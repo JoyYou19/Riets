@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+  # "crates/core-server",
+  "crates/core-core",
+  "crates/core-storage",
+  "crates/core-index",
+  "crates/core-query",
+  # "crates/core-parser",
+  # "crates/core-auth",
+  # "crates/core-api",
+  # "crates/core-protocol",
+  # "crates/core-cluster",
+  # "crates/core-observability",
+  # "crates/core-admin",
+  # "crates/core-migration",
+  "crates/core-testkit",
+]
+
+[workspace.package]
+edition = "2024"
+license = "proprietary"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1.44"
+criterion = "0.8.2"

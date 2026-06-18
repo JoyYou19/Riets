@@ -1,0 +1,19 @@
+# Rust
+/target/
+
+.DS_Store
+**/.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.*
+
+# If all fixtures are generated and should never be committed:
+/crates/core-testkit/fixtures/*.jsonl

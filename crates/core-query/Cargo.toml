@@ -1,0 +1,20 @@
+[package]
+name = "core-query"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+core-index = { path = "../core-index" }
+
+[dev-dependencies]
+criterion = { workspace = true }
+core-testkit = { path = "../core-testkit" }
+
+[[bench]]
+name = "query_bench"
+harness = false
+
+
+[[bench]]
+name = "jsonl_bench"
+harness = false
