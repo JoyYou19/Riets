@@ -1,18 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use ahash::{HashMap, HashMapExt};
+use ahash::HashMapExt;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
 use crate::posting::PostingList;
-use crate::search::SearchIndex;
-use crate::types::{DocId, TermKey, XPathId};
+use crate::search::{SearchIndex, SearchStats};
+use crate::types::{DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
 #[derive(Debug, Default, Clone)]
 pub struct MemIndex {
     terms: HashMap<TermKey, PostingList>,
+    doc_lengths: HashMap<(DocId, XPathId), u32>,
+    field_stats: BTreeMap<XPathId, FieldStats>,
 }
 
 impl SearchIndex for MemIndex {
@@ -29,16 +31,41 @@ impl SearchIndex for MemIndex {
     }
 }
 
+impl SearchStats for MemIndex {
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        self.doc_lengths.get(&(doc_id, xpath)).copied()
+    }
+
+    fn doc_count(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.doc_count)
+            .unwrap_or(0)
+    }
+
+    fn total_doc_len(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.total_doc_len)
+            .unwrap_or(0)
+    }
+}
+
 impl MemIndex {
     pub fn new() -> Self {
         Self {
             terms: HashMap::new(),
+            doc_lengths: HashMap::new(),
+            field_stats: BTreeMap::new(),
         }
     }
 
     pub fn freeze(self) -> crate::segment::ImmutableSegment {
         let terms: BTreeMap<_, _> = self.terms.into_iter().collect();
-        crate::segment::ImmutableSegment::new(terms)
+        let doc_lengths: BTreeMap<_, _> = self.doc_lengths.into_iter().collect();
+        let field_stats = self.field_stats;
+
+        crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats)
     }
 
     pub fn add_token(
@@ -126,6 +153,14 @@ impl MemIndex {
         max_weight: u16,
     ) {
         let tokens = analyzer.analyze(text);
+
+        let len = tokens.len().min(u32::MAX as usize) as u32;
+
+        self.doc_lengths.insert((doc_id, xpath), len);
+
+        let stats = self.field_stats.entry(xpath).or_default();
+        stats.doc_count += 1;
+        stats.total_doc_len += len as u64;
 
         let mut grouped = ahash::HashMap::<String, Vec<u32>>::new();
 

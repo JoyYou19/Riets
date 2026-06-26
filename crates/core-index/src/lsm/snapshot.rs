@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use crate::{
     mem::MemIndex,
     posting::{ops::union_many, DeleteSet, PostingList},
-    search::SearchIndex,
+    search::{SearchIndex, SearchReader, SearchStats},
     types::XPathId,
     wildcard::WildcardPattern,
 };
@@ -15,7 +15,7 @@ use crate::{
 #[derive(Default, Clone)]
 pub struct IndexSnapshot {
     mem: MemIndex,
-    segments: Vec<Arc<dyn SearchIndex + Send + Sync>>,
+    segments: Vec<Arc<dyn SearchReader + Send + Sync>>,
     deleted: DeleteSet,
 }
 
@@ -33,10 +33,46 @@ impl SearchIndex for IndexSnapshot {
     }
 }
 
+impl SearchStats for IndexSnapshot {
+    fn doc_count(&self, xpath: XPathId) -> u64 {
+        let mut total = self.mem.doc_count(xpath);
+
+        for segment in &self.segments {
+            total += segment.doc_count(xpath);
+        }
+
+        total
+    }
+
+    fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {
+        if let Some(len) = self.mem.doc_len(doc_id, xpath) {
+            return Some(len);
+        }
+
+        for segment in &self.segments {
+            if let Some(len) = segment.doc_len(doc_id, xpath) {
+                return Some(len);
+            }
+        }
+
+        None
+    }
+
+    fn total_doc_len(&self, xpath: XPathId) -> u64 {
+        let mut total = self.mem.total_doc_len(xpath);
+
+        for segment in &self.segments {
+            total += segment.total_doc_len(xpath);
+        }
+
+        total
+    }
+}
+
 impl IndexSnapshot {
     pub fn new(
         mem: MemIndex,
-        segments: Vec<Arc<dyn SearchIndex + Send + Sync>>,
+        segments: Vec<Arc<dyn SearchReader + Send + Sync>>,
         deleted: DeleteSet,
     ) -> Self {
         Self {

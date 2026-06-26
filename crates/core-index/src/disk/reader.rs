@@ -1,4 +1,4 @@
-use std::{io, path::Path};
+use std::{collections::BTreeMap, io, path::Path};
 
 use memmap2::Mmap;
 
@@ -8,7 +8,8 @@ use crate::{
         format::{SegmentFooter, TermEntry, FOOTER_LEN, MAGIC, VERSION},
     },
     posting::{Posting, PostingList},
-    search::SearchIndex,
+    search::{SearchIndex, SearchStats},
+    types::{DocId, FieldStats, XPathId},
 };
 /*
 * MMaps a disk segment and implements SearchIndex
@@ -21,6 +22,28 @@ use crate::{
 pub struct DiskSegment {
     mmap: Mmap,
     dictionary: Vec<TermEntry>,
+    doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
+    field_stats: BTreeMap<XPathId, FieldStats>,
+}
+
+impl SearchStats for DiskSegment {
+    fn doc_count(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.doc_count)
+            .unwrap_or(0)
+    }
+
+    fn total_doc_len(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.total_doc_len)
+            .unwrap_or(0)
+    }
+
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        self.doc_lengths.get(&(doc_id, xpath)).copied()
+    }
 }
 
 impl DiskSegment {
@@ -37,9 +60,18 @@ impl DiskSegment {
         let footer = read_footer(&mmap)?;
         validate_footer(&mmap, &footer)?;
 
+        let doc_lengths = read_doc_lengths(&mmap, &footer)?;
+
+        let field_stats = build_field_stats(&doc_lengths);
+
         let dictionary = read_dictionary(&mmap, &footer)?;
 
-        Ok(Self { mmap, dictionary })
+        Ok(Self {
+            mmap,
+            dictionary,
+            doc_lengths,
+            field_stats,
+        })
     }
 
     // Decodes the postings, specifically for the purpose of reading what is inside the actual data
@@ -97,7 +129,11 @@ impl DiskSegment {
             );
         }
 
-        crate::segment::ImmutableSegment::new(terms)
+        crate::segment::ImmutableSegment::new(
+            terms,
+            self.doc_lengths.clone(),
+            self.field_stats.clone(),
+        )
     }
 }
 
@@ -256,10 +292,57 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
     let start = bytes.len() - FOOTER_LEN;
 
     Ok(SegmentFooter {
-        dictionary_offset: read_u64_at(bytes, start),
-        dictionary_len: read_u64_at(bytes, start + 8),
-        term_count: read_u32_at(bytes, start + 16),
+        doc_lengths_offset: read_u64_at(bytes, start),
+        doc_lengths_len: read_u64_at(bytes, start + 8),
+        dictionary_offset: read_u64_at(bytes, start + 16),
+        dictionary_len: read_u64_at(bytes, start + 24),
+        term_count: read_u32_at(bytes, start + 32),
     })
+}
+
+fn build_field_stats(
+    doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
+) -> BTreeMap<XPathId, FieldStats> {
+    let mut stats: BTreeMap<XPathId, FieldStats> = BTreeMap::new();
+
+    for ((_, xpath), len) in doc_lengths {
+        let entry = stats.entry(*xpath).or_default();
+        entry.doc_count += 1;
+        entry.total_doc_len += *len as u64;
+    }
+
+    stats
+}
+
+fn read_doc_lengths(
+    bytes: &[u8],
+    footer: &SegmentFooter,
+) -> io::Result<std::collections::BTreeMap<(DocId, XPathId), u32>> {
+    let start = footer.doc_lengths_offset as usize;
+    let len = footer.doc_lengths_len as usize;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "doc lengths offset overflow"))?;
+
+    if end > bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "doc lengths outside segment bounds",
+        ));
+    }
+
+    let mut cursor = Cursor::new(&bytes[start..end]);
+    let count = cursor.read_u32()? as usize;
+    let mut doc_lengths = std::collections::BTreeMap::new();
+
+    for _ in 0..count {
+        let doc_id = cursor.read_u64()?;
+        let xpath = cursor.read_u32()?;
+        let len = cursor.read_u32()?;
+        doc_lengths.insert((doc_id, xpath), len);
+    }
+
+    Ok(doc_lengths)
 }
 
 fn read_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Vec<TermEntry>> {

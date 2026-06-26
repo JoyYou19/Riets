@@ -1,12 +1,96 @@
 use std::sync::Arc;
 
-use core_index::{posting::PostingList, types::Position};
+use core_index::{
+    posting::PostingList,
+    search::SearchStats,
+    types::{Position, XPathId},
+};
 
 use crate::ScoredPosting;
 
 /*
 * Turns postings into scored postings based on whatever criteria
 */
+
+const BM25_K1: f32 = 1.2;
+const BM25_B: f32 = 0.75;
+const SCORE_SCALE: f32 = 1000.0;
+
+fn trace_bm25() -> bool {
+    std::env::var_os("CORELAMO_TRACE_BM25").is_some()
+}
+
+pub fn score_term_hybrid<S: SearchStats>(
+    stats: &S,
+    postings: &PostingList,
+    xpath: XPathId,
+) -> Vec<ScoredPosting> {
+    let trace = trace_bm25();
+    let total_started = std::time::Instant::now();
+
+    let started = std::time::Instant::now();
+
+    let n = stats.doc_count(xpath) as f32;
+    let df = postings.len() as f32;
+    let avgdl = stats.avg_doc_len(xpath);
+
+    if trace {
+        eprintln!(
+            "bm25 stats: xpath={}, docs={}, df={}, avgdl={:.2}, took={:?}",
+            xpath,
+            n,
+            df,
+            avgdl,
+            started.elapsed()
+        );
+    }
+
+    let started = std::time::Instant::now();
+
+    let scored: Vec<ScoredPosting> = postings
+        .items()
+        .iter()
+        .filter(|p| !p.positions.is_empty())
+        .map(|p| {
+            let policy_weight = p.weight as f32;
+
+            let bm25 = if n > 0.0 && df > 0.0 && avgdl > 0.0 {
+                let tf = p.positions.len() as f32;
+                let dl = stats.doc_len(p.doc_id, xpath).unwrap_or(avgdl as u32) as f32;
+
+                let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+                let norm = 1.0 - BM25_B + BM25_B * (dl / avgdl);
+
+                idf * ((tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm))
+            } else {
+                1.0
+            };
+
+            let hybrid = policy_weight * bm25.max(0.001);
+
+            ScoredPosting {
+                doc_id: p.doc_id,
+                positions: Arc::from(p.positions.as_slice()),
+                score: (hybrid * SCORE_SCALE) as u64,
+                matched_terms: 1,
+                density: 1.0,
+            }
+        })
+        .collect();
+
+    if trace {
+        eprintln!(
+            "bm25 score: xpath={}, postings={}, scored={}, scoring_took={:?}, total_took={:?}",
+            xpath,
+            postings.len(),
+            scored.len(),
+            started.elapsed(),
+            total_started.elapsed()
+        );
+    }
+
+    scored
+}
 
 pub fn score_term(postings: &PostingList) -> Vec<ScoredPosting> {
     postings
@@ -16,7 +100,7 @@ pub fn score_term(postings: &PostingList) -> Vec<ScoredPosting> {
         .map(|p| ScoredPosting {
             doc_id: p.doc_id,
             positions: Arc::from(p.positions.as_slice()),
-            weight_sum: p.weight as u32,
+            score: p.weight as u64 * 1000,
             matched_terms: 1,
             density: 1.0,
         })
@@ -38,13 +122,13 @@ pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPost
             continue;
         };
 
-        let proximity = 1.0 / (1.0 + distance as f32);
+        let proximity = 1.0 + (1.0 / (1.0 + distance as f32));
 
         result.push(ScoredPosting {
             doc_id: l.doc_id,
             positions: Arc::from([left_pos, right_pos]),
-            weight_sum: l.weight_sum + r.weight as u32,
-            density: l.density + proximity,
+            score: l.score + ((r.weight as u64) * 1000),
+            density: l.density * proximity,
             matched_terms: l.matched_terms + 1,
         });
     }

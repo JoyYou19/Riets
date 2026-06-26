@@ -10,7 +10,7 @@ use crate::{
     },
     mem::MemIndex,
     posting::{DeleteSet, PostingList},
-    search::SearchIndex,
+    search::{SearchIndex, SearchReader, SearchStats},
     segment::{ImmutableSegment, SegmentHandle},
     types::{DocId, XPathId},
     wildcard::WildcardPattern,
@@ -21,7 +21,7 @@ use crate::{
 pub struct LsmIndex {
     mem: MemIndex,
     segment_handles: Vec<SegmentHandle>,
-    query_segments: Vec<Arc<dyn SearchIndex + Send + Sync>>,
+    query_segments: Vec<Arc<dyn SearchReader + Send + Sync>>,
     flush_threshold: usize,
     deleted: DeleteSet,
 
@@ -41,6 +41,20 @@ impl SearchIndex for LsmIndex {
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_wildcard(pattern, xpath)
+    }
+}
+
+impl SearchStats for LsmIndex {
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        self.snapshot().doc_len(doc_id, xpath)
+    }
+
+    fn doc_count(&self, xpath: XPathId) -> u64 {
+        self.snapshot().doc_count(xpath)
+    }
+
+    fn total_doc_len(&self, xpath: XPathId) -> u64 {
+        self.snapshot().total_doc_len(xpath)
     }
 }
 
@@ -65,7 +79,7 @@ impl LsmIndex {
         let segment_paths = manifest::read_manifest(&root)?;
 
         let mut segment_handles = Vec::new();
-        let mut query_segments = Vec::new();
+        let mut query_segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::new();
         let mut next_segment_id = 0;
 
         for path in segment_paths {
@@ -81,7 +95,9 @@ impl LsmIndex {
             }
 
             segment_handles.push(SegmentHandle::Disk(path));
-            query_segments.push(Arc::new(disk) as Arc<dyn SearchIndex + Send + Sync>);
+            // Non primitive cast alaallala
+            let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
+            query_segments.push(disk);
         }
 
         let deleted = crate::lsm::deletes::read_deletes(&root)?;
@@ -142,7 +158,7 @@ impl LsmIndex {
 
                 self.segment_handles.push(SegmentHandle::Disk(path));
                 self.query_segments
-                    .push(Arc::new(disk) as Arc<dyn SearchIndex + Send + Sync>);
+                    .push(Arc::new(disk) as Arc<dyn SearchReader + Send + Sync>);
 
                 let disk_paths: Vec<PathBuf> = self
                     .segment_handles
@@ -160,7 +176,7 @@ impl LsmIndex {
                 self.segment_handles
                     .push(SegmentHandle::Memory(segment.clone()));
                 self.query_segments
-                    .push(segment as Arc<dyn SearchIndex + Send + Sync>);
+                    .push(segment as Arc<dyn SearchReader + Send + Sync>);
             }
         }
 
@@ -188,8 +204,8 @@ impl LsmIndex {
                 let disk = DiskSegment::open(&path)?;
 
                 self.segment_handles.push(SegmentHandle::Disk(path));
-                self.query_segments
-                    .push(Arc::new(disk) as Arc<dyn SearchIndex + Send + Sync>);
+                let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
+                self.query_segments.push(disk);
 
                 let disk_paths: Vec<PathBuf> = self
                     .segment_handles
@@ -206,8 +222,9 @@ impl LsmIndex {
             None => {
                 self.segment_handles
                     .push(SegmentHandle::Memory(segment.clone()));
-                self.query_segments
-                    .push(segment as Arc<dyn SearchIndex + Send + Sync>);
+
+                let reader: Arc<dyn SearchReader + Send + Sync> = segment;
+                self.query_segments.push(reader);
             }
         }
 
@@ -266,8 +283,8 @@ impl LsmIndex {
 
         self.segment_handles
             .push(SegmentHandle::Disk(compacted_path.clone()));
-        self.query_segments
-            .push(Arc::new(disk) as Arc<dyn SearchIndex + Send + Sync>);
+        let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
+        self.query_segments.push(disk);
 
         manifest::write_manifest(root, &[compacted_path])?;
 
@@ -327,8 +344,8 @@ impl LsmIndex {
         self.segment_handles
             .insert(0, SegmentHandle::Disk(compacted_path.clone()));
 
-        self.query_segments
-            .insert(0, Arc::new(disk) as Arc<dyn SearchIndex + Send + Sync>);
+        let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
+        self.query_segments.insert(0, disk);
 
         let disk_paths: Vec<PathBuf> = self
             .segment_handles
@@ -431,8 +448,8 @@ impl LsmIndex {
         self.segment_handles
             .insert(0, SegmentHandle::Disk(completed.output_path.clone()));
 
-        self.query_segments
-            .insert(0, Arc::new(disk) as Arc<dyn SearchIndex + Send + Sync>);
+        let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
+        self.query_segments.insert(0, disk);
 
         let disk_paths: Vec<PathBuf> = self
             .segment_handles
