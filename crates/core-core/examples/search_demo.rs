@@ -22,7 +22,7 @@ struct InputDoc {
 
 fn main() -> io::Result<()> {
     let root = std::env::temp_dir().join("corelamo-search-demo");
-    std::fs::remove_dir_all(&root).ok();
+    // std::fs::remove_dir_all(&root).ok();
     //
     println!("fixture={}", fixture_path());
     println!("exists={}", std::path::Path::new(fixture_path()).exists());

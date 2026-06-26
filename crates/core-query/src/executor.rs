@@ -14,7 +14,7 @@ use core_index::{
     types::XPathId,
 };
 
-use crate::{ast::Query, ScoredPosting, SearchHit, TopHit};
+use crate::{ast::Query, planner::QueryPlan, ScoredPosting, SearchHit, TopHit};
 
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
@@ -37,37 +37,35 @@ where
         Self { index, analyzer }
     }
 
-    pub fn execute(&self, query: &Query, xpath: XPathId) -> PostingList {
+    fn execute_optional(&self, query: &Query, xpath: XPathId) -> Option<PostingList> {
         match query {
             Query::Term(term) => self.execute_term(term, xpath),
             Query::Prefix(prefix) => self.execute_prefix(prefix, xpath),
-            Query::Wildcard(pattern) => self.execute_wildcard(pattern, xpath),
+            Query::Wildcard(pattern) => Some(self.execute_wildcard(pattern, xpath)),
             Query::And(parts) => self.execute_and(parts, xpath),
             Query::Or(parts) => self.execute_or(parts, xpath),
-            Query::Phrase(terms) => self.execute_phrase(terms, xpath),
+            Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
         }
     }
 
+    pub fn execute(&self, query: &Query, xpath: XPathId) -> PostingList {
+        self.execute_optional(query, xpath).unwrap_or_default()
+    }
+
     // Query a term
-    fn execute_term(&self, term: &str, xpath: XPathId) -> PostingList {
+    fn execute_term(&self, term: &str, xpath: XPathId) -> Option<PostingList> {
         let analyzed = self.analyzer.analyze(term);
+        let token = analyzed.first()?;
 
-        let Some(token) = analyzed.first() else {
-            return PostingList::default();
-        };
-
-        self.index.lookup(&token.text, xpath)
+        Some(self.index.lookup(&token.text, xpath))
     }
 
     // Prefix query, so for example if we do dat* would find database etc.
-    fn execute_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
+    fn execute_prefix(&self, prefix: &str, xpath: XPathId) -> Option<PostingList> {
         let analyzed = self.analyzer.analyze(prefix);
+        let token = analyzed.first()?;
 
-        let Some(token) = analyzed.first() else {
-            return PostingList::default();
-        };
-
-        self.index.lookup_prefix(&token.text, xpath)
+        Some(self.index.lookup_prefix(&token.text, xpath))
     }
 
     // Wildcard query, for now, we are not analyzing this, might change later
@@ -81,16 +79,23 @@ where
     // 2. if any query returns nothing it drops entire search
     // 3. sorts the posting lists by shortest first
     // 4. Intersects progressively
-    fn execute_and(&self, parts: &[Query], xpath: XPathId) -> PostingList {
-        if parts.is_empty() {
-            return PostingList::default();
+    fn execute_and(&self, parts: &[Query], xpath: XPathId) -> Option<PostingList> {
+        let mut lists = Vec::new();
+
+        for part in parts {
+            let Some(list) = self.execute_optional(part, xpath) else {
+                continue;
+            };
+
+            if list.is_empty() {
+                return Some(PostingList::default());
+            }
+
+            lists.push(list);
         }
 
-        let mut lists: Vec<PostingList> =
-            parts.iter().map(|part| self.execute(part, xpath)).collect();
-
-        if lists.iter().any(|list| list.is_empty()) {
-            return PostingList::default();
+        if lists.is_empty() {
+            return None;
         }
 
         lists.sort_by_key(|list| list.len());
@@ -102,17 +107,23 @@ where
             result = intersection(&result, &next);
         }
 
-        result
+        Some(result)
     }
 
     // Boolean OR
     // Executes every child and unions that into a response
-    fn execute_or(&self, parts: &[Query], xpath: XPathId) -> PostingList {
-        let mut result = PostingList::default();
+    fn execute_or(&self, parts: &[Query], xpath: XPathId) -> Option<PostingList> {
+        let mut result: Option<PostingList> = None;
 
         for part in parts {
-            let next = self.execute(part, xpath);
-            result = union(&result, &next);
+            let Some(next) = self.execute_optional(part, xpath) else {
+                continue;
+            };
+
+            result = Some(match result {
+                Some(current) => union(&current, &next),
+                None => next,
+            });
         }
 
         result
@@ -176,6 +187,14 @@ where
         }
 
         PostingList::from_items(result)
+    }
+
+    fn execute_phrase_optional(&self, terms: &[String], xpath: XPathId) -> Option<PostingList> {
+        if terms.is_empty() {
+            return None;
+        }
+
+        Some(self.execute_phrase(terms, xpath))
     }
 
     // Full search in the entire database
@@ -244,6 +263,137 @@ where
         });
 
         hits
+    }
+
+    pub fn search_plan_top_k(&self, plan: &QueryPlan, xpath: XPathId, k: usize) -> Vec<SearchHit> {
+        if k == 0 {
+            return Vec::new();
+        }
+
+        let candidate_k = (k * 50).max(100).min(2_000);
+
+        let mut by_doc: HashMap<u64, SearchHit> = self
+            .search_top_k(&plan.retrieval, xpath, candidate_k)
+            .into_iter()
+            .map(|hit| (hit.doc_id, hit))
+            .collect();
+
+        if by_doc.is_empty() {
+            return Vec::new();
+        }
+
+        for signal in &plan.signals {
+            let postings = self.execute(&signal.query, xpath);
+
+            if postings.is_empty() {
+                if signal.required {
+                    return Vec::new();
+                }
+                continue;
+            }
+
+            if signal.required {
+                by_doc.retain(|doc_id, _| {
+                    postings
+                        .items()
+                        .binary_search_by_key(doc_id, |p| p.doc_id)
+                        .is_ok()
+                });
+            }
+
+            for posting in postings.items() {
+                let Some(existing) = by_doc.get_mut(&posting.doc_id) else {
+                    continue;
+                };
+
+                let signal_score =
+                    (posting.weight as f32) * signal.boost * (1.0 + posting.positions.len() as f32);
+
+                existing.score += signal_score;
+                existing.weight_sum = existing
+                    .weight_sum
+                    .saturating_add(signal_score.max(0.0) as u32);
+                existing.matched_terms += 1;
+            }
+        }
+
+        top_k_from_hits(by_doc.into_values(), k)
+    }
+
+    pub fn search_plan_all_xpaths_top_k(
+        &self,
+        plan: &QueryPlan,
+        xpaths: impl IntoIterator<Item = XPathId>,
+        k: usize,
+    ) -> Vec<SearchHit> {
+        if k == 0 {
+            return Vec::new();
+        }
+
+        let xpaths: Vec<_> = xpaths.into_iter().collect();
+        let candidate_k = (k * 50).max(100).min(2_000);
+
+        let mut by_doc = HashMap::<u64, SearchHit>::new();
+
+        // One retrieval phase across all fields.
+        for xpath in &xpaths {
+            for hit in self.search_top_k(&plan.retrieval, *xpath, candidate_k) {
+                by_doc
+                    .entry(hit.doc_id)
+                    .and_modify(|existing| {
+                        existing.matched_terms += hit.matched_terms;
+                        existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
+                        existing.score += hit.score;
+                    })
+                    .or_insert(hit);
+            }
+        }
+
+        if by_doc.is_empty() {
+            return Vec::new();
+        }
+
+        // Rerank only candidate docs.
+        for signal in &plan.signals {
+            let mut required_seen = std::collections::HashSet::new();
+
+            for xpath in &xpaths {
+                let postings = self.execute(&signal.query, *xpath);
+
+                if postings.is_empty() {
+                    continue;
+                }
+
+                for posting in postings.items() {
+                    let Some(existing) = by_doc.get_mut(&posting.doc_id) else {
+                        continue;
+                    };
+
+                    required_seen.insert(posting.doc_id);
+
+                    let signal_score = posting.weight as f32
+                        * signal.boost
+                        * (1.0 + posting.positions.len() as f32);
+
+                    existing.score += signal_score;
+                    existing.weight_sum = existing
+                        .weight_sum
+                        .saturating_add(signal_score.max(0.0) as u32);
+                    existing.matched_terms += 1;
+                }
+            }
+
+            if signal.required {
+                by_doc.retain(|doc_id, _| required_seen.contains(doc_id));
+                if by_doc.is_empty() {
+                    return Vec::new();
+                }
+            }
+        }
+
+        top_k_from_hits(by_doc.into_values(), k)
     }
 
     // INFO: Currently we might want to think about other ways of implementing the idea
@@ -329,7 +479,9 @@ where
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
         match query {
             Query::Term(term) => {
-                let postings = self.execute_term(term, xpath);
+                let postings = self
+                    .execute_term(term, xpath)
+                    .unwrap_or(PostingList::default());
                 crate::scorer::score_term_hybrid(self.index, &postings, xpath)
             }
             Query::And(parts) => self.execute_scored_and(parts, xpath),
@@ -341,14 +493,21 @@ where
     }
 
     fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
-        if parts.is_empty() {
-            return Vec::new();
+        let mut lists = Vec::new();
+
+        for part in parts {
+            let Some(postings) = self.execute_optional(part, xpath) else {
+                continue;
+            };
+
+            if postings.is_empty() {
+                return Vec::new();
+            }
+
+            lists.push(postings);
         }
 
-        let mut lists: Vec<PostingList> =
-            parts.iter().map(|part| self.execute(part, xpath)).collect();
-
-        if lists.iter().any(|postings| postings.is_empty()) {
+        if lists.is_empty() {
             return Vec::new();
         }
 
@@ -389,4 +548,27 @@ fn phrase_matches(position_lists: &[&[u32]]) -> bool {
     }
 
     false
+}
+
+fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<SearchHit> {
+    let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
+
+    for hit in hits {
+        heap.push(TopHit(hit));
+
+        if heap.len() > k {
+            heap.pop();
+        }
+    }
+
+    let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
+    });
+
+    hits
 }

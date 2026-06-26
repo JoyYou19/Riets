@@ -11,7 +11,7 @@ use core_index::{
         snapshot::SharedIndexSnapshot,
     },
 };
-use core_query::{Query, QueryExecutor, SearchHit};
+use core_query::{planner::QueryPlan, Query, QueryExecutor, SearchHit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
@@ -313,6 +313,20 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let hits = self.resolve_document_hits(top_hits)?;
 
         Ok(SearchDocumentResults { total_hits, hits })
+    }
+
+    pub fn search_document_hits_plan_top_k(
+        &mut self,
+        plan: &QueryPlan,
+        k: usize,
+    ) -> io::Result<Vec<SearchDocumentHit>> {
+        let snapshot = self.snapshot.get();
+        let executor = QueryExecutor::new(&snapshot, &self.analyzer);
+
+        let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
+        let hits = executor.search_plan_all_xpaths_top_k(plan, xpaths, k);
+
+        self.resolve_document_hits(hits)
     }
 
     fn resolve_document_hits(
