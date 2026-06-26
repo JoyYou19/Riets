@@ -1,4 +1,5 @@
 mod database;
+pub mod metrics;
 mod options;
 
 pub use database::CorelamoDatabase;

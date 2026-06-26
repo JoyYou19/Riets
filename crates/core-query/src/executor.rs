@@ -16,8 +16,13 @@ use core_index::{
 
 use crate::{ast::Query, ScoredPosting, SearchHit, TopHit};
 
+// Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I: SearchIndex> {
+    // Which index are we searching?
     index: &'a I,
+
+    // A query is analyzed also the same way as the index, so we could filter out words, stemming,
+    // whaatever
     analyzer: &'a Analyzer,
 }
 
@@ -37,6 +42,7 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         }
     }
 
+    // Query a term
     fn execute_term(&self, term: &str, xpath: XPathId) -> PostingList {
         let analyzed = self.analyzer.analyze(term);
 
@@ -47,6 +53,7 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         self.index.lookup(&token.text, xpath)
     }
 
+    // Prefix query, so for example if we do dat* would find database etc.
     fn execute_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let analyzed = self.analyzer.analyze(prefix);
 
@@ -57,11 +64,17 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         self.index.lookup_prefix(&token.text, xpath)
     }
 
+    // Wildcard query, for now, we are not analyzing this, might change later
     fn execute_wildcard(&self, pattern: &str, xpath: XPathId) -> PostingList {
         let pattern = core_index::wildcard::WildcardPattern::parse(pattern);
         self.index.lookup_wildcard(&pattern, xpath)
     }
 
+    // Boolean AND logic
+    // 1. execute all child queries
+    // 2. if any query returns nothing it drops entire search
+    // 3. sorts the posting lists by shortest first
+    // 4. Intersects progressively
     fn execute_and(&self, parts: &[Query], xpath: XPathId) -> PostingList {
         if parts.is_empty() {
             return PostingList::default();
@@ -86,6 +99,8 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         result
     }
 
+    // Boolean OR
+    // Executes every child and unions that into a response
     fn execute_or(&self, parts: &[Query], xpath: XPathId) -> PostingList {
         let mut result = PostingList::default();
 
@@ -97,6 +112,12 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         result
     }
 
+    // Phrase query,
+    // ["rust", "document"]
+    //
+    // A document matches only if rust and database appear in it in order rust + database so
+    // position and position + 1
+    //
     fn execute_phrase(&self, terms: &[String], xpath: XPathId) -> PostingList {
         use core_index::posting::Posting;
 
@@ -151,6 +172,7 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         PostingList::from_items(result)
     }
 
+    // Full search in the entire database
     pub fn search(&self, query: &Query, xpath: XPathId) -> Vec<SearchHit> {
         let scored = self.execute_scored(query, xpath);
 
@@ -179,6 +201,7 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         hits
     }
 
+    // Most basic top K search, searches a single Xpath
     pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -268,6 +291,7 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         hits
     }
 
+    // Search the entire database all xpaths
     pub fn search_all_xpaths(
         &self,
         query: &Query,
@@ -295,6 +319,7 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         by_doc.into_values().collect()
     }
 
+    // Converts a query
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
         match query {
             Query::Term(term) => {

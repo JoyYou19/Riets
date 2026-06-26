@@ -1,3 +1,4 @@
+// Keep track of all types, will be needed for binary in the future
 pub type DocId = u64;
 pub type Position = u32;
 pub type XPathId = u32;

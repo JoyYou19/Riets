@@ -3,6 +3,7 @@ use crate::{
     types::{DocId, XPathId},
 };
 
+// Represents one entry in the database documents
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedDocument {
     pub doc_id: DocId,

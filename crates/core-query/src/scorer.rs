@@ -4,6 +4,10 @@ use core_index::{posting::PostingList, types::Position};
 
 use crate::ScoredPosting;
 
+/*
+* Turns postings into scored postings based on whatever criteria
+*/
+
 pub fn score_term(postings: &PostingList) -> Vec<ScoredPosting> {
     postings
         .items()

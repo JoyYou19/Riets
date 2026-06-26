@@ -14,8 +14,9 @@ use core_storage::{
     search_database::{DocumentInput, SearchDatabase, SearchDocumentHit},
 };
 
-use crate::options::DatabaseOptions;
+use crate::{metrics::DatabaseMetrics, options::DatabaseOptions};
 
+// Currently the main entry point to the database
 pub struct CorelamoDatabase {
     root: PathBuf,
     policy_path: PathBuf,
@@ -24,6 +25,8 @@ pub struct CorelamoDatabase {
     options: DatabaseOptions,
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     compaction_worker: Option<CompactionWorker>,
+
+    metrics: DatabaseMetrics,
 }
 
 impl CorelamoDatabase {
@@ -66,23 +69,70 @@ impl CorelamoDatabase {
             options,
             db: Some(db),
             compaction_worker,
+            metrics: DatabaseMetrics::default(),
         })
     }
 
     pub fn put_documents_parallel(&mut self, inputs: Vec<DocumentInput>) -> io::Result<()> {
+        let started = std::time::Instant::now();
+        let count = inputs.len();
         let batch_size = self.options.runtime.indexing_batch_size;
 
-        let db = self.db_mut()?;
-        db.put_documents_parallel(inputs, batch_size)?;
-        db.flush()
+        let result = (|| {
+            let db = self.db_mut()?;
+            db.put_documents_parallel(inputs, batch_size)?;
+            db.flush()
+        })();
+
+        let elapsed = started.elapsed();
+
+        self.metrics.indexing_requests += 1;
+        self.metrics.indexing_total_time += elapsed;
+
+        if result.is_err() {
+            self.metrics.indexing_errors += 1;
+        }
+
+        tracing::info!(
+            documents = count,
+            batch_size = batch_size,
+            elapsed_ms = elapsed.as_millis(),
+            ok = result.is_ok(),
+            "put documents parallel"
+        );
+
+        result
     }
 
     pub fn search(&mut self, query: &str, k: usize) -> io::Result<Vec<SearchDocumentHit>> {
-        let Some(query) = self.build_query(query)? else {
-            return Ok(Vec::new());
-        };
+        let started = std::time::Instant::now();
 
-        self.search_top_k(&query, k)
+        let result = (|| {
+            let Some(query) = self.build_query(query)? else {
+                return Ok(Vec::new());
+            };
+
+            self.search_top_k(&query, k)
+        })();
+
+        let elapsed = started.elapsed();
+
+        self.metrics.search_requests += 1;
+        self.metrics.search_total_time += elapsed;
+
+        if result.is_err() {
+            self.metrics.search_errors += 1;
+        }
+
+        tracing::info!(
+            query = query,
+            k = k,
+            elapsed_ms = elapsed.as_millis(),
+            ok = result.is_ok(),
+            "search request"
+        );
+
+        result
     }
 
     fn build_query(&self, input: &str) -> io::Result<Option<Query>> {
@@ -144,6 +194,7 @@ impl CorelamoDatabase {
             document_count: db.document_count(),
             segment_count: db.segment_count()?,
             background_compaction_enabled: self.compaction_worker.is_some(),
+            metrics: self.metrics.clone(),
         })
     }
 
@@ -225,4 +276,5 @@ pub struct DatabaseStats {
     pub document_count: usize,
     pub segment_count: usize,
     pub background_compaction_enabled: bool,
+    pub metrics: DatabaseMetrics,
 }
