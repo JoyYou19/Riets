@@ -289,6 +289,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-runtime"
+version = "0.1.0"
+dependencies = [
+ "core-core",
+ "core-index",
+ "core-query",
+ "core-storage",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "core-storage"
 version = "0.1.0"
 dependencies = [

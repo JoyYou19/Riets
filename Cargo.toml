@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   # "crates/core-server",
+  "crates/core-runtime",
   "crates/core-core",
   "crates/core-storage",
   "crates/core-index",
