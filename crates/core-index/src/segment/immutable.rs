@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     posting::PostingList,
-    search::SearchIndex,
-    types::{TermKey, XPathId},
+    search::{SearchIndex, SearchStats},
+    types::{DocId, FieldStats, TermKey, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -12,6 +12,8 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImmutableSegment {
     terms: BTreeMap<TermKey, PostingList>,
+    doc_lengths: BTreeMap<(DocId, XPathId), u32>,
+    field_stats: BTreeMap<XPathId, FieldStats>,
 }
 
 // Haha, if we want to search inside of this segment, it must implement, and we do
@@ -29,9 +31,41 @@ impl SearchIndex for ImmutableSegment {
     }
 }
 
+impl SearchStats for ImmutableSegment {
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        self.doc_lengths.get(&(doc_id, xpath)).copied()
+    }
+
+    fn doc_count(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.doc_count)
+            .unwrap_or(0)
+    }
+
+    fn total_doc_len(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.total_doc_len)
+            .unwrap_or(0)
+    }
+}
+
 impl ImmutableSegment {
-    pub fn new(terms: BTreeMap<TermKey, PostingList>) -> Self {
-        Self { terms }
+    pub fn new(
+        terms: BTreeMap<TermKey, PostingList>,
+        doc_lengths: BTreeMap<(DocId, XPathId), u32>,
+        field_stats: BTreeMap<XPathId, FieldStats>,
+    ) -> Self {
+        Self {
+            terms,
+            doc_lengths,
+            field_stats,
+        }
+    }
+
+    pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
+        &self.doc_lengths
     }
 
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {

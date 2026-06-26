@@ -218,6 +218,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         executor.search(query, xpath)
     }
 
+    // WARN: MIght not be used
     pub fn search_documents(
         &mut self,
         query: &Query,

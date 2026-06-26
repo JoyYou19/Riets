@@ -17,3 +17,12 @@ impl TermKey {
         }
     }
 }
+
+// Cached entry of the field stats, once computed in the index, will store smaller information
+// TODO: Need to persist this on the disk probably, could be a good small size increase, but decent
+// performance benefit
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FieldStats {
+    pub doc_count: u64,
+    pub total_doc_len: u64,
+}

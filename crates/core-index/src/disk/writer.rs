@@ -11,6 +11,7 @@ use crate::{
     },
     posting::PostingList,
     segment::ImmutableSegment,
+    types::{DocId, XPathId},
 };
 
 /*
@@ -45,6 +46,8 @@ fn write_header(out: &mut impl Write) -> io::Result<()> {
 }
 
 fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> {
+    write_u64(out, footer.doc_lengths_offset)?;
+    write_u64(out, footer.doc_lengths_len)?;
     write_u64(out, footer.dictionary_offset)?;
     write_u64(out, footer.dictionary_len)?;
     write_u32(out, footer.term_count)
@@ -153,6 +156,10 @@ pub fn write_segment_to<W: Write + Seek>(
         );
     }
 
+    let doc_lengths_offset = out.stream_position()?;
+    write_doc_lengths(out, segment.doc_lengths())?;
+    let doc_lengths_end = out.stream_position()?;
+
     let started = std::time::Instant::now();
 
     let dictionary_offset = out.stream_position()?;
@@ -170,6 +177,8 @@ pub fn write_segment_to<W: Write + Seek>(
     let started = std::time::Instant::now();
 
     let footer = SegmentFooter {
+        doc_lengths_offset,
+        doc_lengths_len: doc_lengths_end - doc_lengths_offset,
         dictionary_offset,
         dictionary_len: dictionary_end - dictionary_offset,
         term_count: dictionary.len() as u32,
@@ -183,6 +192,21 @@ pub fn write_segment_to<W: Write + Seek>(
             started.elapsed(),
             total_started.elapsed()
         );
+    }
+
+    Ok(())
+}
+
+fn write_doc_lengths(
+    out: &mut impl Write,
+    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+) -> io::Result<()> {
+    write_u32(out, doc_lengths.len() as u32)?;
+
+    for (&(doc_id, xpath), &len) in doc_lengths {
+        write_u64(out, doc_id)?;
+        write_u32(out, xpath)?;
+        write_u32(out, len)?;
     }
 
     Ok(())

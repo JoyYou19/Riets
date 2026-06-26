@@ -22,7 +22,10 @@ struct InputDoc {
 
 fn main() -> io::Result<()> {
     let root = std::env::temp_dir().join("corelamo-search-demo");
-    // std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&root).ok();
+    //
+    println!("fixture={}", fixture_path());
+    println!("exists={}", std::path::Path::new(fixture_path()).exists());
 
     let mut db = CorelamoDatabase::open(&root, DatabaseOptions::default())?;
     println!("database root={}", db.root().display());
@@ -88,7 +91,11 @@ fn main() -> io::Result<()> {
             continue;
         }
 
+        let started = std::time::Instant::now();
         let hits = db.search(raw, 3)?;
+        let elapsed = started.elapsed();
+
+        println!("search took {:?}, hits={}", elapsed, hits.len());
 
         for hit in hits {
             let title = hit
@@ -97,7 +104,16 @@ fn main() -> io::Result<()> {
                 .map(String::as_str)
                 .unwrap_or("<no title>");
 
-            println!("\n{} score={:.2}\n{}\n", hit.external_id, hit.score, title,);
+            let body = hit
+                .fields
+                .get("body")
+                .map(String::as_str)
+                .unwrap_or("<no body>");
+
+            println!(
+                "\n{}\nscore={:.2}\n\ntitle:\n{}\n\nbody:\n{}\n",
+                hit.external_id, hit.score, title, body,
+            );
         }
     }
 

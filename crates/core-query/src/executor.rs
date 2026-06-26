@@ -10,14 +10,17 @@ use core_index::{
         ops::{intersection, union},
         PostingList,
     },
-    search::SearchIndex,
+    search::{SearchIndex, SearchStats},
     types::XPathId,
 };
 
 use crate::{ast::Query, ScoredPosting, SearchHit, TopHit};
 
 // Turns the AST into a PostingList or SearchHit
-pub struct QueryExecutor<'a, I: SearchIndex> {
+pub struct QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats,
+{
     // Which index are we searching?
     index: &'a I,
 
@@ -26,7 +29,10 @@ pub struct QueryExecutor<'a, I: SearchIndex> {
     analyzer: &'a Analyzer,
 }
 
-impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
+impl<'a, I> QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats,
+{
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self { index, analyzer }
     }
@@ -179,12 +185,12 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         let mut hits: Vec<SearchHit> = scored
             .into_iter()
             .map(|p| {
-                let score = p.weight_sum as f32 * p.density;
+                let score = p.score as f32 / 1000.0 * p.density;
 
                 SearchHit {
                     doc_id: p.doc_id,
                     matched_terms: p.matched_terms,
-                    weight_sum: p.weight_sum,
+                    weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
                     distance_factor: p.density,
                     score,
                 }
@@ -211,12 +217,12 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
 
         for p in scored {
-            let score = p.weight_sum as f32 * p.density;
+            let score = p.score as f32 / 1000.0 * p.density;
 
             let hit = SearchHit {
                 doc_id: p.doc_id,
                 matched_terms: p.matched_terms,
-                weight_sum: p.weight_sum,
+                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
                 distance_factor: p.density,
                 score,
             };
@@ -324,12 +330,12 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         match query {
             Query::Term(term) => {
                 let postings = self.execute_term(term, xpath);
-                crate::scorer::score_term(&postings)
+                crate::scorer::score_term_hybrid(self.index, &postings, xpath)
             }
             Query::And(parts) => self.execute_scored_and(parts, xpath),
             _ => {
                 let postings = self.execute(query, xpath);
-                crate::scorer::score_term(&postings)
+                crate::scorer::score_term_hybrid(self.index, &postings, xpath)
             }
         }
     }
@@ -351,7 +357,7 @@ impl<'a, I: SearchIndex> QueryExecutor<'a, I> {
         let mut iter = lists.into_iter();
         let first = iter.next().unwrap();
 
-        let mut result = crate::scorer::score_term(&first);
+        let mut result = crate::scorer::score_term_hybrid(self.index, &first, xpath);
 
         for postings in iter {
             result = crate::scorer::scored_and(&result, &postings);

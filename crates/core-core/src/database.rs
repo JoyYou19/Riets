@@ -136,11 +136,9 @@ impl CorelamoDatabase {
     }
 
     fn build_query(&self, input: &str) -> io::Result<Option<Query>> {
-        let db = self.db_ref()?;
-
         let terms: Vec<String> = input
             .split_whitespace()
-            .filter_map(|term| db.analyze_query_term(term))
+            .map(|term| term.to_string())
             .collect();
 
         Ok(match terms.len() {
@@ -149,6 +147,22 @@ impl CorelamoDatabase {
             _ => Some(Query::And(terms.into_iter().map(Query::Term).collect())),
         })
     }
+
+    // TODO: Might be broken.
+    // fn build_query(&self, input: &str) -> io::Result<Option<Query>> {
+    //     let db = self.db_ref()?;
+    //
+    //     let terms: Vec<String> = input
+    //         .split_whitespace()
+    //         .filter_map(|term| db.analyze_query_term(term))
+    //         .collect();
+    //
+    //     Ok(match terms.len() {
+    //         0 => None,
+    //         1 => Some(Query::Term(terms[0].clone())),
+    //         _ => Some(Query::And(terms.into_iter().map(Query::Term).collect())),
+    //     })
+    // }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
         self.db
