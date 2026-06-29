@@ -548,11 +548,123 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // RETRIEVE
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_033_retrieve_single_document_ok() {
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
+            .body(r#"["1"]"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let json = get_json(res).await;
+        let docs = json["data"]["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["id"], "1");
+    }
+
+    #[tokio::test]
+    async fn test_034_retrieve_multiple_documents_ok() {
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
+            .body(r#"["1","2","3"]"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let json = get_json(res).await;
+        let docs = json["data"]["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_035_retrieve_non_existent_document() {
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
+            .body(r#"["999999"]"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let json = get_json(res).await;
+        let docs = json["data"]["documents"].as_array().unwrap();
+        let not_found = json["data"]["not_found"].as_array().unwrap();
+        assert_eq!(docs.len(), 0);
+        assert_eq!(not_found.len(), 1);
+        assert_eq!(not_found[0], "999999");
+    }
+
+    #[tokio::test]
+    async fn test_036_retrieve_mixed_existing_and_non_existent() {
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
+            .body(r#"["1","999999"]"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let json = get_json(res).await;
+        let docs = json["data"]["documents"].as_array().unwrap();
+        let not_found = json["data"]["not_found"].as_array().unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(not_found.len(), 1);
+        assert_eq!(docs[0]["id"], "1");
+        assert_eq!(not_found[0], "999999");
+    }
+
+    #[tokio::test]
+    async fn test_037_retrieve_empty_body() {
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
+            .body("")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn test_038_retrieve_invalid_body() {
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
+            .body("not json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn test_039_retrieve_db_not_found() {
+        let res = client()
+            .post(url("/api/databases/nonexistent/retrieve/json"))
+            .body(r#"["1"]"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn test_040_retrieve_unsupported_filetype() {
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/csv")))
+            .body(r#"["1"]"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
+    // -------------------------------------------------------------------------
     // DELETE
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_033_delete_database_not_found() {
+    async fn test_041_delete_database_not_found() {
         let res = client()
             .delete(url("/api/databases/nonexistent/delete-database"))
             .send()
@@ -562,7 +674,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_034_delete_database_ok() {
+    async fn test_042_delete_database_ok() {
         let res = client()
             .delete(url(&format!(
                 "/api/databases/{TEST_DB_NAME}/delete-database"

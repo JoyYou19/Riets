@@ -1,15 +1,20 @@
 use core_index::document::IndexPolicy;
-use core_storage::search_database::{DocumentInput, SearchDocumentHit};
+use core_storage::{
+    document_store::StoredDocument,
+    search_database::{DocumentInput, SearchDocumentHit},
+};
 use serde_json::Value;
 use std::{collections::BTreeMap, io};
 
 //TODO: ALL types for documents and policy
 //trait for each filetype json/xml/toml....
+//before adding more we should get the arrays + id field figured out i believe
 pub trait DocumentConversion {
-    fn into_document_inputs(self) -> io::Result<Vec<DocumentInput>>;
-    fn from_res_to_document(docs: Vec<SearchDocumentHit>) -> io::Result<String>;
-    fn from_policy(policy: &IndexPolicy) -> io::Result<String>;
-    fn into_policy(self) -> io::Result<IndexPolicy>;
+    fn into_document_inputs(self) -> io::Result<Vec<DocumentInput>>; //insert
+    fn from_res_to_document(docs: Vec<SearchDocumentHit>) -> io::Result<String>; //search
+    fn from_policy(policy: &IndexPolicy) -> io::Result<String>; //policy 
+    fn into_policy(self) -> io::Result<IndexPolicy>; //policy
+    fn stored_documents_to_values(docs: &[StoredDocument]) -> Vec<serde_json::Value>; //retrieve
 }
 
 //all posiible Filetype
@@ -67,6 +72,20 @@ impl<'a> DocumentConversion for Json<'a> {
             )
         })
     }
+
+    //FIX: the id wont always be "id" type shit
+    fn stored_documents_to_values(docs: &[StoredDocument]) -> Vec<serde_json::Value> {
+        docs.iter()
+            .map(|doc| {
+                let mut obj = res_to_json(doc.fields.clone());
+                obj.insert(
+                    "id".to_string(),
+                    serde_json::Value::String(doc.external_id.clone()),
+                );
+                serde_json::Value::Object(obj)
+            })
+            .collect()
+    }
 }
 
 //MAIN FUNCTIONS ////////////////////////////////////////////////////////////////////////
@@ -93,6 +112,23 @@ pub fn serialize_hits(hits: Vec<SearchDocumentHit>, filetype: &str) -> io::Resul
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported filetype: '{other}'"),
+        )),
+    }
+}
+
+//for retrieve convert from StoredDocument
+pub fn convert_from_storage(docs: &[StoredDocument], filetype: &str) -> io::Result<String> {
+    match filetype.to_lowercase().as_str() {
+        "json" => {
+            let values = Json::stored_documents_to_values(docs);
+            serde_json::to_string_pretty(&values)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        }
+        // "xml" => ...
+        // "toml" => ...
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported filetype: '{other}' — supported types: json"),
         )),
     }
 }

@@ -1,3 +1,12 @@
+//INFO: under scirpts we have ./movies now for funzies
+
+//TODO: update/delete partial replace graceful shutdown db.shutdown backup/restore
+//HTTPS auth clustering lmao
+//better output
+//better LOGS no just prints, or tracing atleast
+//and all //TODO ive written
+//make a million $$$$
+
 use axum::{
     Router,
     extract::{Path, Query, State},
@@ -219,6 +228,7 @@ async fn main() -> io::Result<()> {
 
     //TODO: visi parejie endpointi lmao
     //+ mos pielikt default type configaa? lai nav  prost 404
+    //mos uzrakstit routes smukaak jeedziigaak jo sis jau ir parverties par porno
     let addr = format!("{}:{}", settings.host, settings.port);
     println!("starting http server on {addr}");
     let app = Router::new()
@@ -240,6 +250,16 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/insert",
             post(|| async {
                 response::bad_request("filetype not specified, use /insert/{filetype}")
+            }),
+        )
+        .route(
+            "/api/databases/{db_name}/retrieve/{filetype}",
+            post(handlers::retrieve_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/retrieve",
+            post(|| async {
+                response::bad_request("filetype not specified, use /retrieve/{filetype}")
             }),
         )
         .route(

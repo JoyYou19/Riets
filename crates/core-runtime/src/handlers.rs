@@ -75,8 +75,9 @@ pub async fn search_handler(
         Err(e) => return e,
     };
 
-    //TODO docs offset nevis hardcoded 10 + structured query like elastic not raw string
+    //TODO docs offset nevis hardcoded 10 + structured query like elastic/CP not raw string
     //TODO process query validity.... all the * AND OR  check ......
+    //FIX: "cars" search gets over stemmed "car" works
     let hits = match db.search(&q, 10) {
         Ok(hits) => hits,
         Err(e) => return response::internal_error(&format!("search failed: {e}")),
@@ -91,6 +92,56 @@ pub async fn search_handler(
     response::ok_with_data(
         &format!("{hit_count} hit(s) for '{q}'"),
         serde_json::from_str(&output).unwrap(),
+    )
+}
+
+//TODO add get_documents_handler if we want multiple documents retrieved at once
+//+ how would we return the exact document that was stored (we deserialize it from HashMap)
+pub async fn retrieve_handler(
+    State(state): State<AppState>,
+    Path((db_name, filetype)): Path<(String, String)>,
+    body: String,
+) -> response::ApiResponse {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return e,
+    };
+
+    let ids: Vec<String> = match serde_json::from_str(&body) {
+        Ok(ids) => ids,
+        Err(e) => return response::bad_request(&format!("expected JSON array of ids: {e}")),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return e,
+    };
+
+    let mut docs = Vec::new();
+    let mut not_found_ids = Vec::new();
+
+    for id in &ids {
+        match db.get_document(id) {
+            Ok(Some(doc)) => docs.push(doc),
+            Ok(None) => not_found_ids.push(id.clone()),
+            Err(e) => {
+                return response::internal_error(&format!("failed to get document '{id}': {e}"));
+            }
+        }
+    }
+
+    let output = match doctypes::convert_from_storage(&docs, &filetype) {
+        Ok(s) => s,
+        Err(e) => return response::bad_request(&e.to_string()),
+    };
+
+    response::ok_with_data(
+        &format!("retrieved {} document(s)", docs.len()),
+        serde_json::json!({
+            "documents": serde_json::from_str::<serde_json::Value>(&output).unwrap(),
+            "not_found": not_found_ids,
+        }),
     )
 }
 
@@ -118,6 +169,7 @@ pub async fn insert_handler(
     };
 
     //insert
+    //TODO: needs duplicate check!!!!
     let doc_count = input_docs.len();
     if input_docs.is_empty() {
         return response::bad_request("no valid documents found in request body");
