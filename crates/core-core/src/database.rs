@@ -6,7 +6,7 @@ use std::{
 use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
-    lsm::{worker::CompactionWorker, LsmIndex},
+    lsm::{LsmIndex, worker::CompactionWorker},
 };
 use core_query::Query;
 use core_storage::{

@@ -2,8 +2,10 @@ use axum::{
     Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    middleware,
+    routing::{delete, get, post},
 };
+
 use core_core::CorelamoDatabase;
 
 use std::{
@@ -14,7 +16,13 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+#[cfg(test)]
+mod api_tests;
+
 mod database_helpers;
+mod doctypes;
+mod handlers;
+mod response;
 
 const DEFAULT_ROOT: &str = "/var/lib/corelamo";
 const DEFAULT_NAME: &str = "corelamo";
@@ -166,51 +174,6 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-async fn search_handler(
-    Path(db_name): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> (StatusCode, String) {
-    let q = match params.get("q") {
-        Some(q) => q.clone(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "missing ?q= query param".to_string(),
-            );
-        }
-    };
-
-    println!("[search] db={db_name} q={q:?}");
-
-    (StatusCode::OK, format!("db={db_name} q={q}"))
-}
-
-async fn insert_handler(Path(db_name): Path<String>, body: String) -> (StatusCode, String) {
-    println!("[insert] db={db_name} body={body:?}");
-    (
-        StatusCode::OK,
-        format!("db={db_name} received {} bytes", body.len()),
-    )
-}
-
-async fn create_handler(
-    State(state): State<AppState>,
-    Path(db_name): Path<String>,
-) -> (StatusCode, String) {
-    let db_path = state.databases_dir.join(&db_name);
-
-    match database_helpers::create_database(db_name.clone(), &db_path) {
-        Ok(db) => {
-            state.databases.write().unwrap().insert(db_name.clone(), db);
-            (StatusCode::OK, format!("database {db_name} created"))
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to create database {db_name}: {e}"),
-        ),
-    }
-}
-
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = match parse_args() {
@@ -240,7 +203,7 @@ async fn main() -> io::Result<()> {
     let databases_dir = settings.databases_dir(&args.root);
     println!("databases_dir: {}", databases_dir.display());
 
-    let databases = match database_helpers::load_databases(&databases_dir) {
+    let databases = match database_helpers::load_saved_databases(&databases_dir) {
         Ok(dbs) => dbs,
         Err(e) => {
             eprintln!("error loading databases: {e}");
@@ -254,12 +217,76 @@ async fn main() -> io::Result<()> {
         databases_dir,
     };
 
+    //TODO: visi parejie endpointi lmao
+    //+ mos pielikt default type configaa? lai nav  prost 404
     let addr = format!("{}:{}", settings.host, settings.port);
     println!("starting http server on {addr}");
     let app = Router::new()
-        .route("/api/databases/{db_name}/search", get(search_handler))
-        .route("/api/databases/{db_name}/insert", post(insert_handler))
-        .route("/api/databases/{db_name}/create", post(create_handler))
+        .route(
+            "/api/databases/{db_name}/search/{file_type}",
+            post(handlers::search_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/search",
+            post(|| async {
+                response::bad_request("filetype not specified, use /search/{filetype}")
+            }),
+        )
+        .route(
+            "/api/databases/{db_name}/insert/{file_type}",
+            post(handlers::insert_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/insert",
+            post(|| async {
+                response::bad_request("filetype not specified, use /insert/{filetype}")
+            }),
+        )
+        .route(
+            "/api/databases/{db_name}/create-database",
+            post(handlers::create_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/delete-database",
+            delete(handlers::delete_handler),
+        )
+        .route("/api/databases", get(handlers::list_databases_handler))
+        .route(
+            "/api/databases/{db_name}/status",
+            get(handlers::stats_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/reindex",
+            post(handlers::reindex_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/policy/{filetype}",
+            get(handlers::get_policy_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/policy/{filetype}",
+            post(handlers::set_policy_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/policy",
+            get(|| async {
+                response::bad_request(
+                    "filetype not specified, use /policy/{filetype} e.g. /policy/json",
+                )
+            }),
+        )
+        .route(
+            "/api/databases/{db_name}/policy",
+            post(|| async {
+                response::bad_request(
+                    "filetype not specified, use /policy/{filetype} e.g. /policy/json",
+                )
+            }),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            handlers::auth_middleware,
+        ))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
