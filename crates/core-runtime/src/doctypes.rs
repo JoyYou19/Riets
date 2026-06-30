@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, io};
 
 //TODO: ALL types for documents and policy
-//trait for each filetype json/xml/toml....
+//trait for each filetype json/xml...
 //before adding more we should get the arrays + id field figured out i believe
 pub trait DocumentConversion {
     fn into_document_inputs(self) -> io::Result<Vec<DocumentInput>>; //insert
@@ -20,7 +20,6 @@ pub trait DocumentConversion {
 //all posiible Filetype
 pub struct Json<'a>(pub &'a str);
 // pub struct Xml<'a>(pub &'a str);
-// pub struct Toml<'a>(pub &'a str);
 
 impl<'a> DocumentConversion for Json<'a> {
     fn into_document_inputs(self) -> io::Result<Vec<DocumentInput>> {
@@ -73,7 +72,7 @@ impl<'a> DocumentConversion for Json<'a> {
         })
     }
 
-    //FIX: the id wont always be "id" type shit
+    //FIX: the id wont always be named "id" type shit
     fn stored_documents_to_values(docs: &[StoredDocument]) -> Vec<serde_json::Value> {
         docs.iter()
             .map(|doc| {
@@ -95,7 +94,6 @@ pub fn parse_documents(body: &str, file_type: &str) -> io::Result<Vec<DocumentIn
     match file_type.to_lowercase().as_str() {
         "json" => Json(body).into_document_inputs(),
         // "xml" => Xml(body).into_document_inputs(),
-        // "toml" => Toml(body).into_document_inputs(),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported file type: '{other}'"),
@@ -108,7 +106,6 @@ pub fn serialize_hits(hits: Vec<SearchDocumentHit>, filetype: &str) -> io::Resul
     match filetype.to_lowercase().as_str() {
         "json" => Json::from_res_to_document(hits),
         // "xml" => Xml::from_document_inputs(hits),
-        // "toml" => Toml::from_document_inputs(hits),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported filetype: '{other}'"),
@@ -125,7 +122,6 @@ pub fn convert_from_storage(docs: &[StoredDocument], filetype: &str) -> io::Resu
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
         }
         // "xml" => ...
-        // "toml" => ...
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported filetype: '{other}' — supported types: json"),
@@ -137,7 +133,6 @@ pub fn convert_from_storage(docs: &[StoredDocument], filetype: &str) -> io::Resu
 pub fn serialize_policy(policy: &IndexPolicy, filetype: &str) -> io::Result<String> {
     match filetype.to_lowercase().as_str() {
         "json" => Json::from_policy(policy),
-        // "toml" => Toml::from_policy(policy),
         // "xml" => Xml::from_policy(policy),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -150,7 +145,6 @@ pub fn serialize_policy(policy: &IndexPolicy, filetype: &str) -> io::Result<Stri
 pub fn parse_policy(body: &str, filetype: &str) -> io::Result<IndexPolicy> {
     match filetype.to_lowercase().as_str() {
         "json" => Json(body).into_policy(),
-        // "toml" => Toml(body).into_policy(),
         // "xml" => Xml(body).into_policy(),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,

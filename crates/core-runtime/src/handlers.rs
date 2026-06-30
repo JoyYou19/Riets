@@ -11,7 +11,6 @@ use axum::{
     response::Response,
 };
 use core_core::CorelamoDatabase;
-use core_index::document::IndexPolicy;
 
 use crate::{AppState, database_helpers, doctypes, response};
 
@@ -42,7 +41,26 @@ fn require_body(body: &str) -> Result<&str, response::ApiResponse> {
     }
 }
 
-//TODO auth before request (check permissions....)
+//helper to coreaclty extract the specified/default filetype and db_name from path
+///api/databases/db_name/command/filetype
+fn get_db_name_and_filetype(
+    state: &AppState,
+    params: &HashMap<String, String>,
+) -> Result<(String, String), response::ApiResponse> {
+    let db_name = params
+        .get("db_name")
+        .cloned()
+        .ok_or_else(|| response::bad_request("missing db_name in path"))?;
+
+    let filetype = params
+        .get("filetype")
+        .cloned()
+        .unwrap_or_else(|| state.default_filetype.clone());
+
+    Ok((db_name, filetype))
+}
+
+//TODO auth/https before request (check permissions....)
 pub async fn auth_middleware(
     State(state): State<AppState>,
     request: Request,
@@ -61,11 +79,16 @@ pub async fn auth_middleware(
 
 pub async fn search_handler(
     State(state): State<AppState>,
-    Path((db_name, filetype)): Path<(String, String)>,
+    Path(params): Path<HashMap<String, String>>,
     body: String,
 ) -> response::ApiResponse {
     let q = match require_body(&body) {
         Ok(q) => q.to_string(),
+        Err(e) => return e,
+    };
+
+    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+        Ok(r) => r,
         Err(e) => return e,
     };
 
@@ -95,11 +118,10 @@ pub async fn search_handler(
     )
 }
 
-//TODO add get_documents_handler if we want multiple documents retrieved at once
-//+ how would we return the exact document that was stored (we deserialize it from HashMap)
+//TODO how would we return the exact document that was stored (we deserialize it from HashMap)
 pub async fn retrieve_handler(
     State(state): State<AppState>,
-    Path((db_name, filetype)): Path<(String, String)>,
+    Path(params): Path<HashMap<String, String>>,
     body: String,
 ) -> response::ApiResponse {
     let body = match require_body(&body) {
@@ -110,6 +132,11 @@ pub async fn retrieve_handler(
     let ids: Vec<String> = match serde_json::from_str(&body) {
         Ok(ids) => ids,
         Err(e) => return response::bad_request(&format!("expected JSON array of ids: {e}")),
+    };
+
+    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
     let mut databases = state.databases.write().unwrap();
@@ -147,11 +174,16 @@ pub async fn retrieve_handler(
 
 pub async fn insert_handler(
     State(state): State<AppState>,
-    Path((db_name, filetype)): Path<(String, String)>,
+    Path(params): Path<HashMap<String, String>>,
     body: String,
 ) -> response::ApiResponse {
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
+        Err(e) => return e,
+    };
+
+    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+        Ok(r) => r,
         Err(e) => return e,
     };
 
@@ -282,9 +314,15 @@ pub async fn reindex_handler(
 
 pub async fn get_policy_handler(
     State(state): State<AppState>,
-    Path((db_name, filetype)): Path<(String, String)>,
+    Path(params): Path<HashMap<String, String>>,
 ) -> response::ApiResponse {
     let databases = state.databases.read().unwrap();
+
+    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
     let db = match get_db_read(&databases, &db_name) {
         Ok(db) => db,
         Err(e) => return e,
@@ -301,11 +339,16 @@ pub async fn get_policy_handler(
 
 pub async fn set_policy_handler(
     State(state): State<AppState>,
-    Path((db_name, filetype)): Path<(String, String)>,
+    Path(params): Path<HashMap<String, String>>,
     body: String,
 ) -> response::ApiResponse {
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
+        Err(e) => return e,
+    };
+
+    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+        Ok(r) => r,
         Err(e) => return e,
     };
 

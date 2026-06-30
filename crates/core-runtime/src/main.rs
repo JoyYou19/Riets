@@ -1,16 +1,17 @@
-//INFO: under scirpts we have ./movies now for funzies
+//INFO: under scripts we have ./movies now for funzies
 
-//TODO: update/delete partial replace graceful shutdown db.shutdown backup/restore
+//TODO: update/delete partial replace
+//graceful shutdown db.shutdown
+//backup/restore
+//Some Errors.rs file/enum for standardised errors
 //HTTPS auth clustering lmao
 //better output
 //better LOGS no just prints, or tracing atleast
 //and all //TODO ive written
-//make a million $$$$
 
 use axum::{
     Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{Path, State},
     middleware,
     routing::{delete, get, post},
 };
@@ -25,167 +26,75 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use tokio::signal;
+
 #[cfg(test)]
 mod api_tests;
 
+mod corelamo_settings;
 mod database_helpers;
 mod doctypes;
 mod handlers;
 mod response;
 
-const DEFAULT_ROOT: &str = "/var/lib/corelamo";
-const DEFAULT_NAME: &str = "corelamo";
-const DEFAULT_PORT: u16 = 6006;
-const DEFAULT_HOST: &str = "0.0.0.0";
-
-const HELP: &str = "\
-corelamo-runtime 
-USAGE:
-    corelamo-runtime [OPTIONS]
-OPTIONS:
-    --root-path <path>    Root directory for all databases and config
-                          [default: /var/lib/corelamo]
-
-    --name <name>         Name of this corelamo instance
-                          [default: corelamo]
-
-    --host <host>         Host address to bind the HTTP server to
-                          [default: 0.0.0.0]
-                          note: config file takes priority if it exists
-
-    --port <port>         Port to bind the HTTP server to
-                          [default: 6006]
-                          note: config file takes priority if it exists
-
-    -h, --help            Print this help message and exit
-";
-
-struct Args {
-    root: PathBuf,
-    name: String,
-    host: Option<String>,
-    port: Option<u16>,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, CorelamoDatabase>>>,
     pub databases_dir: PathBuf,
+    pub default_filetype: String,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct CorelamoSettings {
-    pub name: String,
-    pub host: String,
-    pub port: u16,
+//helper function for axum to decet the shutdown of a programm
+//TODO: maybe check if there are more possible signals
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    #[cfg(unix)]
+    let hangup = async {
+        signal::unix::signal(signal::unix::SignalKind::hangup())
+            .expect("failed to install SIGHUP handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let hangup = std::future::pending::<()>();
+
+    #[cfg(unix)]
+    let quit = async {
+        signal::unix::signal(signal::unix::SignalKind::quit())
+            .expect("failed to install SIGQUIT handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let quit = std::future::pending::<()>();
+
+    let reason = tokio::select! {
+        _ = ctrl_c => "SIGINT (Ctrl+C)",
+        _ = terminate => "SIGTERM",
+        _ = hangup => "SIGHUP",
+        _ = quit => "SIGQUIT",
+    };
+
+    println!("shutdown signal received: {reason}, shutting down gracefully...");
 }
-
-impl CorelamoSettings {
-    pub fn new(name: String, host: String, port: u16) -> Self {
-        Self { name, host, port }
-    }
-
-    pub fn databases_dir(&self, root: &PathBuf) -> PathBuf {
-        root.join("databases")
-    }
-}
-
-pub fn load_or_init_settings(
-    root: &PathBuf,
-    name: String,
-    host: Option<String>,
-    port: Option<u16>,
-) -> io::Result<CorelamoSettings> {
-    let settings_path = root.join("DatabaseSettings.toml");
-
-    if settings_path.exists() {
-        let raw = std::fs::read_to_string(&settings_path)?;
-        let settings: CorelamoSettings =
-            toml::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        println!("config loaded from {}", settings_path.display());
-        return Ok(settings);
-    }
-
-    println!("no config found, writing defaults...");
-    std::fs::create_dir_all(root)?;
-    let settings = CorelamoSettings::new(
-        name,
-        host.unwrap_or_else(|| DEFAULT_HOST.to_string()),
-        port.unwrap_or(DEFAULT_PORT),
-    );
-    let raw =
-        toml::to_string_pretty(&settings).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    std::fs::write(&settings_path, raw)?;
-    println!("config written to {}", settings_path.display());
-
-    Ok(settings)
-}
-
-fn resolve_root(path: PathBuf) -> PathBuf {
-    if path.ends_with("corelamo") {
-        path
-    } else {
-        path.join("corelamo")
-    }
-}
-
-fn parse_args() -> Result<Args, String> {
-    let mut args = std::env::args().skip(1).peekable();
-    let mut root: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut host: Option<String> = None;
-    let mut port: Option<u16> = None;
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                print!("{}", HELP);
-                process::exit(0);
-            }
-            "--root-path" => {
-                let val = args
-                    .next()
-                    .ok_or_else(|| "--root-path requires a value".to_string())?;
-                root = Some(PathBuf::from(val));
-            }
-            "--name" => {
-                let val = args
-                    .next()
-                    .ok_or_else(|| "--name requires a value".to_string())?;
-                name = Some(val);
-            }
-            "--host" => {
-                let val = args
-                    .next()
-                    .ok_or_else(|| "--host requires a value".to_string())?;
-                host = Some(val);
-            }
-            "--port" => {
-                let val = args
-                    .next()
-                    .ok_or_else(|| "--port requires a value".to_string())?;
-                let parsed = val
-                    .parse::<u16>()
-                    .map_err(|_| format!("--port must be a valid port number, got: {val}"))?;
-                port = Some(parsed);
-            }
-            other => {
-                return Err(format!("unknown argument: {other}"));
-            }
-        }
-    }
-
-    Ok(Args {
-        root: resolve_root(root.unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT))),
-        name: name.unwrap_or_else(|| DEFAULT_NAME.to_string()),
-        host,
-        port,
-    })
-}
-
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let args = match parse_args() {
+    let cli_overrides = match corelamo_settings::parse_args() {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}");
@@ -195,9 +104,8 @@ async fn main() -> io::Result<()> {
     };
 
     println!("corelamo-runtime starting");
-    println!("root: {}", args.root.display());
 
-    let settings = match load_or_init_settings(&args.root, args.name, args.host, args.port) {
+    let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error loading settings: {e}");
@@ -205,11 +113,19 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    println!("name: {}", settings.name);
-    println!("host: {}", settings.host);
-    println!("port: {}", settings.port);
+    let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));
+    let name = corelamo_settings::get(&settings, "name");
+    let host = corelamo_settings::get(&settings, "host");
+    let port = corelamo_settings::get(&settings, "port");
+    let default_filetype = corelamo_settings::get(&settings, "filetype");
 
-    let databases_dir = settings.databases_dir(&args.root);
+    println!("root: {}", root_path.display());
+    println!("name: {name}");
+    println!("host: {host}");
+    println!("port: {port}");
+    println!("default filetype: {default_filetype}");
+
+    let databases_dir = root_path.join("databases");
     println!("databases_dir: {}", databases_dir.display());
 
     let databases = match database_helpers::load_saved_databases(&databases_dir) {
@@ -221,36 +137,34 @@ async fn main() -> io::Result<()> {
     };
 
     println!("found and opened {} database(s)", databases.len());
+
     let state = AppState {
         databases: Arc::new(RwLock::new(databases)),
         databases_dir,
+        default_filetype,
     };
 
-    //TODO: visi parejie endpointi lmao
-    //+ mos pielikt default type configaa? lai nav  prost 404
-    //mos uzrakstit routes smukaak jeedziigaak jo sis jau ir parverties par porno
-    let addr = format!("{}:{}", settings.host, settings.port);
-    println!("starting http server on {addr}");
+    //this clone is ok since it just += 1 for Arc
+    let state_for_shutdown = state.clone();
+
+    //INFO: the paths that have /{filetype} have another path without it for default filetype,
+    //handlers handle it :)
     let app = Router::new()
         .route(
-            "/api/databases/{db_name}/search/{file_type}",
+            "/api/databases/{db_name}/search/{filetype}",
             post(handlers::search_handler),
         )
         .route(
             "/api/databases/{db_name}/search",
-            post(|| async {
-                response::bad_request("filetype not specified, use /search/{filetype}")
-            }),
+            post(handlers::search_handler),
         )
         .route(
-            "/api/databases/{db_name}/insert/{file_type}",
+            "/api/databases/{db_name}/insert/{filetype}",
             post(handlers::insert_handler),
         )
         .route(
             "/api/databases/{db_name}/insert",
-            post(|| async {
-                response::bad_request("filetype not specified, use /insert/{filetype}")
-            }),
+            post(handlers::insert_handler),
         )
         .route(
             "/api/databases/{db_name}/retrieve/{filetype}",
@@ -258,9 +172,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/retrieve",
-            post(|| async {
-                response::bad_request("filetype not specified, use /retrieve/{filetype}")
-            }),
+            post(handlers::retrieve_handler),
         )
         .route(
             "/api/databases/{db_name}/create-database",
@@ -289,19 +201,11 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/policy",
-            get(|| async {
-                response::bad_request(
-                    "filetype not specified, use /policy/{filetype} e.g. /policy/json",
-                )
-            }),
+            get(handlers::get_policy_handler),
         )
         .route(
             "/api/databases/{db_name}/policy",
-            post(|| async {
-                response::bad_request(
-                    "filetype not specified, use /policy/{filetype} e.g. /policy/json",
-                )
-            }),
+            post(handlers::set_policy_handler),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -309,10 +213,29 @@ async fn main() -> io::Result<()> {
         ))
         .with_state(state);
 
+    let addr = format!("{host}:{port}");
+    println!("starting http server on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("listening on {addr}");
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
+    //something or someone killed our beloved programm
+    println!("server stopped, shutting down databases...");
+
+    //some dark magic to gain ownership of databases for shutdown
+    let databases = std::mem::take(&mut *state_for_shutdown.databases.write().unwrap());
+    for (name, db) in databases {
+        println!("shutting down database '{name}'...");
+        if let Err(e) = db.shutdown() {
+            eprintln!("error shutting down '{name}': {e}");
+        }
+    }
+
+    //TODO: we might have extra stuff to do here later, for now i cant think of anything else
+
+    println!("Goodbye!");
     Ok(())
 }

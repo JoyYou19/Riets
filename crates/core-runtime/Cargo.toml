@@ -22,4 +22,6 @@ thiserror = "2"
 toml = "1.1.2"
 axum = "0.8.9"
 reqwest = "0.13.4"
+tracing-appender = "0.2.5"
+tracing-subscriber = "0.3.23"
 

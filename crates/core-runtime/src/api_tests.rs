@@ -11,6 +11,7 @@
 mod tests {
     const PORT: u16 = 6006;
     const TEST_DB_NAME: &str = "testdb";
+    const DEFAULT_FILETYPE: &str = "json"; // must match corelamo_settings DEFAULT_SETTINGS filetype
 
     fn url(path: &str) -> String {
         format!("http://localhost:{PORT}{path}")
@@ -195,12 +196,28 @@ mod tests {
         assert_eq!(res.status(), 404);
     }
 
+    #[tokio::test]
+    async fn test_013_insert_default_filetype_ok() {
+        // no /filetype in path — should fall back to DEFAULT_FILETYPE
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/insert")))
+            .body(r#"{"id":"6","title":"default filetype insert","body":"no filetype in path"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "expected default filetype '{DEFAULT_FILETYPE}' to be used when none is given"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // SEARCH
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_013_search_rust_ranking() {
+    async fn test_014_search_rust_ranking() {
         // id:2 has more "rust" occurrences so should be first hit
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/search/json")))
@@ -216,7 +233,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_014_search_nested_field_before_policy() {
+    async fn test_015_search_nested_field_before_policy() {
         // meta/author not in policy yet — normunds may not be found
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/search/json")))
@@ -235,7 +252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_015_search_empty_body() {
+    async fn test_016_search_empty_body() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/search/json")))
             .body("")
@@ -246,7 +263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_016_search_db_not_found() {
+    async fn test_017_search_db_not_found() {
         let res = client()
             .post(url("/api/databases/nonexistent/search/json"))
             .body("rust")
@@ -257,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_017_search_unsupported_filetype() {
+    async fn test_018_search_unsupported_filetype() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/search/csv")))
             .body("rust")
@@ -267,12 +284,28 @@ mod tests {
         assert_eq!(res.status(), 400);
     }
 
+    #[tokio::test]
+    async fn test_019_search_default_filetype_ok() {
+        // no /filetype in path — should fall back to DEFAULT_FILETYPE
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/search")))
+            .body("rust")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "expected default filetype '{DEFAULT_FILETYPE}' to be used when none is given"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // STATUS (with documents)
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_018_status_with_documents() {
+    async fn test_020_status_with_documents() {
         let res = client()
             .get(url(&format!("/api/databases/{TEST_DB_NAME}/status")))
             .send()
@@ -287,7 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_019_status_db_not_found() {
+    async fn test_021_status_db_not_found() {
         let res = client()
             .get(url("/api/databases/nonexistent/status"))
             .send()
@@ -301,7 +334,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_020_get_policy_ok() {
+    async fn test_022_get_policy_ok() {
         let res = client()
             .get(url(&format!("/api/databases/{TEST_DB_NAME}/policy/json")))
             .send()
@@ -311,7 +344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_021_get_policy_invalid_filetype() {
+    async fn test_023_get_policy_invalid_filetype() {
         let res = client()
             .get(url(&format!("/api/databases/{TEST_DB_NAME}/policy/csv")))
             .send()
@@ -321,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_022_get_policy_db_not_found() {
+    async fn test_024_get_policy_db_not_found() {
         let res = client()
             .get(url("/api/databases/nonexistent/policy/json"))
             .send()
@@ -331,7 +364,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_023_set_valid_policy_with_nested_field() {
+    async fn test_025_get_policy_default_filetype_ok() {
+        // no /filetype in path — should fall back to DEFAULT_FILETYPE
+        let res = client()
+            .get(url(&format!("/api/databases/{TEST_DB_NAME}/policy")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "expected default filetype '{DEFAULT_FILETYPE}' to be used when none is given"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_026_set_valid_policy_with_nested_field() {
         // add meta/author to policy so it gets indexed and searched
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/policy/json")))
@@ -372,7 +420,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_024_set_policy_duplicate_field_name() {
+    async fn test_027_set_policy_duplicate_field_name() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/policy/json")))
             .body(
@@ -404,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_025_set_policy_duplicate_xpath() {
+    async fn test_028_set_policy_duplicate_xpath() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/policy/json")))
             .body(
@@ -436,7 +484,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_026_set_policy_bad_weight_range() {
+    async fn test_029_set_policy_bad_weight_range() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/policy/json")))
             .body(
@@ -460,7 +508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_027_set_policy_invalid_json() {
+    async fn test_030_set_policy_invalid_json() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/policy/json")))
             .body("not json at all")
@@ -471,7 +519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_028_set_policy_unsupported_filetype() {
+    async fn test_031_set_policy_unsupported_filetype() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/policy/csv")))
             .body(r#"{"fields":[]}"#)
@@ -481,12 +529,57 @@ mod tests {
         assert_eq!(res.status(), 400);
     }
 
+    #[tokio::test]
+    async fn test_032_set_policy_default_filetype_ok() {
+        // no /filetype in path — should fall back to DEFAULT_FILETYPE
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/policy")))
+            .body(
+                r#"{
+                "fields": [
+                    {
+                        "name": "title",
+                        "xpath": 1,
+                        "index": "Text",
+                        "stored": true,
+                        "stemming": "english",
+                        "weight": { "min": 65, "max": 90 }
+                    },
+                    {
+                        "name": "body",
+                        "xpath": 2,
+                        "index": "Text",
+                        "stored": true,
+                        "stemming": "english",
+                        "weight": { "min": 1, "max": 75 }
+                    },
+                    {
+                        "name": "meta/author",
+                        "xpath": 3,
+                        "index": "Text",
+                        "stored": true,
+                        "stemming": null,
+                        "weight": { "min": 1, "max": 75 }
+                    }
+                ]
+            }"#,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "expected default filetype '{DEFAULT_FILETYPE}' to be used when none is given"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // REINDEX (after policy change to include meta/author)
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_029_reindex_ok() {
+    async fn test_033_reindex_ok() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/reindex")))
             .send()
@@ -496,7 +589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_030_reindex_db_not_found() {
+    async fn test_034_reindex_db_not_found() {
         let res = client()
             .post(url("/api/databases/nonexistent/reindex"))
             .send()
@@ -510,7 +603,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_031_search_rust_ranking_after_reindex() {
+    async fn test_035_search_rust_ranking_after_reindex() {
         // id:2 should still rank first for "rust"
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/search/json")))
@@ -529,7 +622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_032_search_nested_field_after_reindex() {
+    async fn test_036_search_nested_field_after_reindex() {
         // meta/author is now indexed — normunds should be found
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/search/json")))
@@ -552,7 +645,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_033_retrieve_single_document_ok() {
+    async fn test_037_retrieve_single_document_ok() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
             .body(r#"["1"]"#)
@@ -567,7 +660,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_034_retrieve_multiple_documents_ok() {
+    async fn test_038_retrieve_multiple_documents_ok() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
             .body(r#"["1","2","3"]"#)
@@ -581,7 +674,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_035_retrieve_non_existent_document() {
+    async fn test_039_retrieve_non_existent_document() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
             .body(r#"["999999"]"#)
@@ -598,7 +691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_036_retrieve_mixed_existing_and_non_existent() {
+    async fn test_040_retrieve_mixed_existing_and_non_existent() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
             .body(r#"["1","999999"]"#)
@@ -616,7 +709,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_037_retrieve_empty_body() {
+    async fn test_041_retrieve_empty_body() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
             .body("")
@@ -627,7 +720,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_038_retrieve_invalid_body() {
+    async fn test_042_retrieve_invalid_body() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/json")))
             .body("not json")
@@ -638,7 +731,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_039_retrieve_db_not_found() {
+    async fn test_043_retrieve_db_not_found() {
         let res = client()
             .post(url("/api/databases/nonexistent/retrieve/json"))
             .body(r#"["1"]"#)
@@ -649,7 +742,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_040_retrieve_unsupported_filetype() {
+    async fn test_044_retrieve_unsupported_filetype() {
         let res = client()
             .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve/csv")))
             .body(r#"["1"]"#)
@@ -659,12 +752,28 @@ mod tests {
         assert_eq!(res.status(), 400);
     }
 
+    #[tokio::test]
+    async fn test_045_retrieve_default_filetype_ok() {
+        // no /filetype in path — should fall back to DEFAULT_FILETYPE
+        let res = client()
+            .post(url(&format!("/api/databases/{TEST_DB_NAME}/retrieve")))
+            .body(r#"["1"]"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "expected default filetype '{DEFAULT_FILETYPE}' to be used when none is given"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // DELETE
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_041_delete_database_not_found() {
+    async fn test_046_delete_database_not_found() {
         let res = client()
             .delete(url("/api/databases/nonexistent/delete-database"))
             .send()
@@ -674,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_042_delete_database_ok() {
+    async fn test_047_delete_database_ok() {
         let res = client()
             .delete(url(&format!(
                 "/api/databases/{TEST_DB_NAME}/delete-database"
