@@ -12,9 +12,29 @@ use std::{collections::BTreeMap, io};
 pub trait DocumentConversion {
     fn into_document_inputs(self) -> io::Result<Vec<DocumentInput>>; //insert
     fn from_res_to_document(docs: Vec<SearchDocumentHit>) -> io::Result<String>; //search
-    fn from_policy(policy: &IndexPolicy) -> io::Result<String>; //policy 
-    fn into_policy(self) -> io::Result<IndexPolicy>; //policy
     fn stored_documents_to_values(docs: &[StoredDocument]) -> Vec<serde_json::Value>; //retrieve
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    JSON,
+    XML,
+}
+
+//helper for enum
+impl TryFrom<&str> for Format {
+    type Error = io::Error;
+
+    fn try_from(value: &str) -> io::Result<Self> {
+        match value.to_lowercase().as_str() {
+            "json" => Ok(Format::JSON),
+            "xml" => Ok(Format::XML),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported format: '{other}'"),
+            )),
+        }
+    }
 }
 
 //all posiible Filetype
@@ -59,19 +79,6 @@ impl<'a> DocumentConversion for Json<'a> {
         serde_json::to_string_pretty(&results).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
 
-    fn from_policy(policy: &IndexPolicy) -> io::Result<String> {
-        serde_json::to_string_pretty(policy).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
-
-    fn into_policy(self) -> io::Result<IndexPolicy> {
-        serde_json::from_str(self.0).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid JSON policy: {e}"),
-            )
-        })
-    }
-
     //FIX: the id wont always be named "id" type shit
     fn stored_documents_to_values(docs: &[StoredDocument]) -> Vec<serde_json::Value> {
         docs.iter()
@@ -89,73 +96,60 @@ impl<'a> DocumentConversion for Json<'a> {
 
 //MAIN FUNCTIONS ////////////////////////////////////////////////////////////////////////
 
-//determining filetype from string + convert
-pub fn parse_documents(body: &str, file_type: &str) -> io::Result<Vec<DocumentInput>> {
-    match file_type.to_lowercase().as_str() {
-        "json" => Json(body).into_document_inputs(),
-        // "xml" => Xml(body).into_document_inputs(),
-        other => Err(io::Error::new(
+//determining filetype from enum + convert
+pub fn parse_documents(body: &str, format: Format) -> io::Result<Vec<DocumentInput>> {
+    match format {
+        Format::JSON => Json(body).into_document_inputs(),
+        Format::XML => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("unsupported file type: '{other}'"),
+            "unsupported format: xml",
         )),
     }
 }
 
 //determining filetype + convert from results
-pub fn serialize_hits(hits: Vec<SearchDocumentHit>, filetype: &str) -> io::Result<String> {
-    match filetype.to_lowercase().as_str() {
-        "json" => Json::from_res_to_document(hits),
-        // "xml" => Xml::from_document_inputs(hits),
-        other => Err(io::Error::new(
+pub fn serialize_hits(hits: Vec<SearchDocumentHit>, format: Format) -> io::Result<String> {
+    match format {
+        Format::JSON => Json::from_res_to_document(hits),
+        Format::XML => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("unsupported filetype: '{other}'"),
+            "unsupported format: xml",
         )),
     }
 }
 
 //for retrieve convert from StoredDocument
-pub fn convert_from_storage(docs: &[StoredDocument], filetype: &str) -> io::Result<String> {
-    match filetype.to_lowercase().as_str() {
-        "json" => {
+pub fn convert_from_storage(docs: &[StoredDocument], format: Format) -> io::Result<String> {
+    match format {
+        Format::JSON => {
             let values = Json::stored_documents_to_values(docs);
             serde_json::to_string_pretty(&values)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
         }
-        // "xml" => ...
-        other => Err(io::Error::new(
+        Format::XML => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("unsupported filetype: '{other}' — supported types: json"),
+            "unsupported format: xml",
         )),
     }
 }
 
-//from policy
-pub fn serialize_policy(policy: &IndexPolicy, filetype: &str) -> io::Result<String> {
-    match filetype.to_lowercase().as_str() {
-        "json" => Json::from_policy(policy),
-        // "xml" => Xml::from_policy(policy),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unsupported filetype: '{other}'"),
-        )),
-    }
+//policy is always toml, not tied to request Format
+pub fn serialize_policy(policy: &IndexPolicy) -> io::Result<String> {
+    toml::to_string_pretty(policy).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
-//to policy
-pub fn parse_policy(body: &str, filetype: &str) -> io::Result<IndexPolicy> {
-    match filetype.to_lowercase().as_str() {
-        "json" => Json(body).into_policy(),
-        // "xml" => Xml(body).into_policy(),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unsupported filetype: '{other}'"),
-        )),
-    }
+pub fn parse_policy(body: &str) -> io::Result<IndexPolicy> {
+    toml::from_str(body).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid TOML policy: {e}"),
+        )
+    })
 }
 
 /////////////////////////////////////////////////////////////////////////
 
-//Specific helpers:
+//specific helpers
 fn traverse_json(value: &Value, path: &str, fields: &mut BTreeMap<String, String>) {
     match value {
         Value::Object(map) => {

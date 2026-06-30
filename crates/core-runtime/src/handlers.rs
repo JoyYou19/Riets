@@ -5,8 +5,8 @@ use std::{
 };
 
 use axum::{
-    extract::{Path, Query, Request, State},
-    http::StatusCode,
+    extract::{Path, Request, State},
+    http::{HeaderMap, StatusCode, header},
     middleware::Next,
     response::Response,
 };
@@ -41,23 +41,38 @@ fn require_body(body: &str) -> Result<&str, response::ApiResponse> {
     }
 }
 
-//helper to coreaclty extract the specified/default filetype and db_name from path
-///api/databases/db_name/command/filetype
-fn get_db_name_and_filetype(
+//resolves db_name (passthrough) + the Format to use for this request.
+//Accept header wins if present and parseable; missing/empty/*/* falls back to config default.
+//a named-but-unsupported subtype is a hard error (406) rather than a silent fallback.
+//TODO: this ignores q= quality values and just takes the first listed type in a
+//comma-separated Accept header (e.g. "application/xml;q=0.9, application/json" picks xml).
+fn get_db_and_format(
     state: &AppState,
-    params: &HashMap<String, String>,
-) -> Result<(String, String), response::ApiResponse> {
-    let db_name = params
-        .get("db_name")
-        .cloned()
-        .ok_or_else(|| response::bad_request("missing db_name in path"))?;
+    headers: &HeaderMap,
+    db_name: String,
+) -> Result<(String, doctypes::Format), response::ApiResponse> {
+    let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
 
-    let filetype = params
-        .get("filetype")
-        .cloned()
-        .unwrap_or_else(|| state.default_filetype.clone());
+    let format = match accept {
+        None => state.default_format,
+        Some(accept) => {
+            let first = accept.split(',').next().unwrap_or("").trim();
+            let subtype = first.split('/').nth(1).unwrap_or("").trim();
 
-    Ok((db_name, filetype))
+            if first.is_empty() || subtype.is_empty() || subtype == "*" {
+                state.default_format
+            } else {
+                doctypes::Format::try_from(subtype).map_err(|_| {
+                    response::error(
+                        StatusCode::NOT_ACCEPTABLE,
+                        &format!("unsupported format in Accept header: '{subtype}'"),
+                    )
+                })?
+            }
+        }
+    };
+
+    Ok((db_name, format))
 }
 
 //TODO auth/https before request (check permissions....)
@@ -79,7 +94,8 @@ pub async fn auth_middleware(
 
 pub async fn search_handler(
     State(state): State<AppState>,
-    Path(params): Path<HashMap<String, String>>,
+    Path(db_name): Path<String>,
+    headers: HeaderMap,
     body: String,
 ) -> response::ApiResponse {
     let q = match require_body(&body) {
@@ -87,7 +103,7 @@ pub async fn search_handler(
         Err(e) => return e,
     };
 
-    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+    let (db_name, format) = match get_db_and_format(&state, &headers, db_name) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -107,7 +123,7 @@ pub async fn search_handler(
     };
 
     let hit_count = hits.len();
-    let output = match doctypes::serialize_hits(hits, &filetype) {
+    let output = match doctypes::serialize_hits(hits, format) {
         Ok(s) => s,
         Err(e) => return response::bad_request(&e.to_string()),
     };
@@ -121,7 +137,8 @@ pub async fn search_handler(
 //TODO how would we return the exact document that was stored (we deserialize it from HashMap)
 pub async fn retrieve_handler(
     State(state): State<AppState>,
-    Path(params): Path<HashMap<String, String>>,
+    Path(db_name): Path<String>,
+    headers: HeaderMap,
     body: String,
 ) -> response::ApiResponse {
     let body = match require_body(&body) {
@@ -134,7 +151,7 @@ pub async fn retrieve_handler(
         Err(e) => return response::bad_request(&format!("expected JSON array of ids: {e}")),
     };
 
-    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+    let (db_name, format) = match get_db_and_format(&state, &headers, db_name) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -158,7 +175,7 @@ pub async fn retrieve_handler(
         }
     }
 
-    let output = match doctypes::convert_from_storage(&docs, &filetype) {
+    let output = match doctypes::convert_from_storage(&docs, format) {
         Ok(s) => s,
         Err(e) => return response::bad_request(&e.to_string()),
     };
@@ -174,7 +191,8 @@ pub async fn retrieve_handler(
 
 pub async fn insert_handler(
     State(state): State<AppState>,
-    Path(params): Path<HashMap<String, String>>,
+    Path(db_name): Path<String>,
+    headers: HeaderMap,
     body: String,
 ) -> response::ApiResponse {
     let body = match require_body(&body) {
@@ -182,7 +200,7 @@ pub async fn insert_handler(
         Err(e) => return e,
     };
 
-    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
+    let (db_name, format) = match get_db_and_format(&state, &headers, db_name) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -195,7 +213,7 @@ pub async fn insert_handler(
     };
 
     //try to parse
-    let input_docs = match doctypes::parse_documents(&body, &filetype) {
+    let input_docs = match doctypes::parse_documents(&body, format) {
         Ok(d) => d,
         Err(e) => return response::bad_request(&e.to_string()),
     };
@@ -312,34 +330,27 @@ pub async fn reindex_handler(
     }
 }
 
+//policy is always TOML now — no format resolution needed, db_name comes straight from the path.
 pub async fn get_policy_handler(
     State(state): State<AppState>,
-    Path(params): Path<HashMap<String, String>>,
+    Path(db_name): Path<String>,
 ) -> response::ApiResponse {
     let databases = state.databases.read().unwrap();
-
-    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
 
     let db = match get_db_read(&databases, &db_name) {
         Ok(db) => db,
         Err(e) => return e,
     };
 
-    match doctypes::serialize_policy(db.policy(), &filetype) {
-        Ok(output) => response::ok_with_data(
-            &format!("policy for '{db_name}'"),
-            serde_json::from_str(&output).unwrap(),
-        ),
+    match doctypes::serialize_policy(db.policy()) {
+        Ok(output) => response::ok(&output),
         Err(e) => response::bad_request(&e.to_string()),
     }
 }
 
 pub async fn set_policy_handler(
     State(state): State<AppState>,
-    Path(params): Path<HashMap<String, String>>,
+    Path(db_name): Path<String>,
     body: String,
 ) -> response::ApiResponse {
     let body = match require_body(&body) {
@@ -347,12 +358,7 @@ pub async fn set_policy_handler(
         Err(e) => return e,
     };
 
-    let (db_name, filetype) = match get_db_name_and_filetype(&state, &params) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-
-    let policy = match doctypes::parse_policy(&body, &filetype) {
+    let policy = match doctypes::parse_policy(&body) {
         Ok(p) => p,
         Err(e) => return response::bad_request(&e.to_string()),
     };

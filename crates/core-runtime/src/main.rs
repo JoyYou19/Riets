@@ -41,7 +41,7 @@ mod response;
 pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, CorelamoDatabase>>>,
     pub databases_dir: PathBuf,
-    pub default_filetype: String,
+    pub default_format: doctypes::Format,
 }
 
 //helper function for axum to decet the shutdown of a programm
@@ -117,13 +117,18 @@ async fn main() -> io::Result<()> {
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
-    let default_filetype = corelamo_settings::get(&settings, "filetype");
+    let default_format_str = corelamo_settings::get(&settings, "format");
+    let default_format =
+        doctypes::Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
+            eprintln!("error: invalid 'format' in config/cli: {e}");
+            process::exit(1);
+        });
 
     println!("root: {}", root_path.display());
     println!("name: {name}");
     println!("host: {host}");
     println!("port: {port}");
-    println!("default filetype: {default_filetype}");
+    println!("default format: {default_format_str}");
 
     let databases_dir = root_path.join("databases");
     println!("databases_dir: {}", databases_dir.display());
@@ -141,34 +146,20 @@ async fn main() -> io::Result<()> {
     let state = AppState {
         databases: Arc::new(RwLock::new(databases)),
         databases_dir,
-        default_filetype,
+        default_format,
     };
 
     //this clone is ok since it just += 1 for Arc
     let state_for_shutdown = state.clone();
 
-    //INFO: the paths that have /{filetype} have another path without it for default filetype,
-    //handlers handle it :)
     let app = Router::new()
-        .route(
-            "/api/databases/{db_name}/search/{filetype}",
-            post(handlers::search_handler),
-        )
         .route(
             "/api/databases/{db_name}/search",
             post(handlers::search_handler),
         )
         .route(
-            "/api/databases/{db_name}/insert/{filetype}",
-            post(handlers::insert_handler),
-        )
-        .route(
             "/api/databases/{db_name}/insert",
             post(handlers::insert_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/retrieve/{filetype}",
-            post(handlers::retrieve_handler),
         )
         .route(
             "/api/databases/{db_name}/retrieve",
@@ -190,14 +181,6 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/reindex",
             post(handlers::reindex_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/policy/{filetype}",
-            get(handlers::get_policy_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/policy/{filetype}",
-            post(handlers::set_policy_handler),
         )
         .route(
             "/api/databases/{db_name}/policy",

@@ -7,7 +7,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("name", "corelamo"),
     ("host", "0.0.0.0"),
     ("port", "6006"),
-    ("filetype", "json"),
+    ("format", "json"),
 ];
 
 pub const HELP: &str = "\
@@ -28,12 +28,10 @@ OPTIONS:
     --port <port>         Port to bind the HTTP server to
                           [default: 6006]
 
-    --filetype <type>     Default filetype used when none is given in a route
-                          e.g. /insert instead of /insert/json
+    --format <format>     Default format for requests, responses and documents (json/xml)
                           [default: json]
 
     NOTE: config file takes priority if it exists
-
 
     -h, --help            Print this help message and exit
 ";
@@ -98,7 +96,7 @@ pub fn load_or_init_settings(
         .unwrap_or_else(|| default_value("root-path").to_string());
     let root_path = resolve_root(PathBuf::from(root_path_str));
 
-    let settings_path = root_path.join("DatabaseSettings.toml");
+    let settings_path = root_path.join("CorelamoSettings.toml");
 
     let mut settings: HashMap<String, String> = if settings_path.exists() {
         let raw = std::fs::read_to_string(&settings_path)?;
