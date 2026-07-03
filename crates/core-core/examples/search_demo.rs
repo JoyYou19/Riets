@@ -40,6 +40,7 @@ fn main() -> io::Result<()> {
             docs.into_iter()
                 .map(|doc| DocumentInput {
                     external_id: doc.id,
+                    source: None,
                     fields: BTreeMap::from([
                         ("title".to_string(), doc.title),
                         ("body".to_string(), doc.body),

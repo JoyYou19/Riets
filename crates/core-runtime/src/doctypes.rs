@@ -1,5 +1,5 @@
-use core_core::errors::CorelamoError;
 use core_index::document::IndexPolicy;
+use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::{
     document_store::StoredDocument,
     search_database::{DocumentInput, SearchDocumentHit},
@@ -11,26 +11,6 @@ pub trait DocumentConversion {
     fn into_document_inputs(self) -> Result<Vec<DocumentInput>, CorelamoError>;
     fn from_res_to_document(docs: Vec<SearchDocumentHit>) -> Vec<serde_json::Value>;
     fn stored_documents_to_values(docs: &[StoredDocument]) -> Vec<serde_json::Value>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    JSON,
-    XML,
-}
-
-impl TryFrom<&str> for Format {
-    type Error = CorelamoError;
-
-    fn try_from(value: &str) -> Result<Self, CorelamoError> {
-        match value.to_lowercase().as_str() {
-            "json" => Ok(Format::JSON),
-            "xml" => Ok(Format::XML),
-            other => Err(CorelamoError::UnsupportedFormat(format!(
-                "unsupported format: '{other}'"
-            ))),
-        }
-    }
 }
 
 pub struct Json<'a>(pub &'a str);
@@ -45,9 +25,10 @@ impl<'a> DocumentConversion for Json<'a> {
                 .into_iter()
                 .map(|v| json_value_to_document_input(v).map_err(|e| CorelamoError::InvalidData(e)))
                 .collect(),
-            single => Ok(vec![
-                json_value_to_document_input(single).map_err(|e| CorelamoError::InvalidData(e))?,
-            ]),
+            single => {
+                Ok(vec![json_value_to_document_input(single)
+                    .map_err(|e| CorelamoError::InvalidData(e))?])
+            }
         }
     }
 
@@ -105,9 +86,23 @@ pub fn convert_from_storage(
     format: Format,
 ) -> Result<Vec<serde_json::Value>, CorelamoError> {
     match format {
-        Format::JSON => Ok(Json::stored_documents_to_values(docs)),
+        Format::JSON => docs.iter().map(stored_document_to_json_value).collect(),
+
         Format::XML => Err(CorelamoError::UnsupportedFormat(
             "xml not yet implemented".to_string(),
+        )),
+    }
+}
+
+fn stored_document_to_json_value(doc: &StoredDocument) -> Result<serde_json::Value, CorelamoError> {
+    match doc.format {
+        Format::JSON => {
+            let value: serde_json::Value = serde_json::from_slice(&doc.source)?;
+            Ok(value)
+        }
+
+        Format::XML => Err(CorelamoError::UnsupportedFormat(
+            "cannot return stored XML as JSON yet".to_string(),
         )),
     }
 }
@@ -183,6 +178,8 @@ fn res_to_json(fields: BTreeMap<String, String>) -> serde_json::Map<String, serd
 }
 
 fn json_value_to_document_input(value: Value) -> Result<DocumentInput, String> {
+    let source = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+
     let mut fields = BTreeMap::new();
     traverse_json(&value, "", &mut fields);
 
@@ -195,16 +192,19 @@ fn json_value_to_document_input(value: Value) -> Result<DocumentInput, String> {
     Ok(DocumentInput {
         external_id,
         fields,
+        source,
+        format: Format::JSON,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_core::errors::CorelamoError;
+    use core_protocol::format::Format;
     use core_storage::document_store::StoredDocument;
     use core_storage::search_database::SearchDocumentHit;
     use std::collections::BTreeMap;
+    use tracing_subscriber::fmt::format;
 
     // ── Format::try_from ─────────────────────────────────────────────────────
 
@@ -369,6 +369,8 @@ mod tests {
             external_id: "doc1".to_string(),
             internal_id: 0,
             fields: BTreeMap::new(),
+            source: Vec::new(),
+            format: Format::JSON,
         };
         let result = convert_from_storage(&[doc], Format::JSON).unwrap();
         assert_eq!(result.len(), 1);
@@ -384,6 +386,8 @@ mod tests {
             external_id: "doc1".to_string(),
             internal_id: 0,
             fields,
+            source: Vec::new(),
+            format: Format::JSON,
         };
         let result = convert_from_storage(&[doc], Format::JSON).unwrap();
         assert_eq!(result[0]["title"], "hello world");
@@ -396,11 +400,15 @@ mod tests {
                 external_id: "doc1".to_string(),
                 internal_id: 0,
                 fields: BTreeMap::new(),
+                source: Vec::new(),
+                format: Format::JSON,
             },
             StoredDocument {
                 external_id: "doc2".to_string(),
                 internal_id: 1,
                 fields: BTreeMap::new(),
+                source: Vec::new(),
+                format: Format::JSON,
             },
         ];
         let result = convert_from_storage(&docs, Format::JSON).unwrap();
