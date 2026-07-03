@@ -1,389 +1,373 @@
 use std::{
     collections::HashMap,
-    io,
     sync::{RwLockReadGuard, RwLockWriteGuard},
 };
 
 use axum::{
-    extract::{Path, Request, State},
-    http::{HeaderMap, StatusCode, header},
-    middleware::Next,
-    response::Response,
+    Extension,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
-use core_core::CorelamoDatabase;
+use core_core::{CorelamoDatabase, errors::CorelamoError};
+use serde_json::json;
 
-use crate::{AppState, database_helpers, doctypes, response};
+use crate::{
+    AppState, database_helpers, doctypes,
+    middleware::RequestContext,
+    response::{HttpError, HttpOk},
+};
 
+//helpers
 fn get_db_read<'a>(
     databases: &'a RwLockReadGuard<HashMap<String, CorelamoDatabase>>,
     db_name: &str,
-) -> Result<&'a CorelamoDatabase, response::ApiResponse> {
+) -> Result<&'a CorelamoDatabase, CorelamoError> {
     databases
         .get(db_name)
-        .ok_or_else(|| response::not_found(&format!("database '{db_name}' not found")))
+        .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
 }
 
 fn get_db_write<'a>(
     databases: &'a mut RwLockWriteGuard<HashMap<String, CorelamoDatabase>>,
     db_name: &str,
-) -> Result<&'a mut CorelamoDatabase, response::ApiResponse> {
+) -> Result<&'a mut CorelamoDatabase, CorelamoError> {
     databases
         .get_mut(db_name)
-        .ok_or_else(|| response::not_found(&format!("database '{db_name}' not found")))
+        .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
 }
 
-fn require_body(body: &str) -> Result<&str, response::ApiResponse> {
+fn require_body(body: &str) -> Result<&str, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        Err(response::bad_request("request body is empty"))
+        Err(CorelamoError::InvalidData(
+            "request body is empty".to_string(),
+        ))
     } else {
         Ok(trimmed)
     }
 }
 
-//resolves db_name (passthrough) + the Format to use for this request.
-//Accept header wins if present and parseable; missing/empty/*/* falls back to config default.
-//a named-but-unsupported subtype is a hard error (406) rather than a silent fallback.
-//TODO: this ignores q= quality values and just takes the first listed type in a
-//comma-separated Accept header (e.g. "application/xml;q=0.9, application/json" picks xml).
-fn get_db_and_format(
-    state: &AppState,
-    headers: &HeaderMap,
-    db_name: String,
-) -> Result<(String, doctypes::Format), response::ApiResponse> {
-    let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
-
-    let format = match accept {
-        None => state.default_format,
-        Some(accept) => {
-            let first = accept.split(',').next().unwrap_or("").trim();
-            let subtype = first.split('/').nth(1).unwrap_or("").trim();
-
-            if first.is_empty() || subtype.is_empty() || subtype == "*" {
-                state.default_format
-            } else {
-                doctypes::Format::try_from(subtype).map_err(|_| {
-                    response::error(
-                        StatusCode::NOT_ACCEPTABLE,
-                        &format!("unsupported format in Accept header: '{subtype}'"),
-                    )
-                })?
-            }
-        }
-    };
-
-    Ok((db_name, format))
-}
-
-//TODO auth/https before request (check permissions....)
-pub async fn auth_middleware(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let token = request.headers().get("X-Corelamo-Key");
-
-    //HACK:  japieliek ka parbauda sis vienkarsi taads placeholder
-    next.run(request).await
-
-    // match token {
-    //     Some(key) if (key == "mysecretkey") || (true) => next.run(request).await,
-    //     _ => (StatusCode::UNAUTHORIZED, "missing or invalid api key").into_response(),
-    // }
-}
-
 pub async fn search_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    headers: HeaderMap,
+    Extension(ctx): Extension<RequestContext>,
     body: String,
-) -> response::ApiResponse {
+) -> Response {
+    //TODO smarter shit for query syntax
     let q = match require_body(&body) {
         Ok(q) => q.to_string(),
-        Err(e) => return e,
-    };
-
-    let (db_name, format) = match get_db_and_format(&state, &headers, db_name) {
-        Ok(r) => r,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     //TODO docs offset nevis hardcoded 10 + structured query like elastic/CP not raw string
-    //TODO process query validity.... all the * AND OR  check ......
+    //TODO process query validity.... all the * AND OR check ......
     //FIX: "cars" search gets over stemmed "car" works
     let hits = match db.search(&q, 10) {
         Ok(hits) => hits,
-        Err(e) => return response::internal_error(&format!("search failed: {e}")),
+        //TODO: fix when search returns CorelamoError
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("search failed: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
     };
 
     let hit_count = hits.len();
-    let output = match doctypes::serialize_hits(hits, format) {
-        Ok(s) => s,
-        Err(e) => return response::bad_request(&e.to_string()),
+    let output = match doctypes::serialize_hits(hits, ctx.format) {
+        Ok(data) => data,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    response::ok_with_data(
-        &format!("{hit_count} hit(s) for '{q}'"),
-        serde_json::from_str(&output).unwrap(),
-    )
+    HttpOk::with_data(format!("{hit_count} hit(s) for '{q}'"), output, &ctx).into_response()
 }
 
-//TODO how would we return the exact document that was stored (we deserialize it from HashMap)
+//TODO: how would we return the exact document that was stored (we deserialize it from HashMap)
 pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    headers: HeaderMap,
+    Extension(ctx): Extension<RequestContext>,
     body: String,
-) -> response::ApiResponse {
+) -> Response {
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let ids: Vec<String> = match serde_json::from_str(&body) {
         Ok(ids) => ids,
-        Err(e) => return response::bad_request(&format!("expected JSON array of ids: {e}")),
-    };
-
-    let (db_name, format) = match get_db_and_format(&state, &headers, db_name) {
-        Ok(r) => r,
-        Err(e) => return e,
+        Err(_) => {
+            return HttpError::from_corelamo(
+                CorelamoError::InvalidData("expected JSON array of ids".to_string()),
+                &ctx,
+            )
+            .into_response();
+        }
     };
 
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut docs = Vec::new();
-    let mut not_found_ids = Vec::new();
+    let mut not_found_ids: Vec<String> = Vec::new();
 
     for id in &ids {
         match db.get_document(id) {
             Ok(Some(doc)) => docs.push(doc),
             Ok(None) => not_found_ids.push(id.clone()),
+            //TODO:  update error handling once the get_document gets updated
             Err(e) => {
-                return response::internal_error(&format!("failed to get document '{id}': {e}"));
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal(format!("failed to get document '{id}': {e}")),
+                    &ctx,
+                )
+                .into_response();
             }
         }
     }
 
-    let output = match doctypes::convert_from_storage(&docs, format) {
-        Ok(s) => s,
-        Err(e) => return response::bad_request(&e.to_string()),
+    //FIX: doctypes::convert_from_storage should return typed data directly instead of String
+    //     not_found_ids is also dropped here until HttpOk.data can carry structured data
+    let output = match doctypes::convert_from_storage(&docs, ctx.format) {
+        Ok(data) => data,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    response::ok_with_data(
-        &format!("retrieved {} document(s)", docs.len()),
-        serde_json::json!({
-            "documents": serde_json::from_str::<serde_json::Value>(&output).unwrap(),
-            "not_found": not_found_ids,
-        }),
+    HttpOk::with_data(
+        format!("retrieved {} document(s)", docs.len()),
+        serde_json::json!({ "documents": output, "not_found": not_found_ids }),
+        &ctx,
     )
+    .into_response()
 }
 
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    headers: HeaderMap,
+    Extension(ctx): Extension<RequestContext>,
     body: String,
-) -> response::ApiResponse {
+) -> Response {
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let (db_name, format) = match get_db_and_format(&state, &headers, db_name) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-
-    //db exists?
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    //try to parse
-    let input_docs = match doctypes::parse_documents(&body, format) {
+    let input_docs = match doctypes::parse_documents(&body, ctx.format) {
         Ok(d) => d,
-        Err(e) => return response::bad_request(&e.to_string()),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    //insert
-    //TODO: needs duplicate check!!!!
-    let doc_count = input_docs.len();
     if input_docs.is_empty() {
-        return response::bad_request("no valid documents found in request body");
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData("no valid documents found in request body".to_string()),
+            &ctx,
+        )
+        .into_response();
     }
 
+    //TODO: needs duplicate check!!!!
+    let doc_count = input_docs.len();
     match db.put_documents_parallel(input_docs) {
-        Ok(_) => response::ok_with_data(
-            &format!("inserted {doc_count} document(s) into '{db_name}'"),
-            serde_json::json!({ "inserted": doc_count, "database": db_name }),
-        ),
-        Err(e) => response::internal_error(&format!("insert failed: {e}")),
+        Ok(_) => HttpOk::with_data(
+            format!("inserted {doc_count} document(s) into '{db_name}'"),
+            json!({ "inserted": doc_count, "database": db_name }),
+            &ctx,
+        )
+        .into_response(),
+        //TODO: update ones put_documents_parallel gets errors updated
+        Err(e) => {
+            HttpError::from_corelamo(CorelamoError::Internal(format!("insert failed: {e}")), &ctx)
+                .into_response()
+        }
     }
 }
 
 pub async fn create_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-) -> response::ApiResponse {
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
     let databases_read = state.databases.read().unwrap();
     match database_helpers::create_database(db_name.clone(), &state.databases_dir, &databases_read)
     {
         Ok(db) => {
-            //realease the read so that we can write
             drop(databases_read);
             state.databases.write().unwrap().insert(db_name.clone(), db);
-            response::created(&format!("database '{db_name}' created"))
-        }
-        Err(e) => {
-            //pareizo kluudu izvadam
-            let status = match e.kind() {
-                io::ErrorKind::AlreadyExists => StatusCode::CONFLICT,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            response::error(
-                status,
-                &format!("failed to create database '{db_name}': {e}"),
+            HttpOk::with_status(
+                StatusCode::CREATED,
+                format!("database '{db_name}' created"),
+                &ctx,
             )
+            .into_response()
         }
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
-
 pub async fn delete_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-) -> response::ApiResponse {
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
     let db_path = state.databases_dir.join(&db_name);
-
     let mut databases_write = state.databases.write().unwrap();
 
     if !databases_write.contains_key(&db_name) {
-        return response::not_found(&format!("database '{db_name}' not found"));
+        return HttpError::from_corelamo(
+            CorelamoError::NotFound(format!("database '{db_name}' not found")),
+            &ctx,
+        )
+        .into_response();
     }
 
-    // shutdown the db before removing it from disk
     if let Some(db) = databases_write.remove(&db_name) {
         if let Err(e) = db.shutdown() {
-            return response::internal_error(&format!(
-                "failed to shutdown database '{db_name}': {e}"
-            ));
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("failed to shutdown database '{db_name}': {e}")),
+                &ctx,
+            )
+            .into_response();
         }
     }
 
     if let Err(e) = std::fs::remove_dir_all(&db_path) {
-        return response::internal_error(&format!(
-            "removed from memory but failed to delete '{db_name}' from disk: {e}"
-        ));
+        return HttpError::from_corelamo(
+            CorelamoError::Internal(format!(
+                "removed from memory but failed to delete '{db_name}' from disk: {e}"
+            )),
+            &ctx,
+        )
+        .into_response();
     }
 
-    response::ok(&format!("database '{db_name}' deleted"))
+    HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response()
 }
 
 pub async fn stats_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-) -> response::ApiResponse {
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
     let databases = state.databases.read().unwrap();
     let db = match get_db_read(&databases, &db_name) {
         Ok(db) => db,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match db.stats() {
-        Ok(stats) => response::ok_with_data(
-            &format!("stats for '{db_name}'"),
-            serde_json::json!({
+        Ok(stats) => HttpOk::with_data(
+            format!("stats for '{db_name}'"),
+            json!({
                 "document_count": stats.document_count,
                 "segment_count": stats.segment_count,
                 "background_compaction_enabled": stats.background_compaction_enabled,
             }),
-        ),
-        Err(e) => response::internal_error(&format!("failed to get stats: {e}")),
+            &ctx,
+        )
+        .into_response(),
+        //TODO: upate once stats gets updated with errors
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("failed to get stats: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
 pub async fn reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-) -> response::ApiResponse {
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match db.reindex() {
-        Ok(_) => response::ok(&format!("reindex complete for '{db_name}'")),
-        Err(e) => response::internal_error(&format!("reindex failed: {e}")),
+        Ok(_) => HttpOk::new(format!("reindex complete for '{db_name}'"), &ctx).into_response(),
+        //TODO:  update once reindex errors updated
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("reindex failed: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
-//policy is always TOML now — no format resolution needed, db_name comes straight from the path.
+// policy is always TOML — sending raw since it shouldnt be encoded in json/xml
 pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-) -> response::ApiResponse {
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
     let databases = state.databases.read().unwrap();
-
     let db = match get_db_read(&databases, &db_name) {
         Ok(db) => db,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match doctypes::serialize_policy(db.policy()) {
-        Ok(output) => response::ok(&output),
-        Err(e) => response::bad_request(&e.to_string()),
+        Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
+        Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     }
 }
 
 pub async fn set_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
     body: String,
-) -> response::ApiResponse {
+) -> Response {
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
-        Err(e) => return e,
-    };
-
-    let policy = match doctypes::parse_policy(&body) {
-        Ok(p) => p,
-        Err(e) => return response::bad_request(&e.to_string()),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
-        Err(e) => return e,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let policy = match doctypes::parse_policy(&body) {
+        Ok(p) => p,
+        Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     };
 
     match db.set_policy(policy) {
-        Ok(_) => response::ok(&format!("policy updated for '{db_name}'")),
-        Err(e) => match e.kind() {
-            io::ErrorKind::InvalidData => response::bad_request(&e.to_string()),
-            _ => response::internal_error(&format!("failed to set policy: {e}")),
-        },
+        Ok(_) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     }
 }
 
-pub async fn list_databases_handler(State(state): State<AppState>) -> response::ApiResponse {
+pub async fn list_databases_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
     let databases = state.databases.read().unwrap();
     let names: Vec<&String> = databases.keys().collect();
+    let count = names.len();
 
-    response::ok_with_data(
-        &format!("{} database(s) loaded", names.len()),
-        serde_json::json!({ "databases": names }),
+    HttpOk::with_data(
+        format!("{count} database(s) loaded"),
+        json!({ "databases": names }),
+        &ctx,
     )
+    .into_response()
 }

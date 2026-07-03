@@ -1,18 +1,14 @@
 //INFO: under scripts we have ./movies now for funzies
 
-//TODO: update/delete partial replace
-//graceful shutdown db.shutdown
+//TODO update/delete partial replace
 //backup/restore
-//Some Errors.rs file/enum for standardised errors
 //HTTPS auth clustering lmao
-//better output
-//better LOGS no just prints, or tracing atleast
+//LOGS not just prints
 //and all //TODO ive written
 
 use axum::{
     Router,
-    extract::{Path, State},
-    middleware,
+    middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
 
@@ -35,6 +31,7 @@ mod corelamo_settings;
 mod database_helpers;
 mod doctypes;
 mod handlers;
+mod middleware;
 mod response;
 
 #[derive(Clone)]
@@ -103,7 +100,7 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    println!("corelamo-runtime starting");
+    println!("corelamo-runtime starting...");
 
     let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
         Ok(s) => s,
@@ -151,7 +148,6 @@ async fn main() -> io::Result<()> {
 
     //this clone is ok since it just += 1 for Arc
     let state_for_shutdown = state.clone();
-
     let app = Router::new()
         .route(
             "/api/databases/{db_name}/search",
@@ -190,9 +186,13 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/policy",
             post(handlers::set_policy_handler),
         )
-        .layer(middleware::from_fn_with_state(
+        .layer(from_fn_with_state(
             state.clone(),
-            handlers::auth_middleware,
+            middleware::auth_middleware,
+        ))
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::request_context_middleware,
         ))
         .with_state(state);
 
@@ -212,6 +212,8 @@ async fn main() -> io::Result<()> {
     let databases = std::mem::take(&mut *state_for_shutdown.databases.write().unwrap());
     for (name, db) in databases {
         println!("shutting down database '{name}'...");
+        //WARN: is the db.shutdown a safe thing to do yet? meaning like while
+        //indexing/merging/compacting, if shutdown is it safe?
         if let Err(e) = db.shutdown() {
             eprintln!("error shutting down '{name}': {e}");
         }

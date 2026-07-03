@@ -3,12 +3,12 @@ use std::{collections::BTreeMap, io};
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{policy::IndexKind, IndexPolicy, IndexedDocument},
+    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
     lsm::{
-        index_worker::{build_segments_parallel, IndexCommand, IndexWorker},
+        LsmIndex,
+        index_worker::{IndexCommand, IndexWorker, build_segments_parallel},
         make_batches,
         snapshot::SharedIndexSnapshot,
-        LsmIndex,
     },
 };
 use core_query::{Query, QueryExecutor, SearchHit};
@@ -28,6 +28,7 @@ pub struct SearchDatabase<S: DocumentStore> {
     next_internal_id: u64,
 }
 
+#[derive(Debug)]
 pub struct DocumentInput {
     pub external_id: String,
     pub fields: BTreeMap<String, String>, //Don't know if this can be HashMap instead

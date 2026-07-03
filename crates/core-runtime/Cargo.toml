@@ -13,9 +13,9 @@ core-index = { path = "../core-index" }
 core-query = { path = "../core-query" }
 core-storage = { path = "../core-storage" }
 core-core = { path = "../core-core" }
-
+uuid = { version = "1.23.4", features = ["v4"] }
 serde = { workspace = true }
-tokio = {workspace = true}
+tokio = { workspace = true }
 serde_json = "1"
 tracing = "0.1.44"
 thiserror = "2"
@@ -24,4 +24,3 @@ axum = "0.8.9"
 reqwest = "0.13.4"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
-

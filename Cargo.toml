@@ -24,9 +24,6 @@ license = "proprietary"
 rust-version = "1.85"
 
 [workspace.dependencies]
-anyhow = "1"
-thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-tracing = "0.1.44"
 criterion = "0.8.2"
