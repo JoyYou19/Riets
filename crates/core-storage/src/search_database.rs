@@ -3,15 +3,16 @@ use std::{collections::BTreeMap, io};
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{policy::IndexKind, IndexPolicy, IndexedDocument},
     lsm::{
-        LsmIndex,
-        index_worker::{IndexCommand, IndexWorker, build_segments_parallel},
+        index_worker::{build_segments_parallel, IndexCommand, IndexWorker},
         make_batches,
         snapshot::SharedIndexSnapshot,
+        LsmIndex,
     },
 };
-use core_query::{Query, QueryExecutor, SearchHit};
+use core_protocol::format::Format;
+use core_query::{planner::QueryPlan, Query, QueryExecutor, SearchHit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
@@ -32,6 +33,9 @@ pub struct SearchDatabase<S: DocumentStore> {
 pub struct DocumentInput {
     pub external_id: String,
     pub fields: BTreeMap<String, String>, //Don't know if this can be HashMap instead
+
+    pub source: Vec<u8>,
+    pub format: Format, // Stores the format of the document JSON/XML
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +85,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let doc = StoredDocument {
             external_id: input.external_id,
             internal_id: self.allocate_internal_id(),
+            source: input.source,
             fields: input.fields,
+            format: input.format,
         };
         self.store.put(doc.clone())?;
 
@@ -111,7 +117,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
             let doc = StoredDocument {
                 external_id: input.external_id,
                 internal_id: self.allocate_internal_id(),
+                source: input.source,
                 fields: input.fields,
+                format: input.format,
             };
 
             indexed_documents.push(stored_document_to_indexed(&doc, &self.policy));
@@ -169,7 +177,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let doc = StoredDocument {
             external_id: input.external_id,
             internal_id: self.allocate_internal_id(),
+            source: input.source,
             fields: input.fields,
+            format: input.format,
         };
 
         self.store.put(doc.clone())?;
@@ -188,7 +198,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let doc = StoredDocument {
             external_id: input.external_id,
             internal_id: self.allocate_internal_id(),
+            source: input.source,
             fields: input.fields,
+            format: input.format,
         };
         self.store.put(doc.clone())?;
 
@@ -313,6 +325,20 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let hits = self.resolve_document_hits(top_hits)?;
 
         Ok(SearchDocumentResults { total_hits, hits })
+    }
+
+    pub fn search_document_hits_plan_top_k(
+        &mut self,
+        plan: &QueryPlan,
+        k: usize,
+    ) -> io::Result<Vec<SearchDocumentHit>> {
+        let snapshot = self.snapshot.get();
+        let executor = QueryExecutor::new(&snapshot, &self.analyzer);
+
+        let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
+        let hits = executor.search_plan_all_xpaths_top_k(plan, xpaths, k);
+
+        self.resolve_document_hits(hits)
     }
 
     fn resolve_document_hits(

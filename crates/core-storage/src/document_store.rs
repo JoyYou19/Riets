@@ -1,3 +1,4 @@
+use core_protocol::{errors::CorelamoError, format::Format};
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,12 @@ pub type InternalDocId = u64;
 pub struct StoredDocument {
     pub external_id: ExternalDocId,
     pub internal_id: InternalDocId,
+
+    // Format of the original document, JSON/XML
+    pub format: Format,
+    // Storing the original document as bytes from any of the formats
+    pub source: Vec<u8>,
+
     pub fields: BTreeMap<String, String>,
 }
 

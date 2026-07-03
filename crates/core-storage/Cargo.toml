@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+core-protocol = { path = "../core-protocol" }
 core-index = {path = "../core-index"}
 core-query = {path = "../core-query"}
 serde = { workspace = true }

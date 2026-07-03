@@ -7,12 +7,13 @@
 //and all //TODO ive written
 
 use axum::{
-    Router,
     middleware::from_fn_with_state,
     routing::{delete, get, post},
+    Router,
 };
 
 use core_core::CorelamoDatabase;
+use core_protocol::format::Format;
 
 use std::{
     collections::HashMap,
@@ -38,7 +39,7 @@ mod response;
 pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, CorelamoDatabase>>>,
     pub databases_dir: PathBuf,
-    pub default_format: doctypes::Format,
+    pub default_format: Format,
 }
 
 //helper function for axum to decet the shutdown of a programm
@@ -115,11 +116,10 @@ async fn main() -> io::Result<()> {
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
     let default_format_str = corelamo_settings::get(&settings, "format");
-    let default_format =
-        doctypes::Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
-            eprintln!("error: invalid 'format' in config/cli: {e}");
-            process::exit(1);
-        });
+    let default_format = Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
+        eprintln!("error: invalid 'format' in config/cli: {e}");
+        process::exit(1);
+    });
 
     println!("root: {}", root_path.display());
     println!("name: {name}");

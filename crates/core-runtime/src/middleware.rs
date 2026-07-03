@@ -1,23 +1,23 @@
 use axum::{
     extract::{Request, State},
-    http::{StatusCode, header},
+    http::{header, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use core_protocol::{errors::CorelamoError, format::Format};
 use uuid::Uuid;
 
-use crate::{AppState, doctypes, response::HttpError};
-use core_core::errors::CorelamoError;
+use crate::{doctypes, response::HttpError, AppState};
 
 //INFO: everything later will need these two to return
 #[derive(Debug, Clone)]
 pub struct RequestContext {
-    pub format: doctypes::Format,
+    pub format: Format,
     pub request_id: Uuid,
     pub instance: String,
 }
 
-fn resolve_format(state: &AppState, request: &Request) -> Result<doctypes::Format, String> {
+fn resolve_format(state: &AppState, request: &Request) -> Result<Format, String> {
     let accept = request
         .headers()
         .get(header::ACCEPT)
@@ -39,7 +39,7 @@ fn resolve_format(state: &AppState, request: &Request) -> Result<doctypes::Forma
                 Ok(state.default_format)
             } else {
                 //TODO this try_from should also have everything xml related
-                doctypes::Format::try_from(subtype).map_err(|_| subtype.to_string())
+                Format::try_from(subtype).map_err(|_| subtype.to_string())
             }
         }
     }
@@ -101,8 +101,7 @@ pub async fn auth_middleware(
 mod tests {
     use super::*;
     use crate::AppState;
-    use crate::doctypes::Format;
-    use axum::http::{Request, header};
+    use axum::http::{header, Request};
     use std::{
         collections::HashMap,
         path::PathBuf,

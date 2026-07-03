@@ -4,18 +4,20 @@ use std::{
 };
 
 use axum::{
-    Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
+    Extension,
 };
-use core_core::{CorelamoDatabase, errors::CorelamoError};
+use core_core::CorelamoDatabase;
+use core_protocol::errors::CorelamoError;
 use serde_json::json;
 
 use crate::{
-    AppState, database_helpers, doctypes,
+    database_helpers, doctypes,
     middleware::RequestContext,
     response::{HttpError, HttpOk},
+    AppState,
 };
 
 //helpers

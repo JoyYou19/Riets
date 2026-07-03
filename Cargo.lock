@@ -419,6 +419,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "core-query"
 version = "0.1.0"
 dependencies = [
@@ -434,6 +445,7 @@ dependencies = [
  "axum",
  "core-core",
  "core-index",
+ "core-protocol",
  "core-query",
  "core-storage",
  "http-body-util",
@@ -456,6 +468,7 @@ name = "core-storage"
 version = "0.1.0"
 dependencies = [
  "core-index",
+ "core-protocol",
  "core-query",
  "criterion",
  "serde",

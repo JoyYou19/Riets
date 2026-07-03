@@ -1,4 +1,5 @@
-use core_core::{CorelamoDatabase, DatabaseOptions, errors::CorelamoError};
+use core_core::{CorelamoDatabase, DatabaseOptions};
+use core_protocol::errors::CorelamoError;
 
 use std::{collections::HashMap, path::PathBuf};
 

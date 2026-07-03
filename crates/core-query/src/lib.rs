@@ -1,6 +1,6 @@
 mod ast;
 mod executor;
-mod planner;
+pub mod planner;
 mod scored_posting;
 mod scorer;
 mod search_hit;

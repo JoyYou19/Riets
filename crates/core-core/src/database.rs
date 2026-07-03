@@ -8,7 +8,10 @@ use core_index::{
     document::IndexPolicy,
     lsm::{LsmIndex, worker::CompactionWorker},
 };
-use core_query::Query;
+use core_query::{
+    planner::{QueryPlan, QueryPlanner},
+    Query,
+};
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
@@ -113,7 +116,9 @@ impl CorelamoDatabase {
                 return Ok(Vec::new());
             };
 
-            self.search_top_k(&query, k)
+            let plan = QueryPlanner::plan(query);
+
+            self.search_plan_top_k(&plan, k)
         })();
 
         let elapsed = started.elapsed();
@@ -181,6 +186,14 @@ impl CorelamoDatabase {
         self.db
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "database is closed"))
+    }
+
+    pub fn search_plan_top_k(
+        &mut self,
+        plan: &QueryPlan,
+        k: usize,
+    ) -> io::Result<Vec<SearchDocumentHit>> {
+        self.db_mut()?.search_document_hits_plan_top_k(plan, k)
     }
 
     pub fn search_top_k(&mut self, query: &Query, k: usize) -> io::Result<Vec<SearchDocumentHit>> {

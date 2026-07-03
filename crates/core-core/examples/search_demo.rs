@@ -22,7 +22,7 @@ struct InputDoc {
 
 fn main() -> io::Result<()> {
     let root = std::env::temp_dir().join("corelamo-search-demo");
-    std::fs::remove_dir_all(&root).ok();
+    // std::fs::remove_dir_all(&root).ok();
     //
     println!("fixture={}", fixture_path());
     println!("exists={}", std::path::Path::new(fixture_path()).exists());
@@ -40,6 +40,7 @@ fn main() -> io::Result<()> {
             docs.into_iter()
                 .map(|doc| DocumentInput {
                     external_id: doc.id,
+                    source: None,
                     fields: BTreeMap::from([
                         ("title".to_string(), doc.title),
                         ("body".to_string(), doc.body),

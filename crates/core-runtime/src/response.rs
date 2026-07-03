@@ -2,15 +2,15 @@
 
 use axum::{
     body::Body,
-    http::{StatusCode, header},
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
-use core_core::errors::CorelamoError;
+use core_protocol::{errors::CorelamoError, format::Format};
 use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::{doctypes::Format, middleware::RequestContext};
+use crate::middleware::RequestContext;
 
 //INFO: 🤓 RFC-7807 standart defines this Problem Detail for HTTP APIs:
 // EXAMPLE:

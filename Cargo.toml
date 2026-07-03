@@ -10,7 +10,7 @@ members = [
   # "crates/core-parser",
   # "crates/core-auth",
   # "crates/core-api",
-  # "crates/core-protocol",
+  "crates/core-protocol",
   # "crates/core-cluster",
   # "crates/core-observability",
   # "crates/core-admin",

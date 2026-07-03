@@ -11,6 +11,7 @@ hyper = { version = "1", features = ["full"] }
 [dependencies]
 core-index = { path = "../core-index" }
 core-query = { path = "../core-query" }
+core-protocol = { path = "../core-protocol" }
 core-storage = { path = "../core-storage" }
 core-core = { path = "../core-core" }
 uuid = { version = "1.23.4", features = ["v4"] }

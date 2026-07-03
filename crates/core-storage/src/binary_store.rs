@@ -5,9 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use core_protocol::format::Format;
+
 use crate::document_store::{DocumentStore, StoredDocument};
 
-const MAGIC: &[u8; 8] = b"CDOCLOG2";
+const MAGIC: &[u8; 8] = b"CDOCLOG4";
 
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
@@ -203,6 +205,10 @@ fn write_document(writer: &mut impl Write, doc: &StoredDocument) -> io::Result<(
     write_string(writer, &doc.external_id)?;
     write_u64(writer, doc.internal_id)?;
 
+    write_u8(writer, doc.format.into())?;
+
+    write_bytes(writer, &doc.source)?;
+
     write_u32(writer, doc.fields.len() as u32)?;
 
     for (name, value) in &doc.fields {
@@ -217,6 +223,10 @@ fn read_document(reader: &mut impl Read) -> io::Result<StoredDocument> {
     let external_id = read_string(reader)?;
     let internal_id = read_u64(reader)?;
 
+    let format = Format::try_from(read_u8(reader)?).map_err(io::Error::from)?;
+
+    let source = read_bytes(reader)?;
+
     let field_count = read_u32(reader)? as usize;
     let mut fields = BTreeMap::new();
 
@@ -229,8 +239,23 @@ fn read_document(reader: &mut impl Read) -> io::Result<StoredDocument> {
     Ok(StoredDocument {
         external_id,
         internal_id,
+        source,
         fields,
+        format,
     })
+}
+
+fn write_bytes(writer: &mut impl Write, value: &[u8]) -> io::Result<()> {
+    write_u32(writer, value.len() as u32)?;
+    writer.write_all(value)
+}
+
+fn read_bytes(reader: &mut impl Read) -> io::Result<Vec<u8>> {
+    let len = read_u32(reader)? as usize;
+    let mut bytes = vec![0u8; len];
+
+    reader.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn write_string(writer: &mut impl Write, value: &str) -> io::Result<()> {
