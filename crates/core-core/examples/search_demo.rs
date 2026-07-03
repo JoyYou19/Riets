@@ -33,7 +33,7 @@ fn main() -> io::Result<()> {
     println!("policy={:#?}", db.policy());
     println!("stats={:#?}", db.stats()?);
 
-    if db.stats()?.document_count == 0 {
+    if db.stats()?.document_count == 1 {
         let docs = load_jsonl(fixture_path())?;
 
         db.put_documents_parallel(

@@ -15,6 +15,10 @@
 .env
 .env.*
 
+#movies lol
+/scripts/movies/movies.json
+/scripts/movies/movie_chunks
+
 # If all fixtures are generated and should never be committed:
 /crates/core-testkit/fixtures/*.jsonl
 !/crates/core-testkit/fixtures/small.jsonl

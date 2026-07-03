@@ -1,0 +1,60 @@
+chatins uztaisija lai neziamirstu visu
+
+0.vajag lai requestu parsee dinamiski xml/json prieks insert/search/retrieve.....
+
+1. PICK A CRATE
+   core-core/Cargo.toml + core-runtime/Cargo.toml
+   Research options: quick-xml, roxmltree, minidom
+   Add From<chosen_crate::Error> for CorelamoError in core-core/src/response.rs
+   (placeholder //TODO comment already there)
+
+
+
+2. FORMAT RESOLUTION — core-runtime/src/middleware.rs
+   resolve_format() currently maps Accept subtype directly to Format via TryFrom<&str>
+   "xml" already maps to Format::XML in doctypes.rs
+   No changes needed here once crate is picked
+
+
+
+3. ERROR RESPONSES — core-runtime/src/response.rs
+   HttpError::into_response() — replace fallback JSON with real XML serialization:
+       Format::XML => "application/problem+xml"
+       body should be RFC 7807 XML format:
+       <problem xmlns="urn:ietf:rfc:7807">
+           <type>...</type>
+           <title>...</title>
+           <status>...</status>
+           <detail>...</detail>
+           <instance>...</instance>
+           <request_id>...</request_id>
+       </problem>
+
+   HttpOk::into_response() — replace fallback JSON with real XML serialization:
+       Format::XML => "application/xml"
+       body shape TBD once crate is picked
+
+
+
+4. DOCUMENT PARSING — core-runtime/src/doctypes.rs
+   Add pub struct Xml<'a>(pub &'a str)
+   Implement DocumentConversion for Xml:
+       into_document_inputs()         — parse XML body into Vec<DocumentInput>
+       from_res_to_document()         — Vec<SearchDocumentHit> -> Vec<serde_json::Value>
+                                        (or ideally a typed XML output once we decide the shape)
+       stored_documents_to_values()   — &[StoredDocument] -> Vec<serde_json::Value>
+   Wire into:
+       parse_documents()              — Format::XML arm
+       serialize_hits()               — Format::XML arm
+       convert_from_storage()         — Format::XML arm
+
+
+
+5. REQUEST BODY PARSING — core-runtime/src/handlers.rs
+   retrieve_handler — id list is currently serde_json::from_str::<Vec<String>>
+   needs a format-aware equivalent in doctypes for XML id lists
+
+
+
+6. POLICY — no changes needed
+   policy is always TOML regardless of format, already handled correctly

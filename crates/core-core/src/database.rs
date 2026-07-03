@@ -6,11 +6,12 @@ use std::{
 use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
-    lsm::{worker::CompactionWorker, LsmIndex},
+    lsm::{LsmIndex, worker::CompactionWorker},
 };
 use core_query::Query;
 use core_storage::{
     binary_store::BinaryDocumentStore,
+    document_store::StoredDocument,
     search_database::{DocumentInput, SearchDatabase, SearchDocumentHit},
 };
 
@@ -163,6 +164,12 @@ impl CorelamoDatabase {
     //         _ => Some(Query::And(terms.into_iter().map(Query::Term).collect())),
     //     })
     // }
+    //
+
+    //HACK: not 100% sure if this is corret but we need RETRIEVE sorry Valč
+    pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
+        self.db_mut()?.get_document(external_id)
+    }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
         self.db

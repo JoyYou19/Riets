@@ -1,4 +1,5 @@
 mod database;
+pub mod errors;
 pub mod metrics;
 mod options;
 
