@@ -1,15 +1,11 @@
 
-[dependencies]
-role-system="0.1"
+[package]
+name = "core-auth"
+version = "0.1.0"
+edition = "2021"
 
-[workspace]
-members = [
-    "crates/core-core",
-    "crates/core-index",
-    "crates/core-protocol",
-    "crates/core-query",
-    "crates/core-runtime",
-    "crates/core-storage",
-    "crates/core-testkit",
-    "crates/core-auth",
-]
+[dependencies]
+argon2="0.5"
+rand="0.8"
+sha2="0.10"
+hex="0.4"

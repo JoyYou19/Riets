@@ -1,10 +1,12 @@
 use std::time::Instant;
-
+//Auth
+use core_auth::Token;
 use axum::{
     extract::{Request, State},
-    http::header,
+    http::{header,StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
+    
 };
 use core_protocol::{errors::CorelamoError, format::Format};
 use uuid::Uuid;
@@ -95,15 +97,16 @@ pub async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    let _token = request.headers().get("X-Corelamo-Key");
+    let token = request.headers().get("X-Corelamo-Key").and_then(|v| v.to_str().ok());
 
-    //HACK: japieliek ka parbauda sis vienkarsi taads placeholder
-    next.run(request).await
+    
 
-    // match token {
-    //     Some(key) if key == "mysecretkey" => next.run(request).await,
-    //     _ => (StatusCode::UNAUTHORIZED, "missing or invalid api key").into_response(),
-    // }
+    match token {
+       Some(t) if state.auth.authenticate(&Token(t.to_string())).is_some() => {
+            next.run(request).await
+       }
+        _ => (StatusCode::UNAUTHORIZED, "missing or invalid api key").into_response(),
+     }
 }
 
 #[cfg(test)]
@@ -111,6 +114,7 @@ mod tests {
     use super::*;
     use crate::AppState;
     use axum::http::{Request, header};
+use core_auth::{AuthService, PolicyStore, TokenStore, UserStore};
     use std::{
         collections::HashMap,
         path::PathBuf,
@@ -123,6 +127,11 @@ mod tests {
             databases: Arc::new(RwLock::new(HashMap::new())),
             databases_dir: PathBuf::from("/tmp"),
             default_format,
+            auth: Arc:: new(AuthService::new(
+                PolicyStore::new(),
+                TokenStore::new(),
+                UserStore::new(),
+            )),
         }
     }
 

@@ -2,10 +2,11 @@
 use core_protocol::{errors::CorelamoError, format::Format};
 use indexmap::IndexMap;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 
 use crate::command_response_helpers::{FieldNode, tree_to_json, unflatten};
+
 
 //trait Command -> all XXXCommand should have these properties
 pub trait Command: Sized {
@@ -128,4 +129,12 @@ impl ResponseData for RetrieveResponse {
     // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {
     //     todo!();
     // }
+}
+pub struct LoginResponse{
+    pub token:String,
+}
+impl ResponseData for LoginResponse{
+    fn to_json(&self) -> Result<Value, CorelamoError> {
+        Ok(json!({"token":self.token}))
+    }
 }

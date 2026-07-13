@@ -7,11 +7,10 @@
 //and all //TODO ive written
 
 use axum::{
-    Router,
-    middleware::from_fn_with_state,
-    routing::{delete, get, post},
+    Router, middleware::from_fn_with_state, routing::{delete, get, post},
 };
 
+use core_auth::{AuthService, Permission, PolicyStore, TokenStore, UserStore};
 use core_core::CorelamoDatabase;
 use core_protocol::format::Format;
 
@@ -40,6 +39,7 @@ pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, CorelamoDatabase>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
+    pub auth: Arc<AuthService>,
 }
 
 //TODO: maybe check if there are more possible signals
@@ -139,63 +139,53 @@ async fn main() -> io::Result<()> {
     };
 
     println!("found and opened {} database(s)", databases.len());
+    //Autorizacijas prikoli
+    let mut policy = PolicyStore::new();
+    policy.grant("admin", Permission::Read);
+    policy.grant("admin", Permission::Write);
+
+    let mut users = UserStore::new();
+    users.add_user("admin", "secret", vec!["admin".to_string()]);
+
+    let auth = Arc::new(AuthService::new(policy, TokenStore::new(), users));
 
     let state = AppState {
         databases: Arc::new(RwLock::new(databases)),
         databases_dir,
         default_format,
+        auth,
     };
-
+    
     //this clone is ok since it just += 1 for Arc
     let state_for_shutdown = state.clone();
-    let app = Router::new()
+    //login
+    let public_routes= Router::new()
         .route(
-            "/api/databases/{db_name}/search",
-            post(handlers::search_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/insert",
-            post(handlers::insert_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/retrieve",
-            post(handlers::retrieve_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/create-database",
-            post(handlers::create_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/delete-database",
-            delete(handlers::delete_handler),
-        )
+            "/api/login", post(handlers::login_handler)
+        );
+    //pec login
+    let protected_routes=Router::new()
+        .route("/api/databases/{db_name}/search", post(handlers::search_handler))
+        .route("/api/databases/{db_name}/insert", post(handlers::insert_handler))
+        .route("/api/databases/{db_name}/retrieve", post(handlers::retrieve_handler))
+        .route("/api/databases/{db_name}/create-database", post(handlers::create_handler))
+        .route("/api/databases/{db_name}/delete-database", delete(handlers::delete_handler))
         .route("/api/databases", get(handlers::list_databases_handler))
-        .route(
-            "/api/databases/{db_name}/status",
-            get(handlers::stats_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/reindex",
-            post(handlers::reindex_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/policy",
-            get(handlers::get_policy_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/policy",
-            post(handlers::set_policy_handler),
-        )
-        .layer(from_fn_with_state(
-            state.clone(),
-            middleware::auth_middleware,
-        ))
+        .route("/api/databases/{db_name}/status", get(handlers::stats_handler))
+        .route("/api/databases/{db_name}/reindex", post(handlers::reindex_handler))
+        .route("/api/databases/{db_name}/policy", get(handlers::get_policy_handler))
+        .route("/api/databases/{db_name}/policy", post(handlers::set_policy_handler))
+        .layer(from_fn_with_state(state.clone(), middleware::auth_middleware));
+    let app = Router::new()
+        
+        .merge(public_routes)
+        .merge(protected_routes)
         .layer(from_fn_with_state(
             state.clone(),
             middleware::request_context_middleware,
         ))
         .with_state(state);
-
+    
     let addr = format!("{host}:{port}");
     println!("starting http server on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;

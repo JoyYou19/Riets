@@ -14,7 +14,7 @@ serde_json = "1"
 tracing = "0.1.44"
 thiserror = "2"
 toml = "1.1.2"
-indexmap = "2.14.0"
+indexmap = { version = "2.14.0", features = ["serde"] }
 
 [[example]]
 name = "search_demo"

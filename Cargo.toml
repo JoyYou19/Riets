@@ -16,6 +16,7 @@ members = [
   # "crates/core-admin",
   # "crates/core-migration",
   "crates/core-testkit",
+  "crates/core-auth",
 ]
 
 [workspace.package]

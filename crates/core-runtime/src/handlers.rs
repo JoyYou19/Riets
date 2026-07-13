@@ -13,7 +13,7 @@ use axum::{
 use core_core::{
     CorelamoDatabase,
     command_reponse_definitions::{
-        Command, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        Command, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, LoginResponse,
     },
 };
 use core_protocol::errors::CorelamoError;
@@ -26,6 +26,15 @@ use crate::{
     http_response::{HttpError, HttpOk},
     middleware::RequestContext,
 };
+//authorizations
+use serde::Deserialize;
+#[derive(Deserialize)]
+struct LoginRequest{
+    username: String,
+    password:String,
+}
+
+
 
 //helpers
 fn get_db_read<'a>(
@@ -387,4 +396,32 @@ pub async fn list_databases_handler(
         &ctx,
     )
     .into_response()
+}
+
+//login handler 
+pub async fn login_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    let req: LoginRequest= match serde_json::from_str(body){
+        Ok(r)=> r,
+        Err(e)=>{
+            return HttpError::from_corelamo(CorelamoError::Internal(format!("invalid login request:{e}")),
+            &ctx,
+        )
+            .into_response();
+        }
+    };
+    match state.auth.login(&req.username,&req.password){
+        Some(token)=>{
+            let resp = LoginResponse{token:token.0};
+            HttpOk::with_response("Login succesful".to_string(), resp, &ctx).into_response()
+        }
+        None => HttpError::from_corelamo(CorelamoError::Internal("Invalid username or password".to_string()), &ctx).into_response(),
+    }
 }
