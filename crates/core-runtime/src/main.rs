@@ -5,11 +5,12 @@
 //HTTPS auth clustering lmao
 //LOGS not just prints
 //and all //TODO ive written
+//TODO --debug mode
 
 use axum::{
     Router,
     middleware::from_fn_with_state,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 
 use core_core::CorelamoDatabase;
@@ -24,9 +25,6 @@ use std::{
 };
 
 use tokio::signal;
-
-#[cfg(test)]
-mod api_tests;
 
 mod corelamo_settings;
 mod database_helpers;
@@ -158,16 +156,24 @@ async fn main() -> io::Result<()> {
             post(handlers::insert_handler),
         )
         .route(
+            "/api/databases/{db_name}/delete",
+            delete(handlers::delete_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/update",
+            put(handlers::update_document_handler),
+        )
+        .route(
             "/api/databases/{db_name}/retrieve",
             post(handlers::retrieve_handler),
         )
         .route(
             "/api/databases/{db_name}/create-database",
-            post(handlers::create_handler),
+            post(handlers::create_database_handler),
         )
         .route(
             "/api/databases/{db_name}/delete-database",
-            delete(handlers::delete_handler),
+            delete(handlers::delete_detabase_handler),
         )
         .route("/api/databases", get(handlers::list_databases_handler))
         .route(

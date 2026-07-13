@@ -6,7 +6,7 @@ use crate::errors::CorelamoError;
 #[repr(u8)]
 pub enum Format {
     JSON = 1,
-    XML = 2,
+    //XML = 2,
 }
 
 impl TryFrom<&str> for Format {
@@ -15,7 +15,7 @@ impl TryFrom<&str> for Format {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.to_ascii_lowercase().as_str() {
             "json" => Ok(Format::JSON),
-            "xml" => Ok(Format::XML),
+            //"xml" => Ok(Format::XML),
             other => Err(CorelamoError::UnsupportedFormat(format!(
                 "unsupported format: '{other}'"
             ))),
@@ -35,7 +35,7 @@ impl TryFrom<u8> for Format {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Format::JSON),
-            2 => Ok(Format::XML),
+            //2 => Ok(Format::XML),
             other => Err(CorelamoError::InvalidData(format!(
                 "unknown document format id {other}"
             ))),

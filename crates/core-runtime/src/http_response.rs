@@ -1,12 +1,11 @@
 //INFO: response.rs is responsible for sending messages in a constant format with the help of
-//CommandResponse
 use axum::{
     body::Body,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use core_protocol::{errors::CorelamoError, format::Format};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::time::Instant;
 
 use uuid::Uuid;
@@ -126,8 +125,7 @@ impl IntoResponse for HttpError {
                     .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
                     .body(Body::from(body))
                     .unwrap()
-            }
-            Format::XML => todo!(),
+            } //Format::XML => todo!(),
         }
     }
 }
@@ -175,6 +173,24 @@ impl HttpOk {
         let value = serde_json::to_value(&data).unwrap_or(Value::Null);
         Self {
             status: StatusCode::OK,
+            title: title.into(),
+            data: Some(Box::new(JsonData(value))),
+            request_id: ctx.request_id,
+            instance: ctx.instance.clone(),
+            format: ctx.format,
+            time_start: ctx.time_start,
+        }
+    }
+
+    pub fn with_data_and_status<T: serde::Serialize>(
+        status: StatusCode,
+        title: impl Into<String>,
+        data: T,
+        ctx: &RequestContext,
+    ) -> Self {
+        let value = serde_json::to_value(&data).unwrap_or(Value::Null);
+        Self {
+            status,
             title: title.into(),
             data: Some(Box::new(JsonData(value))),
             request_id: ctx.request_id,
@@ -260,9 +276,72 @@ impl IntoResponse for HttpOk {
                     .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
                     .body(Body::from(body))
                     .unwrap()
-            }
+            } //Format::XML => todo!(),
+        }
+    }
+}
 
-            Format::XML => todo!(),
+//This is meant for insert/delete/update where some documents can succeed and others not
+pub struct BatchOutcome {
+    succeeded: Vec<(String, u16, &'static str)>, // (id, status, label)
+    failed: Vec<(String, u16, &'static str)>,
+}
+
+impl BatchOutcome {
+    pub fn new() -> Self {
+        Self {
+            succeeded: Vec::new(),
+            failed: Vec::new(),
+        }
+    }
+
+    pub fn succeed(&mut self, id: impl Into<String>, status: u16, label: &'static str) {
+        self.succeeded.push((id.into(), status, label));
+    }
+
+    pub fn fail(&mut self, id: impl Into<String>, status: u16, label: &'static str) {
+        self.failed.push((id.into(), status, label));
+    }
+
+    pub fn succeeded_count(&self) -> usize {
+        self.succeeded.len()
+    }
+
+    pub fn failed_count(&self) -> usize {
+        self.failed.len()
+    }
+
+    pub fn into_ok(
+        self,
+        clean_status: StatusCode,
+        title: impl Into<String>,
+        db_name: &str,
+        ctx: &RequestContext,
+    ) -> HttpOk {
+        if self.failed.is_empty() {
+            HttpOk::with_data_and_status(
+                clean_status,
+                title,
+                json!({
+                    "succeeded": self.succeeded.len(),
+                    "database": db_name,
+                }),
+                ctx,
+            )
+        } else {
+            let results: Vec<Value> = self
+                .succeeded
+                .iter()
+                .chain(self.failed.iter())
+                .map(|(id, status, label)| json!({ "id": id, "status": status, "result": label }))
+                .collect();
+
+            HttpOk::with_data_and_status(
+                StatusCode::MULTI_STATUS,
+                title,
+                json!({ "database": db_name, "results": results }),
+                ctx,
+            )
         }
     }
 }

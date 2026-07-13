@@ -34,6 +34,7 @@ pub trait DocumentStore {
     fn get_by_internal_id(&mut self, internal_id: u64) -> std::io::Result<Option<StoredDocument>>;
 
     fn document_count(&self) -> usize;
+    fn contains(&self, external_id: &str) -> io::Result<bool>;
 
     // WARN: For now we can load all docs, in the future we will need a for each function
     fn all_documents(&self) -> io::Result<Vec<StoredDocument>>;
@@ -79,6 +80,10 @@ impl DocumentStore for MemoryDocumentStore {
 
     fn get(&mut self, external_id: &str) -> std::io::Result<Option<StoredDocument>> {
         Ok(self.docs.get(external_id).cloned())
+    }
+
+    fn contains(&self, external_id: &str) -> io::Result<bool> {
+        Ok(self.docs.contains_key(external_id))
     }
 
     fn delete(&mut self, external_id: &str) -> std::io::Result<()> {

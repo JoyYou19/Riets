@@ -4,9 +4,9 @@ use crate::{
     analyzer::analyzer::Analyzer,
     disk::{reader::DiskSegment, writer::write_segment},
     lsm::{
-        compact_segments,
+        IndexSnapshot, compact_segments,
         compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
-        manifest, IndexSnapshot,
+        manifest,
     },
     mem::MemIndex,
     posting::{DeleteSet, PostingList},

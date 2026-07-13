@@ -105,6 +105,14 @@ impl<S: DocumentStore> SearchDatabase<S> {
         inputs: Vec<DocumentInput>,
         batch_size: usize,
     ) -> io::Result<()> {
+        for input in &inputs {
+            if let Some(_) = self.store.get(&input.external_id)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("document '{}' already exists", input.external_id),
+                ));
+            }
+        }
         use std::time::Instant;
 
         let total_started = Instant::now();

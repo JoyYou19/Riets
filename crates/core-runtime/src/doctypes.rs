@@ -18,7 +18,7 @@ pub struct Json<'a>(pub &'a str);
 pub fn parse_documents(body: &str, format: Format) -> Result<Vec<DocumentInput>, CorelamoError> {
     match format {
         Format::JSON => Json(body).into_document_inputs(),
-        Format::XML => todo!(), //Xml(body).into_document_inputs(),
+        //Format::XML => todo!(), //Xml(body).into_document_inputs(),
     }
 }
 
