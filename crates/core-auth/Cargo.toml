@@ -1,0 +1,15 @@
+
+[dependencies]
+role-system="0.1"
+
+[workspace]
+members = [
+    "crates/core-core",
+    "crates/core-index",
+    "crates/core-protocol",
+    "crates/core-query",
+    "crates/core-runtime",
+    "crates/core-storage",
+    "crates/core-testkit",
+    "crates/core-auth",
+]
