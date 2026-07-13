@@ -7,9 +7,9 @@
 //and all //TODO ive written
 
 use axum::{
+    Router,
     middleware::from_fn_with_state,
     routing::{delete, get, post},
-    Router,
 };
 
 use core_core::CorelamoDatabase;
@@ -32,8 +32,8 @@ mod corelamo_settings;
 mod database_helpers;
 mod doctypes;
 mod handlers;
+mod http_response;
 mod middleware;
-mod response;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -42,7 +42,6 @@ pub struct AppState {
     pub default_format: Format,
 }
 
-//helper function for axum to decet the shutdown of a programm
 //TODO: maybe check if there are more possible signals
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -116,10 +115,11 @@ async fn main() -> io::Result<()> {
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
     let default_format_str = corelamo_settings::get(&settings, "format");
-    let default_format = Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
-        eprintln!("error: invalid 'format' in config/cli: {e}");
-        process::exit(1);
-    });
+    let default_format = Format::JSON;
+    // Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
+    //     eprintln!("error: invalid 'format' in config/cli: {e}");
+    //     process::exit(1);
+    // });
 
     println!("root: {}", root_path.display());
     println!("name: {name}");

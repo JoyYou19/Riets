@@ -1,3 +1,5 @@
+//TODO: Valters uztaisi ka var nested fields, paldies
+
 use std::{collections::HashSet, fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};

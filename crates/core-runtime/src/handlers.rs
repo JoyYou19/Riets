@@ -1,23 +1,30 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{RwLockReadGuard, RwLockWriteGuard},
 };
 
 use axum::{
+    Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Extension,
 };
-use core_core::CorelamoDatabase;
+
+use core_core::{
+    CorelamoDatabase,
+    command_reponse_definitions::{
+        Command, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+    },
+};
 use core_protocol::errors::CorelamoError;
 use serde_json::json;
 
 use crate::{
-    database_helpers, doctypes,
-    middleware::RequestContext,
-    response::{HttpError, HttpOk},
     AppState,
+    database_helpers::{self},
+    doctypes,
+    http_response::{HttpError, HttpOk},
+    middleware::RequestContext,
 };
 
 //helpers
@@ -50,15 +57,20 @@ fn require_body(body: &str) -> Result<&str, CorelamoError> {
     }
 }
 
+//TODO: total_hits: xxx kkadu
 pub async fn search_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     body: String,
 ) -> Response {
-    //TODO smarter shit for query syntax
-    let q = match require_body(&body) {
-        Ok(q) => q.to_string(),
+    let body = match require_body(&body) {
+        Ok(b) => b,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let command: SearchCommand = match SearchCommand::parse(body, ctx.format) {
+        Ok(cmd) => cmd,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
@@ -68,12 +80,8 @@ pub async fn search_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    //TODO docs offset nevis hardcoded 10 + structured query like elastic/CP not raw string
-    //TODO process query validity.... all the * AND OR check ......
-    //FIX: "cars" search gets over stemmed "car" works
-    let hits = match db.search(&q, 10) {
+    let hits = match db.search(&command) {
         Ok(hits) => hits,
-        //TODO: fix when search returns CorelamoError
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("search failed: {e}")),
@@ -84,14 +92,23 @@ pub async fn search_handler(
     };
 
     let hit_count = hits.len();
-    let output = match doctypes::serialize_hits(hits, ctx.format) {
-        Ok(data) => data,
+    let projected: Vec<(String, BTreeMap<String, String>)> = hits
+        .into_iter()
+        .map(|hit| (hit.external_id, hit.fields))
+        .collect();
+
+    let resp = match SearchResponse::from_hits(projected) {
+        Ok(r) => r,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    HttpOk::with_data(format!("{hit_count} hit(s) for '{q}'"), output, &ctx).into_response()
+    HttpOk::with_response(
+        format!("{hit_count} hit(s) for '{}'", &command.query),
+        resp,
+        &ctx,
+    )
+    .into_response()
 }
 
-//TODO: how would we return the exact document that was stored (we deserialize it from HashMap)
 pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -103,16 +120,11 @@ pub async fn retrieve_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let ids: Vec<String> = match serde_json::from_str(&body) {
-        Ok(ids) => ids,
-        Err(_) => {
-            return HttpError::from_corelamo(
-                CorelamoError::InvalidData("expected JSON array of ids".to_string()),
-                &ctx,
-            )
-            .into_response();
-        }
+    let command = match RetrieveCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+    let ids = command.ids;
 
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
@@ -138,18 +150,21 @@ pub async fn retrieve_handler(
         }
     }
 
-    //FIX: doctypes::convert_from_storage should return typed data directly instead of String
-    //     not_found_ids is also dropped here until HttpOk.data can carry structured data
-    let output = match doctypes::convert_from_storage(&docs, ctx.format) {
-        Ok(data) => data,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    let (documents, skipped_ids) = doctypes::convert_from_storage(&docs, ctx.format);
+
+    let title = if skipped_ids.is_empty() {
+        format!("retrieved {} document(s)", documents.len())
+    } else {
+        format!(
+            "retrieved {} document(s); {} skipped due to format mismatch",
+            documents.len(),
+            skipped_ids.len()
+        )
     };
-    HttpOk::with_data(
-        format!("retrieved {} document(s)", docs.len()),
-        serde_json::json!({ "documents": output, "not_found": not_found_ids }),
-        &ctx,
-    )
-    .into_response()
+
+    let resp = RetrieveResponse::new(documents, not_found_ids, skipped_ids);
+
+    HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
 pub async fn insert_handler(

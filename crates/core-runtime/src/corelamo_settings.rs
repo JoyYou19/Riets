@@ -28,10 +28,10 @@ OPTIONS:
     --port <port>         Port to bind the HTTP server to
                           [default: 6006]
 
-    --format <format>     Default format for requests, responses and documents (json/xml)
+    --format <format>     Default format for requests, responses and documents (json)
                           [default: json]
 
-    NOTE: config file takes priority if it exists
+    NOTE: config file takes priority over CLI args if it exists
 
     -h, --help            Print this help message and exit
 ";

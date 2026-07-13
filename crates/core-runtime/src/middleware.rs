@@ -1,13 +1,15 @@
+use std::time::Instant;
+
 use axum::{
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::header,
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use core_protocol::{errors::CorelamoError, format::Format};
 use uuid::Uuid;
 
-use crate::{doctypes, response::HttpError, AppState};
+use crate::{AppState, http_response::HttpError};
 
 //INFO: everything later will need these two to return
 #[derive(Debug, Clone)]
@@ -15,9 +17,14 @@ pub struct RequestContext {
     pub format: Format,
     pub request_id: Uuid,
     pub instance: String,
+    pub time_start: Instant,
 }
 
+//WARN: hardcodes json here, fix when json done
 fn resolve_format(state: &AppState, request: &Request) -> Result<Format, String> {
+    return Ok(Format::JSON);
+    //TODO: start where xml detected
+    todo!();
     let accept = request
         .headers()
         .get(header::ACCEPT)
@@ -38,7 +45,6 @@ fn resolve_format(state: &AppState, request: &Request) -> Result<Format, String>
             if first.is_empty() || subtype.is_empty() || subtype == "*" {
                 Ok(state.default_format)
             } else {
-                //TODO this try_from should also have everything xml related
                 Format::try_from(subtype).map_err(|_| subtype.to_string())
             }
         }
@@ -52,6 +58,7 @@ pub async fn request_context_middleware(
     next: Next,
 ) -> Response {
     let request_id = Uuid::new_v4();
+    let start = Instant::now();
     let instance = request.uri().path().to_string();
 
     let format = match resolve_format(&state, &request) {
@@ -63,6 +70,7 @@ pub async fn request_context_middleware(
                 format: state.default_format,
                 request_id,
                 instance,
+                time_start: start,
             };
             return HttpError::from_corelamo(
                 CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
@@ -75,6 +83,7 @@ pub async fn request_context_middleware(
         format,
         request_id,
         instance,
+        time_start: start,
     });
 
     next.run(request).await
@@ -101,7 +110,7 @@ pub async fn auth_middleware(
 mod tests {
     use super::*;
     use crate::AppState;
-    use axum::http::{header, Request};
+    use axum::http::{Request, header};
     use std::{
         collections::HashMap,
         path::PathBuf,

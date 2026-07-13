@@ -7,12 +7,14 @@ edition = "2024"
 core-index = { path = "../core-index" }
 core-query = { path = "../core-query" }
 core-storage = { path = "../core-storage" }
+core-protocol = {path = "../core-protocol" }
 
 serde = { workspace = true }
 serde_json = "1"
 tracing = "0.1.44"
 thiserror = "2"
 toml = "1.1.2"
+indexmap = "2.14.0"
 
 [[example]]
 name = "search_demo"

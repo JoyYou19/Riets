@@ -9,89 +9,113 @@ BASE_URL = "http://localhost:6006"
 DB_NAME = "movies"
 MAX_CHUNKS = 0  # 0 = send all
 
-POLICY = {
-    "fields": [
-        # indexed + stored
-        {
-            "name": "title",
-            "xpath": 1,
-            "index": "Text",
-            "stored": True,
-            "stemming": "english",
-            "weight": {"min": 65, "max": 90}
-        },
-        {
-            "name": "year",
-            "xpath": 2,
-            "index": "Text",
-            "stored": True,
-            "stemming": None,
-            "weight": {"min": 1, "max": 50}
-        },
-        {
-            "name": "cast",
-            "xpath": 3,
-            "index": "Text",
-            "stored": True,
-            "stemming": "english",
-            "weight": {"min": 1, "max": 75}
-        },
-        {
-            "name": "genres",
-            "xpath": 4,
-            "index": "Text",
-            "stored": True,
-            "stemming": None,
-            "weight": {"min": 1, "max": 60}
-        },
-        {
-            "name": "extract",
-            "xpath": 5,
-            "index": "Text",
-            "stored": True,
-            "stemming": "english",
-            "weight": {"min": 1, "max": 75}
-        },
-        # stored only — not indexed
-        {
-            "name": "href",
-            "xpath": 6,
-            "index": "None",
-            "stored": True,
-            "stemming": None,
-            "weight": {"min": 0, "max": 0}
-        },
-        {
-            "name": "thumbnail",
-            "xpath": 7,
-            "index": "None",
-            "stored": True,
-            "stemming": None,
-            "weight": {"min": 0, "max": 0}
-        },
-        {
-            "name": "thumbnail_width",
-            "xpath": 8,
-            "index": "None",
-            "stored": True,
-            "stemming": None,
-            "weight": {"min": 0, "max": 0}
-        },
-        {
-            "name": "thumbnail_height",
-            "xpath": 9,
-            "index": "None",
-            "stored": True,
-            "stemming": None,
-            "weight": {"min": 0, "max": 0}
-        },
-    ]
-}
+POLICY = """\
+[[fields]]
+name     = "title"
+xpath    = 1
+index    = "Text"
+stored   = true
+stemming = "english"
+
+[fields.weight]
+min = 65
+max = 90
+
+[[fields]]
+name     = "year"
+xpath    = 2
+index    = "Text"
+stored   = true
+stemming = ""
+
+[fields.weight]
+min = 1
+max = 50
+
+[[fields]]
+name     = "cast"
+xpath    = 3
+index    = "Text"
+stored   = true
+stemming = "english"
+
+[fields.weight]
+min = 1
+max = 75
+
+[[fields]]
+name     = "genres"
+xpath    = 4
+index    = "Text"
+stored   = true
+stemming = ""
+
+[fields.weight]
+min = 1
+max = 60
+
+[[fields]]
+name     = "extract"
+xpath    = 5
+index    = "Text"
+stored   = true
+stemming = "english"
+
+[fields.weight]
+min = 1
+max = 75
+
+[[fields]]
+name     = "href"
+xpath    = 6
+index    = "None"
+stored   = true
+stemming = ""
+
+[fields.weight]
+min = 0
+max = 0
+
+[[fields]]
+name     = "thumbnail"
+xpath    = 7
+index    = "None"
+stored   = true
+stemming = ""
+
+[fields.weight]
+min = 0
+max = 0
+
+[[fields]]
+name     = "thumbnail_width"
+xpath    = 8
+index    = "None"
+stored   = true
+stemming = ""
+
+[fields.weight]
+min = 0
+max = 0
+
+[[fields]]
+name     = "thumbnail_height"
+xpath    = 9
+index    = "None"
+stored   = true
+stemming = ""
+
+[fields.weight]
+min = 0
+max = 0
+"""
 
 
 def curl_post(url, body):
     result = subprocess.run(
-        ["curl", "-s", "-X", "POST", url, "-d", body],
+        ["curl", "-s", "-X", "POST", url,
+         "-H", "Accept: application/json",
+         "-d", body],
         capture_output=True,
         text=True,
     )
@@ -122,11 +146,11 @@ def main():
         f"{BASE_URL}/api/databases/{DB_NAME}/create-database", "")
     print(f"[INFO] {out}")
 
-    # 3. set policy
+    # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
     out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/policy/json",
-        json.dumps(POLICY)
+        f"{BASE_URL}/api/databases/{DB_NAME}/policy",
+        POLICY
     )
     print(f"[INFO] {out}")
 
@@ -147,7 +171,7 @@ def main():
 
         payload = json.dumps(chunk, ensure_ascii=False)
         out, code = curl_post(
-            f"{BASE_URL}/api/databases/{DB_NAME}/insert/json",
+            f"{BASE_URL}/api/databases/{DB_NAME}/insert",
             payload
         )
 

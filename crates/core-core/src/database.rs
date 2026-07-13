@@ -9,16 +9,21 @@ use core_index::{
     lsm::{LsmIndex, worker::CompactionWorker},
 };
 use core_query::{
-    planner::{QueryPlan, QueryPlanner},
     Query,
+    planner::{QueryPlan, QueryPlanner},
 };
+
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
     search_database::{DocumentInput, SearchDatabase, SearchDocumentHit},
 };
 
-use crate::{metrics::DatabaseMetrics, options::DatabaseOptions};
+use indexmap::IndexMap;
+
+use crate::{
+    command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
+};
 
 // Currently the main entry point to the database
 pub struct CorelamoDatabase {
@@ -108,17 +113,18 @@ impl CorelamoDatabase {
         result
     }
 
-    pub fn search(&mut self, query: &str, k: usize) -> io::Result<Vec<SearchDocumentHit>> {
+    //INFO: changed the function call to take a SearchCommand not just a string of query
+    pub fn search(&mut self, command: &SearchCommand) -> io::Result<Vec<SearchDocumentHit>> {
         let started = std::time::Instant::now();
+        //TODO: make the docs 10 default configurable
+        let docs = command.docs.unwrap_or(10);
 
         let result = (|| {
-            let Some(query) = self.build_query(query)? else {
+            let Some(query) = self.build_query(&command.query)? else {
                 return Ok(Vec::new());
             };
-
             let plan = QueryPlanner::plan(query);
-
-            self.search_plan_top_k(&plan, k)
+            self.search_plan_top_k(&plan, command.return_fields.as_ref(), docs)
         })();
 
         let elapsed = started.elapsed();
@@ -131,8 +137,8 @@ impl CorelamoDatabase {
         }
 
         tracing::info!(
-            query = query,
-            k = k,
+            query = command.query,
+            k = docs,
             elapsed_ms = elapsed.as_millis(),
             ok = result.is_ok(),
             "search request"
@@ -171,7 +177,6 @@ impl CorelamoDatabase {
     // }
     //
 
-    //HACK: not 100% sure if this is corret but we need RETRIEVE sorry Valč
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         self.db_mut()?.get_document(external_id)
     }
@@ -191,9 +196,11 @@ impl CorelamoDatabase {
     pub fn search_plan_top_k(
         &mut self,
         plan: &QueryPlan,
+        return_fields: Option<&IndexMap<String, bool>>,
         k: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?.search_document_hits_plan_top_k(plan, k)
+        self.db_mut()?
+            .search_document_hits_plan_top_k(plan, return_fields, k)
     }
 
     pub fn search_top_k(&mut self, query: &Query, k: usize) -> io::Result<Vec<SearchDocumentHit>> {

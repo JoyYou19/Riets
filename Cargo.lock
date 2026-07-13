@@ -360,8 +360,10 @@ name = "core-core"
 version = "0.1.0"
 dependencies = [
  "core-index",
+ "core-protocol",
  "core-query",
  "core-storage",
+ "indexmap",
  "serde",
  "serde_json",
  "thiserror",
@@ -450,6 +452,7 @@ dependencies = [
  "core-storage",
  "http-body-util",
  "hyper",
+ "indexmap",
  "reqwest",
  "serde",
  "serde_json",
@@ -471,6 +474,7 @@ dependencies = [
  "core-protocol",
  "core-query",
  "criterion",
+ "indexmap",
  "serde",
  "serde_json",
 ]
@@ -2038,6 +2042,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",

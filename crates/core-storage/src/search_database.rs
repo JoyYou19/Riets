@@ -3,16 +3,17 @@ use std::{collections::BTreeMap, io};
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{policy::IndexKind, IndexPolicy, IndexedDocument},
+    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
     lsm::{
-        index_worker::{build_segments_parallel, IndexCommand, IndexWorker},
+        LsmIndex,
+        index_worker::{IndexCommand, IndexWorker, build_segments_parallel},
         make_batches,
         snapshot::SharedIndexSnapshot,
-        LsmIndex,
     },
 };
 use core_protocol::format::Format;
-use core_query::{planner::QueryPlan, Query, QueryExecutor, SearchHit};
+use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use indexmap::IndexMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
@@ -265,7 +266,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     external_id: doc.external_id.clone(),
                     internal_id: doc.internal_id,
                     score: hit.score,
-                    fields: visible_fields(&doc, &self.policy),
+                    fields: visible_fields(&doc, &self.policy, None),
                 });
             }
         }
@@ -283,7 +284,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
         let hits = executor.search_top_k(query, xpath, k);
 
-        self.resolve_document_hits(hits)
+        self.resolve_document_hits(hits, None)
     }
 
     pub fn search_document_hits_all_fields_top_k(
@@ -297,7 +298,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
         let hits = executor.search_all_xpaths_top_k(query, xpaths, k);
 
-        self.resolve_document_hits(hits)
+        self.resolve_document_hits(hits, None)
     }
 
     pub fn search_document_results_all_fields_top_k(
@@ -322,7 +323,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         });
         top_hits.truncate(k);
 
-        let hits = self.resolve_document_hits(top_hits)?;
+        let hits = self.resolve_document_hits(top_hits, None)?;
 
         Ok(SearchDocumentResults { total_hits, hits })
     }
@@ -330,6 +331,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_hits_plan_top_k(
         &mut self,
         plan: &QueryPlan,
+        return_fields: Option<&IndexMap<String, bool>>,
         k: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
@@ -338,12 +340,13 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
         let hits = executor.search_plan_all_xpaths_top_k(plan, xpaths, k);
 
-        self.resolve_document_hits(hits)
+        self.resolve_document_hits(hits, return_fields)
     }
 
     fn resolve_document_hits(
         &mut self,
         hits: Vec<SearchHit>,
+        return_fields: Option<&IndexMap<String, bool>>,
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let mut results = Vec::new();
 
@@ -353,7 +356,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     external_id: doc.external_id.clone(),
                     internal_id: doc.internal_id,
                     score: hit.score,
-                    fields: visible_fields(&doc, &self.policy),
+                    fields: visible_fields(&doc, &self.policy, return_fields),
                 });
             }
         }
@@ -475,15 +478,41 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
     indexed
 }
 
-fn visible_fields(doc: &StoredDocument, policy: &IndexPolicy) -> BTreeMap<String, String> {
+fn visible_fields(
+    doc: &StoredDocument,
+    policy: &IndexPolicy,
+    resolved: Option<&IndexMap<String, bool>>,
+) -> BTreeMap<String, String> {
+    doc.fields
+        .iter()
+        .filter(|(path, _)| should_include(path, policy, resolved))
+        .map(|(path, value)| (path.clone(), value.clone()))
+        .collect()
+}
+
+fn should_include(
+    path: &str,
+    policy: &IndexPolicy,
+    resolved: Option<&IndexMap<String, bool>>,
+) -> bool {
+    if let Some(rf) = resolved {
+        let mut candidate = path;
+        loop {
+            if let Some(&include) = rf.get(candidate) {
+                return include;
+            }
+            match candidate.rfind('/') {
+                Some(idx) => candidate = &candidate[..idx],
+                None => break,
+            }
+        }
+    }
+
+    let top_level = path.split('/').next().unwrap_or(path);
     policy
         .fields
         .iter()
-        .filter(|field| field.stored)
-        .filter_map(|field| {
-            doc.fields
-                .get(&field.name)
-                .map(|value| (field.name.clone(), value.clone()))
-        })
-        .collect()
+        .find(|f| f.name == top_level)
+        .map(|f| f.stored)
+        .unwrap_or(false)
 }
