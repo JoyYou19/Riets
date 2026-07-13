@@ -12,7 +12,14 @@ impl UserStore {
     pub fn new() -> Self {
         Self { users: HashMap::new() }
     }
+}
 
+impl Default for UserStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl UserStore {
     pub fn add_user(&mut self, username: &str, password: &str, roles: Vec<String>) {
         let salt = SaltString::generate(&mut OsRng);
         let hashed = Argon2::default()

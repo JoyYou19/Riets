@@ -16,7 +16,7 @@ impl PolicyStore {
     pub fn grant(&mut self, role: impl Into<String>, permission: Permission) {
         self.role_permissions
             .entry(role.into())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(permission);
     }
 
