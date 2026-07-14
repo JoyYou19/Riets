@@ -1,10 +1,10 @@
 //INFO: under scripts we have ./movies now for funzies
 
-//TODO update/delete partial replace
+//partial replace
 //backup/restore
 //LOGS not just prints
-//setting prieks auth vai vispar?
 //reindex should return ok when started not wait the whole time
+
 use axum::{
     Router,
     middleware::from_fn_with_state,

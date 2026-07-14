@@ -1,66 +1,70 @@
-autoincrement + cutom field for id
-fix the delete/update/insert always returning 207
+# Corelamo — Roadmap
 
+## Reliability & Correctness
+- [ ] **Tests** — unit + integration coverage across handlers, storage, and index
+- [ ] **Replace `unwrap()` calls** — no panics on the request path; propagate errors properly
+- [ ] **Proper error responses** — stop collapsing everything into `CorelamoError::Internal`; map each failure to the right variant/status
+- [ ] **Request validation** — body size limits, field whitelisting, reject malformed input early
 
+## Observability
+- [ ] **Structured logging** — replace `println!` with `tracing`; capture latency, error rates, request counts
+- [ ] **Health & status checks** — richer `/status`, liveness/readiness endpoints
+- [ ] **Reindex progress** — return "started" immediately, expose progress; don't block the whole time
 
-## 2. **Error Handling & Consistency**
-- **Replace `unwrap()` calls** with proper error propagation (e.g., in `update_document_handler` line 183)
-- **Replace `println!` with structured logging** throughout the codebase
-- **Add proper error types** instead of wrapping everything in `io::Error` and `CorelamoError::Internal`
+## Search Features
+- [ ] **Pagination** — `limit` + `offset` on search
+- [ ] **Field-specific search / filters** — numeric search, per-field queries
+- [ ] **Offset support** — tie into pagination
 
-## 3. **Configuration System**
-- **Persist `DatabaseOptions` to disk** instead of always using `Default`
-- **Make `DatabaseOptions` configurable** via API endpoints (GET/PUT `/db/{name}/config`)
-- **Add validation** for configuration changes
+## Data Management
+- [ ] **Backup / restore** — full database snapshot + recovery
+- [ ] **Update/delete partial replace** — merge semantics, not full-document overwrite
+- [ ] **Database configuration persistence** — persist `DatabaseOptions` across restarts
+- [ ] **Config via API** — `GET`/`PUT /db/{name}/config` for `DatabaseOptions`
 
-## 4. **API Completeness**
-- **Add pagination** to search results (offset/limit)
-- **Add bulk operations** (batch delete, batch update)
-- **Add document validation** before insertion
-- **Add health check endpoint**
+## Performance
+- [ ] **Optimize HTTP → database path** — connection handling, reduce conversion overhead
 
-## 5. **Performance & Monitoring**
-- **Add proper metrics** (latency percentiles, throughput, error rates)
-- **Add query logging** for debugging
-- **Add connection pooling** if you plan to handle concurrent requests
-- **Add caching layer** for frequently accessed documents
+## Security & Access
+- [ ] **Rate limiting**
+- [ ] **HTTPS**
 
-## 6. **Data Integrity**
-- **Add transaction support** for multi-document operations
-- **Add backup/restore functionality**
-- **Add data validation hooks** (e.g., schema validation before insert)
+## Distributed
+- [ ] **Clustering** :D
 
-## 7. **Index Improvements**
-- **Add index statistics** (term frequency, document frequency)
-- **Add index optimization** (merge small segments proactively)
-- **Add support for more query types** (phrase queries, fuzzy search, wildcards)
+Pa kodu sameetaatie
+### `handlers.rs`
+- **TODO** (line 103): `//TODO: total_hits: xxx kkadu`
+- **TODO** (line 131): `//TODO: cant really see the id if auto-increment :(`
+- **TODO** (line 165): `//TODO:  update error handling once the get_document gets updated`
+- **TODO** (line 190): `//TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json`
+- **TODO** (line 191): `//TODO: multi-threaded parsing to DocInput`
+- **TODO** (line 233): `//TODO: valtera update has upsert capabilities, we could make another command for upsert document`
+- **FIX** (line 249): `//FIX: im not sure if this unwrap is entirely safe long term`
+- **TODO** (line 296): `//TODO: upate once stats gets updated with errors`
+- **TODO** (line 313): `//TODO:  update once reindex errors updated`
 
-## 8. **Documentation & Testing**
-- **Add integration tests** for all API endpoints
-- **Add benchmark suite** for performance regression testing
-- **Add API documentation** (OpenAPI/Swagger)
+### `http_response.rs`
+- **TODO** (line 36): `//TODO: start where xml detected`
+- **TODO** (line 37): `todo!();`
+- **TODO** (line 96): `//Format::XML => todo!(),`
+- **TODO** (line 155): `//Format::XML => todo!(),`
+- **TODO** (line 195): `//Format::XML => todo!(),`
 
-## 9. **Security** (Coordinate with your colleague)
-- **Add rate limiting**
-- **Add request validation** (size limits, field whitelisting)
-- **Add audit logging**
+### `main.rs`
+- **TODO** (line 1): `//INFO: under scripts we have ./movies now for funzies`
+- **TODO** (line 3): `//partial replace`
+- **TODO** (line 4): `//backup/restore`
+- **TODO** (line 5): `//LOGS not just prints`
+- **TODO** (line 6): `//reindex should return ok when started not wait the whole time`
+- **TODO** (line 47): `//TODO: maybe check if there are more possible signals`
+- **WARN** (line 155): `//WARN: is the db.shutdown a safe thing to do yet? meaning like while`
+- **WARN** (line 156): `//indexing/merging/compacting, if shutdown is it safe?`
+- **TODO** (line 162): `//TODO: we might have extra stuff to do here later, for now i cant think of anything else`
 
-## Quick Wins (1-2 days each):
-1. Fix the update bug
-2. Replace `unwrap()` calls
-3. Add pagination to search
-4. Add health check endpoint
-5. Add proper error responses (not just `Internal` for everything)
-
-## Medium Term (1-2 weeks):
-1. Configuration persistence
-2. Metrics & monitoring
-3. Integration tests
-4. Backup/restore
-
-## Long Term:
-1. Clustering (your colleague's work)
-2. Advanced query features
-3. Transaction support
-4. Schema validation
+### `middleware.rs`
+- **WARN** (line 17): `//WARN: hardcodes json here, fix when json done`
+- **TODO** (line 18): `//TODO: start where xml detected`
+- **TODO** (line 19): `todo!();`
+- **TODO** (line 47): `//TODO: auth/https before request (check permissions....)`
 

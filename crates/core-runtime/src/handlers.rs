@@ -210,7 +210,7 @@ pub async fn retrieve_handler(
 }
 
 //TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json
-//TODO: multi-threaded parsing to DocInput
+//TODO: multi-threaded parsing JSON -> DocInput
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -233,7 +233,6 @@ pub async fn insert_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    // storage assigns auto-increment ids, skips duplicates, and reports both back
     let report = match db.put_documents_parallel(input_docs) {
         Ok(r) => r,
         Err(e) => {
@@ -316,7 +315,6 @@ pub async fn delete_document_handler(
 }
 
 //TODO: valtera update has upsert capabilities, we could make another command for upsert document
-//too imagine
 pub async fn update_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -344,11 +342,18 @@ pub async fn update_document_handler(
 
     for doc in input_docs {
         match db.get_document(&doc.external_id) {
-            Ok(Some(_)) => {
-                updated_count += 1;
-                //FIX: im not sure if this unwrap is entirely safe long term
-                db.update_document(doc).unwrap();
-            }
+            Ok(Some(_)) => match db.update_document(doc) {
+                Ok(_) => {
+                    updated_count += 1;
+                }
+                Err(e) => {
+                    return HttpError::from_corelamo(
+                        CorelamoError::Internal(format!("existence check failed: {e}")),
+                        &ctx,
+                    )
+                    .into_response();
+                }
+            },
             Ok(None) => not_found.push(doc.external_id),
             Err(e) => {
                 return HttpError::from_corelamo(

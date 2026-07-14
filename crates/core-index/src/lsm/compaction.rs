@@ -1,7 +1,9 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
-    posting::{ops::union, DeleteSet, PostingList},
+    posting::{DeleteSet, PostingList, ops::union},
     segment::{ImmutableSegment, SegmentHandle},
     types::{DocId, FieldStats, TermKey, XPathId},
 };
@@ -56,7 +58,7 @@ fn build_field_stats(
     stats
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CompactionConfig {
     pub max_segments_per_compaction: usize,
     pub compact_when_segments_at_least: usize,
