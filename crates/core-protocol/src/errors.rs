@@ -42,6 +42,7 @@ impl CorelamoError {
             CorelamoError::PermissionDenied(_) => "permission_denied",
             CorelamoError::UnsupportedFormat(_) => "unsupported_format",
             CorelamoError::Conflict(_) => "conflict",
+            
         }
     }
 
