@@ -13,11 +13,11 @@ use axum::{
 use core_core::{
     CorelamoDatabase,
     command_reponse_definitions::{
-        Command, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        Command, DeleteCommand, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
     },
 };
 use core_protocol::errors::CorelamoError;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{
     AppState,
@@ -218,27 +218,20 @@ pub async fn insert_handler(
         .into_response();
     }
 
-    let inserted_ids: Vec<String> = to_insert.iter().map(|d| d.external_id.clone()).collect();
-
     match db.put_documents_parallel(to_insert) {
         Ok(_) => {
-            let mut outcome = BatchOutcome::new();
-            for id in inserted_ids {
-                outcome.succeed(id, 201, "Inserted");
-            }
+            let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
+            outcome.succeed_many(inserted_count as u32);
             for id in duplicate_ids {
                 outcome.fail(id, 409, "DUPLICATE ID");
             }
-            let title = format!(
-                "inserted {inserted_count}, skipped {} in '{db_name}'",
-                outcome.failed_count()
-            );
+            let title = format!("inserted {inserted_count} into '{db_name}'");
             outcome
-                .into_ok(StatusCode::OK, title, &db_name, &ctx)
+                .into_ok(StatusCode::CREATED, title, &db_name, &ctx)
                 .into_response()
         }
         Err(e) => HttpError::from_corelamo(
-            CorelamoError::Internal("Insert failed for some reason".to_string()),
+            CorelamoError::Internal(format!("Insert failed for some reason: {e}")),
             &ctx,
         )
         .into_response(),
@@ -256,13 +249,55 @@ pub async fn delete_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    HttpError::from_corelamo(
-        CorelamoError::NotFound("delete not implemented".to_string()),
-        &ctx,
-    )
-    .into_response()
+    let command = match DeleteCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
+
+    for id in command.ids {
+        match db.get_document(&id) {
+            Ok(Some(_)) => match db.delete_document(&id) {
+                Ok(_) => outcome.succeed(),
+                Err(e) => {
+                    return HttpError::from_corelamo(
+                        CorelamoError::Internal(format!("failed to delete '{id}': {e}")),
+                        &ctx,
+                    )
+                    .into_response();
+                }
+            },
+            Ok(None) => outcome.fail(id, 404, "NOT FOUND"),
+            Err(e) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal(format!("failed to lookup '{id}': {e}")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    }
+
+    let title = format!(
+        "deleted {} document(s) from '{db_name}', {} not found",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
+//TODO: valtera update has upsert capabilities, we could make another command for upsert document
+//too imagine
 pub async fn update_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -285,12 +320,16 @@ pub async fn update_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut to_update = Vec::new();
     let mut not_found = Vec::new();
+    let mut updated_count = 0;
 
     for doc in input_docs {
         match db.get_document(&doc.external_id) {
-            Ok(Some(_)) => to_update.push(doc),
+            Ok(Some(_)) => {
+                updated_count += 1;
+                //FIX: im not sure if this unwrap is entirely safe long term
+                db.update_document(doc).unwrap();
+            }
             Ok(None) => not_found.push(doc.external_id),
             Err(e) => {
                 return HttpError::from_corelamo(
@@ -302,64 +341,15 @@ pub async fn update_document_handler(
         }
     }
 
-    let updated_count = to_update.len();
-    if to_update.is_empty() {
-        return HttpError::from_corelamo(
-            CorelamoError::NotFound("no matching document ID(s) to update".to_string()),
-            &ctx,
-        )
-        .into_response();
+    let mut outcome = BatchOutcome::new("updated", StatusCode::NOT_FOUND);
+    outcome.succeed_many(updated_count as u32);
+    for id in not_found {
+        outcome.fail(id, 404, "NOT FOUND");
     }
-
-    let updated_ids: Vec<String> = to_update.iter().map(|d| d.external_id.clone()).collect();
-
-    for doc in to_update {
-        let id = doc.external_id.clone();
-        if let Err(e) = db.update_document(doc) {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("failed to update '{id}': {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    }
-
-    if not_found.is_empty() {
-        HttpOk::with_data_and_status(
-            StatusCode::OK,
-            format!("updated {updated_count} document(s) in '{db_name}'"),
-            json!({
-                "updated": updated_count,
-                "database": db_name,
-            }),
-            &ctx,
-        )
+    let title = format!("updated {updated_count} in '{db_name}'");
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
-    } else {
-        let results: Vec<Value> = updated_ids
-            .iter()
-            .map(|id| json!({ "id": id, "status": 200, "result": "Updated" }))
-            .chain(
-                not_found
-                    .iter()
-                    .map(|id| json!({ "id": id, "status": 404, "result": "NOT FOUND" })),
-            )
-            .collect();
-
-        HttpOk::with_data_and_status(
-            StatusCode::MULTI_STATUS,
-            format!(
-                "updated {updated_count}, {} not found in '{db_name}'",
-                not_found.len()
-            ),
-            json!({
-                "database": db_name,
-                "results": results,
-            }),
-            &ctx,
-        )
-        .into_response()
-    }
 }
 
 pub async fn create_database_handler(
@@ -384,7 +374,6 @@ pub async fn create_database_handler(
     }
 }
 
-//TODO: to batch message uztaisit smuku + lai strada
 pub async fn delete_detabase_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

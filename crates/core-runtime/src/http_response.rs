@@ -281,34 +281,76 @@ impl IntoResponse for HttpOk {
     }
 }
 
-//This is meant for insert/delete/update where some documents can succeed and others not
+struct BatchFailure {
+    id: String,
+    status: u16,
+    label: &'static str,
+}
+
 pub struct BatchOutcome {
-    succeeded: Vec<(String, u16, &'static str)>, // (id, status, label)
-    failed: Vec<(String, u16, &'static str)>,
+    success_label: &'static str,
+    all_failed_status: StatusCode,
+    succeeded: u32,
+    failures: Vec<BatchFailure>,
 }
 
 impl BatchOutcome {
-    pub fn new() -> Self {
+    pub fn new(success_label: &'static str, all_failed_status: StatusCode) -> Self {
         Self {
-            succeeded: Vec::new(),
-            failed: Vec::new(),
+            success_label,
+            all_failed_status,
+            succeeded: 0,
+            failures: Vec::new(),
         }
     }
 
-    pub fn succeed(&mut self, id: impl Into<String>, status: u16, label: &'static str) {
-        self.succeeded.push((id.into(), status, label));
+    pub fn succeed(&mut self) {
+        self.succeeded += 1;
+    }
+
+    pub fn succeed_many(&mut self, n: u32) {
+        self.succeeded += n;
     }
 
     pub fn fail(&mut self, id: impl Into<String>, status: u16, label: &'static str) {
-        self.failed.push((id.into(), status, label));
+        self.failures.push(BatchFailure {
+            id: id.into(),
+            status,
+            label,
+        });
     }
 
-    pub fn succeeded_count(&self) -> usize {
-        self.succeeded.len()
+    pub fn succeeded_count(&self) -> u32 {
+        self.succeeded
     }
 
     pub fn failed_count(&self) -> usize {
-        self.failed.len()
+        self.failures.len()
+    }
+
+    pub fn has_failures(&self) -> bool {
+        !self.failures.is_empty()
+    }
+
+    fn to_value(&self, db_name: &str) -> Value {
+        let mut obj = Map::new();
+        obj.insert(self.success_label.to_string(), Value::from(self.succeeded));
+        obj.insert("database".to_string(), Value::String(db_name.to_string()));
+
+        if !self.failures.is_empty() {
+            obj.insert(
+                "failed".to_string(),
+                Value::from(self.failures.len() as u64),
+            );
+            let results: Vec<Value> = self
+                .failures
+                .iter()
+                .map(|f| json!({ "id": f.id, "status": f.status, "result": f.label }))
+                .collect();
+            obj.insert("results".to_string(), Value::Array(results));
+        }
+
+        Value::Object(obj)
     }
 
     pub fn into_ok(
@@ -318,30 +360,14 @@ impl BatchOutcome {
         db_name: &str,
         ctx: &RequestContext,
     ) -> HttpOk {
-        if self.failed.is_empty() {
-            HttpOk::with_data_and_status(
-                clean_status,
-                title,
-                json!({
-                    "succeeded": self.succeeded.len(),
-                    "database": db_name,
-                }),
-                ctx,
-            )
+        let status = if !self.has_failures() {
+            clean_status
+        } else if self.succeeded == 0 {
+            self.all_failed_status
         } else {
-            let results: Vec<Value> = self
-                .succeeded
-                .iter()
-                .chain(self.failed.iter())
-                .map(|(id, status, label)| json!({ "id": id, "status": status, "result": label }))
-                .collect();
-
-            HttpOk::with_data_and_status(
-                StatusCode::MULTI_STATUS,
-                title,
-                json!({ "database": db_name, "results": results }),
-                ctx,
-            )
-        }
+            StatusCode::MULTI_STATUS
+        };
+        let body = self.to_value(db_name);
+        HttpOk::with_data_and_status(status, title, body, ctx)
     }
 }

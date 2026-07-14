@@ -129,3 +129,20 @@ impl ResponseData for RetrieveResponse {
     //     todo!();
     // }
 }
+
+#[derive(Debug)]
+pub struct DeleteCommand {
+    pub ids: Vec<String>,
+}
+
+impl Command for DeleteCommand {
+    fn from_json(body: &str) -> Result<Self, CorelamoError> {
+        let ids: Vec<String> = serde_json::from_str(body)
+            .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
+        Ok(DeleteCommand { ids })
+    }
+
+    // fn from_xml(body: &str) -> Result<Self, CorelamoError> {
+    //     todo!();
+    // }
+}

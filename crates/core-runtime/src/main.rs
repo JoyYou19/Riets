@@ -5,6 +5,7 @@
 //HTTPS auth clustering lmao
 //LOGS not just prints
 //and all //TODO ive written
+//reindex should return ok when started not wait the whole time
 //TODO --debug mode
 
 use axum::{
