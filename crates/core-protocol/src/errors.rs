@@ -23,6 +23,9 @@ pub enum CorelamoError {
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 
+    #[error("unknown role:{0}")]
+    UnknownRole(String),
+
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 
@@ -42,6 +45,7 @@ impl CorelamoError {
             CorelamoError::PermissionDenied(_) => "permission_denied",
             CorelamoError::UnsupportedFormat(_) => "unsupported_format",
             CorelamoError::Conflict(_) => "conflict",
+            CorelamoError::UnknownRole(_) => "unknown_role",
             
         }
     }
@@ -56,6 +60,7 @@ impl CorelamoError {
             CorelamoError::PermissionDenied(_) => "Permission Denied",
             CorelamoError::UnsupportedFormat(_) => "Unsupported Format",
             CorelamoError::Conflict(_) => "Conflict",
+            CorelamoError::UnknownRole(_) => "Role Error"
         }
     }
 
@@ -68,7 +73,8 @@ impl CorelamoError {
             | CorelamoError::Unauthorized(msg)
             | CorelamoError::PermissionDenied(msg)
             | CorelamoError::UnsupportedFormat(msg)
-            | CorelamoError::Conflict(msg) => msg.clone(),
+            | CorelamoError::Conflict(msg)
+            | CorelamoError::UnknownRole(msg) =>msg.clone(),
         }
     }
 }
