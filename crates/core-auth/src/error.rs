@@ -1,6 +1,7 @@
 #[derive(Debug)]
 pub enum AuthError {
     PermissionDenied { user: String, permission: String },
+    InvalidCredentials,
     UnknownRole(String),
 }
 
@@ -11,6 +12,8 @@ impl std::fmt::Display for AuthError {
                 write!(f, "user '{}' lacks permission '{}'", user, permission)
             }
             AuthError::UnknownRole(role) => write!(f, "unknown role '{}'", role),
+            AuthError::InvalidCredentials=>write!(f,"invalid username or password"),
+            
         }
     }
 }

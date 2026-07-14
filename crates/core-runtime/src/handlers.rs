@@ -91,7 +91,7 @@ pub async fn login_handler(
             HttpOk::with_response("Login succesful".to_string(), resp, &ctx).into_response()
         }
         None => HttpError::from_corelamo(
-            CorelamoError::Internal("Invalid username or password".to_string()),
+            CorelamoError::Unauthorized("Invalid username or password".to_string()),
             &ctx,
         )
         .into_response(),
