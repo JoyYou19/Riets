@@ -396,6 +396,7 @@ name = "core-auth"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "core-protocol",
  "hex",
  "rand 0.8.7",
  "sha2",

@@ -54,8 +54,10 @@ impl From<CorelamoError> for std::io::Error {
             CorelamoError::PermissionDenied(msg) => Error::new(ErrorKind::PermissionDenied, msg),
             CorelamoError::UnsupportedFormat(msg) => Error::new(ErrorKind::InvalidData, msg),
             CorelamoError::Conflict(msg)
+            |CorelamoError::UnknownRole(msg)
             | CorelamoError::Unauthorized(msg)
             | CorelamoError::Internal(msg) => Error::other(msg),
+           
         }
     }
 }

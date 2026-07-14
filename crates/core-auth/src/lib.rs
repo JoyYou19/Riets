@@ -7,6 +7,7 @@ mod token;
 mod users;
 
 pub use bootstrap::default_auth_service;
+use core_protocol::errors::CorelamoError;
 pub use error::AuthError;
 pub use permission::Permission;
 pub use principal::{Principal, UserId};
@@ -37,7 +38,11 @@ impl AuthService {
         self.tokens.resolve(token)
     }
 
-    pub fn check(&self, principal: &Principal, permission: Permission) -> Result<(), AuthError> {
+    pub fn check(
+        &self,
+        principal: &Principal,
+        permission: Permission,
+    ) -> Result<(), CorelamoError> {
         let allowed = principal
             .roles
             .iter()
@@ -46,10 +51,10 @@ impl AuthService {
         if allowed {
             Ok(())
         } else {
-            Err(AuthError::PermissionDenied {
-                user: principal.id.0.clone(),
-                permission: format!("{:?}", permission),
-            })
+            Err(CorelamoError::PermissionDenied(format!(
+                "user '{}' lacks permission '{:?}'",
+                principal.id.0, permission
+            )))
         }
     }
 }

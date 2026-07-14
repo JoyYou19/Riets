@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+core-protocol={path = "../core-protocol"}
 argon2="0.5"
 rand="0.8"
 sha2="0.10"

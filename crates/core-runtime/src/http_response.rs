@@ -56,6 +56,7 @@ fn error_to_status(err: &CorelamoError) -> StatusCode {
         CorelamoError::PermissionDenied(_) => StatusCode::INTERNAL_SERVER_ERROR,
         CorelamoError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         CorelamoError::UnsupportedFormat(_) => StatusCode::NOT_ACCEPTABLE,
+        CorelamoError::UnknownRole(_) => StatusCode::NOT_FOUND,
     }
 }
 
