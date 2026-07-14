@@ -16,7 +16,7 @@ use core_query::{
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
-    search_database::{DocumentInput, SearchDatabase, SearchDocumentHit},
+    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
 };
 
 use indexmap::IndexMap;
@@ -82,15 +82,19 @@ impl CorelamoDatabase {
         })
     }
 
-    pub fn put_documents_parallel(&mut self, inputs: Vec<DocumentInput>) -> io::Result<()> {
+    pub fn put_documents_parallel(
+        &mut self,
+        inputs: Vec<DocumentInput>,
+    ) -> io::Result<InsertReport> {
         let started = std::time::Instant::now();
         let count = inputs.len();
         let batch_size = self.options.runtime.indexing_batch_size;
 
         let result = (|| {
             let db = self.db_mut()?;
-            db.put_documents_parallel(inputs, batch_size)?;
-            db.flush()
+            let report = db.put_documents_parallel(inputs, batch_size)?;
+            db.flush()?;
+            Ok(report)
         })();
 
         let elapsed = started.elapsed();
@@ -176,6 +180,16 @@ impl CorelamoDatabase {
     //     })
     // }
     //
+
+    pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
+        self.db_mut()?.delete_document(external_id)
+    }
+
+    //WARN: es atradu un ieliku, sorix valc ja nepareizi
+    pub fn update_document(&mut self, input: DocumentInput) -> io::Result<()> {
+        self.db_mut()?
+            .update_document(input, IndexMode::StoreAndIndex)
+    }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         self.db_mut()?.get_document(external_id)

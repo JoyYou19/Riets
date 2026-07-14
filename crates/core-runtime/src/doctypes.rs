@@ -1,4 +1,4 @@
-use core_index::document::IndexPolicy;
+use core_index::document::{IndexPolicy, policy::IndexKind};
 use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::{
     document_store::{ExternalDocId, StoredDocument},
@@ -8,46 +8,73 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub trait DocumentConversion {
-    fn into_document_inputs(self) -> Result<Vec<DocumentInput>, CorelamoError>;
+    fn into_document_inputs(
+        self,
+        policy: &IndexPolicy,
+    ) -> Result<Vec<DocumentInput>, CorelamoError>;
 }
 
 pub struct Json<'a>(pub &'a str);
 
 //pub struct Xml<'a>(pub &'a str);
 
-pub fn parse_documents(body: &str, format: Format) -> Result<Vec<DocumentInput>, CorelamoError> {
+pub fn parse_documents(
+    body: &str,
+    format: Format,
+    policy: &IndexPolicy,
+) -> Result<Vec<DocumentInput>, CorelamoError> {
     match format {
-        Format::JSON => Json(body).into_document_inputs(),
-        Format::XML => todo!(), //Xml(body).into_document_inputs(),
+        Format::JSON => Json(body).into_document_inputs(policy),
+        //Format::XML => todo!(), //Xml(body).into_document_inputs(policy),
     }
 }
 
-// TODO: make id path configurable per-database via policy
-// HACK: hardcoded "id" field
-fn extract_external_id(fields: &BTreeMap<String, String>) -> Result<String, CorelamoError> {
-    fields
-        .get("id")
-        .cloned()
-        .ok_or_else(|| CorelamoError::InvalidData("missing 'id' field in document".to_string()))
+//INFO: a little porno to tell if we found the id and if not then if its auto
+fn extract_external_id(
+    fields: &BTreeMap<String, String>,
+    policy: &IndexPolicy,
+) -> Result<String, CorelamoError> {
+    let Some(id_field) = policy.id_field() else {
+        return Err(CorelamoError::InvalidData(
+            "policy has no id field declared".to_string(),
+        ));
+    };
+    match fields.get(&id_field.name) {
+        Some(v) if !v.is_empty() => Ok(v.clone()),
+        _ if id_field.index == IndexKind::IdAutoIncrement => Ok(String::new()),
+        _ => Err(CorelamoError::InvalidData(format!(
+            "missing '{}' field in document (auto_increment is off)",
+            id_field.name
+        ))),
+    }
 }
 
 impl<'a> DocumentConversion for Json<'a> {
-    fn into_document_inputs(self) -> Result<Vec<DocumentInput>, CorelamoError> {
+    fn into_document_inputs(
+        self,
+        policy: &IndexPolicy,
+    ) -> Result<Vec<DocumentInput>, CorelamoError> {
         let value: Value = serde_json::from_str(self.0).map_err(CorelamoError::from)?;
         match value {
-            Value::Array(arr) => arr.into_iter().map(json_value_to_document_input).collect(),
-            single => Ok(vec![json_value_to_document_input(single)?]),
+            Value::Array(arr) => arr
+                .into_iter()
+                .map(|v| json_value_to_document_input(v, policy))
+                .collect(),
+            single => Ok(vec![json_value_to_document_input(single, policy)?]),
         }
     }
 }
 
-fn json_value_to_document_input(value: Value) -> Result<DocumentInput, CorelamoError> {
+fn json_value_to_document_input(
+    value: Value,
+    policy: &IndexPolicy,
+) -> Result<DocumentInput, CorelamoError> {
     let source = serde_json::to_vec(&value).map_err(CorelamoError::from)?;
 
     let mut fields = BTreeMap::new();
     traverse_json(&value, "", &mut fields);
 
-    let external_id = extract_external_id(&fields)?;
+    let external_id = extract_external_id(&fields, policy)?;
 
     Ok(DocumentInput {
         external_id,
@@ -70,8 +97,7 @@ fn traverse_json(value: &Value, path: &str, fields: &mut BTreeMap<String, String
             }
         }
         Value::Array(arr) => {
-            // TODO: figure out best way to handle arrays, for now separate with " " same for xml
-            // repeated tags
+            // TODO: figure out best way to handle arrays, for now separate with " "
             let joined = arr
                 .iter()
                 .map(value_to_string)
