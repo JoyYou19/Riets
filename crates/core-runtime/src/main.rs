@@ -2,10 +2,9 @@
 
 //TODO update/delete partial replace
 //backup/restore
-//HTTPS auth clustering lmao
 //LOGS not just prints
-//and all //TODO ive written
-
+//setting prieks auth vai vispar?
+//reindex should return ok when started not wait the whole time
 use axum::{
     Router,
     middleware::from_fn_with_state,
@@ -114,6 +113,7 @@ async fn main() -> io::Result<()> {
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
     let default_format_str = corelamo_settings::get(&settings, "format");
+    let enable_auth = corelamo_settings::get(&settings, "auth") != "false";
     let default_format = Format::JSON;
     // Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
     //     eprintln!("error: invalid 'format' in config/cli: {e}");
@@ -124,6 +124,7 @@ async fn main() -> io::Result<()> {
     println!("name: {name}");
     println!("host: {host}");
     println!("port: {port}");
+    println!("auth: {enable_auth}");
     println!("default format: {default_format_str}");
 
     let databases_dir = root_path.join("databases");
@@ -198,11 +199,18 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/policy",
             post(handlers::set_policy_handler),
-        )
-        .layer(from_fn_with_state(
+        );
+
+    let protected_routes = if enable_auth {
+        protected_routes.layer(from_fn_with_state(
             state.clone(),
             middleware::auth_middleware,
-        ));
+        ))
+    } else {
+        println!("auth DISABLED — all routes are public!");
+        protected_routes
+    };
+
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)

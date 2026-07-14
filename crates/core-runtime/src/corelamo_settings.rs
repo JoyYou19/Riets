@@ -7,6 +7,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("host", "0.0.0.0"),
     ("port", "6006"),
     ("format", "json"),
+    ("auth", "true"),
 ];
 
 pub const HELP: &str = "\
@@ -29,6 +30,9 @@ OPTIONS:
 
     --format <format>     Default format for requests, responses and documents (json)
                           [default: json]
+
+    --auth <toggle>       Enable/Disabe any form of auth  
+                          [default: true]
 
     NOTE: config file takes priority over CLI args if it exists
 
