@@ -14,8 +14,6 @@ pub enum Permission {
     GetPolicy,
     PostPolicy,
     ChangeID,
-
-
 }
 
 impl Permission {
@@ -33,7 +31,7 @@ impl Permission {
             "GetPolicy" =>Some(Permission::GetPolicy),
             "PostPolicy" => Some(Permission::PostPolicy),
             "ChangeID" => Some(Permission::ChangeID),
-
+            
             _ => None,
         }
     }

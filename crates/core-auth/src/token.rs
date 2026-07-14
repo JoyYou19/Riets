@@ -7,7 +7,7 @@ use rand::RngCore;
 use sha2::{Sha256,Digest};
 
 use crate::principal::Principal;
-
+//Can change to whatever
 const TOKEN_LIFETIME: Duration=Duration::from_secs(86400);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn issued_token_resolves_to_correct_principal() {
         let store = TokenStore::new();
-        let principal = Principal::new("alice").with_role("admin");
+        let principal = Principal::new("admin").with_role("admin");
 
         let token = store.issue(principal.clone());
         let resolved = store.resolve(&token);
