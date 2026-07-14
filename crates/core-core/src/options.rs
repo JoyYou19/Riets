@@ -10,6 +10,7 @@ pub struct DatabaseOptions {
     pub runtime: IndexRuntimeConfig,
     pub enable_background_compaction: bool,
     pub compaction_interval: Duration,
+    pub bootable: bool,
 }
 
 impl DatabaseOptions {
@@ -49,6 +50,7 @@ impl Default for DatabaseOptions {
             runtime: IndexRuntimeConfig::default(),
             enable_background_compaction: true,
             compaction_interval: Duration::from_secs(1),
+            bootable: false,
         }
     }
 }

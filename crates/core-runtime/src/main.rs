@@ -175,6 +175,7 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/delete",
             delete(handlers::delete_document_handler),
         )
+        //create start stop delete database
         .route(
             "/api/databases/{db_name}/create-database",
             post(handlers::create_database_handler),
@@ -182,6 +183,14 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/delete-database",
             delete(handlers::delete_detabase_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/start-database",
+            post(handlers::start_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/stop-database",
+            post(handlers::stop_database_handler),
         )
         .route("/api/databases", get(handlers::list_databases_handler))
         .route(

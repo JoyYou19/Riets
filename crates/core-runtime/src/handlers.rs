@@ -11,7 +11,7 @@ use axum::{
 };
 
 use core_core::{
-    CorelamoDatabase,
+    CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
         Command, DeleteCommand, LoginResponse, RetrieveCommand, RetrieveResponse, SearchCommand,
         SearchResponse,
@@ -21,9 +21,7 @@ use core_protocol::errors::CorelamoError;
 use serde_json::json;
 
 use crate::{
-    AppState,
-    database_helpers::{self},
-    doctypes,
+    AppState, doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
@@ -381,19 +379,72 @@ pub async fn create_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases_read = state.databases.read().unwrap();
-    match database_helpers::create_database(db_name.clone(), &state.databases_dir, &databases_read)
-    {
-        Ok(db) => {
-            drop(databases_read);
-            state.databases.write().unwrap().insert(db_name.clone(), db);
-            HttpOk::with_status(
-                StatusCode::CREATED,
-                format!("database '{db_name}' created"),
-                &ctx,
-            )
-            .into_response()
-        }
+    let mut databases = state.databases.write().unwrap();
+
+    if databases.contains_key(&db_name) {
+        return HttpError::from_corelamo(
+            CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let db_path = state.databases_dir.join(&db_name);
+    let db = match CorelamoDatabase::create(&db_path, DatabaseOptions::default()) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    databases.insert(db_name.clone(), db);
+
+    HttpOk::with_status(
+        StatusCode::CREATED,
+        format!("database '{db_name}' created"),
+        &ctx,
+    )
+    .into_response()
+}
+
+pub async fn start_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    if db.is_running() {
+        return HttpOk::new(format!("database '{db_name}' is already running"), &ctx)
+            .into_response();
+    }
+
+    match db.start() {
+        Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn stop_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    if !db.is_running() {
+        return HttpOk::new(format!("database '{db_name}' is already stopped"), &ctx)
+            .into_response();
+    }
+
+    match db.stop() {
+        Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -542,12 +593,16 @@ pub async fn list_databases_handler(
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let databases = state.databases.read().unwrap();
-    let names: Vec<&String> = databases.keys().collect();
-    let count = names.len();
+    let count = databases.len();
+
+    let entries: Vec<serde_json::Value> = databases
+        .iter()
+        .map(|(name, db)| json!({ "name": name, "running": db.is_running() }))
+        .collect();
 
     HttpOk::with_data(
-        format!("{count} database(s) loaded"),
-        json!({ "databases": names }),
+        format!("{count} database(s)"),
+        json!({ "databases": entries }),
         &ctx,
     )
     .into_response()
