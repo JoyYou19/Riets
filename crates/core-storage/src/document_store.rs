@@ -1,4 +1,4 @@
-use core_protocol::{errors::CorelamoError, format::Format};
+use core_protocol::format::Format;
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};

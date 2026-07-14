@@ -109,6 +109,7 @@ pub async fn search_handler(
     .into_response()
 }
 
+//TODO: cant really see the id if auto-increment :(
 pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -180,62 +181,39 @@ pub async fn insert_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let input_docs = match doctypes::parse_documents(&body, ctx.format) {
-        Ok(d) => d,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut to_insert = Vec::new();
-    let mut duplicate_ids = Vec::new();
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+        Ok(d) => d,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
 
-    for doc in input_docs {
-        match db.get_document(&doc.external_id) {
-            Ok(Some(_)) => duplicate_ids.push(doc.external_id),
-            Ok(None) => to_insert.push(doc),
-            Err(e) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal(format!("Duplicate key check failed: {e}")),
-                    &ctx,
-                )
-                .into_response();
-            }
+    // storage assigns auto-increment ids, skips duplicates, and reports both back
+    let report = match db.put_documents_parallel(input_docs) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("insert failed: {e}")),
+                &ctx,
+            )
+            .into_response();
         }
-    }
-    let inserted_count = to_insert.len();
+    };
 
-    if to_insert.is_empty() {
-        // Nothing to insert everything was a duplicate
-        return HttpError::from_corelamo(
-            CorelamoError::Conflict("Duplicate Primary ID(s)".to_string()),
-            &ctx,
-        )
-        .into_response();
+    let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
+    outcome.succeed_many(report.inserted);
+    for id in report.duplicates {
+        outcome.fail(id, 409, "DUPLICATE ID");
     }
 
-    match db.put_documents_parallel(to_insert) {
-        Ok(_) => {
-            let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
-            outcome.succeed_many(inserted_count as u32);
-            for id in duplicate_ids {
-                outcome.fail(id, 409, "DUPLICATE ID");
-            }
-            let title = format!("inserted {inserted_count} into '{db_name}'");
-            outcome
-                .into_ok(StatusCode::CREATED, title, &db_name, &ctx)
-                .into_response()
-        }
-        Err(e) => HttpError::from_corelamo(
-            CorelamoError::Internal(format!("Insert failed for some reason: {e}")),
-            &ctx,
-        )
-        .into_response(),
-    }
+    let title = format!("inserted {} into '{db_name}'", report.inserted);
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
 pub async fn delete_document_handler(
@@ -309,14 +287,14 @@ pub async fn update_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let input_docs = match doctypes::parse_documents(&body, ctx.format) {
-        Ok(d) => d,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
     let mut databases = state.databases.write().unwrap();
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+        Ok(d) => d,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
@@ -466,7 +444,8 @@ pub async fn reindex_handler(
     }
 }
 
-// policy is always TOML — sending raw since it shouldnt be encoded in json/xml
+// policy is always TOML
+// sending raw since it shouldnt be encoded in json/xml
 pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

@@ -11,6 +11,7 @@ use core_index::{
         snapshot::SharedIndexSnapshot,
     },
 };
+
 use core_protocol::format::Format;
 use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
 use indexmap::IndexMap;
@@ -28,6 +29,11 @@ pub struct SearchDatabase<S: DocumentStore> {
     analyzer: Analyzer,
     policy: IndexPolicy,
     next_internal_id: u64,
+}
+
+pub struct InsertReport {
+    pub inserted: u32,
+    pub duplicates: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -104,28 +110,35 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         inputs: Vec<DocumentInput>,
         batch_size: usize,
-    ) -> io::Result<()> {
-        for input in &inputs {
-            if let Some(_) = self.store.get(&input.external_id)? {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!("document '{}' already exists", input.external_id),
-                ));
-            }
-        }
+    ) -> io::Result<InsertReport> {
         use std::time::Instant;
-
         let total_started = Instant::now();
-
         let started = Instant::now();
 
         let mut stored_documents = Vec::with_capacity(inputs.len());
         let mut indexed_documents = Vec::with_capacity(inputs.len());
+        let mut duplicates = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for input in inputs {
+            let internal_id = self.allocate_internal_id();
+
+            // auto-increment external=internal, (auto=false + no id is handled in doctypes)
+            let external_id = if input.external_id.is_empty() {
+                internal_id.to_string()
+            } else {
+                input.external_id
+            };
+
+            //duplicate id check both for the already inserted + inside the current batch
+            if self.store.get(&external_id)?.is_some() || !seen.insert(external_id.clone()) {
+                duplicates.push(external_id);
+                continue;
+            }
+
             let doc = StoredDocument {
-                external_id: input.external_id,
-                internal_id: self.allocate_internal_id(),
+                external_id,
+                internal_id,
                 source: input.source,
                 fields: input.fields,
                 format: input.format,
@@ -135,18 +148,15 @@ impl<S: DocumentStore> SearchDatabase<S> {
             stored_documents.push(doc);
         }
 
+        let inserted = stored_documents.len() as u32;
         println!("document conversion took {:?}", started.elapsed());
 
         let started = Instant::now();
-
         self.store.put_batch(stored_documents)?;
-
         println!("document store batch write took {:?}", started.elapsed());
 
         let started = Instant::now();
-
         let batches = make_batches(indexed_documents, batch_size);
-
         println!(
             "batch splitting took {:?}, batches={}",
             started.elapsed(),
@@ -154,9 +164,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         );
 
         let started = Instant::now();
-
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
-
         println!(
             "parallel segment build took {:?}, segments={}",
             started.elapsed(),
@@ -164,11 +172,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
         );
 
         let started = Instant::now();
-
         for segment in segments {
             self.index_worker.add_segment_wait(segment)?;
         }
-
         println!("segment publish/write took {:?}", started.elapsed());
 
         println!(
@@ -176,7 +182,10 @@ impl<S: DocumentStore> SearchDatabase<S> {
             total_started.elapsed()
         );
 
-        Ok(())
+        Ok(InsertReport {
+            inserted,
+            duplicates,
+        })
     }
 
     pub fn put_document_store_only_return_indexed(
@@ -472,6 +481,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
     let mut indexed = IndexedDocument::new(doc.internal_id);
 
     for field in policy.indexed_fields() {
+        //TODO: we now have IndexKind::Id/IdAutoIncrement it should be searchable imo
         if field.index != IndexKind::Text {
             continue;
         }
@@ -521,6 +531,6 @@ fn should_include(
         .fields
         .iter()
         .find(|f| f.name == top_level)
-        .map(|f| f.stored)
+        .map(|f| f.list)
         .unwrap_or(false)
 }

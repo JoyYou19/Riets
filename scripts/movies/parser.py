@@ -33,7 +33,7 @@ def main():
 
     docs = []
     for i, movie in enumerate(movies, start=1):
-        doc = {"id": str(i)}
+        doc = {}
         for key, value in movie.items():
             doc[key] = flatten_value(value)
         docs.append(doc)
