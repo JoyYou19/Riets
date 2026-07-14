@@ -99,17 +99,15 @@ impl From<serde_json::Error> for CorelamoError {
     }
 }
 
-//there was like InvalidData(e.to_string)
-//but that shit like output-ed a million lines of text
 impl From<toml::de::Error> for CorelamoError {
-    fn from(_: toml::de::Error) -> Self {
-        CorelamoError::InvalidData("".to_string())
+    fn from(e: toml::de::Error) -> Self {
+        CorelamoError::InvalidData(e.message().to_string())
     }
 }
 
 impl From<toml::ser::Error> for CorelamoError {
-    fn from(_: toml::ser::Error) -> Self {
-        CorelamoError::Internal("".to_string())
+    fn from(e: toml::ser::Error) -> Self {
+        CorelamoError::Internal(e.to_string())
     }
 }
 

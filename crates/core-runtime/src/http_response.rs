@@ -1,12 +1,11 @@
 //INFO: response.rs is responsible for sending messages in a constant format with the help of
-//CommandResponse
 use axum::{
     body::Body,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use core_protocol::{errors::CorelamoError, format::Format};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::time::Instant;
 
 use uuid::Uuid;
@@ -126,8 +125,7 @@ impl IntoResponse for HttpError {
                     .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
                     .body(Body::from(body))
                     .unwrap()
-            }
-            Format::XML => todo!(),
+            } //Format::XML => todo!(),
         }
     }
 }
@@ -175,6 +173,24 @@ impl HttpOk {
         let value = serde_json::to_value(&data).unwrap_or(Value::Null);
         Self {
             status: StatusCode::OK,
+            title: title.into(),
+            data: Some(Box::new(JsonData(value))),
+            request_id: ctx.request_id,
+            instance: ctx.instance.clone(),
+            format: ctx.format,
+            time_start: ctx.time_start,
+        }
+    }
+
+    pub fn with_data_and_status<T: serde::Serialize>(
+        status: StatusCode,
+        title: impl Into<String>,
+        data: T,
+        ctx: &RequestContext,
+    ) -> Self {
+        let value = serde_json::to_value(&data).unwrap_or(Value::Null);
+        Self {
+            status,
             title: title.into(),
             data: Some(Box::new(JsonData(value))),
             request_id: ctx.request_id,
@@ -260,9 +276,98 @@ impl IntoResponse for HttpOk {
                     .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
                     .body(Body::from(body))
                     .unwrap()
-            }
-
-            Format::XML => todo!(),
+            } //Format::XML => todo!(),
         }
+    }
+}
+
+struct BatchFailure {
+    id: String,
+    status: u16,
+    label: &'static str,
+}
+
+pub struct BatchOutcome {
+    success_label: &'static str,
+    all_failed_status: StatusCode,
+    succeeded: u32,
+    failures: Vec<BatchFailure>,
+}
+
+impl BatchOutcome {
+    pub fn new(success_label: &'static str, all_failed_status: StatusCode) -> Self {
+        Self {
+            success_label,
+            all_failed_status,
+            succeeded: 0,
+            failures: Vec::new(),
+        }
+    }
+
+    pub fn succeed(&mut self) {
+        self.succeeded += 1;
+    }
+
+    pub fn succeed_many(&mut self, n: u32) {
+        self.succeeded += n;
+    }
+
+    pub fn fail(&mut self, id: impl Into<String>, status: u16, label: &'static str) {
+        self.failures.push(BatchFailure {
+            id: id.into(),
+            status,
+            label,
+        });
+    }
+
+    pub fn succeeded_count(&self) -> u32 {
+        self.succeeded
+    }
+
+    pub fn failed_count(&self) -> usize {
+        self.failures.len()
+    }
+
+    pub fn has_failures(&self) -> bool {
+        !self.failures.is_empty()
+    }
+
+    fn to_value(&self, db_name: &str) -> Value {
+        let mut obj = Map::new();
+        obj.insert(self.success_label.to_string(), Value::from(self.succeeded));
+        obj.insert("database".to_string(), Value::String(db_name.to_string()));
+
+        if !self.failures.is_empty() {
+            obj.insert(
+                "failed".to_string(),
+                Value::from(self.failures.len() as u64),
+            );
+            let results: Vec<Value> = self
+                .failures
+                .iter()
+                .map(|f| json!({ "id": f.id, "status": f.status, "result": f.label }))
+                .collect();
+            obj.insert("results".to_string(), Value::Array(results));
+        }
+
+        Value::Object(obj)
+    }
+
+    pub fn into_ok(
+        self,
+        clean_status: StatusCode,
+        title: impl Into<String>,
+        db_name: &str,
+        ctx: &RequestContext,
+    ) -> HttpOk {
+        let status = if !self.has_failures() {
+            clean_status
+        } else if self.succeeded == 0 {
+            self.all_failed_status
+        } else {
+            StatusCode::MULTI_STATUS
+        };
+        let body = self.to_value(db_name);
+        HttpOk::with_data_and_status(status, title, body, ctx)
     }
 }

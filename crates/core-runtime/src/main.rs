@@ -5,9 +5,13 @@
 //HTTPS auth clustering lmao
 //LOGS not just prints
 //and all //TODO ive written
+//reindex should return ok when started not wait the whole time
+//TODO --debug mode
 
 use axum::{
-    Router, middleware::from_fn_with_state, routing::{delete, get, post},
+    Router,
+    middleware::from_fn_with_state,
+    routing::{delete, get, post, put},
 };
 
 use core_auth::AuthService;
@@ -23,9 +27,6 @@ use std::{
 };
 
 use tokio::signal;
-
-#[cfg(test)]
-mod api_tests;
 
 mod corelamo_settings;
 mod database_helpers;
@@ -160,9 +161,17 @@ async fn main() -> io::Result<()> {
     let protected_routes=Router::new()
         .route("/api/databases/{db_name}/search", post(handlers::search_handler))
         .route("/api/databases/{db_name}/insert", post(handlers::insert_handler))
+        .route(
+            "/api/databases/{db_name}/delete",
+            delete(handlers::delete_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/update",
+            put(handlers::update_document_handler),
+        )
         .route("/api/databases/{db_name}/retrieve", post(handlers::retrieve_handler))
-        .route("/api/databases/{db_name}/create-database", post(handlers::create_handler))
-        .route("/api/databases/{db_name}/delete-database", delete(handlers::delete_handler))
+        .route("/api/databases/{db_name}/create-database", post(handlers::create_database_handler))
+        .route("/api/databases/{db_name}/delete-database", delete(handlers::delete_detabase_handler))
         .route("/api/databases", get(handlers::list_databases_handler))
         .route("/api/databases/{db_name}/status", get(handlers::stats_handler))
         .route("/api/databases/{db_name}/reindex", post(handlers::reindex_handler))

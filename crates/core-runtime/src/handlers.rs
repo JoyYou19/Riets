@@ -13,7 +13,7 @@ use axum::{
 use core_core::{
     CorelamoDatabase,
     command_reponse_definitions::{
-        Command, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, LoginResponse,
+        Command, DeleteCommand, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
     },
 };
 use core_protocol::errors::CorelamoError;
@@ -23,7 +23,7 @@ use crate::{
     AppState,
     database_helpers::{self},
     doctypes,
-    http_response::{HttpError, HttpOk},
+    http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
 //authorizations
@@ -118,6 +118,7 @@ pub async fn search_handler(
     .into_response()
 }
 
+//TODO: cant really see the id if auto-increment :(
 pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -176,6 +177,8 @@ pub async fn retrieve_handler(
     HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
+//TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json
+//TODO: multi-threaded parsing to DocInput
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -193,37 +196,150 @@ pub async fn insert_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let input_docs = match doctypes::parse_documents(&body, ctx.format) {
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
         Ok(d) => d,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    if input_docs.is_empty() {
-        return HttpError::from_corelamo(
-            CorelamoError::InvalidData("no valid documents found in request body".to_string()),
-            &ctx,
-        )
-        .into_response();
+    // storage assigns auto-increment ids, skips duplicates, and reports both back
+    let report = match db.put_documents_parallel(input_docs) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("insert failed: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
+    outcome.succeed_many(report.inserted);
+    for id in report.duplicates {
+        outcome.fail(id, 409, "DUPLICATE ID");
     }
 
-    //TODO: needs duplicate check!!!!
-    let doc_count = input_docs.len();
-    match db.put_documents_parallel(input_docs) {
-        Ok(_) => HttpOk::with_data(
-            format!("inserted {doc_count} document(s) into '{db_name}'"),
-            json!({ "inserted": doc_count, "database": db_name }),
-            &ctx,
-        )
-        .into_response(),
-        //TODO: update ones put_documents_parallel gets errors updated
-        Err(e) => {
-            HttpError::from_corelamo(CorelamoError::Internal(format!("insert failed: {e}")), &ctx)
-                .into_response()
-        }
-    }
+    let title = format!("inserted {} into '{db_name}'", report.inserted);
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
-pub async fn create_handler(
+pub async fn delete_document_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let command = match DeleteCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
+
+    for id in command.ids {
+        match db.get_document(&id) {
+            Ok(Some(_)) => match db.delete_document(&id) {
+                Ok(_) => outcome.succeed(),
+                Err(e) => {
+                    return HttpError::from_corelamo(
+                        CorelamoError::Internal(format!("failed to delete '{id}': {e}")),
+                        &ctx,
+                    )
+                    .into_response();
+                }
+            },
+            Ok(None) => outcome.fail(id, 404, "NOT FOUND"),
+            Err(e) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal(format!("failed to lookup '{id}': {e}")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    }
+
+    let title = format!(
+        "deleted {} document(s) from '{db_name}', {} not found",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
+//TODO: valtera update has upsert capabilities, we could make another command for upsert document
+//too imagine
+pub async fn update_document_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+        Ok(d) => d,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut not_found = Vec::new();
+    let mut updated_count = 0;
+
+    for doc in input_docs {
+        match db.get_document(&doc.external_id) {
+            Ok(Some(_)) => {
+                updated_count += 1;
+                //FIX: im not sure if this unwrap is entirely safe long term
+                db.update_document(doc).unwrap();
+            }
+            Ok(None) => not_found.push(doc.external_id),
+            Err(e) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal(format!("existence check failed: {e}")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    }
+
+    let mut outcome = BatchOutcome::new("updated", StatusCode::NOT_FOUND);
+    outcome.succeed_many(updated_count as u32);
+    for id in not_found {
+        outcome.fail(id, 404, "NOT FOUND");
+    }
+    let title = format!("updated {updated_count} in '{db_name}'");
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
+pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -244,7 +360,8 @@ pub async fn create_handler(
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
-pub async fn delete_handler(
+
+pub async fn delete_detabase_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -336,7 +453,8 @@ pub async fn reindex_handler(
     }
 }
 
-// policy is always TOML — sending raw since it shouldnt be encoded in json/xml
+// policy is always TOML
+// sending raw since it shouldnt be encoded in json/xml
 pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

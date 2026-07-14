@@ -16,7 +16,7 @@ pub trait Command: Sized {
     fn parse(body: &str, format: Format) -> Result<Self, CorelamoError> {
         match format {
             Format::JSON => Self::from_json(body),
-            Format::XML => todo!(), //Self::from_xml(body),
+            //Format::XML => todo!(), //Self::from_xml(body),
         }
     }
 }
@@ -130,11 +130,20 @@ impl ResponseData for RetrieveResponse {
     //     todo!();
     // }
 }
-pub struct LoginResponse{
-    pub token:String,
+
+#[derive(Debug)]
+pub struct DeleteCommand {
+    pub ids: Vec<String>,
 }
-impl ResponseData for LoginResponse{
-    fn to_json(&self) -> Result<Value, CorelamoError> {
-        Ok(json!({"token":self.token}))
+
+impl Command for DeleteCommand {
+    fn from_json(body: &str) -> Result<Self, CorelamoError> {
+        let ids: Vec<String> = serde_json::from_str(body)
+            .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
+        Ok(DeleteCommand { ids })
     }
+
+    // fn from_xml(body: &str) -> Result<Self, CorelamoError> {
+    //     todo!();
+    // }
 }

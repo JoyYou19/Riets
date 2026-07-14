@@ -1,5 +1,4 @@
 use std::{collections::HashMap, io, path::PathBuf, process};
-//
 //helper file to manage and easilly add corelamo settings
 
 pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
