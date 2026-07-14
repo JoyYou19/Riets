@@ -10,7 +10,7 @@ use axum::{
     Router, middleware::from_fn_with_state, routing::{delete, get, post},
 };
 
-use core_auth::{AuthService, Permission, PolicyStore, TokenStore, UserStore};
+use core_auth::AuthService;
 use core_core::CorelamoDatabase;
 use core_protocol::format::Format;
 
@@ -140,14 +140,7 @@ async fn main() -> io::Result<()> {
 
     println!("found and opened {} database(s)", databases.len());
     //Autorizacijas prikoli
-    let mut policy = PolicyStore::new();
-    policy.grant("admin", Permission::Read);
-    policy.grant("admin", Permission::Write);
-
-    let mut users = UserStore::new();
-    users.add_user("admin", "secret", vec!["admin".to_string()]);
-
-    let auth = Arc::new(AuthService::new(policy, TokenStore::new(), users));
+    let auth =Arc::new(core_auth::default_auth_service());
 
     let state = AppState {
         databases: Arc::new(RwLock::new(databases)),

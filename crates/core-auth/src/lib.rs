@@ -1,16 +1,18 @@
-mod identity;
+mod principal;
 mod permission;
-mod policy;
+mod roles;
 mod error;
 mod token;
-mod credentials;
+mod users;
+mod bootstrap;
 
-pub use identity::{Principal, UserId};
+pub use principal::{Principal, UserId};
 pub use permission::Permission;
-pub use policy::PolicyStore;
+pub use roles::PolicyStore;
 pub use error::AuthError;
 pub use token::{Token,TokenStore};
-pub use credentials::UserStore;
+pub use users::UserStore;
+pub use bootstrap::default_auth_service;
 
 pub struct AuthService {
     policy: PolicyStore,
@@ -22,6 +24,7 @@ impl AuthService {
     pub fn new(policy: PolicyStore,tokens:TokenStore, users:UserStore     ) -> Self {
         Self { policy, tokens, users }
     }
+
     pub fn login (&self, username: &str, password: &str) -> Option<Token>{
         let principal = self.users.verify(username, password)?;
         Some(self.tokens.issue(principal))

@@ -6,7 +6,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Sha256,Digest};
 
-use crate::identity::Principal;
+use crate::principal::Principal;
 
 const TOKEN_LIFETIME: Duration=Duration::from_secs(86400);
 
@@ -66,7 +66,7 @@ impl TokenStore{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::Principal;
+    use crate::principal::Principal;
 
     #[test]
     fn issued_token_resolves_to_correct_principal() {

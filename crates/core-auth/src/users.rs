@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use argon2::{Argon2, PasswordHasher, PasswordVerifier, PasswordHash};
 use argon2::password_hash::{SaltString, rand_core::OsRng};
 
-use crate::identity::Principal;
+use crate::principal::Principal;
 
 pub struct UserStore {
     users: HashMap<String, (String, Vec<String>)>, // username -> (hashed_password, roles)
