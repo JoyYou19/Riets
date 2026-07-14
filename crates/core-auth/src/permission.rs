@@ -14,8 +14,6 @@ pub enum Permission {
     GetPolicy,
     PostPolicy,
     ChangeID,
-
-
 }
 
 impl Permission {
