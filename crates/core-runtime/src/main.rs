@@ -5,8 +5,6 @@
 //HTTPS auth clustering lmao
 //LOGS not just prints
 //and all //TODO ive written
-//reindex should return ok when started not wait the whole time
-//TODO --debug mode
 
 use axum::{
     Router,
@@ -14,6 +12,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 
+use core_auth::AuthService;
 use core_core::CorelamoDatabase;
 use core_protocol::format::Format;
 
@@ -39,6 +38,7 @@ pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, CorelamoDatabase>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
+    pub auth: Arc<AuthService>,
 }
 
 //TODO: maybe check if there are more possible signals
@@ -138,16 +138,22 @@ async fn main() -> io::Result<()> {
     };
 
     println!("found and opened {} database(s)", databases.len());
+    //Autorizacijas prikoli
+    let auth = Arc::new(core_auth::default_auth_service());
 
     let state = AppState {
         databases: Arc::new(RwLock::new(databases)),
         databases_dir,
         default_format,
+        auth,
     };
 
     //this clone is ok since it just += 1 for Arc
     let state_for_shutdown = state.clone();
-    let app = Router::new()
+    //login
+    let public_routes = Router::new().route("/api/login", post(handlers::login_handler));
+    //pec login
+    let protected_routes = Router::new()
         .route(
             "/api/databases/{db_name}/search",
             post(handlers::search_handler),
@@ -157,16 +163,16 @@ async fn main() -> io::Result<()> {
             post(handlers::insert_handler),
         )
         .route(
-            "/api/databases/{db_name}/delete",
-            delete(handlers::delete_document_handler),
+            "/api/databases/{db_name}/retrieve",
+            post(handlers::retrieve_handler),
         )
         .route(
             "/api/databases/{db_name}/update",
             put(handlers::update_document_handler),
         )
         .route(
-            "/api/databases/{db_name}/retrieve",
-            post(handlers::retrieve_handler),
+            "/api/databases/{db_name}/delete",
+            delete(handlers::delete_document_handler),
         )
         .route(
             "/api/databases/{db_name}/create-database",
@@ -196,7 +202,10 @@ async fn main() -> io::Result<()> {
         .layer(from_fn_with_state(
             state.clone(),
             middleware::auth_middleware,
-        ))
+        ));
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
         .layer(from_fn_with_state(
             state.clone(),
             middleware::request_context_middleware,

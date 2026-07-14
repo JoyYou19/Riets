@@ -2,7 +2,7 @@
 use core_protocol::{errors::CorelamoError, format::Format};
 use indexmap::IndexMap;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 
 use crate::command_response_helpers::{FieldNode, tree_to_json, unflatten};
@@ -145,4 +145,13 @@ impl Command for DeleteCommand {
     // fn from_xml(body: &str) -> Result<Self, CorelamoError> {
     //     todo!();
     // }
+}
+
+pub struct LoginResponse {
+    pub token: String,
+}
+impl ResponseData for LoginResponse {
+    fn to_json(&self) -> Result<Value, CorelamoError> {
+        Ok(json!({"token":self.token}))
+    }
 }

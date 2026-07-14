@@ -8,7 +8,7 @@ members = [
   "crates/core-index",
   "crates/core-query",
   # "crates/core-parser",
-  # "crates/core-auth",
+  "crates/core-auth",
   # "crates/core-api",
   "crates/core-protocol",
   # "crates/core-cluster",
