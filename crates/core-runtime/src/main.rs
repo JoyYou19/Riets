@@ -170,8 +170,8 @@ async fn main() -> io::Result<()> {
             put(handlers::update_document_handler),
         )
         .route("/api/databases/{db_name}/retrieve", post(handlers::retrieve_handler))
-        .route("/api/databases/{db_name}/create-database", post(handlers::create_database_handler))
-        .route("/api/databases/{db_name}/delete-database", delete(handlers::delete_detabase_handler))
+        .route("/api/databases/{db_name}/create-database", post(handlers::create_handler))
+        .route("/api/databases/{db_name}/delete-database", delete(handlers::delete_handler))
         .route("/api/databases", get(handlers::list_databases_handler))
         .route("/api/databases/{db_name}/status", get(handlers::stats_handler))
         .route("/api/databases/{db_name}/reindex", post(handlers::reindex_handler))

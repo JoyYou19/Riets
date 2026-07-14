@@ -14,6 +14,7 @@ use core_core::{
     CorelamoDatabase,
     command_reponse_definitions::{
         Command, DeleteCommand, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        Command, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, LoginResponse,
     },
 };
 use core_protocol::errors::CorelamoError;
