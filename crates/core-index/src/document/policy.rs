@@ -1,4 +1,4 @@
-//TODO: Valters uztaisi ka var nested fields, paldies
+//TODO: Valters uztaisi ka var nested fields, luuuuuuuuuuuuuuudzu
 
 use std::{collections::HashSet, fs, io, path::Path};
 
@@ -26,12 +26,13 @@ impl WeightInterval {
 
 // Represents how we handle a single field inside of a file, for example for "title" we must have a
 // weight from x to y and it must be index=true etc.
+//TODO: the list would need to be some enum with yes/no/snippet right?
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldPolicy {
     pub name: String,
     pub xpath: XPathId,
     pub index: IndexKind,
-    pub stored: bool,
+    pub list: bool,
     pub weight: WeightInterval,
     pub stemming: Option<String>,
 }
@@ -66,6 +67,7 @@ impl IndexPolicy {
                 ));
             }
 
+            //TODO: id shouldnt neeed a weight right?
             if field.weight.min > field.weight.max {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -74,28 +76,65 @@ impl IndexPolicy {
             }
         }
 
+        //there must be only one field with id/id-auto
+        let id_count = self
+            .fields
+            .iter()
+            .filter(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAutoIncrement))
+            .count();
+        if id_count != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("policy must have exactly one id field, found {id_count}"),
+            ));
+        }
+
         Ok(())
     }
 
     pub fn default_document() -> Self {
         Self::new(vec![
             FieldPolicy {
-                name: "title".to_string(),
+                name: "id".to_string(),
                 xpath: 1,
+                weight: WeightInterval { min: 100, max: 100 },
+                index: IndexKind::Id,
+                list: true,
+                stemming: None,
+            },
+            FieldPolicy {
+                name: "title".to_string(),
+                xpath: 2,
                 weight: WeightInterval::TITLE,
                 index: IndexKind::Text,
-                stored: true,
+                list: true,
                 stemming: Some("english".to_string()),
             },
             FieldPolicy {
                 name: "body".to_string(),
-                xpath: 2,
+                xpath: 3,
                 weight: WeightInterval::TEXT,
                 index: IndexKind::Text,
-                stored: true,
+                list: true,
                 stemming: Some("english".to_string()),
             },
         ])
+    }
+
+    pub fn id_field(&self) -> Option<&FieldPolicy> {
+        self.fields
+            .iter()
+            .find(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAutoIncrement))
+    }
+
+    pub fn id_field_name(&self) -> Option<&str> {
+        self.id_field().map(|f| f.name.as_str())
+    }
+
+    pub fn is_auto_increment(&self) -> bool {
+        self.id_field()
+            .map(|f| f.index == IndexKind::IdAutoIncrement)
+            .unwrap_or(false)
     }
 
     pub fn indexed_fields(&self) -> impl Iterator<Item = &FieldPolicy> {
@@ -140,6 +179,8 @@ pub enum IndexKind {
     Text,
     Number,
     Date,
+    Id,
+    IdAutoIncrement,
 }
 
 pub enum MatchMode {

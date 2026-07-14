@@ -11,21 +11,21 @@ MAX_CHUNKS = 0  # 0 = send all
 
 POLICY = """\
 [[fields]]
-name     = "title"
-xpath    = 1
-index    = "Text"
-stored   = true
-stemming = "english"
+name = "title"
+xpath = 0
+index = "Id"
+list = true
 
 [fields.weight]
-min = 65
-max = 90
+min = 90
+max = 95
+
 
 [[fields]]
 name     = "year"
 xpath    = 2
 index    = "Text"
-stored   = true
+list   = true
 stemming = ""
 
 [fields.weight]
@@ -36,7 +36,7 @@ max = 50
 name     = "cast"
 xpath    = 3
 index    = "Text"
-stored   = true
+list   = true
 stemming = "english"
 
 [fields.weight]
@@ -47,7 +47,7 @@ max = 75
 name     = "genres"
 xpath    = 4
 index    = "Text"
-stored   = true
+list   = true
 stemming = ""
 
 [fields.weight]
@@ -58,7 +58,7 @@ max = 60
 name     = "extract"
 xpath    = 5
 index    = "Text"
-stored   = true
+list   = true
 stemming = "english"
 
 [fields.weight]
@@ -69,7 +69,7 @@ max = 75
 name     = "href"
 xpath    = 6
 index    = "None"
-stored   = true
+list   = true
 stemming = ""
 
 [fields.weight]
@@ -80,7 +80,7 @@ max = 0
 name     = "thumbnail"
 xpath    = 7
 index    = "None"
-stored   = true
+list   = true
 stemming = ""
 
 [fields.weight]
@@ -91,7 +91,7 @@ max = 0
 name     = "thumbnail_width"
 xpath    = 8
 index    = "None"
-stored   = true
+list   = true
 stemming = ""
 
 [fields.weight]
@@ -102,7 +102,7 @@ max = 0
 name     = "thumbnail_height"
 xpath    = 9
 index    = "None"
-stored   = true
+list   = true
 stemming = ""
 
 [fields.weight]
@@ -178,9 +178,9 @@ def main():
         if code != 0:
             print(f"[ERROR] Failed to upload {file}")
             print(out)
-        else:
-            print(
-                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+        # else:
+        #     print(
+        #         f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
 
     # 5. reindex
     print("[INFO] Reindexing...")

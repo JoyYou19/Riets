@@ -16,7 +16,7 @@ pub trait Command: Sized {
     fn parse(body: &str, format: Format) -> Result<Self, CorelamoError> {
         match format {
             Format::JSON => Self::from_json(body),
-            Format::XML => todo!(), //Self::from_xml(body),
+            //Format::XML => todo!(), //Self::from_xml(body),
         }
     }
 }

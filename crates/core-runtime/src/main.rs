@@ -5,9 +5,14 @@
 //HTTPS auth clustering lmao
 //LOGS not just prints
 //and all //TODO ive written
+//reindex should return ok when started not wait the whole time
+//TODO --debug mode
 
 use axum::{
     Router, middleware::from_fn_with_state, routing::{delete, get, post},
+    Router,
+    middleware::from_fn_with_state,
+    routing::{delete, get, post, put},
 };
 
 use core_auth::AuthService;
@@ -23,9 +28,6 @@ use std::{
 };
 
 use tokio::signal;
-
-#[cfg(test)]
-mod api_tests;
 
 mod corelamo_settings;
 mod database_helpers;

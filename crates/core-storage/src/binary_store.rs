@@ -144,6 +144,10 @@ impl DocumentStore for BinaryDocumentStore {
         Ok(())
     }
 
+    fn contains(&self, external_id: &str) -> io::Result<bool> {
+        Ok(self.docs.contains_key(external_id))
+    }
+
     fn get(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         Ok(self.docs.get(external_id).cloned())
     }
