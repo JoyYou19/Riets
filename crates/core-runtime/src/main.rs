@@ -1,14 +1,8 @@
-//INFO: under scripts we have ./movies now for funzies
-
-//TODO update/delete partial replace
-//backup/restore
-//LOGS not just prints
-//setting prieks auth vai vispar?
-//reindex should return ok when started not wait the whole time
+//HEELO WORLD
 use axum::{
     Router,
     middleware::from_fn_with_state,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 
 use core_auth::AuthService;
@@ -124,7 +118,6 @@ async fn main() -> io::Result<()> {
     println!("name: {name}");
     println!("host: {host}");
     println!("port: {port}");
-    println!("auth: {enable_auth}");
     println!("default format: {default_format_str}");
 
     let databases_dir = root_path.join("databases");
@@ -138,9 +131,10 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    println!("found and opened {} database(s)", databases.len());
+    println!("found and loaded {} database(s) in total", databases.len());
     //Autorizacijas prikoli
     let auth = Arc::new(RwLock::new(AuthService::bootstrap()));
+
     let state = AppState {
         databases: Arc::new(RwLock::new(databases)),
         databases_dir,
@@ -150,9 +144,11 @@ async fn main() -> io::Result<()> {
 
     //this clone is ok since it just += 1 for Arc
     let state_for_shutdown = state.clone();
+
     //login
     let public_routes = Router::new().route("/api/login", post(handlers::login_handler));
     //pec login
+    //god forbid someone breaks this
     let protected_routes = Router::new()
         .route(
             "/api/databases/{db_name}/search",
@@ -167,8 +163,12 @@ async fn main() -> io::Result<()> {
             post(handlers::retrieve_handler),
         )
         .route(
-            "/api/databases/{db_name}/update",
-            put(handlers::update_document_handler),
+            "/api/databases/{db_name}/replace",
+            put(handlers::replace_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/upsert",
+            put(handlers::upsert_document_handler),
         )
         .route(
             "/api/databases/{db_name}/delete",
@@ -181,6 +181,14 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/delete-database",
             delete(handlers::delete_detabase_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/start-database",
+            post(handlers::start_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/stop-database",
+            post(handlers::stop_database_handler),
         )
         .route("/api/databases", get(handlers::list_databases_handler))
         .route(
@@ -211,6 +219,19 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/users/{username}/roles",
             post(handlers::update_user_roles_handler),
+            put(handlers::set_policy_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/config",
+            get(handlers::get_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/config",
+            put(handlers::set_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/restart-database",
+            post(handlers::restart_database_handler),
         );
 
     let protected_routes = if enable_auth {
@@ -219,7 +240,7 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        println!("auth DISABLED — all routes are public!");
+        println!("AUTH DISABLED — You're on your own!");
         protected_routes
     };
 

@@ -8,6 +8,7 @@ use core_index::{
     document::IndexPolicy,
     lsm::{LsmIndex, worker::CompactionWorker},
 };
+use core_protocol::errors::CorelamoError;
 use core_query::{
     Query,
     planner::{QueryPlan, QueryPlanner},
@@ -39,47 +40,122 @@ pub struct CorelamoDatabase {
 }
 
 impl CorelamoDatabase {
-    pub fn open(root: impl AsRef<Path>, options: DatabaseOptions) -> io::Result<Self> {
+    fn config_full_path_from(root: &Path) -> std::path::PathBuf {
+        root.join("config.toml")
+    }
+
+    //INFO: just creates everything for the database, doesnt start it
+    pub fn create(root: impl AsRef<Path>, options: DatabaseOptions) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
+
+        if root.exists() {
+            return Err(CorelamoError::AlreadyExists(format!(
+                "database at {} already exists",
+                root.display()
+            )));
+        }
+
         std::fs::create_dir_all(&root)?;
 
-        let index_root = root.join("index");
+        let policy_path = root.join("policy.toml");
+        let policy = IndexPolicy::default_document();
+        policy.save(&policy_path)?;
+        options.save_to_file(Self::config_full_path_from(&root))?;
+
         let store_path = root.join("documents.bin");
+        BinaryDocumentStore::open(&store_path)?;
+        Ok(Self {
+            root,
+            policy_path,
+            policy,
+            options,
+            db: None,
+            compaction_worker: None,
+            metrics: DatabaseMetrics::default(),
+        })
+    }
+
+    //acknowledge the database on startup
+    pub fn load(root: impl AsRef<Path>) -> Result<Self, CorelamoError> {
+        let root = root.as_ref().to_path_buf();
         let policy_path = root.join("policy.toml");
 
-        let policy = if policy_path.exists() {
-            IndexPolicy::load(&policy_path)?
-        } else {
-            let policy = IndexPolicy::default_document();
-            policy.save(&policy_path)?;
-            policy
-        };
+        if !policy_path.exists() {
+            return Err(CorelamoError::NotFound(format!(
+                "no database found at {}",
+                root.display()
+            )));
+        }
 
-        let analyzer = Analyzer::new();
-        let index = LsmIndex::persistent(&index_root, options.runtime.flush_threshold)?;
-        let store = BinaryDocumentStore::open(&store_path)?;
-
-        let db = SearchDatabase::with_policy(store, index, analyzer, policy.clone());
-
-        let compaction_worker = if options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                options.runtime.compaction,
-                options.compaction_interval,
-            ))
-        } else {
-            None
-        };
+        let policy = IndexPolicy::load(&policy_path)?;
+        let options = DatabaseOptions::load_or_default(Self::config_full_path_from(&root));
 
         Ok(Self {
             root,
             policy_path,
             policy,
             options,
-            db: Some(db),
-            compaction_worker,
+            db: None,
+            compaction_worker: None,
             metrics: DatabaseMetrics::default(),
         })
+    }
+
+    pub fn start(&mut self) -> Result<(), CorelamoError> {
+        if self.db.is_some() {
+            return Ok(());
+        }
+
+        let index_root = self.root.join("index");
+        let store_path = self.root.join("documents.bin");
+
+        let analyzer = Analyzer::new();
+        let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
+        let store = BinaryDocumentStore::open(&store_path)?;
+
+        let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
+
+        self.compaction_worker = if self.options.enable_background_compaction {
+            Some(CompactionWorker::start(
+                db.index_sender(),
+                self.options.runtime.compaction,
+                self.options.compaction_interval,
+            ))
+        } else {
+            None
+        };
+
+        self.db = Some(db);
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> Result<(), CorelamoError> {
+        if let Some(worker) = self.compaction_worker.take() {
+            worker.stop()?;
+        }
+        if let Some(db) = self.db.take() {
+            db.shutdown()?;
+        }
+        Ok(())
+    }
+
+    pub fn restart(&mut self) -> Result<(), CorelamoError> {
+        self.stop()?;
+        self.start()
+    }
+
+    pub fn set_options(&mut self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+        options.save_to_file(Self::config_full_path_from(&self.root))?;
+        self.options = options;
+        Ok(())
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.db.is_some()
+    }
+
+    pub fn options(&self) -> &DatabaseOptions {
+        &self.options
     }
 
     pub fn put_documents_parallel(
@@ -185,10 +261,9 @@ impl CorelamoDatabase {
         self.db_mut()?.delete_document(external_id)
     }
 
-    //WARN: es atradu un ieliku, sorix valc ja nepareizi
-    pub fn update_document(&mut self, input: DocumentInput) -> io::Result<()> {
+    pub fn upsert_document(&mut self, input: DocumentInput) -> io::Result<()> {
         self.db_mut()?
-            .update_document(input, IndexMode::StoreAndIndex)
+            .upsert_document(input, IndexMode::StoreAndIndex)
     }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
@@ -253,10 +328,14 @@ impl CorelamoDatabase {
         })
     }
 
+    //SMART SHIIT: if database running update the policy if not just validate->update file
     pub fn set_policy(&mut self, policy: IndexPolicy) -> io::Result<()> {
         policy.validate()?;
 
-        self.db_mut()?.set_policy(policy.clone())?;
+        if self.db.is_some() {
+            self.db_mut()?.set_policy(policy.clone())?;
+        }
+
         self.policy = policy;
         self.save_policy()?;
 

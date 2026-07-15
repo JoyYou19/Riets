@@ -6,8 +6,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use core_auth::Token;
-use core_protocol::{errors::CorelamoError, format::Format};
+use core_auth::{Principal, Token};
+use core_protocol::{errors::CorelamoError::{self, Unauthorized}, format::Format};
 use uuid::Uuid;
 
 use crate::{AppState, http_response::HttpError};
@@ -111,7 +111,7 @@ pub async fn auth_middleware(
             return (StatusCode::UNAUTHORIZED, "auth service unavailable").into_response();
         };
         auth.authenticate(&Token(token))
-    };
+    }; // <- auth (the lock guard) is dropped here, before any .await
 
     match principal {
         Some(principal) => {

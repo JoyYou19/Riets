@@ -2,6 +2,7 @@ use crate::{Permission, PolicyStore};
 
 pub fn default_policy() -> PolicyStore {
     let mut policy = PolicyStore::new();
+
     policy.grant_many(
         "admin",
         [
@@ -16,12 +17,9 @@ pub fn default_policy() -> PolicyStore {
             Permission::PostPolicy,
             Permission::GetPolicy,
             Permission::Status,
-            Permission::CreateUser,
-            Permission::DeleteUser,
-            Permission::UpdatePwd,
-            Permission::UpdateRole,
         ],
     );
+
     policy.grant_many(
         "architect",
         [
@@ -33,6 +31,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::Status,
         ],
     );
+
     policy.grant("viewer", Permission::Search);
     policy.grant("viewer", Permission::Retrieve);
 
@@ -43,3 +42,4 @@ pub fn default_policy() -> PolicyStore {
 
     policy
 }
+

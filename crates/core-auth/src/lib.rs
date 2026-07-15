@@ -1,5 +1,4 @@
 mod bootstrap;
-
 mod permission;
 mod principal;
 mod roles;
@@ -8,7 +7,6 @@ mod users;
 
 pub use bootstrap::default_policy;
 use core_protocol::errors::CorelamoError;
-
 pub use permission::Permission;
 pub use principal::{Principal, UserId};
 pub use roles::PolicyStore;
@@ -91,7 +89,7 @@ impl AuthService {
     pub fn authenticate(&self, token: &Token) -> Option<Principal> {
         self.tokens.resolve(token)
     }
-
+    
     pub fn check(
         &self,
         principal: &Principal,

@@ -18,6 +18,7 @@ pub enum Permission {
     DeleteUser,
     UpdateRole,
     UpdatePwd,
+
 }
 
 impl Permission {

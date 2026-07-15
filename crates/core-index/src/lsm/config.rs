@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::lsm::compaction::CompactionConfig;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexRuntimeConfig {
     pub flush_threshold: usize,
     pub indexing_batch_size: usize,

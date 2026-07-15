@@ -2,16 +2,15 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{RwLockReadGuard, RwLockWriteGuard},
 };
-
 use axum::{
     Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-
+use core_auth::Principal;
 use core_core::{
-    CorelamoDatabase,
+    CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
         Command, DeleteCommand, LoginResponse, RetrieveCommand, RetrieveResponse, SearchCommand,
         SearchResponse,
@@ -21,9 +20,7 @@ use core_protocol::errors::CorelamoError;
 use serde_json::json;
 
 use crate::{
-    AppState,
-    database_helpers::{self},
-    doctypes,
+    AppState, database_helpers, doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
@@ -37,21 +34,20 @@ struct LoginRequest {
     password: String,
 }
 #[derive(Deserialize)]
-struct CreateUserRequest {
-    username: String,
+struct CreateUserRequest{
+    username:String,
     password: String,
     roles: Vec<String>,
 }
-
 #[derive(Deserialize)]
-struct UpdatePasswordRequest {
+struct UpdatePasswordRequest{
     password: String,
 }
-
 #[derive(Deserialize)]
-struct UpdateRolesRequest {
+struct UpdateRolesRequest{
     roles: Vec<String>,
 }
+
 
 //helpers
 fn get_db_read<'a>(
@@ -70,6 +66,32 @@ fn get_db_write<'a>(
     databases
         .get_mut(db_name)
         .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
+}
+
+fn get_db_read_running<'a>(
+    databases: &'a RwLockReadGuard<HashMap<String, CorelamoDatabase>>,
+    db_name: &str,
+) -> Result<&'a CorelamoDatabase, CorelamoError> {
+    let db = get_db_read(databases, db_name)?;
+    if !db.is_running() {
+        return Err(CorelamoError::DatabaseNotRunning(format!(
+            "database '{db_name}' is not running"
+        )));
+    }
+    Ok(db)
+}
+
+fn get_db_write_running<'a>(
+    databases: &'a mut RwLockWriteGuard<HashMap<String, CorelamoDatabase>>,
+    db_name: &str,
+) -> Result<&'a mut CorelamoDatabase, CorelamoError> {
+    let db = get_db_write(databases, db_name)?;
+    if !db.is_running() {
+        return Err(CorelamoError::DatabaseNotRunning(format!(
+            "database '{db_name}' is not running"
+        )));
+    }
+    Ok(db)
 }
 
 fn require_body(body: &str) -> Result<&str, CorelamoError> {
@@ -102,23 +124,15 @@ pub async fn login_handler(
             .into_response();
         }
     };
-    let Ok(auth) = state.auth.read() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
+    let Ok(auth) =state.auth.read() else{
+        return HttpError::from_corelamo(CorelamoError::Internal("auth service lock poisoned".to_string()), &ctx).into_response();
     };
     match auth.login(&req.username, &req.password) {
-        Some(token) => {
+       Some(token) => {
             let resp = LoginResponse { token: token.0 };
             HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
         }
-        None => HttpError::from_corelamo(
-            CorelamoError::Unauthorized("Invalid username or password".to_string()),
-            &ctx,
-        )
-        .into_response(),
+        None => HttpError::from_corelamo(CorelamoError::Unauthorized("invalid username or password".to_string()), &ctx).into_response(),
     }
     
 }
@@ -141,7 +155,7 @@ pub async fn search_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -194,7 +208,7 @@ pub async fn retrieve_handler(
     let ids = command.ids;
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -235,7 +249,7 @@ pub async fn retrieve_handler(
 }
 
 //TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json
-//TODO: multi-threaded parsing to DocInput
+//TODO: multi-threaded parsing JSON/XML -> DocInput
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -248,7 +262,7 @@ pub async fn insert_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -258,7 +272,6 @@ pub async fn insert_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    // storage assigns auto-increment ids, skips duplicates, and reports both back
     let report = match db.put_documents_parallel(input_docs) {
         Ok(r) => r,
         Err(e) => {
@@ -273,7 +286,7 @@ pub async fn insert_handler(
     let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
     outcome.succeed_many(report.inserted);
     for id in report.duplicates {
-        outcome.fail(id, 409, "DUPLICATE ID");
+        outcome.fail(id, 409, "DUPLICATE ID".to_string());
     }
 
     let title = format!("inserted {} into '{db_name}'", report.inserted);
@@ -299,7 +312,7 @@ pub async fn delete_document_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -318,7 +331,7 @@ pub async fn delete_document_handler(
                     .into_response();
                 }
             },
-            Ok(None) => outcome.fail(id, 404, "NOT FOUND"),
+            Ok(None) => outcome.fail(id, 404, "NOT FOUND".to_string()),
             Err(e) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal(format!("failed to lookup '{id}': {e}")),
@@ -340,9 +353,7 @@ pub async fn delete_document_handler(
         .into_response()
 }
 
-//TODO: valtera update has upsert capabilities, we could make another command for upsert document
-//too imagine
-pub async fn update_document_handler(
+pub async fn replace_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -354,7 +365,7 @@ pub async fn update_document_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -365,15 +376,22 @@ pub async fn update_document_handler(
     };
 
     let mut not_found = Vec::new();
-    let mut updated_count = 0;
+    let mut replaced_count = 0;
 
     for doc in input_docs {
         match db.get_document(&doc.external_id) {
-            Ok(Some(_)) => {
-                updated_count += 1;
-                //FIX: im not sure if this unwrap is entirely safe long term
-                db.update_document(doc).unwrap();
-            }
+            Ok(Some(_)) => match db.upsert_document(doc) {
+                Ok(_) => {
+                    replaced_count += 1;
+                }
+                Err(e) => {
+                    return HttpError::from_corelamo(
+                        CorelamoError::Internal(format!("existence check failed: {e}")),
+                        &ctx,
+                    )
+                    .into_response();
+                }
+            },
             Ok(None) => not_found.push(doc.external_id),
             Err(e) => {
                 return HttpError::from_corelamo(
@@ -385,12 +403,57 @@ pub async fn update_document_handler(
         }
     }
 
-    let mut outcome = BatchOutcome::new("updated", StatusCode::NOT_FOUND);
-    outcome.succeed_many(updated_count as u32);
+    let mut outcome = BatchOutcome::new("replaced", StatusCode::NOT_FOUND);
+    outcome.succeed_many(replaced_count as u32);
     for id in not_found {
-        outcome.fail(id, 404, "NOT FOUND");
+        outcome.fail(id, 404, "NOT FOUND".to_string());
     }
-    let title = format!("updated {updated_count} in '{db_name}'");
+    let title = format!("replaced {replaced_count} in '{db_name}'");
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
+pub async fn upsert_document_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write_running(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+        Ok(d) => d,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut outcome = BatchOutcome::new("upserted", StatusCode::INTERNAL_SERVER_ERROR);
+
+    for doc in input_docs {
+        let id = doc.external_id.clone();
+        match db.upsert_document(doc) {
+            Ok(_) => outcome.succeed(),
+            Err(e) => {
+                outcome.fail(id, 500, e.to_string());
+            }
+        }
+    }
+
+    let title = format!(
+        "upserted {} document(s) into '{db_name}', {} failed",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+
     outcome
         .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
@@ -401,19 +464,72 @@ pub async fn create_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases_read = state.databases.read().unwrap();
-    match database_helpers::create_database(db_name.clone(), &state.databases_dir, &databases_read)
-    {
-        Ok(db) => {
-            drop(databases_read);
-            state.databases.write().unwrap().insert(db_name.clone(), db);
-            HttpOk::with_status(
-                StatusCode::CREATED,
-                format!("database '{db_name}' created"),
-                &ctx,
-            )
-            .into_response()
-        }
+    let mut databases = state.databases.write().unwrap();
+
+    if databases.contains_key(&db_name) {
+        return HttpError::from_corelamo(
+            CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let db_path = state.databases_dir.join(&db_name);
+    let db = match CorelamoDatabase::create(&db_path, DatabaseOptions::default()) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    databases.insert(db_name.clone(), db);
+
+    HttpOk::with_status(
+        StatusCode::CREATED,
+        format!("database '{db_name}' created"),
+        &ctx,
+    )
+    .into_response()
+}
+
+pub async fn start_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    if db.is_running() {
+        return HttpOk::new(format!("database '{db_name}' is already running"), &ctx)
+            .into_response();
+    }
+
+    match db.start() {
+        Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn stop_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    if !db.is_running() {
+        return HttpOk::new(format!("database '{db_name}' is already stopped"), &ctx)
+            .into_response();
+    }
+
+    match db.stop() {
+        Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -463,7 +579,7 @@ pub async fn stats_handler(
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let databases = state.databases.read().unwrap();
-    let db = match get_db_read(&databases, &db_name) {
+    let db = match get_db_read_running(&databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -494,7 +610,7 @@ pub async fn reindex_handler(
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -517,12 +633,11 @@ pub async fn get_policy_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases = state.databases.read().unwrap();
-    let db = match get_db_read(&databases, &db_name) {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
     match doctypes::serialize_policy(db.policy()) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
         Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
@@ -557,33 +672,106 @@ pub async fn set_policy_handler(
     }
 }
 
+pub async fn get_config_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let databases = state.databases.read().unwrap();
+    let db = match get_db_read(&databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match toml::to_string_pretty(db.options()) {
+        Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
+        Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    }
+}
+
+pub async fn set_config_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let options: DatabaseOptions = match toml::from_str(&body) {
+        Ok(o) => o,
+        Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    };
+
+    match database_helpers::set_config(db, options) {
+        Ok(()) => {
+            let note = if db.is_running() {
+                " (restart required for start-time settings to take effect)"
+            } else {
+                ""
+            };
+            HttpOk::new(format!("config updated for '{db_name}' {note}"), &ctx).into_response()
+        }
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn restart_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match database_helpers::restart_database(db) {
+        Ok(()) => {
+            HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
+        }
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
 pub async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let databases = state.databases.read().unwrap();
-    let names: Vec<&String> = databases.keys().collect();
-    let count = names.len();
+    let count = databases.len();
+
+    let entries: Vec<serde_json::Value> = databases
+        .iter()
+        .map(|(name, db)| json!({ "name": name, "running": db.is_running() }))
+        .collect();
 
     HttpOk::with_data(
-        format!("{count} database(s) loaded"),
-        json!({ "databases": names }),
+        format!("{count} database(s)"),
+        json!({ "databases": entries }),
         &ctx,
     )
     .into_response()
 }
-
 pub async fn create_user_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    let body = match require_body(&body) {
-        Ok(b) => b,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    let body= match require_body(&body){
+        Ok(b)=>b,
+        Err(e)=> return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
     let req: CreateUserRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -595,36 +783,23 @@ pub async fn create_user_handler(
         }
     };
 
-    let Ok(mut auth) = state.auth.write() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
+    let Ok(mut auth) =state.auth.write() else{
+    return HttpError::from_corelamo(CorelamoError::Internal("auth service lock poisoned".to_string()), &ctx).into_response();
     };
-
     match auth.create_user(&principal, &req.username, &req.password, req.roles) {
-        Ok(()) => HttpOk::new(format!("user '{}' created", req.username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-    }
+    Ok(()) => HttpOk::new(format!("user '{}' created", req.username),&ctx).into_response(),
+    Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
 }
-
+}
 pub async fn delete_user_handler(
     State(state): State<AppState>,
     Path(username): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    let Ok(mut auth) = state.auth.write() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
-    };
-
+    let mut auth = state.auth.write().unwrap();
     match auth.delete_user(&principal, &username) {
-        Ok(()) => HttpOk::new(format!("user '{}' deleted", username), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("user '{}' deleted", username),&ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -640,7 +815,6 @@ pub async fn update_user_password_handler(
         Ok(b) => b,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
     let req: UpdatePasswordRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -652,16 +826,9 @@ pub async fn update_user_password_handler(
         }
     };
 
-    let Ok(mut auth) = state.auth.write() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
-    };
-
+    let mut auth = state.auth.write().unwrap();
     match auth.update_user_password(&principal, &username, &req.password) {
-        Ok(()) => HttpOk::new(format!("password updated for '{}'", username), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("password updated for '{}'", username),&ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -677,7 +844,6 @@ pub async fn update_user_roles_handler(
         Ok(b) => b,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
     let req: UpdateRolesRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -689,16 +855,10 @@ pub async fn update_user_roles_handler(
         }
     };
 
-    let Ok(mut auth) = state.auth.write() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
-    };
-
+    let mut auth = state.auth.write().unwrap();
     match auth.update_user_roles(&principal, &username, req.roles) {
-        Ok(()) => HttpOk::new(format!("roles updated for '{}'", username), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("roles updated for '{}'", username),&ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
+

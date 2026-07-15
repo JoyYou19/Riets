@@ -31,6 +31,12 @@ pub enum CorelamoError {
 
     #[error("conflict: {0}")]
     Conflict(String),
+
+    #[error("conflict: {0}")]
+    DatabaseNotRunning(String),
+
+    #[error("conflict: {0}")]
+    DatabaseAlreadyRunning(String),
 }
 
 //INFO: helpers to get all needed info from an error to http response
@@ -46,7 +52,8 @@ impl CorelamoError {
             CorelamoError::UnsupportedFormat(_) => "unsupported_format",
             CorelamoError::Conflict(_) => "conflict",
             CorelamoError::UnknownRole(_) => "unknown_role",
-            
+            CorelamoError::DatabaseNotRunning(_) => "database_not_started",
+            CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
         }
     }
 
@@ -60,7 +67,9 @@ impl CorelamoError {
             CorelamoError::PermissionDenied(_) => "Permission Denied",
             CorelamoError::UnsupportedFormat(_) => "Unsupported Format",
             CorelamoError::Conflict(_) => "Conflict",
-            CorelamoError::UnknownRole(_) => "Role Error"
+            CorelamoError::UnknownRole(_) => "Role Error",
+            CorelamoError::DatabaseNotRunning(_) => "database_not_started",
+            CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
         }
     }
 
@@ -74,7 +83,9 @@ impl CorelamoError {
             | CorelamoError::PermissionDenied(msg)
             | CorelamoError::UnsupportedFormat(msg)
             | CorelamoError::Conflict(msg)
-            | CorelamoError::UnknownRole(msg) =>msg.clone(),
+            | CorelamoError::DatabaseNotRunning(msg)
+            | CorelamoError::DatabaseAlreadyRunning(msg)
+            | CorelamoError::UnknownRole(msg) => msg.clone(),
         }
     }
 }
