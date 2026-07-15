@@ -287,7 +287,7 @@ impl IntoResponse for HttpOk {
 struct BatchFailure {
     id: String,
     status: u16,
-    label: &'static str,
+    label: String,
 }
 
 pub struct BatchOutcome {
@@ -315,7 +315,7 @@ impl BatchOutcome {
         self.succeeded += n;
     }
 
-    pub fn fail(&mut self, id: impl Into<String>, status: u16, label: &'static str) {
+    pub fn fail(&mut self, id: impl Into<String>, status: u16, label: String) {
         self.failures.push(BatchFailure {
             id: id.into(),
             status,

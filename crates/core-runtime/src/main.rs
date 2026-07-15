@@ -1,12 +1,8 @@
-//partial replace
-//backup/restore
-//LOGS not just prints
-//reindex should return ok when started not wait the whole time
-
+//HEELO WORLD
 use axum::{
     Router,
     middleware::from_fn_with_state,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 
 use core_auth::AuthService;
@@ -167,8 +163,12 @@ async fn main() -> io::Result<()> {
             post(handlers::retrieve_handler),
         )
         .route(
-            "/api/databases/{db_name}/update",
-            put(handlers::update_document_handler),
+            "/api/databases/{db_name}/replace",
+            put(handlers::replace_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/upsert",
+            put(handlers::upsert_document_handler),
         )
         .route(
             "/api/databases/{db_name}/delete",
@@ -226,7 +226,7 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        println!("AUTH DISABLED — youre on your own!");
+        println!("AUTH DISABLED — You're on your own!");
         protected_routes
     };
 

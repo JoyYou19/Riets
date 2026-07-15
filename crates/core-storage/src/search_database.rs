@@ -207,7 +207,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     // Update creates a new internal version, the old internal_id is tombstoned, while the
     // external_id points to the latest version
-    pub fn update_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
+    // INFO: changed the name cuz upsert is more precise here
+    pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(&input.external_id)? {
             self.index_worker
                 .delete_document_wait(old_doc.internal_id)?;

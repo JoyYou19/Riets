@@ -247,7 +247,7 @@ pub async fn retrieve_handler(
 }
 
 //TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json
-//TODO: multi-threaded parsing JSON -> DocInput
+//TODO: multi-threaded parsing JSON/XML -> DocInput
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -264,14 +264,6 @@ pub async fn insert_handler(
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
 
     let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
         Ok(d) => d,
@@ -292,7 +284,7 @@ pub async fn insert_handler(
     let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
     outcome.succeed_many(report.inserted);
     for id in report.duplicates {
-        outcome.fail(id, 409, "DUPLICATE ID");
+        outcome.fail(id, 409, "DUPLICATE ID".to_string());
     }
 
     let title = format!("inserted {} into '{db_name}'", report.inserted);
@@ -318,7 +310,7 @@ pub async fn delete_document_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -337,7 +329,7 @@ pub async fn delete_document_handler(
                     .into_response();
                 }
             },
-            Ok(None) => outcome.fail(id, 404, "NOT FOUND"),
+            Ok(None) => outcome.fail(id, 404, "NOT FOUND".to_string()),
             Err(e) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal(format!("failed to lookup '{id}': {e}")),
@@ -359,8 +351,7 @@ pub async fn delete_document_handler(
         .into_response()
 }
 
-//TODO: valtera update has upsert capabilities, we could make another command for upsert document
-pub async fn update_document_handler(
+pub async fn replace_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -372,18 +363,10 @@ pub async fn update_document_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
 
     let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
         Ok(d) => d,
@@ -391,13 +374,13 @@ pub async fn update_document_handler(
     };
 
     let mut not_found = Vec::new();
-    let mut updated_count = 0;
+    let mut replaced_count = 0;
 
     for doc in input_docs {
         match db.get_document(&doc.external_id) {
-            Ok(Some(_)) => match db.update_document(doc) {
+            Ok(Some(_)) => match db.upsert_document(doc) {
                 Ok(_) => {
-                    updated_count += 1;
+                    replaced_count += 1;
                 }
                 Err(e) => {
                     return HttpError::from_corelamo(
@@ -418,12 +401,57 @@ pub async fn update_document_handler(
         }
     }
 
-    let mut outcome = BatchOutcome::new("updated", StatusCode::NOT_FOUND);
-    outcome.succeed_many(updated_count as u32);
+    let mut outcome = BatchOutcome::new("replaced", StatusCode::NOT_FOUND);
+    outcome.succeed_many(replaced_count as u32);
     for id in not_found {
-        outcome.fail(id, 404, "NOT FOUND");
+        outcome.fail(id, 404, "NOT FOUND".to_string());
     }
-    let title = format!("updated {updated_count} in '{db_name}'");
+    let title = format!("replaced {replaced_count} in '{db_name}'");
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
+pub async fn upsert_document_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write_running(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+        Ok(d) => d,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut outcome = BatchOutcome::new("upserted", StatusCode::INTERNAL_SERVER_ERROR);
+
+    for doc in input_docs {
+        let id = doc.external_id.clone();
+        match db.upsert_document(doc) {
+            Ok(_) => outcome.succeed(),
+            Err(e) => {
+                outcome.fail(id, 500, e.to_string());
+            }
+        }
+    }
+
+    let title = format!(
+        "upserted {} document(s) into '{db_name}', {} failed",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+
     outcome
         .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
