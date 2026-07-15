@@ -1,70 +1,26 @@
-# Corelamo — Roadmap
+MISSING CRUITAL FEATURES:
+    INDEX - ko darit ar json arrays un visiem citiem edge cases nakotnee (xml tajaa skaitaa jaizdomaa)
+    PARTIAL replace command 
+    UPSERT command
+    REINDEX progress + /reindex atgriez OK uzreiz un tad caur status var redzet reindex/compaction progress
+    SEARCH total_hits, offset, numeric search, field-specific filters, exact-match....
+    BACKUP RESTORE database (data/config+policy)
 
-## Reliability & Correctness
-- [ ] **Tests** — unit + integration coverage across handlers, storage, and index
-- [ ] **Replace `unwrap()` calls** — no panics on the request path; propagate errors properly
-- [ ] **Proper error responses** — stop collapsing everything into `CorelamoError::Internal`; map each failure to the right variant/status
-- [ ] **Request validation** — body size limits, field whitelisting, reject malformed input early
+LONG-TERM:
+    AUTH.....
+    CLUSTERING............
+    XML...........
 
-## Observability
-- [ ] **Structured logging** — replace `println!` with `tracing`; capture latency, error rates, request counts
-- [ ] **Health & status checks** — richer `/status`, liveness/readiness endpoints
-- [ ] **Reindex progress** — return "started" immediately, expose progress; don't block the whole time
+WILL-NEED-MAYBE-LATER:
+    OPTIMIZE HTTP->DATABASE like better/faster request parsing validation
+    REST - RATE LIMITING / GZIP COMPRESSION / HTTPS
 
-## Search Features
-- [ ] **Pagination** — `limit` + `offset` on search
-- [ ] **Field-specific search / filters** — numeric search, per-field queries
-- [ ] **Offset support** — tie into pagination
+MELNAIS DARBS:
+    TESTI gan takaa create/detele gan API testi 
+    VISU NOMAINIT UZ CorlamoError
 
-## Data Management
-- [ ] **Backup / restore** — full database snapshot + recovery
-- [ ] **Update/delete partial replace** — merge semantics, not full-document overwrite
-- [ ] **Database configuration persistence** — persist `DatabaseOptions` across restarts
-- [ ] **Config via API** — `GET`/`PUT /db/{name}/config` for `DatabaseOptions`
-
-## Performance
-- [ ] **Optimize HTTP → database path** — connection handling, reduce conversion overhead
-
-## Security & Access
-- [ ] **Rate limiting**
-- [ ] **HTTPS**
-
-## Distributed
-- [ ] **Clustering** :D
-
-Pa kodu sameetaatie
-### `handlers.rs`
-- **TODO** (line 103): `//TODO: total_hits: xxx kkadu`
-- **TODO** (line 131): `//TODO: cant really see the id if auto-increment :(`
-- **TODO** (line 165): `//TODO:  update error handling once the get_document gets updated`
-- **TODO** (line 190): `//TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json`
-- **TODO** (line 191): `//TODO: multi-threaded parsing to DocInput`
-- **TODO** (line 233): `//TODO: valtera update has upsert capabilities, we could make another command for upsert document`
-- **FIX** (line 249): `//FIX: im not sure if this unwrap is entirely safe long term`
-- **TODO** (line 296): `//TODO: upate once stats gets updated with errors`
-- **TODO** (line 313): `//TODO:  update once reindex errors updated`
-
-### `http_response.rs`
-- **TODO** (line 36): `//TODO: start where xml detected`
-- **TODO** (line 37): `todo!();`
-- **TODO** (line 96): `//Format::XML => todo!(),`
-- **TODO** (line 155): `//Format::XML => todo!(),`
-- **TODO** (line 195): `//Format::XML => todo!(),`
-
-### `main.rs`
-- **TODO** (line 1): `//INFO: under scripts we have ./movies now for funzies`
-- **TODO** (line 3): `//partial replace`
-- **TODO** (line 4): `//backup/restore`
-- **TODO** (line 5): `//LOGS not just prints`
-- **TODO** (line 6): `//reindex should return ok when started not wait the whole time`
-- **TODO** (line 47): `//TODO: maybe check if there are more possible signals`
-- **WARN** (line 155): `//WARN: is the db.shutdown a safe thing to do yet? meaning like while`
-- **WARN** (line 156): `//indexing/merging/compacting, if shutdown is it safe?`
-- **TODO** (line 162): `//TODO: we might have extra stuff to do here later, for now i cant think of anything else`
-
-### `middleware.rs`
-- **WARN** (line 17): `//WARN: hardcodes json here, fix when json done`
-- **TODO** (line 18): `//TODO: start where xml detected`
-- **TODO** (line 19): `todo!();`
-- **TODO** (line 47): `//TODO: auth/https before request (check permissions....)`
-
+EXTRAS:
+    nekadus println, vajag logot/tracing izmantot nez kaa vel nezinu ne vienu ne otru
+    STATUS nu vienkarsi labaaks /status sobrid tur like 3 lietas raada
+    RETRIEVE SHOWS ID
+    INSERT dfferent error for duplicate/invalid for each document for the 207 error

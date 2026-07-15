@@ -1,5 +1,3 @@
-//INFO: under scripts we have ./movies now for funzies
-
 //partial replace
 //backup/restore
 //LOGS not just prints
@@ -137,7 +135,7 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    println!("found and loaded {} database(s)", databases.len());
+    println!("found and loaded {} database(s) in total", databases.len());
     //Autorizacijas prikoli
     let auth = Arc::new(core_auth::default_auth_service());
 
@@ -150,9 +148,11 @@ async fn main() -> io::Result<()> {
 
     //this clone is ok since it just += 1 for Arc
     let state_for_shutdown = state.clone();
+
     //login
     let public_routes = Router::new().route("/api/login", post(handlers::login_handler));
     //pec login
+    //god forbid someone breaks this
     let protected_routes = Router::new()
         .route(
             "/api/databases/{db_name}/search",
@@ -174,7 +174,6 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/delete",
             delete(handlers::delete_document_handler),
         )
-        //create start stop delete database
         .route(
             "/api/databases/{db_name}/create-database",
             post(handlers::create_database_handler),
@@ -227,7 +226,7 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        println!("auth DISABLED — all routes are public!");
+        println!("AUTH DISABLED — youre on your own!");
         protected_routes
     };
 

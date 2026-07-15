@@ -75,7 +75,7 @@ impl CorelamoDatabase {
         })
     }
 
-    //reads the database before start
+    //acknowledge the database on startup
     pub fn load(root: impl AsRef<Path>) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let policy_path = root.join("policy.toml");
@@ -102,7 +102,6 @@ impl CorelamoDatabase {
     }
 
     pub fn start(&mut self) -> Result<(), CorelamoError> {
-        //checks if already running
         if self.db.is_some() {
             return Ok(());
         }

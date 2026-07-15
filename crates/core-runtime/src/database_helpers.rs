@@ -46,10 +46,6 @@ pub fn restart_database(db: &mut CorelamoDatabase) -> Result<(), CorelamoError> 
     db.restart()
 }
 
-pub fn get_config(db: &CorelamoDatabase) -> &DatabaseOptions {
-    db.options()
-}
-
 pub fn set_config(
     db: &mut CorelamoDatabase,
     options: DatabaseOptions,
