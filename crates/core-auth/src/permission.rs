@@ -14,6 +14,10 @@ pub enum Permission {
     GetPolicy,
     PostPolicy,
     ChangeID,
+    CreateUser,
+    DeleteUser,
+    UpdateRole,
+    UpdatePwd,
 }
 
 impl Permission {
@@ -31,6 +35,10 @@ impl Permission {
             "GetPolicy" =>Some(Permission::GetPolicy),
             "PostPolicy" => Some(Permission::PostPolicy),
             "ChangeID" => Some(Permission::ChangeID),
+            "CreateUser" =>Some(Permission::CreateUser),
+            "DeleteUser" =>Some(Permission::DeleteUser),
+            "UpdateRole" =>Some(Permission::UpdateRole),
+            "UpdatePwd" =>Some(Permission::UpdatePwd),
             
             _ => None,
         }
