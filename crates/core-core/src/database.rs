@@ -329,10 +329,14 @@ impl CorelamoDatabase {
         })
     }
 
+    //SMART SHIIT: if database running update the policy if not just validate->update file
     pub fn set_policy(&mut self, policy: IndexPolicy) -> io::Result<()> {
         policy.validate()?;
 
-        self.db_mut()?.set_policy(policy.clone())?;
+        if self.db.is_some() {
+            self.db_mut()?.set_policy(policy.clone())?;
+        }
+
         self.policy = policy;
         self.save_policy()?;
 

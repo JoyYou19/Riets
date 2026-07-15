@@ -53,6 +53,32 @@ fn get_db_write<'a>(
         .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
 }
 
+fn get_db_read_running<'a>(
+    databases: &'a RwLockReadGuard<HashMap<String, CorelamoDatabase>>,
+    db_name: &str,
+) -> Result<&'a CorelamoDatabase, CorelamoError> {
+    let db = get_db_read(databases, db_name)?;
+    if !db.is_running() {
+        return Err(CorelamoError::DatabaseNotRunning(format!(
+            "database '{db_name}' is not running"
+        )));
+    }
+    Ok(db)
+}
+
+fn get_db_write_running<'a>(
+    databases: &'a mut RwLockWriteGuard<HashMap<String, CorelamoDatabase>>,
+    db_name: &str,
+) -> Result<&'a mut CorelamoDatabase, CorelamoError> {
+    let db = get_db_write(databases, db_name)?;
+    if !db.is_running() {
+        return Err(CorelamoError::DatabaseNotRunning(format!(
+            "database '{db_name}' is not running"
+        )));
+    }
+    Ok(db)
+}
+
 fn require_body(body: &str) -> Result<&str, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
@@ -114,18 +140,10 @@ pub async fn search_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
 
     let hits = match db.search(&command) {
         Ok(hits) => hits,
@@ -175,18 +193,10 @@ pub async fn retrieve_handler(
     let ids = command.ids;
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
 
     let mut docs = Vec::new();
     let mut not_found_ids: Vec<String> = Vec::new();
@@ -237,7 +247,7 @@ pub async fn insert_handler(
     };
 
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -299,14 +309,6 @@ pub async fn delete_document_handler(
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
 
     let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
 
@@ -534,18 +536,10 @@ pub async fn stats_handler(
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let databases = state.databases.read().unwrap();
-    let db = match get_db_read(&databases, &db_name) {
+    let db = match get_db_read_running(&databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
 
     match db.stats() {
         Ok(stats) => HttpOk::with_data(
@@ -573,18 +567,10 @@ pub async fn reindex_handler(
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write(&mut databases, &db_name) {
+    let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
 
     match db.reindex() {
         Ok(_) => HttpOk::new(format!("reindex complete for '{db_name}'"), &ctx).into_response(),
@@ -604,20 +590,11 @@ pub async fn get_policy_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases = state.databases.read().unwrap();
-    let db = match get_db_read(&databases, &db_name) {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if !db.is_running() {
-        return HttpError::from_corelamo(
-            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
-            &ctx,
-        )
-        .into_response();
-    }
-
     match doctypes::serialize_policy(db.policy()) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
         Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
