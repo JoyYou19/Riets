@@ -50,7 +50,7 @@ fix the delete/update/insert always returning 207
 2. Replace `unwrap()` calls
 3. Add pagination to search
 4. Add health check endpoint
-5. Add proper error responses (not just `Internal` for everything)
+
 
 ## Medium Term (1-2 weeks):
 1. Configuration persistence

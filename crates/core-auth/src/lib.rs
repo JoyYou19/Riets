@@ -1,5 +1,5 @@
 mod bootstrap;
-mod error;
+
 mod permission;
 mod principal;
 mod roles;
@@ -8,7 +8,7 @@ mod users;
 
 pub use bootstrap::default_auth_service;
 use core_protocol::errors::CorelamoError;
-pub use error::AuthError;
+
 pub use permission::Permission;
 pub use principal::{Principal, UserId};
 pub use roles::PolicyStore;
