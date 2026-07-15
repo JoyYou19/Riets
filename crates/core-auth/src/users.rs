@@ -70,31 +70,5 @@ impl UserStore {
         }
         Some(principal)
     }
-    pub fn remove_user(&mut self, username: &str) -> bool{
-        self.users.remove(username).is_some()
-
-    }
-    pub fn update_password(&mut self, username: &str, new_password: &str) -> bool {
-        if let Some((_, roles)) = self.users.get(username) {
-            let roles = roles.clone();
-            let salt = SaltString::generate(&mut OsRng);
-            let hashed = Argon2::default()
-                .hash_password(new_password.as_bytes(), &salt)
-                .unwrap()
-                .to_string();
-            self.users.insert(username.to_string(), (hashed, roles));
-            true
-        } else {
-            false
-        }
-    }
-    pub fn update_roles(&mut self, username: &str, new_roles:Vec<String>) -> bool{
-        if let Some((hash, _)) = self.users.get(username) {
-            let hash = hash.clone();
-            self.users.insert(username.to_string(), (hash, new_roles));
-            true
-        } else {
-            false
-        }
-    }
+    
 }

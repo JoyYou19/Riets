@@ -4,20 +4,24 @@ pub fn default_policy() -> PolicyStore {
     let mut policy = PolicyStore::new();
 
     policy.grant_many(
-        "admin",
-        [
-            Permission::Search,
-            Permission::Retrieve,
-            Permission::Insert,
-            Permission::Delete,
-            Permission::CreateDatabase,
-            Permission::DeleteDatabase,
-            Permission::ListDatabase,
-            Permission::ChangeID,
-            Permission::PostPolicy,
-            Permission::GetPolicy,
-            Permission::Status,
-        ],
+    "admin",
+    [
+        Permission::Search,
+        Permission::Retrieve,
+        Permission::Insert,
+        Permission::Delete,
+        Permission::CreateDatabase,
+        Permission::DeleteDatabase,
+        Permission::ListDatabase,
+        Permission::ChangeID,
+        Permission::PostPolicy,
+        Permission::GetPolicy,
+        Permission::Status,
+        Permission::CreateUser,
+        Permission::DeleteUser,
+        Permission::UpdatePwd,
+        Permission::UpdateRole,
+    ],
     );
 
     policy.grant_many(

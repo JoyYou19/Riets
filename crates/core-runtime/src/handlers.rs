@@ -8,7 +8,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::Principal;
+use core_auth::{Principal, Permission};
 use core_core::{
     CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
@@ -25,7 +25,7 @@ use crate::{
     middleware::RequestContext,
 };
 
-use core_auth::Principal;
+
 //authorizations
 use serde::Deserialize;
 #[derive(Deserialize)]
@@ -254,8 +254,25 @@ pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
+    let Ok(auth) = state.auth.read() else {
+        return HttpError::from_corelamo(
+            CorelamoError::Internal("auth service lock poisoned".to_string()),
+            &ctx,
+        )
+        .into_response();
+    };
+    if let Err(e) = auth.check(&principal, Permission::Insert) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    drop(auth); // release the lock before doing database work
+
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
