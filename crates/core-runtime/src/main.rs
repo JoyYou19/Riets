@@ -124,7 +124,6 @@ async fn main() -> io::Result<()> {
     println!("name: {name}");
     println!("host: {host}");
     println!("port: {port}");
-    println!("auth: {enable_auth}");
     println!("default format: {default_format_str}");
 
     let databases_dir = root_path.join("databases");
@@ -138,7 +137,7 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    println!("found and opened {} database(s)", databases.len());
+    println!("found and loaded {} database(s)", databases.len());
     //Autorizacijas prikoli
     let auth = Arc::new(core_auth::default_auth_service());
 
@@ -207,7 +206,19 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/policy",
-            post(handlers::set_policy_handler),
+            put(handlers::set_policy_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/config",
+            get(handlers::get_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/config",
+            put(handlers::set_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/restart-database",
+            post(handlers::restart_database_handler),
         );
 
     let protected_routes = if enable_auth {

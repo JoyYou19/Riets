@@ -21,7 +21,7 @@ use core_protocol::errors::CorelamoError;
 use serde_json::json;
 
 use crate::{
-    AppState, doctypes,
+    AppState, database_helpers, doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
@@ -119,6 +119,14 @@ pub async fn search_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
     let hits = match db.search(&command) {
         Ok(hits) => hits,
         Err(e) => {
@@ -171,6 +179,14 @@ pub async fn retrieve_handler(
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
 
     let mut docs = Vec::new();
     let mut not_found_ids: Vec<String> = Vec::new();
@@ -226,6 +242,14 @@ pub async fn insert_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
     let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
         Ok(d) => d,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -275,6 +299,14 @@ pub async fn delete_document_handler(
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
 
     let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
 
@@ -329,6 +361,14 @@ pub async fn update_document_handler(
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
 
     let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
         Ok(d) => d,
@@ -499,6 +539,14 @@ pub async fn stats_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
     match db.stats() {
         Ok(stats) => HttpOk::with_data(
             format!("stats for '{db_name}'"),
@@ -530,6 +578,14 @@ pub async fn reindex_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
     match db.reindex() {
         Ok(_) => HttpOk::new(format!("reindex complete for '{db_name}'"), &ctx).into_response(),
         //TODO:  update once reindex errors updated
@@ -553,6 +609,14 @@ pub async fn get_policy_handler(
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+
+    if !db.is_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database '{db_name}' is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
 
     match doctypes::serialize_policy(db.policy()) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
@@ -585,6 +649,77 @@ pub async fn set_policy_handler(
     match db.set_policy(policy) {
         Ok(_) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    }
+}
+
+pub async fn get_config_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let databases = state.databases.read().unwrap();
+    let db = match get_db_read(&databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match toml::to_string_pretty(db.options()) {
+        Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
+        Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    }
+}
+
+pub async fn set_config_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let options: DatabaseOptions = match toml::from_str(&body) {
+        Ok(o) => o,
+        Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    };
+
+    match database_helpers::set_config(db, options) {
+        Ok(()) => {
+            let note = if db.is_running() {
+                " (restart required for start-time settings to take effect)"
+            } else {
+                ""
+            };
+            HttpOk::new(format!("config updated for '{db_name}' {note}"), &ctx).into_response()
+        }
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn restart_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let mut databases = state.databases.write().unwrap();
+    let db = match get_db_write(&mut databases, &db_name) {
+        Ok(db) => db,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match database_helpers::restart_database(db) {
+        Ok(()) => {
+            HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
+        }
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 

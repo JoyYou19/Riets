@@ -135,10 +135,19 @@ impl CorelamoDatabase {
             worker.stop()?;
         }
         if let Some(db) = self.db.take() {
-            // shutdown() flushes via the index worker and returns the LsmIndex,
-            // which we drop.
             db.shutdown()?;
         }
+        Ok(())
+    }
+
+    pub fn restart(&mut self) -> Result<(), CorelamoError> {
+        self.stop()?;
+        self.start()
+    }
+
+    pub fn set_options(&mut self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+        options.save_to_file(Self::config_full_path_from(&self.root))?;
+        self.options = options;
         Ok(())
     }
 

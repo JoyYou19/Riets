@@ -57,6 +57,8 @@ fn error_to_status(err: &CorelamoError) -> StatusCode {
         CorelamoError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         CorelamoError::UnsupportedFormat(_) => StatusCode::NOT_ACCEPTABLE,
         CorelamoError::UnknownRole(_) => StatusCode::NOT_FOUND,
+        CorelamoError::DatabaseAlreadyRunning(_) => StatusCode::CONFLICT,
+        CorelamoError::DatabaseNotRunning(_) => StatusCode::CONFLICT,
     }
 }
 

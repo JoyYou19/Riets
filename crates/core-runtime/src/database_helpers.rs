@@ -1,6 +1,7 @@
 use std::{collections::HashMap, io, path::Path};
 
-use core_core::CorelamoDatabase;
+use core_core::{CorelamoDatabase, DatabaseOptions};
+use core_protocol::errors::CorelamoError;
 
 pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, CorelamoDatabase>> {
     let mut databases = HashMap::new();
@@ -39,4 +40,19 @@ pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, 
     }
 
     Ok(databases)
+}
+
+pub fn restart_database(db: &mut CorelamoDatabase) -> Result<(), CorelamoError> {
+    db.restart()
+}
+
+pub fn get_config(db: &CorelamoDatabase) -> &DatabaseOptions {
+    db.options()
+}
+
+pub fn set_config(
+    db: &mut CorelamoDatabase,
+    options: DatabaseOptions,
+) -> Result<(), CorelamoError> {
+    db.set_options(options)
 }
