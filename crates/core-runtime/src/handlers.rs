@@ -2,14 +2,13 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{RwLockReadGuard, RwLockWriteGuard},
 };
-
 use axum::{
     Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-
+use core_auth::Principal;
 use core_core::{
     CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
@@ -33,6 +32,21 @@ struct LoginRequest {
     username: String,
     password: String,
 }
+#[derive(Deserialize)]
+struct CreateUserRequest{
+    username:String,
+    password: String,
+    roles: Vec<String>,
+}
+#[derive(Deserialize)]
+struct UpdatePasswordRequest{
+    password: String,
+}
+#[derive(Deserialize)]
+struct UpdateRolesRequest{
+    roles: Vec<String>,
+}
+
 
 //helpers
 fn get_db_read<'a>(
@@ -109,16 +123,15 @@ pub async fn login_handler(
             .into_response();
         }
     };
-    match state.auth.login(&req.username, &req.password) {
-        Some(token) => {
+    let Ok(auth) =state.auth.read() else{
+        return HttpError::from_corelamo(CorelamoError::Internal("auth service lock poisoned".to_string()), &ctx).into_response();
+    };
+    match auth.login(&req.username, &req.password) {
+       Some(token) => {
             let resp = LoginResponse { token: token.0 };
             HttpOk::with_response("Login succesful".to_string(), resp, &ctx).into_response()
         }
-        None => HttpError::from_corelamo(
-            CorelamoError::Unauthorized("Invalid username or password".to_string()),
-            &ctx,
-        )
-        .into_response(),
+        None => HttpError::from_corelamo(CorelamoError::Unauthorized("invalid username or password".to_string()), &ctx).into_response(),
     }
 }
 
@@ -719,3 +732,103 @@ pub async fn list_databases_handler(
     )
     .into_response()
 }
+pub async fn create_user_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    let body= match require_body(&body){
+        Ok(b)=>b,
+        Err(e)=> return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    let req: CreateUserRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::InvalidData(format!("invalid create-user request: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let Ok(mut auth) =state.auth.write() else{
+    return HttpError::from_corelamo(CorelamoError::Internal("auth service lock poisoned".to_string()), &ctx).into_response();
+    };
+    match auth.create_user(&principal, &req.username, &req.password, req.roles) {
+    Ok(()) => HttpOk::new(format!("user '{}' created", req.username),&ctx).into_response(),
+    Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+}
+}
+pub async fn delete_user_handler(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    let mut auth = state.auth.write().unwrap();
+    match auth.delete_user(&principal, &username) {
+        Ok(()) => HttpOk::new(format!("user '{}' deleted", username),&ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn update_user_password_handler(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    let req: UpdatePasswordRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::InvalidData(format!("invalid update-password request: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let mut auth = state.auth.write().unwrap();
+    match auth.update_user_password(&principal, &username, &req.password) {
+        Ok(()) => HttpOk::new(format!("password updated for '{}'", username),&ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn update_user_roles_handler(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    let req: UpdateRolesRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::InvalidData(format!("invalid update-roles request: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let mut auth = state.auth.write().unwrap();
+    match auth.update_user_roles(&principal, &username, req.roles) {
+        Ok(()) => HttpOk::new(format!("roles updated for '{}'", username),&ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+

@@ -35,7 +35,7 @@ pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, CorelamoDatabase>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
-    pub auth: Arc<AuthService>,
+    pub auth: Arc<RwLock<AuthService>>,
 }
 
 //TODO: maybe check if there are more possible signals
@@ -137,7 +137,7 @@ async fn main() -> io::Result<()> {
 
     println!("found and loaded {} database(s) in total", databases.len());
     //Autorizacijas prikoli
-    let auth = Arc::new(core_auth::default_auth_service());
+    let auth = Arc::new(RwLock::new(AuthService::bootstrap()));
 
     let state = AppState {
         databases: Arc::new(RwLock::new(databases)),

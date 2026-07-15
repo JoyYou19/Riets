@@ -1,7 +1,8 @@
-use crate::{AuthService, Permission, PolicyStore, TokenStore, UserStore};
+use crate::{Permission, PolicyStore};
 
-pub fn default_auth_service() -> AuthService {
+pub fn default_policy() -> PolicyStore {
     let mut policy = PolicyStore::new();
+
     policy.grant_many(
         "admin",
         [
@@ -18,6 +19,7 @@ pub fn default_auth_service() -> AuthService {
             Permission::Status,
         ],
     );
+
     policy.grant_many(
         "architect",
         [
@@ -29,6 +31,7 @@ pub fn default_auth_service() -> AuthService {
             Permission::Status,
         ],
     );
+
     policy.grant("viewer", Permission::Search);
     policy.grant("viewer", Permission::Retrieve);
 
@@ -37,11 +40,6 @@ pub fn default_auth_service() -> AuthService {
     policy.grant("editor", Permission::Search);
     policy.grant("editor", Permission::Retrieve);
 
-    let mut users = UserStore::new();
-    users.add_user("admin", "secret", vec!["admin".to_string()]);
-    users.add_user("viewer", "secret", vec!["viewer".to_string()]);
-    users.add_user("editor", "secret", vec!["editor".to_string()]);
-
-    AuthService::new(policy, TokenStore::new(), users)
+    policy
 }
 

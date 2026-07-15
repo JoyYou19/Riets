@@ -6,8 +6,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use core_auth::Token;
-use core_protocol::{errors::CorelamoError, format::Format};
+use core_auth::{Principal, Token};
+use core_protocol::{errors::CorelamoError::{self, Unauthorized}, format::Format};
 use uuid::Uuid;
 
 use crate::{AppState, http_response::HttpError};
@@ -93,18 +93,31 @@ pub async fn request_context_middleware(
 //TODO: auth/https before request (check permissions....)
 pub async fn auth_middleware(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    let token = request
+    let token: Option<String> = request
         .headers()
         .get("X-Corelamo-Key")
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
-    match token {
-        Some(t) if state.auth.authenticate(&Token(t.to_string())).is_some() => {
+    let Some(token) = token else {
+        return (StatusCode::UNAUTHORIZED, "missing token").into_response();
+    };
+
+    let principal = {
+        let Ok(auth) = state.auth.read() else {
+            return (StatusCode::UNAUTHORIZED, "auth service unavailable").into_response();
+        };
+        auth.authenticate(&Token(token))
+    }; // <- auth (the lock guard) is dropped here, before any .await
+
+    match principal {
+        Some(principal) => {
+            request.extensions_mut().insert(principal);
             next.run(request).await
         }
-        _ => (StatusCode::UNAUTHORIZED, "missing or invalid api key").into_response(),
+        None => (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response(),
     }
 }
