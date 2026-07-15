@@ -278,7 +278,7 @@ impl IntoResponse for HttpOk {
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
                     .body(Body::from(body))
-                    .unwrap()
+                    .expect("Failed to build response")
             } //Format::XML => todo!(),
         }
     }

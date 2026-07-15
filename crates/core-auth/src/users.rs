@@ -22,10 +22,12 @@ impl Default for UserStore {
 impl UserStore {
     pub fn add_user(&mut self, username: &str, password: &str, roles: Vec<String>) {
         let salt = SaltString::generate(&mut OsRng);
-        let hashed = Argon2::default()
+        let hashed = match Argon2::default()
             .hash_password(password.as_bytes(), &salt)
-            .unwrap()
-            .to_string();
+            {
+                Ok(hash) => hash.to_string(),
+                Err(_) => return,
+            };
         self.users.insert(username.to_string(), (hashed, roles));
     }
     pub fn remove_user(&mut self, username: &str) -> bool{
@@ -36,10 +38,12 @@ impl UserStore {
         if let Some((_, roles)) = self.users.get(username) {
             let roles = roles.clone();
             let salt = SaltString::generate(&mut OsRng);
-            let hashed = Argon2::default()
+            let hashed = match Argon2::default()
                 .hash_password(new_password.as_bytes(), &salt)
-                .unwrap()
-                .to_string();
+                {
+                    Ok(hash) => hash.to_string(),
+                    Err(_) => return false ,
+                };
             self.users.insert(username.to_string(), (hashed, roles));
             true
         } else {
