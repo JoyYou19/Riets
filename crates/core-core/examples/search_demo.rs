@@ -3,7 +3,7 @@ use std::{
     io::{self, Write},
 };
 
-use core_core::{CorelamoDatabase, DatabaseOptions};
+use core_core::{CorelamoDatabase, DatabaseOptions, command_reponse_definitions::SearchCommand};
 use core_storage::search_database::DocumentInput;
 
 fn fixture_path() -> &'static str {
@@ -40,7 +40,8 @@ fn main() -> io::Result<()> {
             docs.into_iter()
                 .map(|doc| DocumentInput {
                     external_id: doc.id,
-                    source: None,
+                    source: Vec::new(),
+                    format:XML,
                     fields: BTreeMap::from([
                         ("title".to_string(), doc.title),
                         ("body".to_string(), doc.body),
@@ -93,7 +94,7 @@ fn main() -> io::Result<()> {
         }
 
         let started = std::time::Instant::now();
-        let hits = db.search(raw, 3)?;
+        let hits = db.search(&SearchCommand)?;
         let elapsed = started.elapsed();
 
         println!("search took {:?}, hits={}", elapsed, hits.len());

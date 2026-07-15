@@ -25,6 +25,7 @@ use crate::{
     middleware::RequestContext,
 };
 
+use core_auth::Principal;
 //authorizations
 use serde::Deserialize;
 #[derive(Deserialize)]
@@ -129,10 +130,11 @@ pub async fn login_handler(
     match auth.login(&req.username, &req.password) {
        Some(token) => {
             let resp = LoginResponse { token: token.0 };
-            HttpOk::with_response("Login succesful".to_string(), resp, &ctx).into_response()
+            HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
         }
         None => HttpError::from_corelamo(CorelamoError::Unauthorized("invalid username or password".to_string()), &ctx).into_response(),
     }
+    
 }
 
 //TODO: total_hits: xxx kkadu

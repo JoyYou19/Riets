@@ -1,26 +1,66 @@
-MISSING CRUITAL FEATURES:
-    INDEX - ko darit ar json arrays un visiem citiem edge cases nakotnee (xml tajaa skaitaa jaizdomaa)
-    PARTIAL replace command (seit loti japadomaa par to jobano failu glabasanu)
-    UPSERT command ✅
-    REINDEX progress + /reindex atgriez OK uzreiz un tad caur status var redzet reindex/compaction progress
-    SEARCH total_hits, offset, numeric search, field-specific filters, exact-match....
-    BACKUP RESTORE database (data/config+policy) looked into a concept WAL - Write Ahead Log (a lot of "competitors" use this)
+autoincrement + cutom field for id
+fix the delete/update/insert always returning 207
 
-LONG-TERM:
-    AUTH.....
-    CLUSTERING............
-    XML...........
 
-WILL-NEED-MAYBE-LATER:
-    OPTIMIZE HTTP->DATABASE like better/faster request parsing validation (MOSTLY INSERT THOUGH)
-    REST - RATE LIMITING / GZIP COMPRESSION / HTTPS
 
-MELNAIS DARBS:
-    TESTI gan takaa create/detele gan API testi 
-    VISU NOMAINIT UZ CorlamoError
+## 2. **Error Handling & Consistency**
+- **Replace `unwrap()` calls** with proper error propagation (e.g., in `update_document_handler` line 183)
+- **Replace `println!` with structured logging** throughout the codebase
+- **Add proper error types** instead of wrapping everything in `io::Error` and `CorelamoError::Internal`
 
-EXTRAS:
-    nekadus println, vajag logot/tracing izmantot nez kaa vel nezinu ne vienu ne otru
-    STATUS nu vienkarsi labaaks /status sobrid tur like 3 lietas raada
-    RETRIEVE Ssomehow maybe needs to show the IDs of the documet(s) even if index=IdAutoIncrement 
-    INSERT dfferent error for duplicate/invalid for each document for the 207 error
+## 3. **Configuration System**
+- **Persist `DatabaseOptions` to disk** instead of always using `Default`
+- **Make `DatabaseOptions` configurable** via API endpoints (GET/PUT `/db/{name}/config`)
+- **Add validation** for configuration changes
+
+## 4. **API Completeness**
+- **Add pagination** to search results (offset/limit)
+- **Add bulk operations** (batch delete, batch update)
+- **Add document validation** before insertion
+- **Add health check endpoint**
+
+## 5. **Performance & Monitoring**
+- **Add proper metrics** (latency percentiles, throughput, error rates)
+- **Add query logging** for debugging
+- **Add connection pooling** if you plan to handle concurrent requests
+- **Add caching layer** for frequently accessed documents
+
+## 6. **Data Integrity**
+- **Add transaction support** for multi-document operations
+- **Add backup/restore functionality**
+- **Add data validation hooks** (e.g., schema validation before insert)
+
+## 7. **Index Improvements**
+- **Add index statistics** (term frequency, document frequency)
+- **Add index optimization** (merge small segments proactively)
+- **Add support for more query types** (phrase queries, fuzzy search, wildcards)
+
+## 8. **Documentation & Testing**
+- **Add integration tests** for all API endpoints
+- **Add benchmark suite** for performance regression testing
+- **Add API documentation** (OpenAPI/Swagger)
+
+## 9. **Security** (Coordinate with your colleague)
+- **Add rate limiting**
+- **Add request validation** (size limits, field whitelisting)
+- **Add audit logging**
+
+## Quick Wins (1-2 days each):
+1. Fix the update bug
+2. Replace `unwrap()` calls
+3. Add pagination to search
+4. Add health check endpoint
+
+
+## Medium Term (1-2 weeks):
+1. Configuration persistence
+2. Metrics & monitoring
+3. Integration tests
+4. Backup/restore
+
+## Long Term:
+1. Clustering (your colleague's work)
+2. Advanced query features
+3. Transaction support
+4. Schema validation
+

@@ -101,7 +101,7 @@ impl From<std::io::Error> for CorelamoError {
             }
             // os-level permission failure is always a server-side config problem, not a user error
             std::io::ErrorKind::PermissionDenied => CorelamoError::PermissionDenied(e.to_string()),
-            _ => CorelamoError::Internal(e.to_string()),
+            _ => CorelamoError::PermissionDenied(e.to_string()),
         }
     }
 }
