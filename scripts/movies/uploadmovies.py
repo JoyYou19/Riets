@@ -178,9 +178,9 @@ def main():
         if code != 0:
             print(f"[ERROR] Failed to upload {file}")
             print(out)
-        # else:
-        #     print(
-        #         f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+        else:
+            print(
+                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
 
     # 5. reindex
     print("[INFO] Reindexing...")

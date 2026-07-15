@@ -261,10 +261,9 @@ impl CorelamoDatabase {
         self.db_mut()?.delete_document(external_id)
     }
 
-    //WARN: es atradu un ieliku, sorix valc ja nepareizi
-    pub fn update_document(&mut self, input: DocumentInput) -> io::Result<()> {
+    pub fn upsert_document(&mut self, input: DocumentInput) -> io::Result<()> {
         self.db_mut()?
-            .update_document(input, IndexMode::StoreAndIndex)
+            .upsert_document(input, IndexMode::StoreAndIndex)
     }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {

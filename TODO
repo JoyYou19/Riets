@@ -1,10 +1,10 @@
 MISSING CRUITAL FEATURES:
     INDEX - ko darit ar json arrays un visiem citiem edge cases nakotnee (xml tajaa skaitaa jaizdomaa)
-    PARTIAL replace command 
-    UPSERT command
+    PARTIAL replace command (seit loti japadomaa par to jobano failu glabasanu)
+    UPSERT command ✅
     REINDEX progress + /reindex atgriez OK uzreiz un tad caur status var redzet reindex/compaction progress
     SEARCH total_hits, offset, numeric search, field-specific filters, exact-match....
-    BACKUP RESTORE database (data/config+policy)
+    BACKUP RESTORE database (data/config+policy) looked into a concept WAL - Write Ahead Log (a lot of "competitors" use this)
 
 LONG-TERM:
     AUTH.....
@@ -12,7 +12,7 @@ LONG-TERM:
     XML...........
 
 WILL-NEED-MAYBE-LATER:
-    OPTIMIZE HTTP->DATABASE like better/faster request parsing validation
+    OPTIMIZE HTTP->DATABASE like better/faster request parsing validation (MOSTLY INSERT THOUGH)
     REST - RATE LIMITING / GZIP COMPRESSION / HTTPS
 
 MELNAIS DARBS:
@@ -22,5 +22,5 @@ MELNAIS DARBS:
 EXTRAS:
     nekadus println, vajag logot/tracing izmantot nez kaa vel nezinu ne vienu ne otru
     STATUS nu vienkarsi labaaks /status sobrid tur like 3 lietas raada
-    RETRIEVE SHOWS ID
+    RETRIEVE Ssomehow maybe needs to show the IDs of the documet(s) even if index=IdAutoIncrement 
     INSERT dfferent error for duplicate/invalid for each document for the 207 error
