@@ -154,7 +154,7 @@ pub async fn search_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -207,7 +207,7 @@ pub async fn retrieve_handler(
     };
     let ids = command.ids;
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -278,7 +278,7 @@ pub async fn insert_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -328,7 +328,7 @@ pub async fn delete_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -381,7 +381,7 @@ pub async fn replace_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -442,7 +442,7 @@ pub async fn upsert_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write_running(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -481,7 +481,7 @@ pub async fn create_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
 
     if databases.contains_key(&db_name) {
         return HttpError::from_corelamo(
@@ -512,7 +512,7 @@ pub async fn start_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -534,7 +534,7 @@ pub async fn stop_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e|e.into_inner());
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -557,7 +557,7 @@ pub async fn delete_detabase_handler(
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let db_path = state.databases_dir.join(&db_name);
-    let mut databases_write = state.databases.write().unwrap();
+    let mut databases_write = state.databases.write().unwrap_or_else(|e|e.into_inner());
 
     if !databases_write.contains_key(&db_name) {
         return HttpError::from_corelamo(
@@ -595,7 +595,7 @@ pub async fn stats_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases = state.databases.read().unwrap();
+    let databases: RwLockReadGuard<'_, HashMap<String, CorelamoDatabase>> = state.databases.read().unwrap_or_else(|e|e.into_inner());
     let db = match get_db_read_running(&databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -650,7 +650,7 @@ pub async fn get_policy_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -672,7 +672,7 @@ pub async fn set_policy_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -694,7 +694,7 @@ pub async fn get_config_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases = state.databases.read().unwrap();
+    let databases = state.databases.read().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_read(&databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -717,7 +717,7 @@ pub async fn set_config_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -746,7 +746,7 @@ pub async fn restart_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap();
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -764,7 +764,7 @@ pub async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases = state.databases.read().unwrap();
+    let databases = state.databases.read().unwrap_or_else(|e| e.into_inner());
     let count = databases.len();
 
     let entries: Vec<serde_json::Value> = databases
@@ -814,7 +814,7 @@ pub async fn delete_user_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    let mut auth = state.auth.write().unwrap();
+    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
     match auth.delete_user(&principal, &username) {
         Ok(()) => HttpOk::new(format!("user '{}' deleted", username),&ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -843,7 +843,7 @@ pub async fn update_user_password_handler(
         }
     };
 
-    let mut auth = state.auth.write().unwrap();
+    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
     match auth.update_user_password(&principal, &username, &req.password) {
         Ok(()) => HttpOk::new(format!("password updated for '{}'", username),&ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -872,7 +872,7 @@ pub async fn update_user_roles_handler(
         }
     };
 
-    let mut auth = state.auth.write().unwrap();
+    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
     match auth.update_user_roles(&principal, &username, req.roles) {
         Ok(()) => HttpOk::new(format!("roles updated for '{}'", username),&ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),

@@ -265,7 +265,7 @@ async fn main() -> io::Result<()> {
     println!("server stopped, shutting down databases...");
 
     //some dark magic to gain ownership of databases for shutdown
-    let databases = std::mem::take(&mut *state_for_shutdown.databases.write().unwrap());
+    let databases = std::mem::take(&mut *state_for_shutdown.databases.write().unwrap_or_else(|e| e.into_inner()));
     for (name, db) in databases {
         println!("shutting down database '{name}'...");
         //WARN: is the db.shutdown a safe thing to do yet? meaning like while
