@@ -11,6 +11,7 @@
 BASE_URL="http://localhost:6006"
 PASS_COUNT=0
 FAIL_COUNT=0
+RUN_ID=$(date +%s)
 
 # ── helper: run a curl command, check status code, print PASS/FAIL ────
 # usage: check "<label>" <expected_status> <curl args...>
@@ -81,11 +82,11 @@ check "viewer can search" 200 \
 
 check "viewer cannot insert" 403 \
   -X POST "$BASE_URL/api/databases/movies/insert" \
-  -H "X-Corelamo-Key: $VIEWER_TOKEN" -d '{"id":"test-doc-1","title":"Test"}'
+  -H "X-Corelamo-Key: $VIEWER_TOKEN" -d '{"id":"test-doc-viewer-'"$RUN_ID"'","title":"Test"}'
 
 check "editor can insert" 200 \
   -X POST "$BASE_URL/api/databases/movies/insert" \
-  -H "X-Corelamo-Key: $EDITOR_TOKEN" -d '{"id":"test-doc-1","title":"Test"}'
+  -H "X-Corelamo-Key: $EDITOR_TOKEN" -d '{"id":"test-doc-editor-'"$RUN_ID"'","title":"Test"}'
 
 # ── 7. user CRUD lifecycle (admin only) ─────────────────────────────────
 check "admin creates testuser" 200 \
@@ -119,7 +120,7 @@ TESTUSER_TOKEN=$(get_token '{"username":"testuser","password":"newpass456"}')
 
 check "testuser can now insert (has editor role)" 200 \
   -X POST "$BASE_URL/api/databases/movies/insert" \
-  -H "X-Corelamo-Key: $TESTUSER_TOKEN" -d '{"id":"test-doc-1","title":"Test"}'
+  -H "X-Corelamo-Key: $TESTUSER_TOKEN" -d '{"id":"test-doc-testuser-'"$RUN_ID"'","title":"Test"}'
 
 check "admin deletes testuser" 200 \
   -X DELETE "$BASE_URL/api/users/testuser" -H "X-Corelamo-Key: $ADMIN_TOKEN"

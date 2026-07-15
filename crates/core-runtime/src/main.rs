@@ -219,7 +219,6 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/users/{username}/roles",
             post(handlers::update_user_roles_handler),
-            put(handlers::set_policy_handler),
         )
         .route(
             "/api/databases/{db_name}/config",
