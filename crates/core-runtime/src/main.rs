@@ -6,8 +6,7 @@ use axum::{
 };
 
 use core_auth::AuthService;
-use core_core::CorelamoDatabase;
-use core_protocol::format::Format;
+use core_protocol::{errors::CorelamoError, format::Format};
 
 use std::{
     collections::HashMap,
@@ -19,8 +18,11 @@ use std::{
 
 use tokio::signal;
 
+use crate::db_actor::DbHandle;
+
 mod corelamo_settings;
 mod database_helpers;
+mod db_actor;
 mod doctypes;
 mod handlers;
 mod http_response;
@@ -28,10 +30,22 @@ mod middleware;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub databases: Arc<RwLock<HashMap<String, CorelamoDatabase>>>,
+    pub databases: Arc<RwLock<HashMap<String, DbHandle>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
     pub auth: Arc<RwLock<AuthService>>,
+}
+
+impl AppState {
+    pub fn lookup(&self, db_name: &str) -> Result<DbHandle, CorelamoError> {
+        let dbs = self
+            .databases
+            .read()
+            .map_err(|_| CorelamoError::Internal("databases lock poisoned".into()))?;
+        dbs.get(db_name)
+            .cloned()
+            .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
+    }
 }
 
 //TODO: maybe check if there are more possible signals
@@ -132,11 +146,20 @@ async fn main() -> io::Result<()> {
     };
 
     println!("found and loaded {} database(s) in total", databases.len());
+    let mut handles = HashMap::new();
+    let mut joins = Vec::new();
+    //setup databases and their handlers
+    for (db_name, db) in databases {
+        let (handle, join) = db_actor::spawn_db_actor(db, db_name.clone());
+        handles.insert(db_name, handle);
+        joins.push(join);
+    }
+
     //Autorizacijas prikoli
     let auth = Arc::new(RwLock::new(AuthService::bootstrap()));
 
     let state = AppState {
-        databases: Arc::new(RwLock::new(databases)),
+        databases: Arc::new(RwLock::new(handles)),
         databases_dir,
         default_format,
         auth,
@@ -168,7 +191,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/upsert",
-            put(handlers::upsert_document_handler),
+            post(handlers::upsert_document_handler),
         )
         .route(
             "/api/databases/{db_name}/delete",
@@ -207,19 +230,19 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/policy",
             post(handlers::set_policy_handler),
         )
-        .route("/api/users", post(handlers::create_user_handler))
-        .route(
-            "/api/users/{username}",
-            delete(handlers::delete_user_handler),
-        )
-        .route(
-            "/api/users/{username}/password",
-            post(handlers::update_user_password_handler),
-        )
-        .route(
-            "/api/users/{username}/roles",
-            post(handlers::update_user_roles_handler),
-        )
+        // .route("/api/users", post(handlers::create_user_handler))
+        // .route(
+        //     "/api/users/{username}",
+        //     delete(handlers::delete_user_handler),
+        // )
+        // .route(
+        //     "/api/users/{username}/password",
+        //     post(handlers::update_user_password_handler),
+        // )
+        // .route(
+        //     "/api/users/{username}/roles",
+        //     post(handlers::update_user_roles_handler),
+        // )
         .route(
             "/api/databases/{db_name}/config",
             get(handlers::get_config_handler),
@@ -264,19 +287,23 @@ async fn main() -> io::Result<()> {
     //something or someone killed our beloved programm
     println!("server stopped, shutting down databases...");
 
-    //some dark magic to gain ownership of databases for shutdown
-    let databases = std::mem::take(&mut *state_for_shutdown.databases.write().unwrap_or_else(|e| e.into_inner()));
-    for (name, db) in databases {
-        println!("shutting down database '{name}'...");
-        //WARN: is the db.shutdown a safe thing to do yet? meaning like while
-        //indexing/merging/compacting, if shutdown is it safe?
-        if let Err(e) = db.shutdown() {
-            eprintln!("error shutting down '{name}': {e}");
+    let handles = {
+        let mut guard = state_for_shutdown.databases.write().unwrap();
+        std::mem::take(&mut *guard)
+    };
+
+    for (db_name, handle) in handles {
+        println!("shutting down database '{db_name}'...");
+        if let Err(e) = handle.shutdown().await {
+            eprintln!("error shutting down '{db_name}': {e}");
         }
     }
 
-    //TODO: we might have extra stuff to do here later, for now i cant think of anything else
+    for join in joins {
+        let _ = join.join();
+    }
 
+    //TODO: we might have extra stuff to do here later, for now i cant think of anything else
     println!("Goodbye!");
     Ok(())
 }

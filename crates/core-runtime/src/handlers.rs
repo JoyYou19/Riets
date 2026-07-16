@@ -12,7 +12,9 @@ use core_core::{
         SearchResponse,
     },
 };
+use core_index::segment::handle;
 use core_protocol::errors::CorelamoError;
+use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -20,7 +22,9 @@ use std::{
 };
 
 use crate::{
-    AppState, database_helpers, doctypes,
+    AppState, database_helpers,
+    db_actor::{self, DbHandle},
+    doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
@@ -45,51 +49,6 @@ struct UpdatePasswordRequest {
 #[derive(Deserialize)]
 struct UpdateRolesRequest {
     roles: Vec<String>,
-}
-
-//helpers
-fn get_db_read<'a>(
-    databases: &'a RwLockReadGuard<HashMap<String, CorelamoDatabase>>,
-    db_name: &str,
-) -> Result<&'a CorelamoDatabase, CorelamoError> {
-    databases
-        .get(db_name)
-        .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
-}
-
-fn get_db_write<'a>(
-    databases: &'a mut RwLockWriteGuard<HashMap<String, CorelamoDatabase>>,
-    db_name: &str,
-) -> Result<&'a mut CorelamoDatabase, CorelamoError> {
-    databases
-        .get_mut(db_name)
-        .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
-}
-
-fn get_db_read_running<'a>(
-    databases: &'a RwLockReadGuard<HashMap<String, CorelamoDatabase>>,
-    db_name: &str,
-) -> Result<&'a CorelamoDatabase, CorelamoError> {
-    let db = get_db_read(databases, db_name)?;
-    if !db.is_running() {
-        return Err(CorelamoError::DatabaseNotRunning(format!(
-            "database '{db_name}' is not running"
-        )));
-    }
-    Ok(db)
-}
-
-fn get_db_write_running<'a>(
-    databases: &'a mut RwLockWriteGuard<HashMap<String, CorelamoDatabase>>,
-    db_name: &str,
-) -> Result<&'a mut CorelamoDatabase, CorelamoError> {
-    let db = get_db_write(databases, db_name)?;
-    if !db.is_running() {
-        return Err(CorelamoError::DatabaseNotRunning(format!(
-            "database '{db_name}' is not running"
-        )));
-    }
-    Ok(db)
 }
 
 fn require_body(body: &str) -> Result<&str, CorelamoError> {
@@ -150,30 +109,25 @@ pub async fn search_handler(
     body: String,
 ) -> Response {
     let body = match require_body(&body) {
-        Ok(b) => b,
+        Ok(b) => b.to_string(),
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let command: SearchCommand = match SearchCommand::parse(body, ctx.format) {
+    let command: SearchCommand = match SearchCommand::parse(&body, ctx.format) {
         Ok(cmd) => cmd,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write_running(&mut databases, &db_name) {
-        Ok(db) => db,
+    let query = command.query.clone();
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let hits = match db.search(&command) {
+    let hits = match handle.search(command).await {
         Ok(hits) => hits,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("search failed: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let hit_count = hits.len();
@@ -186,12 +140,8 @@ pub async fn search_handler(
         Ok(r) => r,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    HttpOk::with_response(
-        format!("{hit_count} hit(s) for '{}'", &command.query),
-        resp,
-        &ctx,
-    )
-    .into_response()
+
+    HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
 }
 
 //TODO: cant really see the id if auto-increment :(
@@ -210,29 +160,24 @@ pub async fn retrieve_handler(
         Ok(cmd) => cmd,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    let ids = command.ids;
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write_running(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let results = match handle.retrieve(command.ids).await {
+        Ok(r) => r,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut docs = Vec::new();
     let mut not_found_ids: Vec<String> = Vec::new();
 
-    for id in &ids {
-        match db.get_document(id) {
-            Ok(Some(doc)) => docs.push(doc),
-            Ok(None) => not_found_ids.push(id.clone()),
-            //TODO:  update error handling once the get_document gets updated
-            Err(e) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal(format!("failed to get document '{id}': {e}")),
-                    &ctx,
-                )
-                .into_response();
-            }
+    for (id, doc) in results {
+        match doc {
+            Some(d) => docs.push(d),
+            None => not_found_ids.push(id),
         }
     }
 
@@ -253,52 +198,37 @@ pub async fn retrieve_handler(
     HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
-//TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json
-//TODO: multi-threaded parsing JSON/XML -> DocInput
+// //TODO: padomat kaa smuki paradit ne tikai duplicate id bet arii kkadu invalid json
+// //TODO: multi-threaded parsing JSON/XML -> DocInput
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    let Ok(auth) = state.auth.read() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
-    };
-    if let Err(e) = auth.check(&principal, Permission::Insert) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-    drop(auth); // release the lock before doing database work
-
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write_running(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+    let policy = match handle.get_policy().await {
+        Ok(p) => p,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, &policy) {
         Ok(d) => d,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let report = match db.put_documents_parallel(input_docs) {
+    let report = match handle.insert(input_docs).await {
         Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("insert failed: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
@@ -329,35 +259,20 @@ pub async fn delete_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write_running(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let report = match handle.delete(command.ids).await {
+        Ok(r) => r,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
-
-    for id in command.ids {
-        match db.get_document(&id) {
-            Ok(Some(_)) => match db.delete_document(&id) {
-                Ok(_) => outcome.succeed(),
-                Err(e) => {
-                    return HttpError::from_corelamo(
-                        CorelamoError::Internal(format!("failed to delete '{id}': {e}")),
-                        &ctx,
-                    )
-                    .into_response();
-                }
-            },
-            Ok(None) => outcome.fail(id, 404, "NOT FOUND".to_string()),
-            Err(e) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal(format!("failed to lookup '{id}': {e}")),
-                    &ctx,
-                )
-                .into_response();
-            }
-        }
+    outcome.succeed_many(report.deleted);
+    for id in report.not_found {
+        outcome.fail(id, 404, "NOT FOUND".to_string());
     }
 
     let title = format!(
@@ -382,56 +297,37 @@ pub async fn replace_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write_running(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+    let policy = match handle.get_policy().await {
+        Ok(p) => p,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, &policy) {
         Ok(d) => d,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut not_found = Vec::new();
-    let mut replaced_count = 0;
-
-    for doc in input_docs {
-        match db.get_document(&doc.external_id) {
-            Ok(Some(_)) => match db.upsert_document(doc) {
-                Ok(_) => {
-                    replaced_count += 1;
-                }
-                Err(e) => {
-                    return HttpError::from_corelamo(
-                        CorelamoError::Internal(format!("existence check failed: {e}")),
-                        &ctx,
-                    )
-                    .into_response();
-                }
-            },
-            Ok(None) => not_found.push(doc.external_id),
-            Err(e) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal(format!("existence check failed: {e}")),
-                    &ctx,
-                )
-                .into_response();
-            }
-        }
-    }
+    let report = match handle.replace(input_docs).await {
+        Ok(r) => r,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
 
     let mut outcome = BatchOutcome::new("replaced", StatusCode::NOT_FOUND);
-    outcome.succeed_many(replaced_count as u32);
-    for id in not_found {
+    outcome.succeed_many(report.replaced);
+    for id in report.not_found {
         outcome.fail(id, 404, "NOT FOUND".to_string());
     }
-    let title = format!("replaced {replaced_count} in '{db_name}'");
+
+    let title = format!("replaced {} in '{db_name}'", report.replaced);
     outcome
         .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
 }
-
 pub async fn upsert_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -443,26 +339,30 @@ pub async fn upsert_document_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write_running(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let input_docs = match doctypes::parse_documents(&body, ctx.format, db.policy()) {
+    let policy = match handle.get_policy().await {
+        Ok(p) => p,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    let input_docs = match doctypes::parse_documents(&body, ctx.format, &policy) {
         Ok(d) => d,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut outcome = BatchOutcome::new("upserted", StatusCode::INTERNAL_SERVER_ERROR);
+    let results = match handle.upsert(input_docs).await {
+        Ok(r) => r,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
 
-    for doc in input_docs {
-        let id = doc.external_id.clone();
-        match db.upsert_document(doc) {
-            Ok(_) => outcome.succeed(),
-            Err(e) => {
-                outcome.fail(id, 500, e.to_string());
-            }
+    let mut outcome = BatchOutcome::new("upserted", StatusCode::INTERNAL_SERVER_ERROR);
+    for (id, result) in results {
+        match result {
+            Ok(()) => outcome.succeed(),
+            Err(e) => outcome.fail(id, 500, e.to_string()),
         }
     }
 
@@ -482,23 +382,69 @@ pub async fn create_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-
-    if databases.contains_key(&db_name) {
-        return HttpError::from_corelamo(
-            CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-            &ctx,
-        )
-        .into_response();
+    {
+        let dbs = match state.databases.read() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        if dbs.contains_key(&db_name) {
+            return HttpError::from_corelamo(
+                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+                &ctx,
+            )
+            .into_response();
+        }
     }
 
     let db_path = state.databases_dir.join(&db_name);
-    let db = match CorelamoDatabase::create(&db_path, DatabaseOptions::default()) {
-        Ok(db) => db,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+
+    let created = tokio::task::spawn_blocking(move || {
+        CorelamoDatabase::create(&db_path, DatabaseOptions::default())
+    })
+    .await;
+
+    let db = match created {
+        Ok(Ok(db)) => db,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("create task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
     };
 
-    databases.insert(db_name.clone(), db);
+    let (handle, join) = db_actor::spawn_db_actor(db, db_name.clone());
+    {
+        let mut dbs = match state.databases.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        if dbs.contains_key(&db_name) {
+            drop(dbs);
+            drop(handle);
+            let _ = join.join();
+            return HttpError::from_corelamo(
+                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+                &ctx,
+            )
+            .into_response();
+        }
+        dbs.insert(db_name.clone(), handle);
+    }
 
     HttpOk::with_status(
         StatusCode::CREATED,
@@ -513,19 +459,18 @@ pub async fn start_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    if db.is_running() {
-        return HttpOk::new(format!("database '{db_name}' is already running"), &ctx)
-            .into_response();
-    }
-
-    match db.start() {
-        Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
+    match handle.start().await {
+        Ok(DatabasePowerButtonOutcome::Changed) => {
+            HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response()
+        }
+        Ok(DatabasePowerButtonOutcome::Nochange) => {
+            HttpOk::new(format!("database '{db_name}' is already running"), &ctx).into_response()
+        }
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -535,19 +480,18 @@ pub async fn stop_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    if !db.is_running() {
-        return HttpOk::new(format!("database '{db_name}' is already stopped"), &ctx)
-            .into_response();
-    }
-
-    match db.stop() {
-        Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
+    match handle.stop().await {
+        Ok(DatabasePowerButtonOutcome::Changed) => {
+            HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response()
+        }
+        Ok(DatabasePowerButtonOutcome::Nochange) => {
+            HttpOk::new(format!("database '{db_name}' is already stopped"), &ctx).into_response()
+        }
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -557,38 +501,56 @@ pub async fn delete_detabase_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let db_path = state.databases_dir.join(&db_name);
-    let mut databases_write = state.databases.write().unwrap_or_else(|e| e.into_inner());
+    let handle = {
+        let mut dbs = match state.databases.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        match dbs.remove(&db_name) {
+            Some(h) => h,
+            None => {
+                return HttpError::from_corelamo(
+                    CorelamoError::NotFound(format!("database '{db_name}' not found")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    }; //guard dropped
 
-    if !databases_write.contains_key(&db_name) {
+    if let Err(e) = handle.shutdown().await {
         return HttpError::from_corelamo(
-            CorelamoError::NotFound(format!("database '{db_name}' not found")),
+            CorelamoError::Internal(format!("failed to shutdown database '{db_name}': {e}")),
             &ctx,
         )
         .into_response();
     }
+    drop(handle); //last Sender gone
 
-    if let Some(db) = databases_write.remove(&db_name) {
-        if let Err(e) = db.shutdown() {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("failed to shutdown database '{db_name}': {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    }
+    let db_path = state.databases_dir.join(&db_name);
+    let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
 
-    if let Err(e) = std::fs::remove_dir_all(&db_path) {
-        return HttpError::from_corelamo(
+    match removed {
+        Ok(Ok(())) => HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(
             CorelamoError::Internal(format!(
                 "removed from memory but failed to delete '{db_name}' from disk: {e}"
             )),
             &ctx,
         )
-        .into_response();
+        .into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("delete task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
-
-    HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response()
 }
 
 pub async fn stats_handler(
@@ -645,20 +607,14 @@ pub async fn reindex_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap();
-    let db = match get_db_write_running(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    match db.reindex() {
-        Ok(_) => HttpOk::new(format!("reindex complete for '{db_name}'"), &ctx).into_response(),
-        //TODO:  update once reindex errors updated
-        Err(e) => HttpError::from_corelamo(
-            CorelamoError::Internal(format!("reindex failed: {e}")),
-            &ctx,
-        )
-        .into_response(),
+    match handle.reindex().await {
+        Ok(()) => HttpOk::new(format!("reindex complete for '{db_name}'"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -669,12 +625,17 @@ pub async fn get_policy_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    match doctypes::serialize_policy(db.policy()) {
+
+    let policy = match handle.get_policy().await {
+        Ok(p) => p,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match doctypes::serialize_policy(&policy) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
         Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     }
@@ -691,20 +652,19 @@ pub async fn set_policy_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write(&mut databases, &db_name) {
-        Ok(db) => db,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
     let policy = match doctypes::parse_policy(&body) {
         Ok(p) => p,
         Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     };
 
-    match db.set_policy(policy) {
-        Ok(_) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match handle.set_policy(policy).await {
+        Ok(()) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -713,13 +673,13 @@ pub async fn get_config_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases = state.databases.read().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_read(&databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+    let options = handle.options().await;
 
-    match toml::to_string_pretty(db.options()) {
+    match toml::to_string_pretty(&options) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
         Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     }
@@ -736,25 +696,25 @@ pub async fn set_config_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write(&mut databases, &db_name) {
-        Ok(db) => db,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
+    //parse first - TOML parsing needs no database
     let options: DatabaseOptions = match toml::from_str(&body) {
         Ok(o) => o,
         Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     };
 
-    match database_helpers::set_config(db, options) {
-        Ok(()) => {
-            let note = if db.is_running() {
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match handle.set_options(options).await {
+        Ok(was_running) => {
+            let note = if was_running {
                 " (restart required for start-time settings to take effect)"
             } else {
                 ""
             };
-            HttpOk::new(format!("config updated for '{db_name}' {note}"), &ctx).into_response()
+            HttpOk::new(format!("config updated for '{db_name}'{note}"), &ctx).into_response()
         }
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -765,13 +725,12 @@ pub async fn restart_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_write(&mut databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    match database_helpers::restart_database(db) {
+    match handle.restart().await {
         Ok(()) => {
             HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
         }
@@ -783,13 +742,29 @@ pub async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases = state.databases.read().unwrap_or_else(|e| e.into_inner());
-    let count = databases.len();
+    let handles: Vec<(String, DbHandle)> = {
+        let dbs = match state.databases.read() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        dbs.iter()
+            .map(|(name, h)| (name.clone(), h.clone()))
+            .collect()
+    };
 
-    let entries: Vec<serde_json::Value> = databases
-        .iter()
-        .map(|(name, db)| json!({ "name": name, "running": db.is_running() }))
-        .collect();
+    let count = handles.len();
+
+    let mut entries = Vec::with_capacity(count);
+    for (name, handle) in handles {
+        let running = handle.is_running().await.unwrap_or(false);
+        entries.push(json!({ "name": name, "running": running }));
+    }
 
     HttpOk::with_data(
         format!("{count} database(s)"),

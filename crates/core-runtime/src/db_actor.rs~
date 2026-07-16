@@ -1,0 +1,155 @@
+//FIX: sis ir tik AI generated pamats visam jutos loti slikti par so bet man vajag pacakareties lai
+//saprastu, ja izradisies hujna mainisu - nomrunds
+use std::thread;
+
+use core_index::document::IndexPolicy;
+use tokio::sync::{mpsc, oneshot};
+
+use core_core::{
+    CorelamoDatabase, DatabaseOptions, DatabaseStats, command_reponse_definitions::SearchCommand,
+};
+use core_protocol::errors::CorelamoError;
+use core_storage::{document_store::StoredDocument, search_database::SearchDocumentHit};
+
+//oneshot chanel - creates a chanel for a single message (command)
+type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
+
+//Commands
+pub enum DbCommand {
+    Search {
+        cmd: SearchCommand,
+        reply: Reply<Vec<SearchDocumentHit>>,
+    },
+    GetPolicy {
+        reply: Reply<IndexPolicy>,
+    },
+    Shutdown {
+        reply: Reply<()>,
+    },
+    Retrieve {
+        ids: Vec<String>,
+        reply: Reply<Vec<(String, Option<StoredDocument>)>>,
+    },
+    Status {
+        reply: Reply<DatabaseStats>,
+    },
+    GetOptions {
+        reply: Reply<DatabaseOptions>,
+    },
+}
+
+//Each database has a handler
+#[derive(Clone)]
+pub struct DbHandle {
+    tx: mpsc::Sender<DbCommand>,
+}
+
+impl DbHandle {
+    //for now im considering this to be dark magic
+    async fn call<T>(&self, make: impl FnOnce(Reply<T>) -> DbCommand) -> Result<T, CorelamoError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(make(reply_tx))
+            .await
+            .map_err(|_| CorelamoError::Internal("database actor is gone".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| CorelamoError::Internal("database actor dropped the reply".into()))?
+    }
+
+    pub async fn search(
+        &self,
+        cmd: SearchCommand,
+    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+        self.call(|reply| DbCommand::Search { cmd, reply }).await
+    }
+
+    pub async fn get_policy(&self) -> Result<IndexPolicy, CorelamoError> {
+        self.call(|reply| DbCommand::GetPolicy { reply }).await
+    }
+
+    pub async fn shutdown(&self) -> Result<(), CorelamoError> {
+        self.call(|reply| DbCommand::Shutdown { reply }).await
+    }
+
+    pub async fn stats(&self) -> Result<DatabaseStats, CorelamoError> {
+        self.call(|reply| DbCommand::Status { reply }).await
+    }
+
+    pub async fn stats(&self) -> Result<DatabaseStats, CorelamoError> {
+        self.call(|reply| DbCommand::Status { reply }).await
+    }
+}
+
+pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::JoinHandle<()>) {
+    let (tx, mut rx) = mpsc::channel::<DbCommand>(64);
+
+    let join = thread::Builder::new()
+        .name(format!("db-actor-{name}"))
+        .spawn(move || {
+            actor_loop(db, &mut rx, &name);
+            println!("db actor '{name}' exiting");
+        })
+        .expect("failed to spawn db actor thread");
+
+    (DbHandle { tx }, join)
+}
+
+fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
+    while let Some(cmd) = rx.blocking_recv() {
+        match cmd {
+            //core commands
+            DbCommand::Search { cmd, reply } => {
+                let result = db
+                    .search(&cmd)
+                    .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")));
+                let _ = reply.send(result);
+            }
+            DbCommand::Retrieve { ids, reply } => {
+                let mut out = Vec::with_capacity(ids.len());
+                let mut failed = None;
+                for id in ids {
+                    match db.get_document(&id) {
+                        Ok(doc) => out.push((id, doc)),
+                        Err(e) => {
+                            failed = Some(CorelamoError::Internal(format!(
+                                "failed to get document '{id}': {e}"
+                            )));
+                            break;
+                        }
+                    }
+                }
+                let _ = reply.send(match failed {
+                    Some(e) => Err(e),
+                    None => Ok(out),
+                });
+            }
+
+            //maintnance/config commands
+            DbCommand::Shutdown { reply } => {
+                let result = db
+                    .shutdown()
+                    .map_err(|e| CorelamoError::Internal(format!("shutdown failed: {e}")));
+                let _ = reply.send(result);
+                return;
+            }
+            DbCommand::GetPolicy { reply } => {
+                let _ = reply.send(Ok(db.policy().clone()));
+            }
+            DbCommand::Status { reply } => {
+                let _ = reply.send(
+                    db.stats()
+                        .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}"))),
+                );
+            }
+            DbCommand::GetOptions { reply } => {
+                let _ = reply.send(Ok(db.options().clone()));
+            }
+        }
+    }
+
+    eprintln!("db actor '{name}': channel closed without shutdown, stopping");
+    if let Err(e) = db.stop() {
+        eprintln!("db actor '{name}': stop failed: {e}");
+    }
+}

@@ -36,6 +36,22 @@ pub struct InsertReport {
     pub duplicates: Vec<String>,
 }
 
+pub struct DeleteReport {
+    pub deleted: u32,
+    pub not_found: Vec<String>,
+}
+
+pub struct ReplaceReport {
+    pub replaced: u32,
+    pub not_found: Vec<String>,
+}
+
+//start stop database (already stopped/started)
+pub enum DatabasePowerButtonOutcome {
+    Changed,
+    Nochange,
+}
+
 #[derive(Debug)]
 pub struct DocumentInput {
     pub external_id: String,
