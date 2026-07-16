@@ -27,6 +27,8 @@ pub fn default_policy() -> PolicyStore {
     policy.grant_many(
         "architect",
         [
+            Permission::Search,
+            Permission::Retrieve,
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
             Permission::ListDatabase,
@@ -43,6 +45,10 @@ pub fn default_policy() -> PolicyStore {
     policy.grant("editor", Permission::Delete);
     policy.grant("editor", Permission::Search);
     policy.grant("editor", Permission::Retrieve);
+    policy.grant("editor", Permission::PostPolicy);
+    policy.grant("editor", Permission::GetPolicy);
+    policy.grant("editor", Permission::ChangeID);
+
 
     policy
 }

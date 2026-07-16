@@ -2,7 +2,7 @@
 use axum::{
     Router,
     middleware::from_fn_with_state,
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, post, put},
 };
 
 use core_auth::AuthService;

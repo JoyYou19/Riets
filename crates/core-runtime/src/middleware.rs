@@ -6,8 +6,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use core_auth::{Principal, Token};
-use core_protocol::{errors::CorelamoError::{self, Unauthorized}, format::Format};
+use core_auth::{ Token};
+use core_protocol::{errors::CorelamoError::{self}, format::Format};
 use uuid::Uuid;
 
 use crate::{AppState, http_response::HttpError};

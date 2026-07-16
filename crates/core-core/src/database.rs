@@ -273,13 +273,13 @@ impl CorelamoDatabase {
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
         self.db
             .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "database is closed"))
+            .ok_or_else(|| io::Error::other("database is closed"))
     }
 
     fn db_ref(&self) -> io::Result<&SearchDatabase<BinaryDocumentStore>> {
         self.db
             .as_ref()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "database is closed"))
+            .ok_or_else(|| io::Error::other("database is closed"))
     }
 
     pub fn search_plan_top_k(
@@ -375,7 +375,7 @@ impl CorelamoDatabase {
         let db = self
             .db
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "database is closed"))?;
+            .ok_or_else(|| io::Error::other( "database is closed"))?;
 
         let store = db.shutdown_into_store()?;
 

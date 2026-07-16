@@ -424,7 +424,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     pub fn reindex(&mut self) -> io::Result<()> {
-        let docs = self.store.all_documents()?;
+        let docs = self.store.all_documents()?; // jauzliek _ ?
 
         todo!("needs LsmINdex reset/clear before rebuilding")
     }
