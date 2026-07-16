@@ -9,9 +9,9 @@ use crate::{
     analyzer::Analyzer,
     document::IndexedDocument,
     lsm::{
+        LsmIndex,
         compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
         snapshot::SharedIndexSnapshot,
-        LsmIndex,
     },
     mem::MemIndex,
     segment::ImmutableSegment,
