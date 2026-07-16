@@ -6,7 +6,7 @@ use std::{
 use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
-    lsm::{LsmIndex, worker::CompactionWorker},
+    lsm::{LsmIndex, worker::CompactionWorker,index_worker::IndexingStats},
 };
 use core_protocol::errors::CorelamoError;
 use core_query::{
@@ -273,13 +273,13 @@ impl CorelamoDatabase {
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
         self.db
             .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "database is closed"))
+            .ok_or_else(|| io::Error::other("database is closed"))
     }
 
     fn db_ref(&self) -> io::Result<&SearchDatabase<BinaryDocumentStore>> {
         self.db
             .as_ref()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "database is closed"))
+            .ok_or_else(|| io::Error::other("database is closed"))
     }
 
     pub fn search_plan_top_k(
@@ -318,13 +318,14 @@ impl CorelamoDatabase {
     }
 
     pub fn stats(&self) -> io::Result<DatabaseStats> {
-        let db = self.db_ref()?;
-
+        let db: &SearchDatabase<BinaryDocumentStore> = self.db_ref()?;
+        let indexing_stats = db.index_worker().get_stats()?;
         Ok(DatabaseStats {
             document_count: db.document_count(),
             segment_count: db.segment_count()?,
             background_compaction_enabled: self.compaction_worker.is_some(),
             metrics: self.metrics.clone(),
+            indexing: indexing_stats,
         })
     }
 
@@ -375,7 +376,7 @@ impl CorelamoDatabase {
         let db = self
             .db
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "database is closed"))?;
+            .ok_or_else(|| io::Error::other( "database is closed"))?;
 
         let store = db.shutdown_into_store()?;
 
@@ -405,10 +406,11 @@ impl CorelamoDatabase {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DatabaseStats {
     pub document_count: usize,
     pub segment_count: usize,
     pub background_compaction_enabled: bool,
     pub metrics: DatabaseMetrics,
+    pub indexing: IndexingStats,
 }

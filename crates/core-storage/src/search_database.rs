@@ -78,6 +78,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> Self {
         Self::with_policy(store, index, analyzer, IndexPolicy::default_document())
     }
+    pub fn index_worker(&self) -> &IndexWorker {
+        &self.index_worker
+    }
 
     pub fn with_policy(store: S, index: LsmIndex, analyzer: Analyzer, policy: IndexPolicy) -> Self {
         let next_internal_id = store.max_internal_id() + 1;
@@ -178,7 +181,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             started.elapsed(),
             batches.len()
         );
-
+        let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
         let started = Instant::now();
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
         println!(
@@ -188,8 +191,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
         );
 
         let started = Instant::now();
-        for segment in segments {
-            self.index_worker.add_segment_wait(segment)?;
+        for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
+            self.index_worker.add_segment_wait(segment, doc_count)?;
         }
         println!("segment publish/write took {:?}", started.elapsed());
 
@@ -440,7 +443,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     pub fn reindex(&mut self) -> io::Result<()> {
-        let docs = self.store.all_documents()?;
+        let docs = self.store.all_documents()?; // jauzliek _ ?
 
         todo!("needs LsmINdex reset/clear before rebuilding")
     }
@@ -483,12 +486,14 @@ impl<S: DocumentStore> SearchDatabase<S> {
             Ok(())
         })?;
 
+        
         let batches = make_batches(indexed_documents, batch_size);
+        
+        let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
-
-        for segment in segments {
-            self.index_worker.add_segment_wait(segment)?;
-        }
+        for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
+        self.index_worker.add_segment_wait(segment, doc_count)?;
+    }
 
         self.flush()
     }
