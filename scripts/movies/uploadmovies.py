@@ -158,23 +158,27 @@ def main():
 
     # 1. delete if exists
     print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
-    out, _ = curl_delete(f"{BASE_URL}/api/databases/{DB_NAME}/delete-database", token)
+    out, _ = curl_delete(
+        f"{BASE_URL}/api/databases/{DB_NAME}/delete-database", token)
     print(f"[INFO] {out}")
 
     # 2. create database
     print(f"[INFO] Creating database '{DB_NAME}'...")
-    out, _ = curl_post(f"{BASE_URL}/api/databases/{DB_NAME}/create-database", "", token)
+    out, _ = curl_post(
+        f"{BASE_URL}/api/databases/{DB_NAME}/create-database", "", token)
     print(f"[INFO] {out}")
 
     # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
-    out, _ = curl_post(f"{BASE_URL}/api/databases/{DB_NAME}/policy", POLICY, token)
+    out, _ = curl_post(
+        f"{BASE_URL}/api/databases/{DB_NAME}/policy", POLICY, token)
     print(f"[INFO] {out}")
 
     # 4. upload chunks
     files = sorted(glob.glob(os.path.join(INPUT_DIR, "movies_*.json")))
     if not files:
-        print(f"[ERROR] No chunk files found in {INPUT_DIR}. Run parse_movies.py first.")
+        print(
+            f"[ERROR] No chunk files found in {INPUT_DIR}. Run parse_movies.py first.")
         return
 
     if MAX_CHUNKS > 0:
@@ -185,7 +189,8 @@ def main():
         with open(file, "r", encoding="utf-8") as f:
             chunk = json.load(f)
         payload = json.dumps(chunk, ensure_ascii=False)
-        out, code = curl_post(f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
+        out, code = curl_post(
+            f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
         if code != 0:
             print(f"[ERROR] Failed to upload {file}")
             print(out)
@@ -194,7 +199,8 @@ def main():
 
     # 5. reindex
     print("[INFO] Reindexing...")
-    out, _ = curl_post(f"{BASE_URL}/api/databases/{DB_NAME}/reindex", "", token)
+    out, _ = curl_post(
+        f"{BASE_URL}/api/databases/{DB_NAME}/reindex", "", token)
     print(f"[INFO] {out}")
 
     duration = time.time() - start_time

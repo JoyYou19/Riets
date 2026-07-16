@@ -558,37 +558,35 @@ pub async fn stats_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases: RwLockReadGuard<'_, HashMap<String, CorelamoDatabase>> =
-        state.databases.read().unwrap_or_else(|e| e.into_inner());
-    let db = match get_db_read_running(&databases, &db_name) {
-        Ok(db) => db,
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    match db.stats() {
+    let stats = handle.stats().await;
+    match stats {
         Ok(stats) => {
             let indexing = &stats.indexing;
             HttpOk::with_data(
                 format!("stats for '{db_name}'"),
                 json!({
-                        "document_count": stats.document_count,
-                        "segment_count": stats.segment_count,
-                        "background_compaction_enabled": stats.background_compaction_enabled,
-                        "metrics": {
-                              "search_requests": stats.metrics.search_requests,
-                              "search_errors": stats.metrics.search_errors,
-                              "indexing_requests": stats.metrics.indexing_requests,
-                              "indexing_errors": stats.metrics.indexing_errors,
-                             },
-                        "indexing": {
-                            "total_documents_indexed": indexing.total_documents_indexed,
-                            "total_documents_deleted": indexing.total_documents_deleted,
-                            "segments_written": indexing.segments_written,
-                            "compactions_completed": indexing.compactions_completed,
-                            "memtable_term_count": indexing.memtable_term_count,
-                            "segment_count": indexing.segment_count,
-                        }
-                    }),
+                    "document_count": stats.document_count,
+                    "segment_count": stats.segment_count,
+                    "background_compaction_enabled": stats.background_compaction_enabled,
+                    "metrics": {
+                          "search_requests": stats.metrics.search_requests,
+                          "search_errors": stats.metrics.search_errors,
+                          "indexing_requests": stats.metrics.indexing_requests,
+                          "indexing_errors": stats.metrics.indexing_errors,
+                         },
+                    "indexing": {
+                        "total_documents_indexed": indexing.total_documents_indexed,
+                        "total_documents_deleted": indexing.total_documents_deleted,
+                        "segments_written": indexing.segments_written,
+                        "compactions_completed": indexing.compactions_completed,
+                        "memtable_term_count": indexing.memtable_term_count,
+                        "segment_count": indexing.segment_count,
+                    }
+                }),
                 &ctx,
             )
             .into_response()
