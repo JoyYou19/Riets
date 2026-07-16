@@ -179,6 +179,7 @@ impl LsmIndex {
                     .push(segment as Arc<dyn SearchReader + Send + Sync>);
             }
         }
+        
 
         Ok(())
     }
@@ -480,4 +481,7 @@ impl LsmIndex {
 
         Ok(())
     }
+    pub fn memtable_term_count(&self) -> usize{
+            self.mem.term_count()
+        }
 }

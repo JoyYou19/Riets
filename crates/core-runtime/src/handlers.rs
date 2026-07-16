@@ -1,14 +1,10 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{RwLockReadGuard, RwLockWriteGuard},
-};
 use axum::{
     Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Principal, Permission};
+use core_auth::{Permission, Principal};
 use core_core::{
     CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
@@ -18,13 +14,16 @@ use core_core::{
 };
 use core_protocol::errors::CorelamoError;
 use serde_json::json;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{RwLockReadGuard, RwLockWriteGuard},
+};
 
 use crate::{
     AppState, database_helpers, doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
-
 
 //authorizations
 use serde::Deserialize;
@@ -34,20 +33,19 @@ struct LoginRequest {
     password: String,
 }
 #[derive(Deserialize)]
-struct CreateUserRequest{
-    username:String,
+struct CreateUserRequest {
+    username: String,
     password: String,
     roles: Vec<String>,
 }
 #[derive(Deserialize)]
-struct UpdatePasswordRequest{
+struct UpdatePasswordRequest {
     password: String,
 }
 #[derive(Deserialize)]
-struct UpdateRolesRequest{
+struct UpdateRolesRequest {
     roles: Vec<String>,
 }
-
 
 //helpers
 fn get_db_read<'a>(
@@ -124,17 +122,24 @@ pub async fn login_handler(
             .into_response();
         }
     };
-    let Ok(auth) =state.auth.read() else{
-        return HttpError::from_corelamo(CorelamoError::Internal("auth service lock poisoned".to_string()), &ctx).into_response();
+    let Ok(auth) = state.auth.read() else {
+        return HttpError::from_corelamo(
+            CorelamoError::Internal("auth service lock poisoned".to_string()),
+            &ctx,
+        )
+        .into_response();
     };
     match auth.login(&req.username, &req.password) {
-       Some(token) => {
+        Some(token) => {
             let resp = LoginResponse { token: token.0 };
             HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
         }
-        None => HttpError::from_corelamo(CorelamoError::Unauthorized("invalid username or password".to_string()), &ctx).into_response(),
+        None => HttpError::from_corelamo(
+            CorelamoError::Unauthorized("invalid username or password".to_string()),
+            &ctx,
+        )
+        .into_response(),
     }
-    
 }
 
 //TODO: total_hits: xxx kkadu
@@ -269,10 +274,6 @@ pub async fn insert_handler(
     }
     drop(auth); // release the lock before doing database work
 
-    let body = match require_body(&body) {
-        Ok(b) => b.to_string(),
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -534,7 +535,7 @@ pub async fn stop_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let mut databases = state.databases.write().unwrap_or_else(|e|e.into_inner());
+    let mut databases = state.databases.write().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_write(&mut databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -557,7 +558,7 @@ pub async fn delete_detabase_handler(
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
     let db_path = state.databases_dir.join(&db_name);
-    let mut databases_write = state.databases.write().unwrap_or_else(|e|e.into_inner());
+    let mut databases_write = state.databases.write().unwrap_or_else(|e| e.into_inner());
 
     if !databases_write.contains_key(&db_name) {
         return HttpError::from_corelamo(
@@ -595,23 +596,41 @@ pub async fn stats_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    let databases: RwLockReadGuard<'_, HashMap<String, CorelamoDatabase>> = state.databases.read().unwrap_or_else(|e|e.into_inner());
+    let databases: RwLockReadGuard<'_, HashMap<String, CorelamoDatabase>> =
+        state.databases.read().unwrap_or_else(|e| e.into_inner());
     let db = match get_db_read_running(&databases, &db_name) {
         Ok(db) => db,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match db.stats() {
-        Ok(stats) => HttpOk::with_data(
-            format!("stats for '{db_name}'"),
-            json!({
-                "document_count": stats.document_count,
-                "segment_count": stats.segment_count,
-                "background_compaction_enabled": stats.background_compaction_enabled,
-            }),
-            &ctx,
-        )
-        .into_response(),
+        Ok(stats) => {
+            let indexing = &stats.indexing;
+            HttpOk::with_data(
+                format!("stats for '{db_name}'"),
+                json!({
+                        "document_count": stats.document_count,
+                        "segment_count": stats.segment_count,
+                        "background_compaction_enabled": stats.background_compaction_enabled,
+                        "metrics": {
+                              "search_requests": stats.metrics.search_requests,
+                              "search_errors": stats.metrics.search_errors,
+                              "indexing_requests": stats.metrics.indexing_requests,
+                              "indexing_errors": stats.metrics.indexing_errors,
+                             },
+                        "indexing": {
+                            "total_documents_indexed": indexing.total_documents_indexed,
+                            "total_documents_deleted": indexing.total_documents_deleted,
+                            "segments_written": indexing.segments_written,
+                            "compactions_completed": indexing.compactions_completed,
+                            "memtable_term_count": indexing.memtable_term_count,
+                            "segment_count": indexing.segment_count,
+                        }
+                    }),
+                &ctx,
+            )
+            .into_response()
+        }
         //TODO: upate once stats gets updated with errors
         Err(e) => HttpError::from_corelamo(
             CorelamoError::Internal(format!("failed to get stats: {e}")),
@@ -785,9 +804,9 @@ pub async fn create_user_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    let body= match require_body(&body){
-        Ok(b)=>b,
-        Err(e)=> return HttpError::from_corelamo(e, &ctx).into_response(),
+    let body = match require_body(&body) {
+        Ok(b) => b,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
     let req: CreateUserRequest = match serde_json::from_str(body) {
         Ok(r) => r,
@@ -800,13 +819,17 @@ pub async fn create_user_handler(
         }
     };
 
-    let Ok(mut auth) =state.auth.write() else{
-    return HttpError::from_corelamo(CorelamoError::Internal("auth service lock poisoned".to_string()), &ctx).into_response();
+    let Ok(mut auth) = state.auth.write() else {
+        return HttpError::from_corelamo(
+            CorelamoError::Internal("auth service lock poisoned".to_string()),
+            &ctx,
+        )
+        .into_response();
     };
     match auth.create_user(&principal, &req.username, &req.password, req.roles) {
-    Ok(()) => HttpOk::new(format!("user '{}' created", req.username),&ctx).into_response(),
-    Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-}
+        Ok(()) => HttpOk::new(format!("user '{}' created", req.username), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
 }
 pub async fn delete_user_handler(
     State(state): State<AppState>,
@@ -816,7 +839,7 @@ pub async fn delete_user_handler(
 ) -> Response {
     let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
     match auth.delete_user(&principal, &username) {
-        Ok(()) => HttpOk::new(format!("user '{}' deleted", username),&ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("user '{}' deleted", username), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -845,7 +868,7 @@ pub async fn update_user_password_handler(
 
     let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
     match auth.update_user_password(&principal, &username, &req.password) {
-        Ok(()) => HttpOk::new(format!("password updated for '{}'", username),&ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("password updated for '{}'", username), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -874,8 +897,7 @@ pub async fn update_user_roles_handler(
 
     let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
     match auth.update_user_roles(&principal, &username, req.roles) {
-        Ok(()) => HttpOk::new(format!("roles updated for '{}'", username),&ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("roles updated for '{}'", username), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
-
