@@ -1,21 +1,16 @@
-use std::{collections::BTreeMap, io};
+use std::{ collections::BTreeMap, io };
 
-use crate::document_store::{DocumentStore, StoredDocument};
+use crate::document_store::{ DocumentStore, StoredDocument };
 use core_index::{
-    analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
-    lsm::{
-        LsmIndex,
-        index_worker::{IndexCommand, IndexWorker, build_segments_parallel},
-        make_batches,
-        snapshot::SharedIndexSnapshot,
+    analyzer::analyzer::Analyzer, document::{ IndexPolicy, IndexedDocument, policy::IndexKind }, lsm::{
+        LsmIndex, index_worker::{ IndexCommand, IndexWorker, ReindexStatus, ReindexingStats, build_segments_parallel }, make_batches, snapshot::SharedIndexSnapshot,
     },
 };
 
 use core_protocol::format::Format;
-use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use core_query::{ Query, QueryExecutor, SearchHit, planner::QueryPlan };
 use indexmap::IndexMap;
-
+use tokio::sync::watch;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,
@@ -128,7 +123,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn put_documents_parallel(
         &mut self,
         inputs: Vec<DocumentInput>,
-        batch_size: usize,
+        batch_size: usize
     ) -> io::Result<InsertReport> {
         use std::time::Instant;
         let total_started = Instant::now();
@@ -176,12 +171,11 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
         let started = Instant::now();
         let batches = make_batches(indexed_documents, batch_size);
-        println!(
-            "batch splitting took {:?}, batches={}",
-            started.elapsed(),
-            batches.len()
-        );
-        let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+        println!("batch splitting took {:?}, batches={}", started.elapsed(), batches.len());
+        let doc_counts: Vec<u64> = batches
+            .iter()
+            .map(|batch| batch.len() as u64)
+            .collect();
         let started = Instant::now();
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
         println!(
@@ -196,10 +190,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         }
         println!("segment publish/write took {:?}", started.elapsed());
 
-        println!(
-            "TOTAL put_documents_parallel took {:?}",
-            total_started.elapsed()
-        );
+        println!("TOTAL put_documents_parallel took {:?}", total_started.elapsed());
 
         Ok(InsertReport {
             inserted,
@@ -209,7 +200,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn put_document_store_only_return_indexed(
         &mut self,
-        input: DocumentInput,
+        input: DocumentInput
     ) -> io::Result<IndexedDocument> {
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -229,8 +220,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     // INFO: changed the name cuz upsert is more precise here
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(&input.external_id)? {
-            self.index_worker
-                .delete_document_wait(old_doc.internal_id)?;
+            self.index_worker.delete_document_wait(old_doc.internal_id)?;
         }
 
         let doc = StoredDocument {
@@ -252,8 +242,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
-            self.index_worker
-                .delete_document_wait(old_doc.internal_id)?;
+            self.index_worker.delete_document_wait(old_doc.internal_id)?;
         }
 
         self.store.delete(external_id)
@@ -273,7 +262,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_documents(
         &mut self,
         query: &Query,
-        xpath: u32,
+        xpath: u32
     ) -> io::Result<Vec<StoredDocument>> {
         let hits = self.search(query, xpath);
 
@@ -291,7 +280,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_hits(
         &mut self,
         query: &Query,
-        xpath: u32,
+        xpath: u32
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let hits = self.search(query, xpath);
 
@@ -315,7 +304,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         query: &Query,
         xpath: u32,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -327,7 +316,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_hits_all_fields_top_k(
         &mut self,
         query: &Query,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -341,7 +330,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_results_all_fields_top_k(
         &mut self,
         query: &Query,
-        k: usize,
+        k: usize
     ) -> io::Result<SearchDocumentResults> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -369,7 +358,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -383,7 +372,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     fn resolve_document_hits(
         &mut self,
         hits: Vec<SearchHit>,
-        return_fields: Option<&IndexMap<String, bool>>,
+        return_fields: Option<&IndexMap<String, bool>>
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let mut results = Vec::new();
 
@@ -450,21 +439,23 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn build_indexed_batches_from_store(
         &self,
-        batch_size: usize,
+        batch_size: usize
     ) -> io::Result<Vec<Vec<IndexedDocument>>> {
         let mut batches = Vec::new();
         let mut current = Vec::with_capacity(batch_size);
 
-        self.store.for_each_document(&mut |doc| {
-            current.push(stored_document_to_indexed(doc, &self.policy));
+        self.store.for_each_document(
+            &mut (|doc| {
+                current.push(stored_document_to_indexed(doc, &self.policy));
 
-            if current.len() == batch_size {
-                batches.push(std::mem::take(&mut current));
-                current = Vec::with_capacity(batch_size);
-            }
+                if current.len() == batch_size {
+                    batches.push(std::mem::take(&mut current));
+                    current = Vec::with_capacity(batch_size);
+                }
 
-            Ok(())
-        })?;
+                Ok(())
+            })
+        )?;
 
         if !current.is_empty() {
             batches.push(current);
@@ -478,24 +469,77 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(self.store)
     }
 
-    pub fn reindex_existing_documents(&mut self, batch_size: usize) -> io::Result<()> {
+    pub fn reindex_existing_documents(
+        &mut self,
+        batch_size: usize,
+        progress: &watch::Sender<ReindexingStats>
+    ) -> io::Result<()> {
+        //reindexing stats
+        let total = self.store.document_count() as u64;
+
+        let _ = progress.send(ReindexingStats {
+            status: ReindexStatus::Reindexing,
+            progress: 0,
+            eta_seconds: None,
+        });
         let mut indexed_documents = Vec::with_capacity(self.store.document_count());
+        self.store.for_each_document(
+            &mut (|doc| {
+                indexed_documents.push(stored_document_to_indexed(doc, &self.policy));
+                Ok(())
+            })
+        )?;
 
-        self.store.for_each_document(&mut |doc| {
-            indexed_documents.push(stored_document_to_indexed(doc, &self.policy));
-            Ok(())
-        })?;
-
-        
         let batches = make_batches(indexed_documents, batch_size);
-        
-        let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+
+        let doc_counts: Vec<u64> = batches
+            .iter()
+            .map(|batch| batch.len() as u64)
+            .collect();
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
+        //reindexing stats
+        let started_at = std::time::Instant::now();
+        let mut calibrated_rate: Option<f64> = None;
+        let mut done: u64 = 0;
+
         for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
-        self.index_worker.add_segment_wait(segment, doc_count)?;
+            self.index_worker.add_segment_wait(segment, doc_count)?;
+            done += doc_count;
+            
+            if calibrated_rate.is_none()
+            && (done >= 1000 || started_at.elapsed() >= std::time::Duration::from_secs(5))
+        {
+            let elapsed = started_at.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                calibrated_rate = Some(done as f64 / elapsed);
+            }
+        }
+
+        let pct = if total > 0 {
+            ((done as f64 / total as f64) * 100.0) as u8
+        } else {
+            0
+        };
+        let eta_seconds = calibrated_rate.map(|rate| {
+            let remaining = total.saturating_sub(done) as f64;
+            (remaining / rate).max(0.0) as u64
+        });
+
+        let _ = progress.send(ReindexingStats {
+            status: ReindexStatus::Reindexing,
+            progress: pct,
+            eta_seconds,
+        });
     }
 
-        self.flush()
+        self.flush()?;
+
+        let _ = progress.send(ReindexingStats {
+        status: ReindexStatus::Complete,
+        progress: 100,
+        eta_seconds: None,
+        });
+        Ok(())
     }
 }
 
@@ -521,7 +565,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
 fn visible_fields(
     doc: &StoredDocument,
     policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
+    resolved: Option<&IndexMap<String, bool>>
 ) -> BTreeMap<String, String> {
     doc.fields
         .iter()
@@ -533,7 +577,7 @@ fn visible_fields(
 fn should_include(
     path: &str,
     policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
+    resolved: Option<&IndexMap<String, bool>>
 ) -> bool {
     if let Some(rf) = resolved {
         let mut candidate = path;
@@ -542,15 +586,18 @@ fn should_include(
                 return include;
             }
             match candidate.rfind('/') {
-                Some(idx) => candidate = &candidate[..idx],
-                None => break,
+                Some(idx) => {
+                    candidate = &candidate[..idx];
+                }
+                None => {
+                    break;
+                }
             }
         }
     }
 
     let top_level = path.split('/').next().unwrap_or(path);
-    policy
-        .fields
+    policy.fields
         .iter()
         .find(|f| f.name == top_level)
         .map(|f| f.list)

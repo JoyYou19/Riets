@@ -167,7 +167,11 @@ def main():
     out, _ = curl_post(
         f"{BASE_URL}/api/databases/{DB_NAME}/create-database", "", token)
     print(f"[INFO] {out}")
-
+    # 2b. start database
+    print(f"[INFO] Starting database '{DB_NAME}'...")
+    out, _ = curl_post(
+        f"{BASE_URL}/api/databases/{DB_NAME}/start-database", "", token)
+    print(f"[INFO] {out}")
     # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
     out, _ = curl_post(

@@ -1,29 +1,23 @@
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+use std::{ io, path::{ Path, PathBuf } };
 
 use core_index::{
-    analyzer::Analyzer,
-    document::IndexPolicy,
-    lsm::{LsmIndex, worker::CompactionWorker,index_worker::IndexingStats},
+    analyzer::Analyzer, document::IndexPolicy, lsm::{ LsmIndex, index_worker::{ IndexingStats, ReindexStatus, ReindexingStats }, worker::CompactionWorker },
 };
 use core_protocol::errors::CorelamoError;
-use core_query::{
-    Query,
-    planner::{QueryPlan, QueryPlanner},
-};
+use core_query::{ Query, planner::{ QueryPlan, QueryPlanner } };
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
-    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
+    search_database::{ DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit },
 };
 
 use indexmap::IndexMap;
-
+use tokio::sync::watch;
 use crate::{
-    command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
+    command_reponse_definitions::SearchCommand,
+    metrics::DatabaseMetrics,
+    options::DatabaseOptions,
 };
 
 // Currently the main entry point to the database
@@ -31,12 +25,12 @@ pub struct CorelamoDatabase {
     root: PathBuf,
     policy_path: PathBuf,
     policy: IndexPolicy,
-
     options: DatabaseOptions,
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     compaction_worker: Option<CompactionWorker>,
-
     metrics: DatabaseMetrics,
+    reindexing_tx: watch::Sender<ReindexingStats>,
+    reindexing_rx: watch::Receiver<ReindexingStats>,
 }
 
 impl CorelamoDatabase {
@@ -49,13 +43,16 @@ impl CorelamoDatabase {
         let root = root.as_ref().to_path_buf();
 
         if root.exists() {
-            return Err(CorelamoError::AlreadyExists(format!(
-                "database at {} already exists",
-                root.display()
-            )));
+            return Err(
+                CorelamoError::AlreadyExists(
+                    format!("database at {} already exists", root.display())
+                )
+            );
         }
 
         std::fs::create_dir_all(&root)?;
+        //reindexing
+        let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
 
         let policy_path = root.join("policy.toml");
         let policy = IndexPolicy::default_document();
@@ -72,6 +69,8 @@ impl CorelamoDatabase {
             db: None,
             compaction_worker: None,
             metrics: DatabaseMetrics::default(),
+            reindexing_tx,
+            reindexing_rx,
         })
     }
 
@@ -81,12 +80,11 @@ impl CorelamoDatabase {
         let policy_path = root.join("policy.toml");
 
         if !policy_path.exists() {
-            return Err(CorelamoError::NotFound(format!(
-                "no database found at {}",
-                root.display()
-            )));
+            return Err(CorelamoError::NotFound(format!("no database found at {}", root.display())));
         }
 
+        //reindexing
+        let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
         let policy = IndexPolicy::load(&policy_path)?;
         let options = DatabaseOptions::load_or_default(Self::config_full_path_from(&root));
 
@@ -98,6 +96,8 @@ impl CorelamoDatabase {
             db: None,
             compaction_worker: None,
             metrics: DatabaseMetrics::default(),
+            reindexing_tx,
+            reindexing_rx,
         })
     }
 
@@ -116,11 +116,13 @@ impl CorelamoDatabase {
         let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
+            Some(
+                CompactionWorker::start(
+                    db.index_sender(),
+                    self.options.runtime.compaction,
+                    self.options.compaction_interval
+                )
+            )
         } else {
             None
         };
@@ -160,7 +162,7 @@ impl CorelamoDatabase {
 
     pub fn put_documents_parallel(
         &mut self,
-        inputs: Vec<DocumentInput>,
+        inputs: Vec<DocumentInput>
     ) -> io::Result<InsertReport> {
         let started = std::time::Instant::now();
         let count = inputs.len();
@@ -262,8 +264,7 @@ impl CorelamoDatabase {
     }
 
     pub fn upsert_document(&mut self, input: DocumentInput) -> io::Result<()> {
-        self.db_mut()?
-            .upsert_document(input, IndexMode::StoreAndIndex)
+        self.db_mut()?.upsert_document(input, IndexMode::StoreAndIndex)
     }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
@@ -271,30 +272,24 @@ impl CorelamoDatabase {
     }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
-        self.db
-            .as_mut()
-            .ok_or_else(|| io::Error::other("database is closed"))
+        self.db.as_mut().ok_or_else(|| io::Error::other("database is closed"))
     }
 
     fn db_ref(&self) -> io::Result<&SearchDatabase<BinaryDocumentStore>> {
-        self.db
-            .as_ref()
-            .ok_or_else(|| io::Error::other("database is closed"))
+        self.db.as_ref().ok_or_else(|| io::Error::other("database is closed"))
     }
 
     pub fn search_plan_top_k(
         &mut self,
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?
-            .search_document_hits_plan_top_k(plan, return_fields, k)
+        self.db_mut()?.search_document_hits_plan_top_k(plan, return_fields, k)
     }
 
     pub fn search_top_k(&mut self, query: &Query, k: usize) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?
-            .search_document_hits_all_fields_top_k(query, k)
+        self.db_mut()?.search_document_hits_all_fields_top_k(query, k)
     }
 
     pub fn analyze_query_term(&self, term: &str) -> io::Result<Option<String>> {
@@ -316,16 +311,33 @@ impl CorelamoDatabase {
 
         Ok(())
     }
-
+    // ja notiek reindex stats nevar dabut tapec fallback uz reindexing tikai
     pub fn stats(&self) -> io::Result<DatabaseStats> {
-        let db: &SearchDatabase<BinaryDocumentStore> = self.db_ref()?;
-        let indexing_stats = db.index_worker().get_stats()?;
+        let reindexing = self.reindexing_rx.borrow().clone();
+        let db = match self.db_ref() {
+            Ok(db) => db,
+            Err(e) => {
+                if reindexing.status == ReindexStatus::Reindexing {
+                    return Ok(DatabaseStats {
+                        document_count: 0,
+                        segment_count: 0,
+                        background_compaction_enabled: false,
+                        metrics: self.metrics.clone(),
+                        indexing: IndexingStats::default(),
+                        reindexing,
+                    });
+                }
+                return Err(e);
+            }
+        };
+
         Ok(DatabaseStats {
             document_count: db.document_count(),
             segment_count: db.segment_count()?,
             background_compaction_enabled: self.compaction_worker.is_some(),
             metrics: self.metrics.clone(),
-            indexing: indexing_stats,
+            indexing: db.index_worker().get_stats()?,
+            reindexing,
         })
     }
 
@@ -369,39 +381,54 @@ impl CorelamoDatabase {
     }
 
     pub fn reindex(&mut self) -> io::Result<()> {
+        let _ = self.reindexing_tx.send(ReindexingStats {
+            status: ReindexStatus::Reindexing,
+            progress: 0,
+            eta_seconds: None,
+        });
+        let temp_index_root =self.root.join("index.new");
+        std::fs::remove_dir_all(&temp_index_root).ok();
+        std::fs::create_dir_all(&temp_index_root)?;
+
+        let analyzer = Analyzer::new();
+        let new_index = LsmIndex::persistent(&temp_index_root, self.options.runtime.flush_threshold)?;
+
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-
-        let db = self
-            .db
-            .take()
-            .ok_or_else(|| io::Error::other( "database is closed"))?;
-
-        let store = db.shutdown_into_store()?;
-
+        
+        let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
+        let store = old_db.shutdown_into_store()?;
+        
         let index_root = self.root.join("index");
-        std::fs::remove_dir_all(&index_root).ok();
+        std::fs::rename(&index_root, self.root.join("index.old"))?;
+        std::fs::rename(&temp_index_root, &index_root)?;
 
-        let analyzer = Analyzer::new();
+       
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
 
         let mut db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
-        db.reindex_existing_documents(self.options.runtime.indexing_batch_size)?;
+        db.reindex_existing_documents(self.options.runtime.indexing_batch_size,&self.reindexing_tx)?;
 
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
+            Some(
+                CompactionWorker::start(
+                    db.index_sender(),
+                    self.options.runtime.compaction,
+                    self.options.compaction_interval
+                )
+            )
         } else {
             None
         };
 
         self.db = Some(db);
-
+        let _ = self.reindexing_tx.send(ReindexingStats {
+            status: ReindexStatus::Complete,
+            progress: 100,
+            eta_seconds: None,
+        });
         Ok(())
     }
 }
@@ -413,4 +440,5 @@ pub struct DatabaseStats {
     pub background_compaction_enabled: bool,
     pub metrics: DatabaseMetrics,
     pub indexing: IndexingStats,
+    pub reindexing: ReindexingStats,
 }
