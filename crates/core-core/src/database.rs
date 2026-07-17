@@ -301,6 +301,9 @@ impl CorelamoDatabase {
     pub fn analyze_query_term(&self, term: &str) -> io::Result<Option<String>> {
         Ok(self.db_ref()?.analyze_query_term(term))
     }
+    pub fn reindexing_receiver(&self) -> watch::Receiver<ReindexingStats> {
+        self.reindexing_rx.clone()
+    }
 
     pub fn root(&self) -> &Path {
         &self.root
