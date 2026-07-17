@@ -1,7 +1,13 @@
 use std::{ io, path::{ Path, PathBuf } };
 
 use core_index::{
-    analyzer::Analyzer, document::IndexPolicy, lsm::{ LsmIndex, index_worker::{ IndexingStats, ReindexStatus, ReindexingStats }, worker::CompactionWorker },
+    analyzer::Analyzer,
+    document::IndexPolicy,
+    lsm::{
+        LsmIndex,
+        index_worker::{ IndexingStats, ReindexStatus, ReindexingStats },
+        worker::CompactionWorker,
+    },
 };
 use core_protocol::errors::CorelamoError;
 use core_query::{ Query, planner::{ QueryPlan, QueryPlanner } };
@@ -300,15 +306,13 @@ impl CorelamoDatabase {
         &self.root
     }
 
-    pub fn shutdown(mut self) -> io::Result<()> {
+    pub fn shutdown(&mut self) -> io::Result<()> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-
         if let Some(db) = self.db.take() {
             let _index = db.shutdown()?;
         }
-
         Ok(())
     }
     // ja notiek reindex stats nevar dabut tapec fallback uz reindexing tikai
@@ -386,30 +390,52 @@ impl CorelamoDatabase {
             progress: 0,
             eta_seconds: None,
         });
-        let temp_index_root =self.root.join("index.new");
+        let watermark = {
+            let mut max_id = 0u64;
+            self.db_ref()?.for_each_document(
+                &mut (|doc| {
+                    max_id = max_id.max(doc.internal_id);
+                    Ok(())
+                })
+            )?;
+            max_id
+        };
+        let temp_index_root = self.root.join("index.new");
         std::fs::remove_dir_all(&temp_index_root).ok();
         std::fs::create_dir_all(&temp_index_root)?;
 
         let analyzer = Analyzer::new();
-        let new_index = LsmIndex::persistent(&temp_index_root, self.options.runtime.flush_threshold)?;
+        let new_index = LsmIndex::persistent(
+            &temp_index_root,
+            self.options.runtime.flush_threshold
+        )?;
+        let read_store = BinaryDocumentStore::open(self.root.join("documents.bin"))?;
+        let mut staging_db = SearchDatabase::with_policy(
+            read_store,
+            new_index,
+            analyzer.clone(),
+            self.policy.clone()
+        );
+        staging_db.reindex_existing_documents(
+            self.options.runtime.indexing_batch_size,
+            &self.reindexing_tx
+        )?;
+        staging_db.shutdown_into_store()?;
 
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-        
         let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
         let store = old_db.shutdown_into_store()?;
-        
+
         let index_root = self.root.join("index");
         std::fs::rename(&index_root, self.root.join("index.old"))?;
         std::fs::rename(&temp_index_root, &index_root)?;
-
-       
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
-
         let mut db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
-        db.reindex_existing_documents(self.options.runtime.indexing_batch_size,&self.reindexing_tx)?;
+        // catch-up pass: index anything written after the watermark
+        db.reindex_documents_after(watermark, self.options.runtime.indexing_batch_size)?;
 
         self.compaction_worker = if self.options.enable_background_compaction {
             Some(
@@ -424,11 +450,13 @@ impl CorelamoDatabase {
         };
 
         self.db = Some(db);
+        std::fs::remove_dir_all(self.root.join("index.old")).ok();
         let _ = self.reindexing_tx.send(ReindexingStats {
             status: ReindexStatus::Complete,
             progress: 100,
             eta_seconds: None,
         });
+
         Ok(())
     }
 }

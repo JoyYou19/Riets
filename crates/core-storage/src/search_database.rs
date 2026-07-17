@@ -2,8 +2,19 @@ use std::{ collections::BTreeMap, io };
 
 use crate::document_store::{ DocumentStore, StoredDocument };
 use core_index::{
-    analyzer::analyzer::Analyzer, document::{ IndexPolicy, IndexedDocument, policy::IndexKind }, lsm::{
-        LsmIndex, index_worker::{ IndexCommand, IndexWorker, ReindexStatus, ReindexingStats, build_segments_parallel }, make_batches, snapshot::SharedIndexSnapshot,
+    analyzer::analyzer::Analyzer,
+    document::{ IndexPolicy, IndexedDocument, policy::IndexKind },
+    lsm::{
+        LsmIndex,
+        index_worker::{
+            IndexCommand,
+            IndexWorker,
+            ReindexStatus,
+            ReindexingStats,
+            build_segments_parallel,
+        },
+        make_batches,
+        snapshot::SharedIndexSnapshot,
     },
 };
 
@@ -100,6 +111,12 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn document_count(&self) -> usize {
         self.store.document_count()
+    }
+    pub fn for_each_document(
+        &self,
+        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>
+    ) -> io::Result<()> {
+        self.store.for_each_document(f)
     }
 
     pub fn put_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
@@ -505,41 +522,74 @@ impl<S: DocumentStore> SearchDatabase<S> {
         for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
             self.index_worker.add_segment_wait(segment, doc_count)?;
             done += doc_count;
-            
-            if calibrated_rate.is_none()
-            && (done >= 1000 || started_at.elapsed() >= std::time::Duration::from_secs(5))
-        {
-            let elapsed = started_at.elapsed().as_secs_f64();
-            if elapsed > 0.0 {
-                calibrated_rate = Some(done as f64 / elapsed);
+
+            if
+                calibrated_rate.is_none() &&
+                (done >= 1000 || started_at.elapsed() >= std::time::Duration::from_secs(5))
+            {
+                let elapsed = started_at.elapsed().as_secs_f64();
+                if elapsed > 0.0 {
+                    calibrated_rate = Some((done as f64) / elapsed);
+                }
             }
+
+            let pct = if total > 0 { (((done as f64) / (total as f64)) * 100.0) as u8 } else { 0 };
+            let eta_seconds = calibrated_rate.map(|rate| {
+                let remaining = total.saturating_sub(done) as f64;
+                (remaining / rate).max(0.0) as u64
+            });
+
+            let _ = progress.send(ReindexingStats {
+                status: ReindexStatus::Reindexing,
+                progress: pct,
+                eta_seconds,
+            });
         }
-
-        let pct = if total > 0 {
-            ((done as f64 / total as f64) * 100.0) as u8
-        } else {
-            0
-        };
-        let eta_seconds = calibrated_rate.map(|rate| {
-            let remaining = total.saturating_sub(done) as f64;
-            (remaining / rate).max(0.0) as u64
-        });
-
-        let _ = progress.send(ReindexingStats {
-            status: ReindexStatus::Reindexing,
-            progress: pct,
-            eta_seconds,
-        });
-    }
 
         self.flush()?;
 
         let _ = progress.send(ReindexingStats {
-        status: ReindexStatus::Complete,
-        progress: 100,
-        eta_seconds: None,
+            status: ReindexStatus::Complete,
+            progress: 100,
+            eta_seconds: None,
         });
         Ok(())
+    }
+
+    //reindex partaisisiana
+    // core-storage, on SearchDatabase
+    pub fn reindex_documents_after(
+        &mut self,
+        watermark_internal_id: u64,
+        batch_size: usize
+    ) -> io::Result<()> {
+        let mut indexed_documents = Vec::new();
+
+        self.store.for_each_document(
+            &mut (|doc| {
+                if doc.internal_id > watermark_internal_id {
+                    indexed_documents.push(stored_document_to_indexed(doc, &self.policy));
+                }
+                Ok(())
+            })
+        )?;
+
+        if indexed_documents.is_empty() {
+            return Ok(());
+        }
+
+        let batches = make_batches(indexed_documents, batch_size);
+        let doc_counts: Vec<u64> = batches
+            .iter()
+            .map(|batch| batch.len() as u64)
+            .collect();
+        let segments = build_segments_parallel(self.analyzer.clone(), batches);
+
+        for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
+            self.index_worker.add_segment_wait(segment, doc_count)?;
+        }
+
+        self.flush()
     }
 }
 
