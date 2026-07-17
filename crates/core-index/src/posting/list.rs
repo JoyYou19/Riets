@@ -22,13 +22,12 @@ impl PostingList {
         let mut merged: Vec<Posting> = Vec::new();
 
         for item in items {
-            if let Some(last) = merged.last_mut() {
-                if last.doc_id == item.doc_id {
+            if let Some(last) = merged.last_mut()
+                && last.doc_id == item.doc_id {
                     last.positions.extend_from_slice(&item.positions);
                     last.weight = last.weight.max(item.weight);
                     continue;
                 }
-            }
 
             merged.push(item);
         }

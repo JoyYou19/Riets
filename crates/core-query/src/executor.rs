@@ -481,7 +481,7 @@ where
             Query::Term(term) => {
                 let postings = self
                     .execute_term(term, xpath)
-                    .unwrap_or(PostingList::default());
+                    .unwrap_or_default();
                 crate::scorer::score_term_hybrid(self.index, &postings, xpath)
             }
             Query::And(parts) => self.execute_scored_and(parts, xpath),
@@ -536,7 +536,7 @@ fn phrase_matches(position_lists: &[&[u32]]) -> bool {
         for (offset, positions) in position_lists.iter().enumerate().skip(1) {
             let expected = start + offset as u32;
 
-            if !positions.binary_search(&expected).is_ok() {
+            if positions.binary_search(&expected).is_err() {
                 matched = false;
                 break;
             }

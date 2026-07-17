@@ -53,8 +53,8 @@ impl From<CorelamoError> for std::io::Error {
             CorelamoError::InvalidData(msg) => Error::new(ErrorKind::InvalidData, msg),
             CorelamoError::PermissionDenied(msg) => Error::new(ErrorKind::PermissionDenied, msg),
             CorelamoError::UnsupportedFormat(msg) => Error::new(ErrorKind::InvalidData, msg),
-            CorelamoError::DatabaseAlreadyRunning(msg) => Error::new(ErrorKind::Other, msg),
-            CorelamoError::DatabaseNotRunning(msg) => Error::new(ErrorKind::Other, msg),
+            CorelamoError::DatabaseAlreadyRunning(msg) => Error::other( msg),
+            CorelamoError::DatabaseNotRunning(msg) => Error::other( msg),
             CorelamoError::Conflict(msg)
             | CorelamoError::UnknownRole(msg)
             | CorelamoError::Unauthorized(msg)

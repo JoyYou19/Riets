@@ -16,7 +16,7 @@ pub struct DatabaseOptions {
 impl DatabaseOptions {
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> io::Result<()> {
         let toml_string =
-            toml::to_string_pretty(self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            toml::to_string_pretty(self).map_err(io::Error::other)?;
         fs::write(path, toml_string)
     }
 

@@ -23,7 +23,7 @@ pub fn compact_segments(segments: &[ImmutableSegment], deleted: &DeleteSet) -> I
         }
         for (key, postings) in segment.terms() {
             // First we check if the posting is not already deleted
-            let postings = deleted.filter(&postings);
+            let postings = deleted.filter(postings);
 
             if postings.is_empty() {
                 continue;

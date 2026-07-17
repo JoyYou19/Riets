@@ -85,14 +85,13 @@ impl LsmIndex {
         for path in segment_paths {
             let disk = DiskSegment::open(&path)?;
 
-            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
-                if let Some(id) = stem
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                && let Some(id) = stem
                     .strip_prefix("segment-")
                     .and_then(|value| value.parse::<u64>().ok())
                 {
                     next_segment_id = next_segment_id.max(id + 1);
                 }
-            }
 
             segment_handles.push(SegmentHandle::Disk(path));
             // Non primitive cast alaallala

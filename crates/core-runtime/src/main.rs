@@ -230,19 +230,19 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/policy",
             post(handlers::set_policy_handler),
         )
-        // .route("/api/users", post(handlers::create_user_handler))
-        // .route(
-        //     "/api/users/{username}",
-        //     delete(handlers::delete_user_handler),
-        // )
-        // .route(
-        //     "/api/users/{username}/password",
-        //     post(handlers::update_user_password_handler),
-        // )
-        // .route(
-        //     "/api/users/{username}/roles",
-        //     post(handlers::update_user_roles_handler),
-        // )
+        .route("/api/users", post(handlers::create_user_handler))
+         .route(
+            "/api/users/{username}",
+             delete(handlers::delete_user_handler),
+         )
+         .route(
+             "/api/users/{username}/password",
+             post(handlers::update_user_password_handler),
+        )
+         .route(
+             "/api/users/{username}/roles",
+             post(handlers::update_user_roles_handler),
+         )
         .route(
             "/api/databases/{db_name}/config",
             get(handlers::get_config_handler),

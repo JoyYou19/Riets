@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal};
+use core_auth::{Principal};
 use core_core::{
     CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
@@ -12,17 +12,16 @@ use core_core::{
         SearchResponse,
     },
 };
-use core_index::segment::handle;
+
 use core_protocol::errors::CorelamoError;
 use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{RwLockReadGuard, RwLockWriteGuard},
+    collections::{BTreeMap},
 };
 
 use crate::{
-    AppState, database_helpers,
+    AppState,
     db_actor::{self, DbHandle},
     doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
@@ -635,7 +634,9 @@ pub async fn get_policy_handler(
 
     match doctypes::serialize_policy(&policy) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
-        Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+        Err(e) => {
+            HttpError::from_corelamo(e, &ctx).into_response()
+        },
     }
 }
 
@@ -652,7 +653,7 @@ pub async fn set_policy_handler(
 
     let policy = match doctypes::parse_policy(&body) {
         Ok(p) => p,
-        Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let handle = match state.lookup(&db_name) {

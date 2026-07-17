@@ -130,7 +130,7 @@ pub fn load_or_init_settings(
 
     if !config_existed {
         let raw = toml::to_string_pretty(&settings)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         std::fs::write(&settings_path, raw)?;
         println!("config written to {}", settings_path.display());
     }

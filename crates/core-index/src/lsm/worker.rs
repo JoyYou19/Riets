@@ -104,7 +104,7 @@ impl CompactionWorker {
 
         if let Some(handle) = self.handle.take() {
             handle.join().map_err(|_| {
-                io::Error::new(io::ErrorKind::Other, "compaction worker panicked")
+                io::Error::other( "compaction worker panicked")
             })??;
         }
 
