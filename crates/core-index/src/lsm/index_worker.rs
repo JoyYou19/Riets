@@ -415,6 +415,23 @@ pub struct IndexingStats {
     pub memtable_term_count: usize,
     pub segment_count: usize,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReindexStatus {
+    #[default]
+    Idle,
+    Reindexing,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug,Clone,PartialEq,Eq,Default)]
+pub struct ReindexingStats{
+    pub status: ReindexStatus,
+    pub progress: u8,
+    pub eta_seconds: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
