@@ -35,13 +35,13 @@ pub fn score_term_hybrid<S: SearchStats>(
     let avgdl = stats.avg_doc_len(xpath);
 
     if trace {
-        eprintln!(
-            "bm25 stats: xpath={}, docs={}, df={}, avgdl={:.2}, took={:?}",
-            xpath,
-            n,
-            df,
-            avgdl,
-            started.elapsed()
+        tracing::trace!(
+            xpath=%xpath,
+            docs=n,
+            doc_freq=%df,
+            avg_doc_len=%avgdl,
+            time=?started.elapsed(),
+            "bm25 stats",
         );
     }
 
@@ -79,13 +79,14 @@ pub fn score_term_hybrid<S: SearchStats>(
         .collect();
 
     if trace {
-        eprintln!(
-            "bm25 score: xpath={}, postings={}, scored={}, scoring_took={:?}, total_took={:?}",
-            xpath,
-            postings.len(),
-            scored.len(),
-            started.elapsed(),
-            total_started.elapsed()
+        tracing::trace!(
+            xpath=%xpath,
+            postings=%postings.len(),
+            scored=%scored.len(),
+            scoring_took=?started.elapsed(),
+            total_took=?total_started.elapsed(),
+
+            "bm25 score",
         );
     }
 

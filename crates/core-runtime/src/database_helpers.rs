@@ -21,18 +21,18 @@ pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, 
         let mut db = match CorelamoDatabase::load(&path) {
             Ok(db) => db,
             Err(e) => {
-                eprintln!("skipping database '{name}': failed to load: {e}");
+                tracing::error!(name=%name,error=%e,"database failed to load");
                 continue;
             }
         };
 
         if db.options().bootable {
             match db.start() {
-                Ok(()) => println!("started database '{name}'"),
-                Err(e) => eprintln!("loaded '{name}' but failed to start: {e} (left stopped)"),
+                Ok(()) => tracing::info!(name=%name,"started database"),
+                Err(e) => tracing::error!(name=%name, error=%e,"database loaded but failed to start:"),
             }
         } else {
-            println!("loaded database '{name}'");
+            tracing::info!(name=%name,"loaded database");
         }
 
         databases.insert(name, db);

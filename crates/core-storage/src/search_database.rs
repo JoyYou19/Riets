@@ -180,34 +180,35 @@ impl<S: DocumentStore> SearchDatabase<S> {
         }
 
         let inserted = stored_documents.len() as u32;
-        println!("document conversion took {:?}", started.elapsed());
-
+        tracing::info!(time=?started.elapsed(), "Document conversion time");
         let started = Instant::now();
         self.store.put_batch(stored_documents)?;
-        println!("document store batch write took {:?}", started.elapsed());
+        tracing::info!(time=?started.elapsed(),"Document store batch write time");
 
         let started = Instant::now();
         let batches = make_batches(indexed_documents, batch_size);
-        println!("batch splitting took {:?}, batches={}", started.elapsed(), batches.len());
+        tracing::info!(time=?started.elapsed(),batches=%batches.len(), "Batch splitting" );
         let doc_counts: Vec<u64> = batches
             .iter()
             .map(|batch| batch.len() as u64)
             .collect();
         let started = Instant::now();
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
-        println!(
-            "parallel segment build took {:?}, segments={}",
-            started.elapsed(),
-            segments.len()
+        tracing::info!(
+            time=?started.elapsed(),
+            segments=%segments.len(),
+            "Parallel segment build",
         );
 
         let started = Instant::now();
         for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
             self.index_worker.add_segment_wait(segment, doc_count)?;
         }
-        println!("segment publish/write took {:?}", started.elapsed());
+        tracing::info!(time=?started.elapsed(), "Segment publish/write");
 
-        println!("TOTAL put_documents_parallel took {:?}", total_started.elapsed());
+        tracing::info!(total_time=?total_started.elapsed(),"TOTAL Parallel document putting" );
+
+    
 
         Ok(InsertReport {
             inserted,
