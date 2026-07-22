@@ -7,13 +7,9 @@ use axum::{
 
 use core_auth::AuthService;
 use core_protocol::{errors::CorelamoError, format::Format};
-
+use tracing_subscriber::EnvFilter;
 use std::{
-    collections::HashMap,
-    io,
-    path::PathBuf,
-    process,
-    sync::{Arc, RwLock},
+    collections::HashMap, io, mem::transmute, path::PathBuf, process, sync::{Arc, RwLock},
 };
 
 use tokio::signal;
@@ -93,25 +89,34 @@ async fn shutdown_signal() {
         _ = quit => "SIGQUIT",
     };
 
-    println!("shutdown signal received: {reason}, shutting down gracefully...");
+    tracing::warn!(shutdown_signal=%reason,"Shutting down gracefully...");
 }
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    //logging izmantojot tracing lib
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_target(true)   // shows which module emitted the line
+        .init();
+
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}");
-            eprintln!("Run with --help for usage.");
+            tracing::error!(error =%e, "error:");
+            tracing::warn!("Run with --help for usage.");
             process::exit(1);
         }
     };
 
-    println!("corelamo-runtime starting...");
+    tracing::info!("Corelamo-runtime strarting...");
 
     let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error loading settings: {e}");
+            tracing::error!(errpr= %e,"error loading settings:");
             process::exit(1);
         }
     };
@@ -128,24 +133,27 @@ async fn main() -> io::Result<()> {
     //     process::exit(1);
     // });
 
-    println!("root: {}", root_path.display());
-    println!("name: {name}");
-    println!("host: {host}");
-    println!("port: {port}");
-    println!("default format: {default_format_str}");
+    tracing::info!(
+        root=%&root_path.display(),
+        name =%name,
+        host =%host,
+        port,
+        default_format=%default_format_str,
+        "Server configuration"
+    );
 
     let databases_dir = root_path.join("databases");
-    println!("databases_dir: {}", databases_dir.display());
+    tracing::info!( databases_dir = %databases_dir.display(), "databases_dir:");
 
     let databases = match database_helpers::load_saved_databases(&databases_dir) {
         Ok(dbs) => dbs,
         Err(e) => {
-            eprintln!("error loading databases: {e}");
+            tracing::error!(error=%e ,"error loading databases " );
             process::exit(1);
         }
     };
 
-    println!("found and loaded {} database(s) in total", databases.len());
+    tracing::info!( databases=%databases.len() ,"found and loaded database(s) in total");
     let mut handles = HashMap::new();
     let mut joins = Vec::new();
     //setup databases and their handlers
@@ -262,7 +270,7 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        println!("AUTH DISABLED — You're on your own!");
+        tracing::warn!("AUTH DISABLED — You're on your own!");
         protected_routes
     };
 
@@ -276,26 +284,26 @@ async fn main() -> io::Result<()> {
         .with_state(state);
 
     let addr = format!("{host}:{port}");
-    println!("starting http server on {addr}");
+    tracing::info!(addr=%addr,"starting http server on");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("listening on {addr}");
+    tracing::info!(addr=%addr,"listening on");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
     //something or someone killed our beloved programm
-    println!("server stopped, shutting down databases...");
-
+    
+    tracing::error!("Server stopped, shutting down databases..");
     let handles = {
         let mut guard = state_for_shutdown.databases.write().unwrap();
         std::mem::take(&mut *guard)
     };
 
     for (db_name, handle) in handles {
-        println!("shutting down database '{db_name}'...");
+       tracing::info!(database=%db_name,"shutting down database ...");
         if let Err(e) = handle.shutdown().await {
-            eprintln!("error shutting down '{db_name}': {e}");
+            tracing::error!(db = %db_name, error = %e, "error shutting down database");
         }
     }
 
@@ -304,6 +312,6 @@ async fn main() -> io::Result<()> {
     }
 
     //TODO: we might have extra stuff to do here later, for now i cant think of anything else
-    println!("Goodbye!");
+    tracing::info!("Goodbye");
     Ok(())
 }

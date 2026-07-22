@@ -15,7 +15,7 @@ members = [
   # "crates/core-observability",
   # "crates/core-admin",
   # "crates/core-migration",
-  "crates/core-testkit",
+  "crates/core-logs",
 ]
 
 [workspace.package]

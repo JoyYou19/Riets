@@ -24,6 +24,8 @@ use core_storage::{
     },
 };
 
+use crate::db_actor;
+
 //oneshot chanel - creates a chanel for a single message (command)
 type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
 
@@ -193,7 +195,7 @@ pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::
         .name(format!("db-actor-{name}"))
         .spawn(move || {
             actor_loop(db, &mut rx, &name);
-            println!("db actor '{name}' exiting");
+            tracing::info!(db_actor=%name, "exiting");
         })
         .expect("failed to spawn db actor thread");
 
@@ -324,7 +326,7 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                 std::thread::spawn(move || {
                     let mut db = db_handle.lock().expect("db actor mutex poisoned");
                     if let Err(e) = db.reindex() {
-                        eprintln!("reindex failed: {e}");
+                        tracing::error!(error=%e, "Reindex failed");
                     }
                 });
                 let _ = reply.send(Ok(()));
@@ -426,15 +428,16 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
         }
     }
 
-    eprintln!("db actor '{name}': channel closed without shutdown, stopping");
+    tracing::warn!(db_actor=%name, "channel closed without shutdown,stopping");
     match db.lock() {
         Ok(mut db) => {
             if let Err(e) = db.stop() {
-                eprintln!("db actor '{name}': stop failed: {e}");
+                tracing::error!(db_actor=%name, error=%e, "stop failed");
+                
             }
         }
         Err(e) => {
-            eprintln!("db actor '{name}': mutex poisoned, could not stop: {e}");
+            tracing::error!(db_actor=%name,error=%e, "mutex poisoned,could not stop");
         }
     }
 }

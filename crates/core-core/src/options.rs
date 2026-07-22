@@ -31,10 +31,10 @@ impl DatabaseOptions {
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     //WARN: user for invalid config
-                    eprintln!(
-                        "Warning: Could not load options from {:?}: {}. Using defaults.",
-                        path.as_ref(),
-                        e
+                    tracing::warn!(
+                        path=%path.as_ref().display(),
+                        error=%e,
+                        "Could not load options from the path. Using defaults.",
                     );
                 }
                 //if not found its ok, use defaults either way we use defaults

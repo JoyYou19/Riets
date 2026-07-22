@@ -8,10 +8,7 @@ use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
         format::{SegmentFooter, SegmentHeader, TermEntry},
-    },
-    posting::PostingList,
-    segment::ImmutableSegment,
-    types::{DocId, XPathId},
+    }, posting::{self, PostingList}, segment::ImmutableSegment, types::{DocId, XPathId},
 };
 
 /*
@@ -108,7 +105,7 @@ pub fn write_segment_to<W: Write + Seek>(
     write_header(out)?;
 
     if trace {
-        println!("segment writer: header took {:?}", started.elapsed());
+        tracing::trace!(time=?started.elapsed(),"segment writer: header took");
     }
 
     let started = std::time::Instant::now();
@@ -147,12 +144,12 @@ pub fn write_segment_to<W: Write + Seek>(
     }
 
     if trace {
-        println!(
-            "segment writer: postings took {:?}, terms={}, postings={}, positions={}",
-            started.elapsed(),
-            posting_lists,
-            postings_total,
-            positions_total,
+        tracing::trace!(
+            posting_lists=%posting_lists,
+            posting_total=%postings_total,
+            positions_total=%positions_total,
+            time=?started.elapsed(),
+            "segment writer wrote postings",
         );
     }
 
@@ -167,10 +164,10 @@ pub fn write_segment_to<W: Write + Seek>(
     let dictionary_end = out.stream_position()?;
 
     if trace {
-        println!(
-            "segment writer: dictionary took {:?}, entries={}",
-            started.elapsed(),
-            dictionary.len()
+        tracing::trace!(
+            time=?started.elapsed(),
+            dictionary=%dictionary.len(),
+            "segment writer wrote in dictionary",
         );
     }
 
@@ -187,10 +184,10 @@ pub fn write_segment_to<W: Write + Seek>(
     write_footer(out, &footer)?;
 
     if trace {
-        println!(
-            "segment writer: footer took {:?}, total={:?}",
-            started.elapsed(),
-            total_started.elapsed()
+        tracing::trace!(
+            time=?started.elapsed(),
+            total=?total_started.elapsed(),
+            "segment writer wrote footer"
         );
     }
 

@@ -66,7 +66,9 @@ pub fn parse_args() -> Result<HashMap<String, String>, String> {
 
     while let Some(arg) = args.next() {
         if arg == "-h" || arg == "--help" {
-            print!("{}", HELP);
+            tracing::info!(
+                help=%HELP
+            );
             process::exit(0);
         }
 
@@ -103,10 +105,10 @@ pub fn load_or_init_settings(
 
     let mut settings: HashMap<String, String> = if settings_path.exists() {
         let raw = std::fs::read_to_string(&settings_path)?;
-        println!("config loaded from {}", settings_path.display());
+        tracing::info!(settings_path=%settings_path.display(),"config loaded" );
         toml::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
     } else {
-        println!("no config found, writing defaults...");
+        tracing::warn!("No config found,writing defaults..");
         std::fs::create_dir_all(&root_path)?;
         HashMap::new()
     };
@@ -132,7 +134,7 @@ pub fn load_or_init_settings(
         let raw = toml::to_string_pretty(&settings)
             .map_err(io::Error::other)?;
         std::fs::write(&settings_path, raw)?;
-        println!("config written to {}", settings_path.display());
+        tracing::info!(settings_path=%settings_path.display(), "config written to");
     }
 
     Ok(settings)
