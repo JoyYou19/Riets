@@ -95,12 +95,12 @@ async fn shutdown_signal() {
 async fn main() -> io::Result<()> {
     //logging izmantojot tracing lib
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(true)   // shows which module emitted the line
-        .init();
+    .with_max_level(tracing::Level::TRACE)
+    .with_target(true)
+    .init();
+   // EnvFilter::new("info")),
+       
+
 
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(a) => a,
@@ -270,7 +270,7 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        tracing::warn!("AUTH DISABLED — You're on your own!");
+        tracing::debug!("AUTH DISABLED — You're on your own!");
         protected_routes
     };
 
@@ -284,9 +284,9 @@ async fn main() -> io::Result<()> {
         .with_state(state);
 
     let addr = format!("{host}:{port}");
-    tracing::info!(addr=%addr,"starting http server on");
+    tracing::debug!(address=%addr,"starting http server on");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!(addr=%addr,"listening on");
+    tracing::debug!(address=%addr,"listening on");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -294,7 +294,7 @@ async fn main() -> io::Result<()> {
 
     //something or someone killed our beloved programm
     
-    tracing::error!("Server stopped, shutting down databases..");
+    tracing::debug!("Server stopped, shutting down databases..");
     let handles = {
         let mut guard = state_for_shutdown.databases.write().unwrap();
         std::mem::take(&mut *guard)

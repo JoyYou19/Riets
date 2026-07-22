@@ -73,11 +73,14 @@ pub async fn request_context_middleware(
                 instance,
                 time_start: start,
             };
-            return HttpError::from_corelamo(
+            return {
+             tracing::warn!(format=%subtype, "The format is unsupported");
+             HttpError::from_corelamo(
                 CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
                 &ctx,
             )
-            .into_response();
+            .into_response()};
+        
         }
     };
     request.extensions_mut().insert(RequestContext {
@@ -103,11 +106,13 @@ pub async fn auth_middleware(
         .map(|s| s.to_string());
 
     let Some(token) = token else {
+        tracing::warn!(path=?request,"rejected request: missing auth token");
         return (StatusCode::UNAUTHORIZED, "missing token").into_response();
     };
 
     let principal = {
         let Ok(auth) = state.auth.read() else {
+              tracing::warn!( request=?request,"rejected request: auth service unavailable");
             return (StatusCode::UNAUTHORIZED, "auth service unavailable").into_response();
         };
         auth.authenticate(&Token(token))
@@ -118,6 +123,9 @@ pub async fn auth_middleware(
             request.extensions_mut().insert(principal);
             next.run(request).await
         }
-        None => (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response(),
+        None => {
+        tracing::warn!(request=?request,"rejected request: invalid or exipired token");
+        (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()
+        }
     }
 }

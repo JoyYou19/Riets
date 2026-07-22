@@ -1,6 +1,6 @@
 //FIX: sis ir tik AI generated pamats visam jutos loti slikti par so bet man vajag pacakareties lai
 //saprastu, ja izradisies hujna mainisu - nomrunds
-use std::{ io, thread, sync::{ Arc, Mutex } };
+use std::{ io, mem::transmute, sync::{ Arc, Mutex }, thread };
 
 use core_index::document::IndexPolicy;
 use tokio::sync::{ mpsc, oneshot, watch };
@@ -23,6 +23,7 @@ use core_storage::{
         SearchDocumentHit,
     },
 };
+use tracing::error;
 
 use crate::db_actor;
 
@@ -212,26 +213,31 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
             DbCommand::Search { cmd, reply } => {
                 let mut db = db.lock().expect("db actor mutex poisoned");
                 let result = if db.is_running() {
-                    db.search(&cmd).map_err(|e|
-                        CorelamoError::Internal(format!("search failed: {e}"))
+                    db.search(&cmd).map_err(|e|{
+                        tracing::error!(error=%e, "Search failed");
+                        CorelamoError::Internal(format!("search failed: {e}"))}
+
                     )
                 } else {
-                    Err(
+                    Err({
+                         tracing::error!(name=%name, "Database is not running");
                         CorelamoError::DatabaseNotRunning(format!("database {name} is not running"))
-                    )
+                })
                 };
                 let _ = reply.send(result);
             }
             DbCommand::Insert { docs, reply } => {
                 let mut db = db.lock().expect("db actor mutex poisoned");
                 let result = if db.is_running() {
-                    db.put_documents_parallel(docs).map_err(|e|
+                    db.put_documents_parallel(docs).map_err(|e| {
+                        tracing::error!(error=%e,"Insert failed");
                         CorelamoError::Internal(format!("insert failed: {e}"))
-                    )
+                    })
                 } else {
-                    Err(
+                    Err({
+                        tracing::error!(name=%name, "Database not started");
                         CorelamoError::DatabaseNotRunning(format!("database {name} is not started"))
-                    )
+                    })
                 };
                 let _ = reply.send(result);
             }
@@ -246,9 +252,10 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                             Ok(doc) => out.push((id, doc)),
                             Err(e) => {
                                 failed = Some(
-                                    CorelamoError::Internal(
+                                    CorelamoError::Internal({
+                                        tracing::error!(error=%e,"failed to get document");
                                         format!("failed to get document '{id}': {e}")
-                                    )
+                                    })
                                 );
                                 break;
                             }
@@ -259,9 +266,10 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                         None => Ok(out),
                     }
                 } else {
-                    Err(
+                    Err({
+                        tracing::error!(name=%name, "Database is not running");
                         CorelamoError::DatabaseNotRunning(format!("database {name} is not running"))
-                    )
+                    })
                 };
                 let _ = reply.send(result);
             }
@@ -271,9 +279,10 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                 let result = if db.is_running() {
                     replace_docs(&mut db, docs)
                 } else {
-                    Err(
+                    Err({
+                        tracing::error!(name=%name, "Database is not running");
                         CorelamoError::DatabaseNotRunning(format!("database {name} is not started"))
-                    )
+                    })
                 };
                 let _ = reply.send(result);
             }
@@ -283,9 +292,10 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                 let result = if db.is_running() {
                     delete_docs(&mut db, ids)
                 } else {
-                    Err(
+                    Err({
+                        tracing::error!(name=%name, "Database is not running");
                         CorelamoError::DatabaseNotRunning(format!("database {name} is not started"))
-                    )
+                    })
                 };
                 let _ = reply.send(result);
             }
@@ -303,9 +313,10 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                     }
                     Ok(out)
                 } else {
-                    Err(
+                    Err({
+                        tracing::error!(name=%name, "Database is not running");
                         CorelamoError::DatabaseNotRunning(format!("database {name} is not running"))
-                    )
+                    })
                 };
                 let _ = reply.send(result);
             }
@@ -314,11 +325,12 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                 let is_running = db.lock().expect("db actor mutex poisoned").is_running();
                 if !is_running {
                     let _ = reply.send(
-                        Err(
+                        Err({
+                            tracing::error!(name=%name, "Database is not running");
                             CorelamoError::DatabaseNotRunning(
                                 format!("database {name} is not running")
                             )
-                        )
+                        })
                     );
                     continue;
                 }
@@ -337,7 +349,9 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                 let mut db = db.lock().expect("db actor mutex poisoned");
                 let result = db
                     .shutdown()
-                    .map_err(|e| CorelamoError::Internal(format!("shutdown failed: {e}")));
+                    .map_err(|e|{
+                        tracing::error!(error=%e, "Shutdown failed");
+                         CorelamoError::Internal(format!("shutdown failed: {e}"))});
                 let _ = reply.send(result);
                 return;
             }
@@ -366,11 +380,12 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
                                 })
                                 .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
                         } else {
-                            Err(
+                            Err({
+                                tracing::error!(name=%name, "Database is not running");
                                 CorelamoError::DatabaseNotRunning(
                                     format!("database {name} is not running")
                                 )
-                            )
+                        })
                         }
                     }
                     Err(_) => {
@@ -433,7 +448,6 @@ fn actor_loop(mut db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name
         Ok(mut db) => {
             if let Err(e) = db.stop() {
                 tracing::error!(db_actor=%name, error=%e, "stop failed");
-                
             }
         }
         Err(e) => {
@@ -453,13 +467,17 @@ fn replace_docs(
     for doc in docs {
         let exists = db
             .get_document(&doc.external_id)
-            .map_err(|e| CorelamoError::Internal(format!("existence check failed: {e}")))?
+            .map_err(|e|{
+            tracing::error!(error=%e,"existence check failed");
+            CorelamoError::Internal(format!("existence check failed: {e}"))})?
             .is_some();
 
         if exists {
             db
                 .upsert_document(doc)
-                .map_err(|e| CorelamoError::Internal(format!("replace failed: {e}")))?;
+                .map_err(|e| {
+                    tracing::error!(error=%e, "Replace failed");
+                    CorelamoError::Internal(format!("replace failed: {e}"))})?;
             replaced += 1;
         } else {
             not_found.push(doc.external_id);
@@ -479,13 +497,19 @@ fn delete_docs(db: &mut CorelamoDatabase, ids: Vec<String>) -> Result<DeleteRepo
     for id in ids {
         let exists = db
             .get_document(&id)
-            .map_err(|e| CorelamoError::Internal(format!("failed to lookup '{id}': {e}")))?
+            .map_err(|e|{
+                tracing::error!(error=%e, id=%id, "Failed lookup");
+                 CorelamoError::Internal(format!("failed to lookup '{id}': {e}"))
+                })?
             .is_some();
 
         if exists {
             db
                 .delete_document(&id)
-                .map_err(|e| CorelamoError::Internal(format!("failed to delete '{id}': {e}")))?;
+                .map_err(|e| {
+                    tracing::error!(error=%e, id =%id, "failed to delete");
+                    CorelamoError::Internal(format!("failed to delete '{id}': {e}"))
+                })?;
             deleted += 1;
         } else {
             not_found.push(id);
