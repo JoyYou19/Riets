@@ -23,7 +23,7 @@ use core_storage::{
         SearchDocumentHit,
     },
 };
-use tracing::error;
+
 
 use crate::db_actor;
 

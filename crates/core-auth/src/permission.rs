@@ -5,6 +5,7 @@ pub enum Permission {
     Search,
     Retrieve,
     Insert,
+    Upsert,
     Delete,
     CreateDatabase,
     ListDatabase,
@@ -18,6 +19,14 @@ pub enum Permission {
     DeleteUser,
     UpdateRole,
     UpdatePwd,
+    Replace,
+    GetConfig,
+    SetConfig,
+    StartDB,
+    StopDB,
+    RestartDB,
+    
+    
 
 }
 
@@ -40,7 +49,12 @@ impl Permission {
             "DeleteUser" =>Some(Permission::DeleteUser),
             "UpdateRole" =>Some(Permission::UpdateRole),
             "UpdatePwd" =>Some(Permission::UpdatePwd),
-            
+            "Replace" => Some(Permission::Replace),
+            "GetConfig" =>Some(Permission::GetConfig),
+            "SetConfig" =>Some(Permission::SetConfig),
+            "StartDB" =>Some(Permission::StartDB),
+            "StopDB" => Some(Permission::StopDB),
+            "RestartDB" =>Some(Permission::RestartDB),
             _ => None,
         }
     }

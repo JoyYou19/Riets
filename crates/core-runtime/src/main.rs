@@ -5,8 +5,10 @@ use axum::{
     routing::{delete, get, post, put},
 };
 
-use core_auth::AuthService;
+use core_auth::{AuthService, UserDatabase};
 use core_protocol::{errors::CorelamoError, format::Format};
+use core_storage::binary_store::BinaryDocumentStore;
+use core_index::{analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig}, mem::index};
 use tracing_subscriber::EnvFilter;
 use std::{
     collections::HashMap, io, mem::transmute, path::PathBuf, process, sync::{Arc, RwLock},
@@ -164,7 +166,17 @@ async fn main() -> io::Result<()> {
     }
 
     //Autorizacijas prikoli
-    let auth = Arc::new(RwLock::new(AuthService::bootstrap()));
+    let users_dir = PathBuf::from("data/users");
+    std::fs::create_dir_all(&users_dir).expect("failed to create users data dir");
+
+    let store_path = users_dir.join("documents.bin");
+    let store = BinaryDocumentStore::open(&store_path).expect("failed to open users store");
+    let index_cfg=IndexRuntimeConfig::default();
+    let index = LsmIndex::new(index_cfg.flush_threshold);   // match the movies construction exactly
+    let analyzer = Analyzer::default();      // or however movies builds it
+
+    let user_db = UserDatabase::new(store, index, analyzer);
+    let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
 
     let state = AppState {
         databases: Arc::new(RwLock::new(handles)),

@@ -6,6 +6,8 @@ edition = "2021"
 
 [dependencies]
 core-protocol={path = "../core-protocol"}
+core-index = { path = "../core-index" }
+core-storage = { path = "../core-storage" }
 argon2="0.5"
 rand="0.8"
 sha2="0.10"
