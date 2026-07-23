@@ -27,3 +27,4 @@ reqwest = "0.13.4"
 tracing-appender = "0.2.5"
 tracing-subscriber = {version="0.3.23", features=["env-filter"]}
 indexmap = { version = "2.14.0", features = ["serde"] }
+rayon = "1.12.0"

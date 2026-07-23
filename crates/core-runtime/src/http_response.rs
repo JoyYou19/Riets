@@ -4,7 +4,10 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use core_protocol::{errors::CorelamoError, format::Format};
+use core_protocol::{
+    errors::{CorelamoError, DocFailure},
+    format::Format,
+};
 use serde_json::{Map, Value, json};
 use std::time::Instant;
 
@@ -17,11 +20,13 @@ use crate::middleware::RequestContext;
 const DOCS_ROOT_URL: &str = "http://corelamo.com/errors/";
 const REQUEST_ID_HEADER_NAME: &str = "x-corelamo-request-id";
 
-struct JsonData(Value);
+struct JsonData {
+    value: Value,
+}
 
 impl ResponseData for JsonData {
     fn to_json(&self) -> Result<Value, CorelamoError> {
-        Ok(self.0.clone())
+        Ok(self.value.clone())
     }
 
     // fn to_xml(&self, _w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {
@@ -177,7 +182,7 @@ impl HttpOk {
         Self {
             status: StatusCode::OK,
             title: title.into(),
-            data: Some(Box::new(JsonData(value))),
+            data: Some(Box::new(JsonData { value })),
             request_id: ctx.request_id,
             instance: ctx.instance.clone(),
             format: ctx.format,
@@ -195,7 +200,7 @@ impl HttpOk {
         Self {
             status,
             title: title.into(),
-            data: Some(Box::new(JsonData(value))),
+            data: Some(Box::new(JsonData { value })),
             request_id: ctx.request_id,
             instance: ctx.instance.clone(),
             format: ctx.format,
@@ -284,17 +289,11 @@ impl IntoResponse for HttpOk {
     }
 }
 
-struct BatchFailure {
-    id: String,
-    status: u16,
-    label: String,
-}
-
 pub struct BatchOutcome {
     success_label: &'static str,
     all_failed_status: StatusCode,
     succeeded: u32,
-    failures: Vec<BatchFailure>,
+    failures: Vec<DocFailure>,
 }
 
 impl BatchOutcome {
@@ -315,12 +314,12 @@ impl BatchOutcome {
         self.succeeded += n;
     }
 
-    pub fn fail(&mut self, id: impl Into<String>, status: u16, label: String) {
-        self.failures.push(BatchFailure {
-            id: id.into(),
-            status,
-            label,
-        });
+    pub fn fail_doc(&mut self, failure: DocFailure) {
+        self.failures.push(failure);
+    }
+
+    pub fn fail_many(&mut self, failures: impl IntoIterator<Item = DocFailure>) {
+        self.failures.extend(failures);
     }
 
     pub fn succeeded_count(&self) -> u32 {
@@ -348,7 +347,15 @@ impl BatchOutcome {
             let results: Vec<Value> = self
                 .failures
                 .iter()
-                .map(|f| json!({ "id": f.id, "status": f.status, "result": f.label }))
+                .map(|f| {
+                    json!({
+                        "index": f.index,
+                        "id": f.id,
+                        "code": f.reason.code(),
+                        "status": f.reason.status(),
+                        "message": f.reason.to_string(),
+                    })
+                })
                 .collect();
             obj.insert("results".to_string(), Value::Array(results));
         }
@@ -357,12 +364,14 @@ impl BatchOutcome {
     }
 
     pub fn into_ok(
-        self,
+        mut self,
         clean_status: StatusCode,
         title: impl Into<String>,
         db_name: &str,
         ctx: &RequestContext,
     ) -> HttpOk {
+        self.failures.sort_by_key(|f| f.index);
+
         let status = if !self.has_failures() {
             clean_status
         } else if self.succeeded == 0 {

@@ -154,3 +154,78 @@ impl<T: Serialize> CorelamoOk<T> {
         }
     }
 }
+
+//Meant for batch insert/retrieve/update so that we can like tell the user what happened to each document
+#[derive(Debug, Clone, Error, Serialize, Deserialize)]
+pub enum FailReason {
+    #[error("invalid json: {0}")]
+    InvalidJson(String),
+
+    #[error("missing id field '{field}' (auto_increment is off)")]
+    MissingId { field: String },
+
+    #[error("policy has no id field declared")]
+    NoIdField,
+
+    #[error("duplicate primary id")]
+    DuplicatePrimaryId,
+
+    #[error("not found")]
+    NotFound,
+
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+impl FailReason {
+    pub fn code(&self) -> &'static str {
+        match self {
+            FailReason::InvalidJson(_) => "invalid_json",
+            FailReason::MissingId { .. } => "missing_id",
+            FailReason::NoIdField => "no_id_field",
+            FailReason::DuplicatePrimaryId => "duplicate_primary_id",
+            FailReason::NotFound => "not_found",
+            FailReason::Internal { .. } => "internal_error",
+        }
+    }
+
+    pub fn status(&self) -> u16 {
+        match self {
+            FailReason::InvalidJson(_) => 400,
+            FailReason::MissingId { .. } => 400,
+            FailReason::NoIdField => 400,
+            FailReason::DuplicatePrimaryId => 409,
+            FailReason::NotFound => 404,
+            FailReason::Internal { .. } => 500,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocFailure {
+    pub index: Option<usize>,
+    pub id: Option<String>,
+    pub reason: FailReason,
+}
+
+impl DocFailure {
+    pub fn new(index: Option<usize>, id: Option<String>, reason: FailReason) -> Self {
+        Self { index, id, reason }
+    }
+
+    pub fn at(index: usize, reason: FailReason) -> Self {
+        Self {
+            index: index.into(),
+            id: None,
+            reason,
+        }
+    }
+
+    pub fn with_id(index: usize, id: impl Into<String>, reason: FailReason) -> Self {
+        Self {
+            index: Some(index),
+            id: Some(id.into()),
+            reason,
+        }
+    }
+}
