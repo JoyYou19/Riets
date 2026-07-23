@@ -18,7 +18,7 @@ use std::{
     process,
     sync::{Arc, RwLock},
 };
-use tracing_subscriber::EnvFilter;
+
 
 use tokio::signal;
 

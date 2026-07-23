@@ -7,7 +7,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::Principal;
+use core_auth::{Permission, Principal};
 use core_core::{
     CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
@@ -104,6 +104,7 @@ pub async fn login_handler(
         )
         .into_response();
     };
+    let mut auth = state.auth.write().expect("auth lock poisoned");
     match auth.login(&req.username, &req.password) {
         Some(token) => {
             let resp = LoginResponse { token: token.0 };
