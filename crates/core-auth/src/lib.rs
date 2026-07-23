@@ -7,26 +7,26 @@ mod users;
 
 pub use bootstrap::default_policy;
 use core_protocol::errors::CorelamoError;
+use core_storage::binary_store::BinaryDocumentStore; 
 pub use permission::Permission;
 pub use principal::{Principal, UserId};
 pub use roles::PolicyStore;
 pub use token::{Token, TokenStore};
-pub use users::UserStore;
+pub use users::UserDatabase;
 
 pub struct AuthService {
     policy: PolicyStore,
     tokens: TokenStore,
-    users: UserStore,
+    users: UserDatabase<BinaryDocumentStore>,
 }
 
 impl AuthService {
-    pub fn new(policy:PolicyStore, tokens:TokenStore,users: UserStore)-> Self{
+    pub fn new(policy:PolicyStore, tokens:TokenStore,users: UserDatabase<BinaryDocumentStore>)-> Self{
         Self { policy, tokens, users }
     }
-    pub fn bootstrap() -> Self {
+    pub fn bootstrap(mut users: UserDatabase<BinaryDocumentStore>) -> Self {
         let policy = default_policy();
-        let mut users = UserStore::new();
-        users.add_user("admin", "secret", vec!["admin".to_string()]);
+        let _ =users.add_user("admin", "secret", vec!["admin".to_string()]);
         Self::new(policy, TokenStore::new(), users)
     }
     pub fn create_user(
@@ -38,6 +38,7 @@ impl AuthService {
     ) -> Result<(), CorelamoError>{
         self.check(requester,Permission::CreateUser)?;
         self.users.add_user(username, password, roles);
+        //TODO error handling
         Ok(())
     }
     pub fn delete_user(
@@ -82,7 +83,7 @@ impl AuthService {
         }
     }
 
-    pub fn login(&self, username: &str, password: &str) -> Option<Token> {
+    pub fn login(&mut self, username: &str, password: &str) -> Option<Token> {
         let principal = self.users.verify(username, password)?;
         Some(self.tokens.issue(principal))
     }

@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 use std::{
-    io, os::macos::raw::stat, sync::mpsc::{self, Receiver, Sender}, thread::{self, JoinHandle},
+    io, sync::mpsc::{self, Receiver, Sender}, thread::{self, JoinHandle},
 };
 
 use crate::{

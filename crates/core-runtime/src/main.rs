@@ -6,8 +6,11 @@ use axum::{
     routing::{delete, get, post, put},
 };
 
-use core_auth::AuthService;
+use core_auth::{AuthService, UserDatabase};
 use core_protocol::{errors::CorelamoError, format::Format};
+use core_storage::binary_store::BinaryDocumentStore;
+use core_index::{analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig}, mem::index};
+use tracing_subscriber::EnvFilter;
 use std::{
     collections::HashMap,
     io,
@@ -168,7 +171,17 @@ async fn main() -> io::Result<()> {
     }
 
     //Autorizacijas prikoli
-    let auth = Arc::new(RwLock::new(AuthService::bootstrap()));
+    let users_dir = PathBuf::from("data/users");
+    std::fs::create_dir_all(&users_dir).expect("failed to create users data dir");
+
+    let store_path = users_dir.join("documents.bin");
+    let store = BinaryDocumentStore::open(&store_path).expect("failed to open users store");
+    let index_cfg=IndexRuntimeConfig::default();
+    let index = LsmIndex::new(index_cfg.flush_threshold);   // match the movies construction exactly
+    let analyzer = Analyzer::default();      // or however movies builds it
+
+    let user_db = UserDatabase::new(store, index, analyzer);
+    let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
 
     let state = AppState {
         databases: Arc::new(RwLock::new(handles)),
@@ -274,7 +287,7 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        tracing::warn!("AUTH DISABLED — You're on your own!");
+        tracing::debug!("AUTH DISABLED — You're on your own!");
         protected_routes
     };
 
@@ -289,9 +302,9 @@ async fn main() -> io::Result<()> {
         .with_state(state);
 
     let addr = format!("{host}:{port}");
-    tracing::info!(addr=%addr,"starting http server on");
+    tracing::debug!(address=%addr,"starting http server on");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!(addr=%addr,"listening on");
+    tracing::debug!(address=%addr,"listening on");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
