@@ -1,16 +1,21 @@
 //HEELO WORLD
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
 };
 
 use core_auth::AuthService;
 use core_protocol::{errors::CorelamoError, format::Format};
-use tracing_subscriber::EnvFilter;
 use std::{
-    collections::HashMap, io, mem::transmute, path::PathBuf, process, sync::{Arc, RwLock},
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    process,
+    sync::{Arc, RwLock},
 };
+use tracing_subscriber::EnvFilter;
 
 use tokio::signal;
 
@@ -96,10 +101,9 @@ async fn main() -> io::Result<()> {
     //logging izmantojot tracing lib
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
-        .with_target(true)   // shows which module emitted the line
+        .with_target(true) // shows which module emitted the line
         .init();
 
     let cli_overrides = match corelamo_settings::parse_args() {
@@ -211,7 +215,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/delete-database",
-            delete(handlers::delete_detabase_handler),
+            delete(handlers::delete_database_handler),
         )
         .route(
             "/api/databases/{db_name}/start-database",
@@ -221,7 +225,7 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/stop-database",
             post(handlers::stop_database_handler),
         )
-        .route("/api/databases", get(handlers::list_databases_handler))
+        .route("/api/list-databases", get(handlers::list_databases_handler))
         .route(
             "/api/databases/{db_name}/status",
             get(handlers::stats_handler),
@@ -231,26 +235,26 @@ async fn main() -> io::Result<()> {
             post(handlers::reindex_handler),
         )
         .route(
-            "/api/databases/{db_name}/policy",
+            "/api/databases/{db_name}/get-policy",
             get(handlers::get_policy_handler),
         )
         .route(
-            "/api/databases/{db_name}/policy",
+            "/api/databases/{db_name}/set-policy",
             post(handlers::set_policy_handler),
         )
         .route("/api/users", post(handlers::create_user_handler))
-         .route(
+        .route(
             "/api/users/{username}",
-             delete(handlers::delete_user_handler),
-         )
-         .route(
-             "/api/users/{username}/password",
-             post(handlers::update_user_password_handler),
+            delete(handlers::delete_user_handler),
         )
-         .route(
-             "/api/users/{username}/roles",
-             post(handlers::update_user_roles_handler),
-         )
+        .route(
+            "/api/users/{username}/password",
+            post(handlers::update_user_password_handler),
+        )
+        .route(
+            "/api/users/{username}/roles",
+            post(handlers::update_user_roles_handler),
+        )
         .route(
             "/api/databases/{db_name}/config",
             get(handlers::get_config_handler),
@@ -277,6 +281,7 @@ async fn main() -> io::Result<()> {
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
         .layer(from_fn_with_state(
             state.clone(),
             middleware::request_context_middleware,
@@ -293,15 +298,15 @@ async fn main() -> io::Result<()> {
         .await?;
 
     //something or someone killed our beloved programm
-    
-    tracing::error!("Server stopped, shutting down databases..");
+
+    tracing::info!("Server stopped, shutting down databases..");
     let handles = {
         let mut guard = state_for_shutdown.databases.write().unwrap();
         std::mem::take(&mut *guard)
     };
 
     for (db_name, handle) in handles {
-       tracing::info!(database=%db_name,"shutting down database ...");
+        tracing::info!(database=%db_name,"shutting down database ...");
         if let Err(e) = handle.shutdown().await {
             tracing::error!(db = %db_name, error = %e, "error shutting down database");
         }
