@@ -47,9 +47,10 @@ impl<S: DocumentStore> UserDatabase<S> {
     }
 
     pub fn remove_user(&mut self, username: &str) -> bool {
-        // Use whatever deletion method SearchDatabase exposes for movies.
-        // If it's named differently (remove_document, delete, etc.), rename here.
-        self.db.delete_document(username).is_ok()
+        match self.db.get_document(username) {
+        Ok(Some(_)) => self.db.delete_document(username).is_ok(),
+        _ => false,
+        }
     }
 
     pub fn update_password(&mut self, username: &str, new_password: &str) -> bool {
