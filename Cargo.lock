@@ -513,6 +513,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "indexmap",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

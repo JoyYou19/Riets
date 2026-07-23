@@ -1,30 +1,34 @@
-use std::{ io, path::{ Path, PathBuf } };
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
     lsm::{
         LsmIndex,
-        index_worker::{ IndexingStats, ReindexStatus, ReindexingStats },
+        index_worker::{IndexingStats, ReindexStatus, ReindexingStats},
         worker::CompactionWorker,
     },
 };
 use core_protocol::errors::CorelamoError;
-use core_query::{ Query, planner::{ QueryPlan, QueryPlanner } };
+use core_query::{
+    Query,
+    planner::{QueryPlan, QueryPlanner},
+};
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
-    search_database::{ DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit },
+    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
 };
 
+use crate::{
+    command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
+};
 use indexmap::IndexMap;
 use tokio::sync::watch;
-use crate::{
-    command_reponse_definitions::SearchCommand,
-    metrics::DatabaseMetrics,
-    options::DatabaseOptions,
-};
 
 // Currently the main entry point to the database
 pub struct CorelamoDatabase {
@@ -49,11 +53,10 @@ impl CorelamoDatabase {
         let root = root.as_ref().to_path_buf();
 
         if root.exists() {
-            return Err(
-                CorelamoError::AlreadyExists(
-                    format!("database at {} already exists", root.display())
-                )
-            );
+            return Err(CorelamoError::AlreadyExists(format!(
+                "database at {} already exists",
+                root.display()
+            )));
         }
 
         std::fs::create_dir_all(&root)?;
@@ -86,7 +89,10 @@ impl CorelamoDatabase {
         let policy_path = root.join("policy.toml");
 
         if !policy_path.exists() {
-            return Err(CorelamoError::NotFound(format!("no database found at {}", root.display())));
+            return Err(CorelamoError::NotFound(format!(
+                "no database found at {}",
+                root.display()
+            )));
         }
 
         //reindexing
@@ -122,13 +128,11 @@ impl CorelamoDatabase {
         let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(
-                CompactionWorker::start(
-                    db.index_sender(),
-                    self.options.runtime.compaction,
-                    self.options.compaction_interval
-                )
-            )
+            Some(CompactionWorker::start(
+                db.index_sender(),
+                self.options.runtime.compaction,
+                self.options.compaction_interval,
+            ))
         } else {
             None
         };
@@ -168,7 +172,7 @@ impl CorelamoDatabase {
 
     pub fn put_documents_parallel(
         &mut self,
-        inputs: Vec<DocumentInput>
+        inputs: Vec<DocumentInput>,
     ) -> io::Result<InsertReport> {
         let started = std::time::Instant::now();
         let count = inputs.len();
@@ -270,7 +274,8 @@ impl CorelamoDatabase {
     }
 
     pub fn upsert_document(&mut self, input: DocumentInput) -> io::Result<()> {
-        self.db_mut()?.upsert_document(input, IndexMode::StoreAndIndex)
+        self.db_mut()?
+            .upsert_document(input, IndexMode::StoreAndIndex)
     }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
@@ -278,24 +283,30 @@ impl CorelamoDatabase {
     }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
-        self.db.as_mut().ok_or_else(|| io::Error::other("database is closed"))
+        self.db
+            .as_mut()
+            .ok_or_else(|| io::Error::other("database is closed"))
     }
 
     fn db_ref(&self) -> io::Result<&SearchDatabase<BinaryDocumentStore>> {
-        self.db.as_ref().ok_or_else(|| io::Error::other("database is closed"))
+        self.db
+            .as_ref()
+            .ok_or_else(|| io::Error::other("database is closed"))
     }
 
     pub fn search_plan_top_k(
         &mut self,
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
-        k: usize
+        k: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?.search_document_hits_plan_top_k(plan, return_fields, k)
+        self.db_mut()?
+            .search_document_hits_plan_top_k(plan, return_fields, k)
     }
 
     pub fn search_top_k(&mut self, query: &Query, k: usize) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?.search_document_hits_all_fields_top_k(query, k)
+        self.db_mut()?
+            .search_document_hits_all_fields_top_k(query, k)
     }
 
     pub fn analyze_query_term(&self, term: &str) -> io::Result<Option<String>> {
@@ -399,7 +410,7 @@ impl CorelamoDatabase {
                 &mut (|doc| {
                     max_id = max_id.max(doc.internal_id);
                     Ok(())
-                })
+                }),
             )?;
             max_id
         };
@@ -408,27 +419,28 @@ impl CorelamoDatabase {
         std::fs::create_dir_all(&temp_index_root)?;
 
         let analyzer = Analyzer::new();
-        let new_index = LsmIndex::persistent(
-            &temp_index_root,
-            self.options.runtime.flush_threshold
-        )?;
+        let new_index =
+            LsmIndex::persistent(&temp_index_root, self.options.runtime.flush_threshold)?;
         let read_store = BinaryDocumentStore::open(self.root.join("documents.bin"))?;
         let mut staging_db = SearchDatabase::with_policy(
             read_store,
             new_index,
             analyzer.clone(),
-            self.policy.clone()
+            self.policy.clone(),
         );
         staging_db.reindex_existing_documents(
             self.options.runtime.indexing_batch_size,
-            &self.reindexing_tx
+            &self.reindexing_tx,
         )?;
         staging_db.shutdown_into_store()?;
 
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-        let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
+        let old_db = self
+            .db
+            .take()
+            .ok_or_else(|| io::Error::other("database is closed"))?;
         let store = old_db.shutdown_into_store()?;
 
         let index_root = self.root.join("index");
@@ -441,13 +453,11 @@ impl CorelamoDatabase {
         db.reindex_documents_after(watermark, self.options.runtime.indexing_batch_size)?;
 
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(
-                CompactionWorker::start(
-                    db.index_sender(),
-                    self.options.runtime.compaction,
-                    self.options.compaction_interval
-                )
-            )
+            Some(CompactionWorker::start(
+                db.index_sender(),
+                self.options.runtime.compaction,
+                self.options.compaction_interval,
+            ))
         } else {
             None
         };
