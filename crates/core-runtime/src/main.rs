@@ -134,6 +134,7 @@ async fn main() -> io::Result<()> {
     let port = corelamo_settings::get(&settings, "port");
     let default_format_str = corelamo_settings::get(&settings, "format");
     let enable_auth = corelamo_settings::get(&settings, "auth") != "false";
+    tracing::info!(enable_auth, "auth setting resolved");
     let default_format = Format::JSON;
     // Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
     //     eprintln!("error: invalid 'format' in config/cli: {e}");
@@ -182,7 +183,7 @@ async fn main() -> io::Result<()> {
 
     let user_db = UserDatabase::new(store, index, analyzer);
     let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
-    tracing::info!(path = %store_path.display(), "opening users store");
+
     let state = AppState {
         databases: Arc::new(RwLock::new(handles)),
         databases_dir,

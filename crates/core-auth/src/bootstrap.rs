@@ -21,6 +21,9 @@ pub fn default_policy() -> PolicyStore {
         Permission::DeleteUser,
         Permission::UpdatePwd,
         Permission::UpdateRole,
+        Permission::StartDB,
+        Permission::StopDB,
+        Permission::RestartDB,
     ],
     );
 
