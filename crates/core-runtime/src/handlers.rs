@@ -80,7 +80,6 @@ pub async fn login_handler(
     Extension(ctx): Extension<RequestContext>,
     body: String,
 ) -> Response {
-    
     let body = match require_body(&body) {
         Ok(b) => b,
         Err(e) => {
@@ -97,15 +96,19 @@ pub async fn login_handler(
             .into_response();
         }
     };
-    let Ok(auth) = state.auth.read() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
-    };
-    let mut auth = state.auth.write().expect("auth lock poisoned");
-    match auth.login(&req.username, &req.password) {
+
+    let token = {
+        let Ok(mut auth) = state.auth.write() else {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal("auth service lock poisoned".to_string()),
+                &ctx,
+            )
+            .into_response();
+        };
+        auth.login(&req.username, &req.password)
+    }; // write guard dropped here
+
+    match token {
         Some(token) => {
             let resp = LoginResponse { token: token.0 };
             HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()

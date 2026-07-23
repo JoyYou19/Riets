@@ -1,6 +1,6 @@
 //FIX: sis ir tik AI generated pamats visam jutos loti slikti par so bet man vajag pacakareties lai
 //saprastu, ja izradisies hujna mainisu - nomrunds
-use std::{ io, mem::transmute, sync::{ Arc, Mutex }, thread };
+use std::{ sync::{ Arc, Mutex }, thread };
 
 use core_index::document::IndexPolicy;
 use tokio::sync::{mpsc, oneshot};
@@ -18,7 +18,6 @@ use core_storage::{
 };
 
 
-use crate::db_actor;
 
 //oneshot chanel - creates a chanel for a single message (command)
 type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
