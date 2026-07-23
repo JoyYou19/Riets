@@ -9,7 +9,7 @@ use axum::{
 use core_auth::{AuthService, UserDatabase};
 use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::binary_store::BinaryDocumentStore;
-use core_index::{analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig}, mem::index};
+use core_index::{analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig}};
 use tracing_subscriber::EnvFilter;
 use std::{
     collections::HashMap,
@@ -171,7 +171,7 @@ async fn main() -> io::Result<()> {
     }
 
     //Autorizacijas prikoli
-    let users_dir = PathBuf::from("data/users");
+    let users_dir = root_path.join("users");
     std::fs::create_dir_all(&users_dir).expect("failed to create users data dir");
 
     let store_path = users_dir.join("documents.bin");
@@ -182,7 +182,7 @@ async fn main() -> io::Result<()> {
 
     let user_db = UserDatabase::new(store, index, analyzer);
     let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
-
+    tracing::info!(path = %store_path.display(), "opening users store");
     let state = AppState {
         databases: Arc::new(RwLock::new(handles)),
         databases_dir,
