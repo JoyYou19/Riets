@@ -246,21 +246,21 @@ check "viewer cannot delete user"    403 -X DELETE "$BASE_URL/api/users/crud_$RU
 check "editor cannot delete user"    403 -X DELETE "$BASE_URL/api/users/crud_$RUN_ID" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "admin can delete user"        200 -X DELETE "$BASE_URL/api/users/crud_$RUN_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-section "MATRIX — Permission::GetConfig (admin should reach; viewer should not)"
+section "MATRIX — Permission::GetConfig (admin, architect, editor granted; viewer denied)"
 
 check "admin can view config"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "viewer cannot view config" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 check "architect can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 check "editor can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 
-section "MATRIX — Permission::SetConfig (admin should reach; viewer should not)"
+section "MATRIX — Permission::SetConfig (admin, architect, editor granted; viewer denied)"
 
 check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
 check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $VIEWER_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
 check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $EDITOR_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
 check "architect can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
 
-section "MATRIX — Permission::Reindex (admin should reach; viewer should not)"
+section "MATRIX — Permission::Reindex (admin, architect, editor granted; viewer denied)"
 
 check "admin can reindex"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "viewer cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $VIEWER_TOKEN"
@@ -356,7 +356,7 @@ check "delete editor test user"         200 -X DELETE "$BASE_URL/api/users/edito
 check "delete scratch database"         200 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "delete admin_createdb database"  200 -X DELETE "$BASE_URL/api/databases/admin_createdb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "delete architect_createdb database" 200 -X DELETE "$BASE_URL/api/databases/architect_createdb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-# check "delete denied_createdb_db database"      200 -X DELETE "$BASE_URL/api/databases/denied_createdb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "delete denied_deldb database"      200 -X DELETE "$BASE_URL/api/databases/denied_deldb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 echo
