@@ -68,7 +68,7 @@ impl Wal {
         let mut g = self.inner.lock().unwrap();
         if g.poisoned {
             return Err(io::Error::new(
-                io::ErrorKind::Other,
+                io::ErrorKind::Other,   //nepareizi parrakstit
                 "wal poisoned by prior fsync failure",
             ));
         }
@@ -95,7 +95,7 @@ impl Wal {
     pub fn flush(&self) -> io::Result<()> {
         let mut g = self.inner.lock().unwrap();
         if g.poisoned {
-            return Err(io::Error::new(io::ErrorKind::Other, "wal poisoned"));
+            return Err(io::Error::new(io::ErrorKind::Other, "wal poisoned")); //parrakstit
         }
         if let Err(e) = g.file.sync_data() {
             g.poisoned = true;
@@ -121,7 +121,7 @@ impl Wal {
         let stored_crc = u32::from_le_bytes(header[4..8].try_into().unwrap());
         if len > MAX_ENTRY_SIZE {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+                io::ErrorKind::InvalidData, //parrakstit
                 "impossible length",
             ));
         }

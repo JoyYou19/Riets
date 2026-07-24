@@ -1,9 +1,6 @@
 //FIX: sis ir tik AI generated pamats visam jutos loti slikti par so bet man vajag pacakareties lai
 //saprastu, ja izradisies hujna mainisu - nomrunds
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-};
+use std::{ sync::{ Arc, Mutex }, thread };
 
 use core_index::document::IndexPolicy;
 use tokio::sync::{mpsc, oneshot};
@@ -19,6 +16,8 @@ use core_storage::{
         SearchDocumentHit,
     },
 };
+
+
 
 //oneshot chanel - creates a chanel for a single message (command)
 type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
@@ -248,9 +247,14 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
             DbCommand::Reindex { reply } => {
                 let is_running = db.lock().expect("db actor mutex poisoned").is_running();
                 if !is_running {
-                    let _ = reply.send(Err(CorelamoError::DatabaseNotRunning(format!(
-                        "database {name} is not running"
-                    ))));
+                    let _ = reply.send(
+                        Err({
+                            tracing::error!(name=%name, "Database is not running");
+                            CorelamoError::DatabaseNotRunning(
+                                format!("database {name} is not running")
+                            )
+                        })
+                    );
                     continue;
                 }
                 let db_handle = db.clone();
@@ -267,7 +271,9 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 let mut db = db.lock().expect("db actor mutex poisoned");
                 let result = db
                     .shutdown()
-                    .map_err(|e| CorelamoError::Internal(format!("shutdown failed: {e}")));
+                    .map_err(|e|{
+                        tracing::error!(error=%e, "Shutdown failed");
+                         CorelamoError::Internal(format!("shutdown failed: {e}"))});
                 let _ = reply.send(result);
                 return;
             }
@@ -291,9 +297,12 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                                 })
                                 .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
                         } else {
-                            Err(CorelamoError::DatabaseNotRunning(format!(
-                                "database {name} is not running"
-                            )))
+                            Err({
+                                tracing::error!(name=%name, "Database is not running");
+                                CorelamoError::DatabaseNotRunning(
+                                    format!("database {name} is not running")
+                                )
+                        })
                         }
                     }
                     Err(_) => {
@@ -394,12 +403,17 @@ fn replace_docs(
     for (index, doc) in docs.into_iter().enumerate() {
         let exists = db
             .get_document(&doc.external_id)
-            .map_err(|e| CorelamoError::Internal(format!("existence check failed: {e}")))?
+            .map_err(|e|{
+            tracing::error!(error=%e,"existence check failed");
+            CorelamoError::Internal(format!("existence check failed: {e}"))})?
             .is_some();
 
         if exists {
-            db.upsert_document(doc)
-                .map_err(|e| CorelamoError::Internal(format!("replace failed: {e}")))?;
+            db
+                .upsert_document(doc)
+                .map_err(|e| {
+                    tracing::error!(error=%e, "Replace failed");
+                    CorelamoError::Internal(format!("replace failed: {e}"))})?;
             replaced += 1;
         } else {
             failures.push(DocFailure::with_id(
@@ -420,12 +434,19 @@ fn delete_docs(db: &mut CorelamoDatabase, ids: Vec<String>) -> Result<DeleteRepo
     for (index, id) in ids.into_iter().enumerate() {
         let exists = db
             .get_document(&id)
-            .map_err(|e| CorelamoError::Internal(format!("failed to lookup '{id}': {e}")))?
+            .map_err(|e|{
+                tracing::error!(error=%e, id=%id, "Failed lookup");
+                 CorelamoError::Internal(format!("failed to lookup '{id}': {e}"))
+                })?
             .is_some();
 
         if exists {
-            db.delete_document(&id)
-                .map_err(|e| CorelamoError::Internal(format!("failed to delete '{id}': {e}")))?;
+            db
+                .delete_document(&id)
+                .map_err(|e| {
+                    tracing::error!(error=%e, id =%id, "failed to delete");
+                    CorelamoError::Internal(format!("failed to delete '{id}': {e}"))
+                })?;
             deleted += 1;
         } else {
             failures.push(DocFailure::with_id(index, id, FailReason::NotFound));

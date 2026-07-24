@@ -115,6 +115,26 @@ impl HttpError {
 // HttpError for json and xml
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
+        if self.status.is_server_error() {
+            //console logging 
+            tracing::error!(
+                status = self.status.as_u16(),
+                error_type = %self.error_type,
+                detail = %self.detail,
+                instance = %self.instance,
+                request_id = %self.request_id,
+                "request failed"
+            );
+        } else {
+            tracing::warn!(
+                status = self.status.as_u16(),
+                error_type = %self.error_type,
+                detail = %self.detail,
+                instance = %self.instance,
+                request_id = %self.request_id,
+                "request rejected"
+            );
+        }
         match self.format {
             Format::JSON => {
                 let body = format!(
