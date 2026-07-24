@@ -6,24 +6,35 @@ pub fn default_policy() -> PolicyStore {
     policy.grant_many(
     "admin",
     [
+        //basic
         Permission::Search,
         Permission::Retrieve,
         Permission::Insert,
         Permission::Delete,
+        Permission::Status,
+        Permission::Upsert,
+        Permission::Replace,
+        //databases
         Permission::CreateDatabase,
         Permission::DeleteDatabase,
         Permission::ListDatabase,
+        Permission::StartDB,
+        Permission::StopDB,
+        Permission::RestartDB,
+        //config/policy
         Permission::ChangeID,
         Permission::PostPolicy,
         Permission::GetPolicy,
-        Permission::Status,
+        Permission::GetConfig,
+        Permission::SetConfig,
+        Permission::Reindex,
+        //users
         Permission::CreateUser,
         Permission::DeleteUser,
         Permission::UpdatePwd,
         Permission::UpdateRole,
-        Permission::StartDB,
-        Permission::StopDB,
-        Permission::RestartDB,
+        
+        
     ],
     );
 

@@ -85,7 +85,7 @@ impl<'a> DocumentConversion for Json<'a> {
 
 fn parse_raw_items(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcome {
     if raw_items.len() > PARALLEL_PARSE_THRESHOLD {
-        println!("paralel: ");
+        //DATABASE LOG
         parse_raw_items_parallel(raw_items, policy)
     } else {
         println!("sequential: ");

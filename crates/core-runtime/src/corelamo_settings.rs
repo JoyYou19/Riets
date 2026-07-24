@@ -1,4 +1,6 @@
 use std::{collections::HashMap, io, path::PathBuf, process};
+
+use slog::{info, warn};
 //helper file to manage and easilly add corelamo settings
 
 pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
@@ -63,12 +65,10 @@ pub fn parse_args() -> Result<HashMap<String, String>, String> {
     let mut overrides = HashMap::new();
     let mut args = std::env::args().skip(1).peekable();
     let keys = valid_keys();
-
+    let log =slog_scope::logger();
     while let Some(arg) = args.next() {
         if arg == "-h" || arg == "--help" {
-            tracing::info!(
-                help=%HELP
-            );
+            info!( log,"HELP";"help"=>%HELP);
             process::exit(0);
         }
 
@@ -102,13 +102,13 @@ pub fn load_or_init_settings(
     let root_path = resolve_root(PathBuf::from(root_path_str));
 
     let settings_path = root_path.join("CorelamoSettings.toml");
-
+    let log =slog_scope::logger();
     let mut settings: HashMap<String, String> = if settings_path.exists() {
         let raw = std::fs::read_to_string(&settings_path)?;
-        tracing::info!(settings_path=%settings_path.display(),"config loaded" );
+        info!(log,"config loaded";"settings_path"=>%settings_path.display() );
         toml::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
     } else {
-        tracing::warn!("No config found,writing defaults..");
+        warn!(log,"No config found,writing defaults..");
         std::fs::create_dir_all(&root_path)?;
         HashMap::new()
     };
@@ -134,7 +134,7 @@ pub fn load_or_init_settings(
         let raw = toml::to_string_pretty(&settings)
             .map_err(io::Error::other)?;
         std::fs::write(&settings_path, raw)?;
-        tracing::info!(settings_path=%settings_path.display(), "config written to");
+        info!(log, "config written to";"settings_path"=>%settings_path.display());
     }
 
     Ok(settings)

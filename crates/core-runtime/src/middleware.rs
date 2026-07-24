@@ -9,7 +9,7 @@ use axum::{
 use core_auth::{ Token};
 use core_protocol::{errors::CorelamoError::{self}, format::Format};
 use uuid::Uuid;
-
+use slog::{o, warn};
 use crate::{AppState, http_response::HttpError};
 
 //INFO: everything later will need these two to return
@@ -61,7 +61,7 @@ pub async fn request_context_middleware(
     let request_id = Uuid::new_v4();
     let start = Instant::now();
     let instance = request.uri().path().to_string();
-
+     let log=slog_scope::logger().new(o!("component"=> "middleware"));
     let format = match resolve_format(&state, &request) {
         Ok(f) => f,
         Err(subtype) => {
@@ -74,7 +74,7 @@ pub async fn request_context_middleware(
                 time_start: start,
             };
             return {
-             tracing::warn!(format=%subtype, "The format is unsupported");
+             warn!(log,"The format is unsupported";"format"=>%subtype);
              HttpError::from_corelamo(
                 CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
                 &ctx,
@@ -99,6 +99,7 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let log=slog_scope::logger().new(o!("component"=> "middleware"));
     let token: Option<String> = request
         .headers()
         .get("X-Corelamo-Key")
@@ -106,13 +107,17 @@ pub async fn auth_middleware(
         .map(|s| s.to_string());
 
     let Some(token) = token else {
-        tracing::warn!(path=?request,"rejected request: missing auth token");
+        warn!(log,"rejected request: missing auth token";
+        "method" => %request.method(),
+        "uri" => %request.uri(),);
         return (StatusCode::UNAUTHORIZED, "missing token").into_response();
     };
 
     let principal = {
         let Ok(auth) = state.auth.read() else {
-              tracing::warn!( request=?request,"rejected request: auth service unavailable");
+              warn!( log,"rejected request: auth service unavailable";
+              "method"=>%request.method(),
+              "uri"=>%request.uri());
             return (StatusCode::UNAUTHORIZED, "auth service unavailable").into_response();
         };
         auth.authenticate(&Token(token))
@@ -124,7 +129,7 @@ pub async fn auth_middleware(
             next.run(request).await
         }
         None => {
-        tracing::warn!(request=?request,"rejected request: invalid or exipired token");
+        warn!(log,"rejected request: invalid or exipired token";"request"=>?request);
         (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()
         }
     }

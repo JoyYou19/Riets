@@ -105,7 +105,7 @@ pub fn write_segment_to<W: Write + Seek>(
     write_header(out)?;
 
     if trace {
-        tracing::trace!(time=?started.elapsed(),"segment writer: header took");
+      //  tracing.trace!(time=?started.elapsed(),"segment writer: header took");
     }
 
     let started = std::time::Instant::now();
