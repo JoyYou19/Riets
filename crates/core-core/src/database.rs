@@ -1,31 +1,30 @@
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+use std::{ io, path::{ Path, PathBuf } };
 
 use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
     lsm::{
         LsmIndex,
-        index_worker::{IndexingStats, ReindexStatus, ReindexingStats},
+        index_worker::{ IndexingStats, ReindexStatus, ReindexingStats },
         worker::CompactionWorker,
     },
 };
 use core_protocol::errors::CorelamoError;
-use core_query::{
-    Query,
-    planner::{QueryPlan, QueryPlanner},
-};
+use core_query::{ Query, planner::{ QueryPlan, QueryPlanner } };
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
-    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
+    search_database::{ DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit },
 };
-
+//logging
+use core_logs::logger;
+use slog::{ Logger, info, warn, error };
+//logging
 use crate::{
-    command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
+    command_reponse_definitions::SearchCommand,
+    metrics::DatabaseMetrics,
+    options::DatabaseOptions,
 };
 use indexmap::IndexMap;
 use tokio::sync::watch;
@@ -41,6 +40,7 @@ pub struct CorelamoDatabase {
     metrics: DatabaseMetrics,
     reindexing_tx: watch::Sender<ReindexingStats>,
     reindexing_rx: watch::Receiver<ReindexingStats>,
+    log: Logger,
 }
 
 impl CorelamoDatabase {
@@ -50,13 +50,19 @@ impl CorelamoDatabase {
 
     //INFO: just creates everything for the database, doesnt start it
     pub fn create(root: impl AsRef<Path>, options: DatabaseOptions) -> Result<Self, CorelamoError> {
+        
         let root = root.as_ref().to_path_buf();
-
+        let name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown viss slikiti").to_string();
         if root.exists() {
-            return Err(CorelamoError::AlreadyExists(format!(
-                "database at {} already exists",
-                root.display()
-            )));
+            return Err(
+                CorelamoError::AlreadyExists(
+                    format!("database at {} already exists", root.display())
+                    //varbut japievieno global logam
+                )
+            );
         }
 
         std::fs::create_dir_all(&root)?;
@@ -66,10 +72,12 @@ impl CorelamoDatabase {
         let policy_path = root.join("policy.toml");
         let policy = IndexPolicy::default_document();
         policy.save(&policy_path)?;
+        
         options.save_to_file(Self::config_full_path_from(&root))?;
 
         let store_path = root.join("documents.bin");
         BinaryDocumentStore::open(&store_path)?;
+        
         Ok(Self {
             root,
             policy_path,
@@ -80,19 +88,22 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
+            log: logger::db_logger(&name),
         })
+        
     }
 
     //acknowledge the database on startup
     pub fn load(root: impl AsRef<Path>) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let policy_path = root.join("policy.toml");
+        let name = root.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
 
         if !policy_path.exists() {
-            return Err(CorelamoError::NotFound(format!(
-                "no database found at {}",
-                root.display()
-            )));
+            return Err(CorelamoError::NotFound(format!("no database found at {}", root.display())));
         }
 
         //reindexing
@@ -110,6 +121,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
+            log: logger::db_logger(&name),
         })
     }
 
@@ -128,16 +140,20 @@ impl CorelamoDatabase {
         let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
+            Some(
+                CompactionWorker::start(
+                    db.index_sender(),
+                    self.options.runtime.compaction,
+                    self.options.compaction_interval
+                )
+            )
         } else {
             None
         };
 
         self.db = Some(db);
+        info!(self.log,"Database started");
+        
         Ok(())
     }
 
@@ -148,12 +164,15 @@ impl CorelamoDatabase {
         if let Some(db) = self.db.take() {
             db.shutdown()?;
         }
+        info!(self.log, "Database stopped");
         Ok(())
     }
 
     pub fn restart(&mut self) -> Result<(), CorelamoError> {
         self.stop()?;
+        info!(self.log,"database restarted");
         self.start()
+        
     }
 
     pub fn set_options(&mut self, options: DatabaseOptions) -> Result<(), CorelamoError> {
@@ -163,6 +182,7 @@ impl CorelamoDatabase {
     }
 
     pub fn is_running(&self) -> bool {
+        
         self.db.is_some()
     }
 
@@ -172,7 +192,7 @@ impl CorelamoDatabase {
 
     pub fn put_documents_parallel(
         &mut self,
-        inputs: Vec<DocumentInput>,
+        inputs: Vec<DocumentInput>
     ) -> io::Result<InsertReport> {
         let started = std::time::Instant::now();
         let count = inputs.len();
@@ -186,21 +206,26 @@ impl CorelamoDatabase {
         })();
 
         let elapsed = started.elapsed();
-
         self.metrics.indexing_requests += 1;
         self.metrics.indexing_total_time += elapsed;
-
+        if count ==0{
+            return result;
+        }
+        //TODO:te countign nestrada vajag salabot
         if result.is_err() {
             self.metrics.indexing_errors += 1;
-        }
-
-        tracing::info!(
-            documents = count,
-            batch_size = batch_size,
-            elapsed_ms = elapsed.as_millis(),
-            ok = result.is_ok(),
-            "put documents parallel"
+            error!(self.log, "put documents parallel failed";
+            "documents" => count,
+            "batch_size" =>batch_size,
+            "elapsed_ms" => elapsed.as_millis(),
         );
+        } else {
+            info!(self.log, "put documents parallel";
+            "documents" => count,
+            "batch_size" =>batch_size,
+            "elapsed_ms" => elapsed.as_millis(),
+        );
+        }
 
         result
     }
@@ -228,13 +253,20 @@ impl CorelamoDatabase {
             self.metrics.search_errors += 1;
         }
 
-        tracing::info!(
-            query = command.query,
-            k = docs,
-            elapsed_ms = elapsed.as_millis(),
-            ok = result.is_ok(),
-            "search request"
+        if result.is_err() {
+            self.metrics.search_errors += 1;
+            error!(self.log, "search failed";
+            "query" => &command.query,
+            "count" => docs,
+            "elapsed_ms" => elapsed.as_millis(),
         );
+        } else {
+            info!(self.log, "searched";
+            "query" => &command.query,
+            "count" => docs,
+            "elapsed_ms" => elapsed.as_millis(),
+        );
+        }
 
         result
     }
@@ -274,8 +306,7 @@ impl CorelamoDatabase {
     }
 
     pub fn upsert_document(&mut self, input: DocumentInput) -> io::Result<()> {
-        self.db_mut()?
-            .upsert_document(input, IndexMode::StoreAndIndex)
+        self.db_mut()?.upsert_document(input, IndexMode::StoreAndIndex)
     }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
@@ -283,30 +314,24 @@ impl CorelamoDatabase {
     }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
-        self.db
-            .as_mut()
-            .ok_or_else(|| io::Error::other("database is closed"))
+        self.db.as_mut().ok_or_else(|| io::Error::other("database is closed"))
     }
 
     fn db_ref(&self) -> io::Result<&SearchDatabase<BinaryDocumentStore>> {
-        self.db
-            .as_ref()
-            .ok_or_else(|| io::Error::other("database is closed"))
+        self.db.as_ref().ok_or_else(|| io::Error::other("database is closed"))
     }
 
     pub fn search_plan_top_k(
         &mut self,
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?
-            .search_document_hits_plan_top_k(plan, return_fields, k)
+        self.db_mut()?.search_document_hits_plan_top_k(plan, return_fields, k)
     }
 
     pub fn search_top_k(&mut self, query: &Query, k: usize) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?
-            .search_document_hits_all_fields_top_k(query, k)
+        self.db_mut()?.search_document_hits_all_fields_top_k(query, k)
     }
 
     pub fn analyze_query_term(&self, term: &str) -> io::Result<Option<String>> {
@@ -369,7 +394,7 @@ impl CorelamoDatabase {
 
         self.policy = policy;
         self.save_policy()?;
-
+        info!(self.log, "policy updated"; "policy" => ?self.policy);
         Ok(())
     }
 
@@ -399,6 +424,7 @@ impl CorelamoDatabase {
     }
 
     pub fn reindex(&mut self) -> io::Result<()> {
+        info!(self.log, "reindex started");
         let _ = self.reindexing_tx.send(ReindexingStats {
             status: ReindexStatus::Reindexing,
             progress: 0,
@@ -410,7 +436,7 @@ impl CorelamoDatabase {
                 &mut (|doc| {
                     max_id = max_id.max(doc.internal_id);
                     Ok(())
-                }),
+                })
             )?;
             max_id
         };
@@ -419,28 +445,27 @@ impl CorelamoDatabase {
         std::fs::create_dir_all(&temp_index_root)?;
 
         let analyzer = Analyzer::new();
-        let new_index =
-            LsmIndex::persistent(&temp_index_root, self.options.runtime.flush_threshold)?;
+        let new_index = LsmIndex::persistent(
+            &temp_index_root,
+            self.options.runtime.flush_threshold
+        )?;
         let read_store = BinaryDocumentStore::open(self.root.join("documents.bin"))?;
         let mut staging_db = SearchDatabase::with_policy(
             read_store,
             new_index,
             analyzer.clone(),
-            self.policy.clone(),
+            self.policy.clone()
         );
         staging_db.reindex_existing_documents(
             self.options.runtime.indexing_batch_size,
-            &self.reindexing_tx,
+            &self.reindexing_tx
         )?;
         staging_db.shutdown_into_store()?;
 
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-        let old_db = self
-            .db
-            .take()
-            .ok_or_else(|| io::Error::other("database is closed"))?;
+        let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
         let store = old_db.shutdown_into_store()?;
 
         let index_root = self.root.join("index");
@@ -453,11 +478,13 @@ impl CorelamoDatabase {
         db.reindex_documents_after(watermark, self.options.runtime.indexing_batch_size)?;
 
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
+            Some(
+                CompactionWorker::start(
+                    db.index_sender(),
+                    self.options.runtime.compaction,
+                    self.options.compaction_interval
+                )
+            )
         } else {
             None
         };
@@ -469,7 +496,7 @@ impl CorelamoDatabase {
             progress: 100,
             eta_seconds: None,
         });
-
+        info!(self.log, "reindex complete");
         Ok(())
     }
 }

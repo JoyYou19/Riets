@@ -9,6 +9,7 @@ use core_protocol::{
     format::Format,
 };
 use serde_json::{Map, Value, json};
+use slog::{error, o, warn};
 use std::time::Instant;
 
 use uuid::Uuid;
@@ -115,24 +116,27 @@ impl HttpError {
 // HttpError for json and xml
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
+        let log= slog_scope::logger().new(o!("component"=>"middleware"));
         if self.status.is_server_error() {
             //console logging 
-            tracing::error!(
-                status = self.status.as_u16(),
-                error_type = %self.error_type,
-                detail = %self.detail,
-                instance = %self.instance,
-                request_id = %self.request_id,
-                "request failed"
+            error!( log,
+                "request failed";
+                "status" => %self.status.as_u16(),
+                "error_type" => %self.error_type,
+                "detail" => %self.detail,
+                "instance" => %self.instance,
+               " request_id" => %self.request_id,
+                
             );
         } else {
-            tracing::warn!(
-                status = self.status.as_u16(),
-                error_type = %self.error_type,
-                detail = %self.detail,
-                instance = %self.instance,
-                request_id = %self.request_id,
-                "request rejected"
+            warn!(log,
+                "request rejected";
+                "status" => self.status.as_u16(),
+                "error_type" => %self.error_type,
+                "detail "=> %self.detail,
+                "instance" => %self.instance,
+                "request_id" => %self.request_id,
+                
             );
         }
         match self.format {

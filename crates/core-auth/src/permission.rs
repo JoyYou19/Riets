@@ -2,32 +2,33 @@
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Permission {
+    //basic
     Search,
     Retrieve,
     Insert,
     Upsert,
     Delete,
-    CreateDatabase,
-    ListDatabase,
-    DeleteDatabase,
     Status,
-    Reindex,
+    Replace,
+    //databases
+    CreateDatabase,
+    DeleteDatabase,
+    ListDatabase,
+    StartDB,
+    StopDB,
+    RestartDB,
+    //config/policy
+    ChangeID,
     GetPolicy,
     PostPolicy,
-    ChangeID,
+    GetConfig,
+    SetConfig,
+    Reindex,
+    //users
     CreateUser,
     DeleteUser,
     UpdateRole,
     UpdatePwd,
-    Replace,
-    GetConfig,
-    SetConfig,
-    StartDB,
-    StopDB,
-    RestartDB,
-    
-    
-
 }
 
 impl Permission {

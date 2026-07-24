@@ -18,6 +18,7 @@ pub struct AuthService {
     policy: PolicyStore,
     tokens: TokenStore,
     users: UserDatabase<BinaryDocumentStore>,
+    
 }
 
 impl AuthService {
@@ -26,7 +27,6 @@ impl AuthService {
     }
     pub fn bootstrap(mut users: UserDatabase<BinaryDocumentStore>) -> Self {
         let policy = default_policy();
-        tracing::info!("bootstrapping auth service");
         let _ =users.add_user("admin", "secret", vec!["admin".to_string()]);
         Self::new(policy, TokenStore::new(), users)
     }

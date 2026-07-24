@@ -1,9 +1,11 @@
 use std::{collections::HashMap, io, path::Path};
 
 use core_core::CorelamoDatabase;
+use slog::{error, info};
 
 pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, CorelamoDatabase>> {
     let mut databases = HashMap::new();
+    let log=slog_scope::logger();
 
     if !databases_dir.exists() {
         std::fs::create_dir_all(databases_dir)?;
@@ -21,18 +23,18 @@ pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, 
         let mut db = match CorelamoDatabase::load(&path) {
             Ok(db) => db,
             Err(e) => {
-                tracing::error!(name=%name,error=%e,"database failed to load");
+                error!(log,"database failed to load";"name"=>%name,"error"=>%e);
                 continue;
             }
         };
 
         if db.options().bootable {
             match db.start() {
-                Ok(()) => tracing::info!(name=%name,"started database"),
-                Err(e) => tracing::error!(name=%name, error=%e,"database loaded but failed to start:"),
+                Ok(()) => info!(log,"started database";"name"=>%name),
+                Err(e) => error!(log,"database loaded but failed to start:";"name"=>%name, "error"=>%e),
             }
         } else {
-            tracing::info!(name=%name,"loaded database");
+            info!(log,"loaded database";"name"=>%name);
         }
 
         databases.insert(name, db);

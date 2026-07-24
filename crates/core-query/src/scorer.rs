@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem::zeroed, sync::Arc};
 
 use core_index::{
     posting::PostingList,
@@ -34,8 +34,8 @@ pub fn score_term_hybrid<S: SearchStats>(
     let df = postings.len() as f32;
     let avgdl = stats.avg_doc_len(xpath);
 
-    if trace {
-        tracing::trace!(
+   /*  if trace {
+      tracing::trace!(
             xpath=%xpath,
             docs=n,
             doc_freq=%df,
@@ -44,7 +44,7 @@ pub fn score_term_hybrid<S: SearchStats>(
             "bm25 stats",
         );
     }
-
+    */
     let started = std::time::Instant::now();
 
     let scored: Vec<ScoredPosting> = postings
@@ -78,8 +78,8 @@ pub fn score_term_hybrid<S: SearchStats>(
         })
         .collect();
 
-    if trace {
-        tracing::trace!(
+  /*   if trace {
+       tracing::trace!(
             xpath=%xpath,
             postings=%postings.len(),
             scored=%scored.len(),
@@ -89,7 +89,7 @@ pub fn score_term_hybrid<S: SearchStats>(
             "bm25 score",
         );
     }
-
+*/
     scored
 }
 

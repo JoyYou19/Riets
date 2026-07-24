@@ -5,11 +5,10 @@ edition = "2024"
 
 [dependencies]
 core-index = { path = "../core-index" }
-tracing = "0.1.44" 
 [dev-dependencies]
 criterion = { workspace = true }
 core-testkit = { path = "../core-testkit" }
-
+tracing="0.1.44"
 [[bench]]
 name = "query_bench"
 harness = false

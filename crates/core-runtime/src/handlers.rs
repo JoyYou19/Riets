@@ -15,6 +15,7 @@ use core_core::{
         SearchResponse,
     },
 };
+use slog::{error, info, o};
 
 use crate::{
     AppState,
@@ -696,6 +697,7 @@ pub async fn delete_database_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
+    let log = slog_scope::logger().new(o!("components"=> "handlers"));
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteDatabase) {
     return HttpError::from_corelamo(e, &ctx).into_response();
 }
@@ -732,23 +734,36 @@ pub async fn delete_database_handler(
     drop(handle); //last Sender gone
 
     let db_path = state.databases_dir.join(&db_name);
+    let log_path = format!("logs/databases/{db_name}.log");
+    if std::path::Path::new(&log_path).exists() {
+        std::fs::remove_file(&log_path);
+    }
     let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
 
     match removed {
-        Ok(Ok(())) => HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response(),
-        Ok(Err(e)) => HttpError::from_corelamo(
+    Ok(Ok(())) => {
+        info!(log, "database deleted"; "name" => %db_name);
+        HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response()
+    }
+    Ok(Err(e)) => {
+        error!(log, "database delete failed"; "name" => %db_name, "error" => %e);
+        HttpError::from_corelamo(
             CorelamoError::Internal(format!(
                 "removed from memory but failed to delete '{db_name}' from disk: {e}"
             )),
             &ctx,
         )
-        .into_response(),
-        Err(e) => HttpError::from_corelamo(
+        .into_response()
+    }
+    Err(e) => {
+        error!(log, "database delete panicked"; "name" => %db_name, "error" => %e);
+        HttpError::from_corelamo(
             CorelamoError::Internal(format!("delete task panicked: {e}")),
             &ctx,
         )
-        .into_response(),
+        .into_response()
     }
+}
 }
 
 pub async fn stats_handler(

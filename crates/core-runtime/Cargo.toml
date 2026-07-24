@@ -15,16 +15,19 @@ core-protocol = { path = "../core-protocol" }
 core-storage = { path = "../core-storage" }
 core-core = { path = "../core-core" }
 core-auth = {path = "../core-auth"}
+core-logs ={path ="../core-logs"}
 uuid = { version = "1.23.4", features = ["v4"] }
 serde = { workspace = true,}
 tokio = { workspace = true }
 serde_json = { version = "1", features = ["preserve_order"] }
-tracing = "0.1.44" 
+slog ="2"
+slog-async="2"
+slog-term="2"
+slog-envlogger="2"
+slog-scope="4"
 thiserror = "2"
 toml = "1.1.2"
 axum = "0.8.9"
 reqwest = "0.13.4"
-tracing-appender = "0.2.5"
-tracing-subscriber = {version="0.3.23", features=["env-filter"]}
 indexmap = { version = "2.14.0", features = ["serde"] }
 rayon = "1.12.0"
