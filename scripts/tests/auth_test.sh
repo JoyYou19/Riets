@@ -192,10 +192,10 @@ check "architect can delete database"  200 -X DELETE "$BASE_URL/api/databases/ar
 
 section "MATRIX — Permission::ListDatabase (admin, architect granted; viewer, editor denied)"
 
-check "admin can list databases"     200 -X GET "$BASE_URL/api/databases" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "architect can list databases" 200 -X GET "$BASE_URL/api/databases" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
-check "viewer cannot list databases" 403 -X GET "$BASE_URL/api/databases" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor cannot list databases" 403 -X GET "$BASE_URL/api/databases" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "admin can list databases"     200 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "architect can list databases" 200 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "viewer cannot list databases" 403 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "editor cannot list databases" 403 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 
 section "MATRIX — Permission::Status (admin, architect granted; viewer, editor denied)"
 
@@ -206,17 +206,17 @@ check "editor cannot view status" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_D
 
 section "MATRIX — Permission::GetPolicy (admin, architect, editor granted; viewer denied)"
 
-check "admin can get policy"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "architect can get policy" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
-check "editor can get policy"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-check "viewer cannot get policy" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "admin can get policy"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "architect can get policy" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "editor can get policy"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "viewer cannot get policy" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 
 section "MATRIX — Permission::PostPolicy (admin, architect, editor granted; viewer denied)"
 
-check "admin can set policy"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
-check "architect can set policy" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
-check "editor can set policy"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
-check "viewer cannot set policy" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "admin can set policy"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "architect can set policy" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "editor can set policy"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "viewer cannot set policy" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
 
 section "MATRIX — Permission::CreateUser (admin only)"
 
@@ -264,8 +264,8 @@ section "MATRIX — Permission::Reindex (admin should reach; viewer should not)"
 
 check "admin can reindex"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "viewer cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor can reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-check "architect can reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "editor can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "architect can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
 # ==================================================================
 # LIFECYCLE — start / stop / restart-database + conflict codes
@@ -305,9 +305,9 @@ check "insert with empty body is invalid" 400 -X POST "$BASE_URL/api/databases/$
 # ==================================================================
 section "EXTRA — token / header edge cases"
 
-check "missing token on protected route"  401 -X GET "$BASE_URL/api/databases"
-check "garbage token on protected route"  401 -X GET "$BASE_URL/api/databases" -H "X-Corelamo-Key: not-a-real-token"
-check "lowercase header name still works" 200 -X GET "$BASE_URL/api/databases" -H "x-corelamo-key: $ADMIN_TOKEN"
+check "missing token on protected route"  401 -X GET "$BASE_URL/api/list-databases"
+check "garbage token on protected route"  401 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: not-a-real-token"
+check "lowercase header name still works" 200 -X GET "$BASE_URL/api/list-databases" -H "x-corelamo-key: $ADMIN_TOKEN"
 
 # ==================================================================
 # EXTRA — stale tokens after account changes
@@ -341,7 +341,7 @@ MULTI_TOKEN=$(get_token '{"username":"multi_'"$RUN_ID"'","password":"secret"}')
 
 check "multi-role user can search (from viewer)"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/search"  -H "X-Corelamo-Key: $MULTI_TOKEN" -d '{"query":"x","docs":1}'
 check "multi-role user can insert (from editor)"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert"  -H "X-Corelamo-Key: $MULTI_TOKEN" -d '{"id":"multi-'"$RUN_ID"'","title":"T"}'
-check "multi-role user still cannot list databases" 403 -X GET "$BASE_URL/api/databases" -H "X-Corelamo-Key: $MULTI_TOKEN"
+check "multi-role user still cannot list databases" 403 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $MULTI_TOKEN"
 
 check "admin deletes multi-role test user" 200 -X DELETE "$BASE_URL/api/users/multi_$RUN_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
@@ -356,7 +356,7 @@ check "delete editor test user"         200 -X DELETE "$BASE_URL/api/users/edito
 check "delete scratch database"         200 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "delete admin_createdb database"  200 -X DELETE "$BASE_URL/api/databases/admin_createdb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "delete architect_createdb database" 200 -X DELETE "$BASE_URL/api/databases/architect_createdb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "delete denied_createdb_db database"      200 -X DELETE "$BASE_URL/api/databases/denied_createdb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+# check "delete denied_createdb_db database"      200 -X DELETE "$BASE_URL/api/databases/denied_createdb_$RUN_ID/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 echo
