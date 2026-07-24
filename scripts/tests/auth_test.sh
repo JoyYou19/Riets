@@ -5,7 +5,7 @@
 #
 # HOW TO USE:
 #   1. Start the server first:  cargo run -p core-runtime -- --root-path /tmp
-#   2. Run this whole file:     bash auth_test_full.sh
+#   2. Run this whole file:     bash auth_test.sh
 #
 # WHAT THIS COVERS:
 #   - login (success + failure paths)

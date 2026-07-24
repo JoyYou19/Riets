@@ -2,7 +2,7 @@
 # ==============================================================================
 # HOW TO USE:
 #   1. Start the server first:  cargo run -p core-runtime -- --root-path /tmp
-#   2. Run this whole file:     bash auth_test_full.sh
+#   2. Run this whole file:     bash search_test.sh
 # ==============================================================================
 BASE_URL="http://localhost:6006"
 RUN_ID=$(date +%s)
@@ -29,7 +29,7 @@ check() {
         PASS_COUNT=$((PASS_COUNT + 1))
     else
         echo "FAIL  [$label] expected $expected, got $response"
-        echo "      body: $(cat /tmp/auth_test_body.json)"
+        echo "      body: $(cat /tmp/search_test_body.json)"
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 }
@@ -43,7 +43,7 @@ check_json() {
     local expected="$3"
     local actual
 
-    actual=$(jq -r "$filter" /tmp/auth_test_body.json 2>/dev/null)
+    actual=$(jq -r "$filter" /tmp/search_test_body.json 2>/dev/null)
 
     if [ "$actual" == "$expected" ]; then
         echo "PASS  [$label] got '$actual'"
@@ -59,12 +59,12 @@ check_json_bool() {
     local label="$1"
     local filter="$2"
 
-    if jq -e "$filter" /tmp/auth_test_body.json > /dev/null 2>&1; then
+    if jq -e "$filter" /tmp/search_test_body.json > /dev/null 2>&1; then
         echo "PASS  [$label]"
         PASS_COUNT=$((PASS_COUNT + 1))
     else
         echo "FAIL  [$label]"
-        echo "      body: $(cat /tmp/auth_test_body.json)"
+        echo "      body: $(cat /tmp/search_test_body.json)"
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 }
@@ -89,24 +89,24 @@ DB="search_$RUN_ID"
 check "create search database" 201 \
   -X POST "$BASE_URL/api/databases/$DB/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-check "start search database" 201 \
+check "start search database" 200 \
   -X POST "$BASE_URL/api/databases/$DB/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "insert seed document" 200 \
-  -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"1","title":"real"}'
 
-  check "insert seed document" 200 \
-  -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "insert seed document" 200 \
+  -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"2","title":"case"}'
 
-  check "insert seed document" 200 \
-  -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "insert seed document" 200 \
+  -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"3","title":"CASE"}'
 
-    check "insert seed document" 200 \
-  -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"3","title":"CaSe"}'
+check "insert seed document" 200 \
+  -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"4","title":"CaSe"}'
 
 # ------------------------------------------------------------------
 # Search query tests
@@ -114,9 +114,13 @@ check "insert seed document" 200 \
 section "Single search term"
 
 check "non existing search term"    200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"nonexistent","docs":1}'
-check_json_bool "data should be empty" '(.data | length) <= 1'
+check_json_bool "data should be empty" '(.data | length) == 0'
+
 check "existing search term"        200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"real","docs":1}'
+check_json_bool "data should be one" '(.data | length) == 1'
+
 check "existing search term case"        200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"case","docs":3}'
+check_json_bool "data should be empty" '(.data | length) == 3'
 
 
 # ------------------------------------------------------------------
@@ -124,7 +128,7 @@ check "existing search term case"        200 -X POST "$BASE_URL/api/databases/$D
 # ------------------------------------------------------------------
 section "CLEANUP"
 
-check "delete search database"      200 -X DELETE "$BASE_URL/api/database/$DB" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "delete search database"      200 -X DELETE "$BASE_URL/api/databases/$DB/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 echo
