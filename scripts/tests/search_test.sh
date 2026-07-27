@@ -9,6 +9,7 @@ clear
 # ==============================================================================
 
 #Todo: special symbols (kad configa vares ielikt)
+#un ari visi search options kas sobrid nestrada
 
 BASE_URL="http://localhost:6006"
 PASS_COUNT=0
@@ -220,6 +221,8 @@ section "Phrase"
 
 check "non existing search term" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"reality real\""}'
     check_json_bool "data should be 0" '(.data | length) == 0'
+check "nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"\""}'
+    check_json_bool "data should be 0" '(.data | length) == 0'
 check "existing but separated search term" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"nothing real\""}'
     check_json_bool "data should be 0" '(.data | length) == 0'
 check "missing repeated word in middle" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"real word confirmed\""}'
@@ -235,8 +238,33 @@ check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search"
     check_json_bool "data should be 1" '(.data | length) == 1'
 check "existing search terms + symbols" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\".nothing&*(#&seems.real\""}'
     check_json_bool "data should be 1" '(.data | length) == 1'
+check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"a confirmed real\""}'
+    check_json_bool "data should be 1" '(.data | length) == 1'
+check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"confirmed a real\""}'
+    check_json_bool "data should be 1" '(.data | length) == 1'
 
-section "Exact match"
+#section "Exact match"
+#nav vel policy prikols tads
+
+#Nestraadaa
+section "OR"
+
+check "non existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{database management}"}'
+    check_json_bool "data should be 0" '(.data | length) == 0'
+check "nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{}"}'
+    check_json_bool "data should be 0" '(.data | length) == 0'
+check "non existing or nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{notreal}"}'
+    check_json_bool "data should be 0" '(.data | length) == 0'
+
+check "existing or nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{real}"}'
+    check_json_bool "data should be 6" '(.data | length) == 6'
+check "existing or stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{real a}"}'
+    check_json_bool "data should be 6" '(.data | length) == 6'
+check "existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{real word}"}'
+    check_json_bool "data should be 7" '(.data | length) == 7'
+
+#pretty sure ka nekas talak ari nestrada so nahuj
+
 # ------------------------------------------------------------------
 # Cleanup
 # ------------------------------------------------------------------
