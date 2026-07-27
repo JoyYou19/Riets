@@ -25,7 +25,7 @@ use core_storage::{
 };
 //logging
 use core_logs::logger;
-use slog::{ Logger, info, warn, error };
+use slog::{error, info, warn, Logger};
 use slog_async::AsyncGuard;
 //logging
 use crate::{
@@ -46,7 +46,6 @@ pub struct CorelamoDatabase {
     reindexing_tx: watch::Sender<ReindexingStats>,
     reindexing_rx: watch::Receiver<ReindexingStats>,
     log: Logger,
-
 }
 
 impl CorelamoDatabase {
@@ -61,13 +60,12 @@ impl CorelamoDatabase {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown viss slikiti")
             .to_string();
-        
+
         if root.exists() {
-            return Err(
-                CorelamoError::AlreadyExists(
-                    format!("database at {} already exists", root.display())
-                )
-            );
+            return Err(CorelamoError::AlreadyExists(format!(
+                "database at {} already exists",
+                root.display()
+            )));
         }
         std::fs::create_dir_all(&root)?;
         let log = logger::db_logger(&root, &name);
@@ -106,7 +104,6 @@ impl CorelamoDatabase {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
-        
 
         if !policy_path.exists() {
             return Err(CorelamoError::NotFound(format!(
@@ -119,7 +116,7 @@ impl CorelamoDatabase {
         let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
         let policy = IndexPolicy::load(&policy_path)?;
         let options = DatabaseOptions::load_or_default(Self::config_full_path_from(&root));
-         let log = logger::db_logger(&root, &name);
+        let log = logger::db_logger(&root, &name);
         Ok(Self {
             root,
             policy_path,
@@ -131,8 +128,6 @@ impl CorelamoDatabase {
             reindexing_tx,
             reindexing_rx,
             log,
-        
-            
         })
     }
 
@@ -169,7 +164,7 @@ impl CorelamoDatabase {
     pub fn stop(&mut self) -> Result<(), CorelamoError> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
-            info!(self.log,"Compaction worker stopped")
+            info!(self.log, "Compaction worker stopped")
         }
         if let Some(db) = self.db.take() {
             db.shutdown()?;
@@ -205,10 +200,13 @@ impl CorelamoDatabase {
         let started = std::time::Instant::now();
         let count = inputs.len();
         let batch_size = self.options.runtime.indexing_batch_size;
+        let window_size = self.options.runtime.indexing_window_size;
 
         let result = (|| {
             let db = self.db_mut()?;
-            let report = db.put_documents_parallel(inputs, batch_size)?;
+
+            let report = db.put_documents_parallel(inputs, batch_size, window_size)?;
+
             db.flush()?;
             Ok(report)
         })();
@@ -236,21 +234,19 @@ impl CorelamoDatabase {
             );
         }
 
-   
-            if result.is_err() {
-                error!(self.log, "indexing failed";
-                    "documents" => count,
-                    "batch_size" => batch_size,
-                    "elapsed_ms" => elapsed.as_millis(),
-                );
-            } else {
-                info!(self.log, "indexed batch";
-                    "documents" => count,
-                    "batch_size" => batch_size,
-                    "elapsed_ms" => elapsed.as_millis(),
-                );
-            }
-        
+        if result.is_err() {
+            error!(self.log, "indexing failed";
+                "documents" => count,
+                "batch_size" => batch_size,
+                "elapsed_ms" => elapsed.as_millis(),
+            );
+        } else {
+            info!(self.log, "indexed batch";
+                "documents" => count,
+                "batch_size" => batch_size,
+                "elapsed_ms" => elapsed.as_millis(),
+            );
+        }
 
         result
     }
