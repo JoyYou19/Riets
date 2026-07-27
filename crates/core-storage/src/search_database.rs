@@ -6,14 +6,14 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{policy::IndexKind, IndexPolicy, IndexedDocument},
     lsm::{
-        LsmIndex,
         index_worker::{
-            IndexCommand, IndexWorker, ReindexStatus, ReindexingStats, build_segments_parallel,
+            build_segments_parallel, IndexCommand, IndexWorker, ReindexStatus, ReindexingStats,
         },
         make_batches,
         snapshot::SharedIndexSnapshot,
+        LsmIndex,
     },
 };
 
@@ -21,7 +21,7 @@ use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
-use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use core_query::{planner::QueryPlan, Query, QueryExecutor, SearchHit};
 use indexmap::IndexMap;
 use tokio::sync::watch;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,14 +187,14 @@ impl<S: DocumentStore> SearchDatabase<S> {
         }
 
         let inserted = stored_documents.len() as u32;
-       // tracing::info!(time=?started.elapsed(), "Document conversion time");
+        // tracing::info!(time=?started.elapsed(), "Document conversion time");
         let started = Instant::now();
         self.store.put_batch(stored_documents)?;
-       // tracing::info!(time=?started.elapsed(),"Document store batch write time");
+        // tracing::info!(time=?started.elapsed(),"Document store batch write time");
 
         let started = Instant::now();
         let batches = make_batches(indexed_documents, batch_size);
-       // tracing::info!(time=?started.elapsed(),batches=%batches.len(), "Batch splitting" );
+        // tracing::info!(time=?started.elapsed(),batches=%batches.len(), "Batch splitting" );
         let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
         let started = Instant::now();
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
@@ -208,9 +208,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
         for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
             self.index_worker.add_segment_wait(segment, doc_count)?;
         }
-       // tracing::info!(time=?started.elapsed(), "Segment publish/write");
+        // tracing::info!(time=?started.elapsed(), "Segment publish/write");
 
-       // tracing::info!(total_time=?total_started.elapsed(),"TOTAL Parallel document putting" );
+        // tracing::info!(total_time=?total_started.elapsed(),"TOTAL Parallel document putting" );
 
         Ok(InsertReport { inserted, failures })
     }
@@ -373,17 +373,52 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(SearchDocumentResults { total_hits, hits })
     }
 
-    pub fn search_document_hits_plan_top_k(
+    pub fn search_document_hits_plan(
         &mut self,
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
-        k: usize,
+        offset: usize,
+        limit: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let requested_hits = offset.checked_add(limit).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "offset and limit exceed the supported range",
+            )
+        })?;
+
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
 
         let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
-        let hits = executor.search_plan_all_xpaths_top_k(plan, xpaths, k);
+
+        // the executor might not rank enough results to coover the skipped portion and the
+        // requested page, so we must ensure it does
+
+        let mut hits = executor.search_plan_all_xpaths_top_k(plan, xpaths, requested_hits);
+
+        if offset >= hits.len() {
+            return Ok(Vec::new());
+        }
+
+        println!(
+            "offset={}, limit={}, requested={}, returned={}",
+            offset,
+            limit,
+            requested_hits,
+            hits.len(),
+        );
+
+        for (i, hit) in hits.iter().take(15).enumerate() {
+            println!("{i}: doc={} score={}", hit.doc_id, hit.score);
+        }
+        // I don't want to allocate another Vec and also lets not touch skipped docs
+        hits.drain(..offset);
+        hits.truncate(limit);
 
         self.resolve_document_hits(hits, return_fields)
     }

@@ -1,7 +1,7 @@
 use core_protocol::format::Format;
 //logging
 use core_logs::logger;
-use slog::{Logger,info};
+use slog::{info, Logger};
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};
@@ -52,15 +52,15 @@ pub trait DocumentStore {
 pub struct MemoryDocumentStore {
     docs: BTreeMap<String, StoredDocument>,
     internal_to_external: BTreeMap<u64, String>,
-    log:Logger,
+    log: Logger,
 }
 
 impl MemoryDocumentStore {
-    pub fn new(name:&str) -> Self {
+    pub fn new(name: &str) -> Self {
         //te bija self::Default()
-        Self{
+        Self {
             docs: BTreeMap::default(),
-            internal_to_external:BTreeMap::default(),
+            internal_to_external: BTreeMap::default(),
             log: logger::db_logger(name),
         }
     }
