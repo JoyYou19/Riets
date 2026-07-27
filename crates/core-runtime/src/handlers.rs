@@ -2,27 +2,27 @@
 //so the code cood look like: state.lookup(&db_name)?
 
 use axum::{
+    Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Extension,
 };
 use core_auth::{Permission, Principal};
 use core_core::{
+    CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
         Command, DeleteCommand, LoginResponse, RetrieveCommand, RetrieveResponse, SearchCommand,
         SearchResponse,
     },
-    CorelamoDatabase, DatabaseOptions,
 };
 use slog::{error, info, o};
 
 use crate::{
+    AppState,
     db_actor::{self, DbHandle},
     doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
-    AppState,
 };
 use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
 use core_storage::search_database::DatabasePowerButtonOutcome;
@@ -924,7 +924,13 @@ pub async fn get_config_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-    let options = handle.options().await;
+
+    let options = match handle.options().await {
+        Ok(opts) => opts,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
 
     match toml::to_string_pretty(&options) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
