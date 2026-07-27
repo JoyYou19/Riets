@@ -30,6 +30,38 @@ pub enum IndexMode {
     StoreAndIndex,
 }
 
+// For the ability to create many windows and many batches
+// instead of simply indexing everything at once
+// and dumping everything at once we create a pipeline
+//
+// 1. Collects batch_size amount of docs
+// 2. writes them to the document store
+// 3. queues the indexed batch
+// 4. after window_size batches are enough, build_segments_parallel and publishes them
+// 5. releases the memory and repeats (SHOULD FIX THE PROBLEM OF 250GB imports)
+pub struct IndexPipeline<'a, S: DocumentStore> {
+    // Database that we import into
+    db: &'a mut SearchDatabase<S>,
+
+    // Number of docs per ImmutableSegment
+    batch_size: usize,
+    // Number of completed batches before building segments in
+    // parallel
+    window_size: usize,
+
+    // The documents that are waiting to be written to document store
+    current_store_batch: Vec<StoredDocument>,
+    // The current batch waiting to be written to the index segment
+    current_batch: Vec<IndexedDocument>,
+
+    //completed batches that are waiting to be indexed together
+    pending_batches: Vec<Vec<IndexedDocument>>,
+
+    inserted: u32,
+    failures: Vec<DocFailure>,
+    seen: HashSet<String>,
+}
+
 pub struct SearchDatabase<S: DocumentStore> {
     store: S,
     index_worker: IndexWorker,
@@ -139,81 +171,114 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(())
     }
 
+    pub fn begin_import(&mut self, batch_size: usize, window_size: usize) -> IndexPipeline<'_, S> {
+        IndexPipeline {
+            db: self,
+
+            batch_size,
+            window_size,
+
+            current_store_batch: Vec::with_capacity(batch_size),
+            current_batch: Vec::with_capacity(batch_size),
+
+            pending_batches: Vec::with_capacity(window_size),
+
+            inserted: 0,
+            failures: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+
     pub fn put_documents_parallel(
         &mut self,
         inputs: Vec<DocumentInput>,
         batch_size: usize,
+        window_size: usize,
     ) -> io::Result<InsertReport> {
-        use std::time::Instant;
-        let total_started = Instant::now();
-        let started = Instant::now();
+        let mut pipeline = self.begin_import(batch_size, window_size);
 
-        let mut stored_documents = Vec::with_capacity(inputs.len());
-        let mut indexed_documents = Vec::with_capacity(inputs.len());
-
-        let mut failures = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-
-        //INFO: bik porno ar Id/AutoID un kaa logika strada
-        //FIX: izdomat to logiku lidz galam piem kas notiek ja ir auto 1 2 3 un tad kads ieliiek
-        //id:7 yk?
-        for (index, input) in inputs.into_iter().enumerate() {
-            let (internal_id, external_id) = if input.external_id.is_empty() {
-                let internal_id = self.allocate_internal_id();
-                (internal_id, internal_id.to_string())
-            } else {
-                let external_id = input.external_id;
-                if self.store.get(&external_id)?.is_some() || !seen.insert(external_id.clone()) {
-                    failures.push(DocFailure::with_id(
-                        index,
-                        external_id,
-                        FailReason::DuplicatePrimaryId,
-                    ));
-                    continue;
-                }
-                (self.allocate_internal_id(), external_id)
-            };
-
-            let doc = StoredDocument {
-                external_id,
-                internal_id,
-                source: input.source,
-                fields: input.fields,
-                format: input.format,
-            };
-
-            indexed_documents.push(stored_document_to_indexed(&doc, &self.policy));
-            stored_documents.push(doc);
+        for (i, input) in inputs.into_iter().enumerate() {
+            pipeline.push(input, i)?;
         }
 
-        let inserted = stored_documents.len() as u32;
-        // tracing::info!(time=?started.elapsed(), "Document conversion time");
-        let started = Instant::now();
-        self.store.put_batch(stored_documents)?;
-        // tracing::info!(time=?started.elapsed(),"Document store batch write time");
-
-        let started = Instant::now();
-        let batches = make_batches(indexed_documents, batch_size);
-        // tracing::info!(time=?started.elapsed(),batches=%batches.len(), "Batch splitting" );
-        let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
-        let started = Instant::now();
-        let segments = build_segments_parallel(self.analyzer.clone(), batches);
-        /*tracing::info!(
-            time=?started.elapsed(),
-            segments=%segments.len(),
-            "Parallel segment build",
-        );
-        */
-        let started = Instant::now();
-        for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
-            self.index_worker.add_segment_wait(segment, doc_count)?;
-        }
-        // tracing::info!(time=?started.elapsed(), "Segment publish/write");
-
-        // tracing::info!(total_time=?total_started.elapsed(),"TOTAL Parallel document putting" );
-
-        Ok(InsertReport { inserted, failures })
+        pipeline.finish()
     }
+
+    // pub fn put_documents_parallel(
+    //     &mut self,
+    //     inputs: Vec<DocumentInput>,
+    //     batch_size: usize,
+    // ) -> io::Result<InsertReport> {
+    //     use std::time::Instant;
+    //     let total_started = Instant::now();
+    //     let started = Instant::now();
+    //
+    //     let mut stored_documents = Vec::with_capacity(inputs.len());
+    //     let mut indexed_documents = Vec::with_capacity(inputs.len());
+    //
+    //     let mut failures = Vec::new();
+    //     let mut seen: HashSet<String> = HashSet::new();
+    //
+    //     //INFO: bik porno ar Id/AutoID un kaa logika strada
+    //     //FIX: izdomat to logiku lidz galam piem kas notiek ja ir auto 1 2 3 un tad kads ieliiek
+    //     //id:7 yk?
+    //     for (index, input) in inputs.into_iter().enumerate() {
+    //         let (internal_id, external_id) = if input.external_id.is_empty() {
+    //             let internal_id = self.allocate_internal_id();
+    //             (internal_id, internal_id.to_string())
+    //         } else {
+    //             let external_id = input.external_id;
+    //             if self.store.get(&external_id)?.is_some() || !seen.insert(external_id.clone()) {
+    //                 failures.push(DocFailure::with_id(
+    //                     index,
+    //                     external_id,
+    //                     FailReason::DuplicatePrimaryId,
+    //                 ));
+    //                 continue;
+    //             }
+    //             (self.allocate_internal_id(), external_id)
+    //         };
+    //
+    //         let doc = StoredDocument {
+    //             external_id,
+    //             internal_id,
+    //             source: input.source,
+    //             fields: input.fields,
+    //             format: input.format,
+    //         };
+    //
+    //         indexed_documents.push(stored_document_to_indexed(&doc, &self.policy));
+    //         stored_documents.push(doc);
+    //     }
+    //
+    //     let inserted = stored_documents.len() as u32;
+    //     // tracing::info!(time=?started.elapsed(), "Document conversion time");
+    //     let started = Instant::now();
+    //     self.store.put_batch(stored_documents)?;
+    //     // tracing::info!(time=?started.elapsed(),"Document store batch write time");
+    //
+    //     let started = Instant::now();
+    //     let batches = make_batches(indexed_documents, batch_size);
+    //     // tracing::info!(time=?started.elapsed(),batches=%batches.len(), "Batch splitting" );
+    //     let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+    //     let started = Instant::now();
+    //     let segments = build_segments_parallel(self.analyzer.clone(), batches);
+    //     /*tracing::info!(
+    //         time=?started.elapsed(),
+    //         segments=%segments.len(),
+    //         "Parallel segment build",
+    //     );
+    //     */
+    //     let started = Instant::now();
+    //     for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
+    //         self.index_worker.add_segment_wait(segment, doc_count)?;
+    //     }
+    //     // tracing::info!(time=?started.elapsed(), "Segment publish/write");
+    //
+    //     // tracing::info!(total_time=?total_started.elapsed(),"TOTAL Parallel document putting" );
+    //
+    //     Ok(InsertReport { inserted, failures })
+    // }
 
     pub fn put_document_store_only_return_indexed(
         &mut self,
@@ -687,4 +752,106 @@ fn should_include(
         .find(|f| f.name == top_level)
         .map(|f| f.list)
         .unwrap_or(false)
+}
+
+impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
+    pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
+        let (internal_id, external_id) = if input.external_id.is_empty() {
+            let id = self.db.allocate_internal_id();
+            (id, id.to_string())
+        } else {
+            let external_id = input.external_id;
+
+            if self.db.store.get(&external_id)?.is_some() || !self.seen.insert(external_id.clone())
+            {
+                self.failures.push(DocFailure::with_id(
+                    input_index,
+                    external_id,
+                    FailReason::DuplicatePrimaryId,
+                ));
+
+                return Ok(());
+            }
+
+            (self.db.allocate_internal_id(), external_id)
+        };
+
+        let stored = StoredDocument {
+            external_id,
+            internal_id,
+            source: input.source,
+            fields: input.fields,
+            format: input.format,
+        };
+
+        let indexed = stored_document_to_indexed(&stored, &self.db.policy);
+
+        self.current_store_batch.push(stored);
+        self.current_batch.push(indexed);
+
+        self.inserted += 1;
+
+        if self.current_batch.len() >= self.batch_size {
+            self.flush_batch()?;
+        }
+
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> io::Result<InsertReport> {
+        self.flush_batch()?;
+        self.flush_window()?;
+
+        self.db.flush()?;
+
+        Ok(InsertReport {
+            inserted: self.inserted,
+            failures: self.failures,
+        })
+    }
+
+    // Builds all pending batches into immutable segments in parallel
+    // publishes them to the index
+    //
+    //
+    fn flush_window(&mut self) -> io::Result<()> {
+        if self.pending_batches.is_empty() {
+            return Ok(());
+        }
+
+        let batches = std::mem::take(&mut self.pending_batches);
+
+        let counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+
+        let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
+
+        for (segment, count) in segments.into_iter().zip(counts) {
+            self.db.index_worker.add_segment_wait(segment, count)?;
+        }
+
+        Ok(())
+    }
+
+    // Flushes on completed document batch
+    fn flush_batch(&mut self) -> io::Result<()> {
+        if self.current_batch.is_empty() {
+            return Ok(());
+        }
+
+        let stored = std::mem::take(&mut self.current_store_batch);
+        self.db.store.put_batch(stored)?;
+
+        let docs = std::mem::take(&mut self.current_batch);
+
+        self.pending_batches.push(docs);
+
+        self.current_store_batch = Vec::with_capacity(self.batch_size);
+        self.current_batch = Vec::with_capacity(self.batch_size);
+
+        if self.pending_batches.len() >= self.window_size {
+            self.flush_window()?;
+        }
+
+        Ok(())
+    }
 }
