@@ -1,6 +1,8 @@
 use rayon::prelude::*;
 use std::{
-    io, sync::mpsc::{self, Receiver, Sender}, thread::{self, JoinHandle},
+    io,
+    sync::mpsc::{self, Receiver, Sender},
+    thread::{self, JoinHandle},
 };
 
 use crate::{
@@ -56,6 +58,7 @@ pub enum IndexCommand {
     GetStats {
         reply: Sender<io::Result<IndexingStats>>,
     },
+    Abort,
     Shutdown,
 }
 
@@ -94,7 +97,7 @@ impl IndexWorker {
         let handle = self
             .handle
             .take()
-            .ok_or_else(|| io::Error::other( "index worker already joined"))?;
+            .ok_or_else(|| io::Error::other("index worker already joined"))?;
         handle
             .join()
             .map_err(|_| io::Error::other("index worker panicked"))?
@@ -113,7 +116,11 @@ impl IndexWorker {
     }
 
     pub fn add_segment(&self, segment: ImmutableSegment, doc_count: u64) -> io::Result<()> {
-        self.send(IndexCommand::AddSegment { segment, doc_count , ack: None })
+        self.send(IndexCommand::AddSegment {
+            segment,
+            doc_count,
+            ack: None,
+        })
     }
 
     pub fn flush(&self) -> io::Result<()> {
@@ -202,6 +209,10 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
+    pub fn abort(&self) -> io::Result<()> {
+        self.send(IndexCommand::Abort)
+    }
+
     pub fn install_compaction(&self, completed: CompletedCompaction) -> io::Result<()> {
         self.send(IndexCommand::InstallCompaction {
             completed,
@@ -221,12 +232,11 @@ impl IndexWorker {
         })?
     }
     //stats
-   pub fn get_stats(&self) -> io::Result<IndexingStats> {
+    pub fn get_stats(&self) -> io::Result<IndexingStats> {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::GetStats { reply })?;
-        rx.recv().map_err(|_| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
-        })?
+        rx.recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped"))?
     }
 }
 
@@ -236,13 +246,13 @@ fn run_index_worker(
     shared: SharedIndexSnapshot,
     receiver: Receiver<IndexCommand>,
 ) -> io::Result<LsmIndex> {
-    let mut stats=IndexingStats::default();
+    let mut stats = IndexingStats::default();
     while let Ok(command) = receiver.recv() {
         match command {
             IndexCommand::AddIndexedDocument { document, ack } => {
                 let result = index.add_indexed_document(&analyzer, &document).map(|_| {
                     shared.publish(index.snapshot());
-                    stats.total_documents_indexed +=1;
+                    stats.total_documents_indexed += 1;
                 });
 
                 send_acknowledgement(ack, result)?
@@ -250,14 +260,18 @@ fn run_index_worker(
             IndexCommand::DeleteDocument { doc_id, ack } => {
                 let result = index.delete_document(doc_id).map(|_| {
                     shared.publish(index.snapshot());
-                    stats.total_documents_deleted +=1;
+                    stats.total_documents_deleted += 1;
                 });
                 send_acknowledgement(ack, result)?
             }
-            IndexCommand::AddSegment { segment, ack , doc_count} => {
+            IndexCommand::AddSegment {
+                segment,
+                ack,
+                doc_count,
+            } => {
                 let result = index.add_immutable_segment(segment).map(|_| {
                     shared.publish(index.snapshot());
-                    stats.segments_written +=1;
+                    stats.segments_written += 1;
                     stats.total_documents_indexed += doc_count;
                 });
                 send_acknowledgement(ack, result)?
@@ -283,7 +297,7 @@ fn run_index_worker(
                 let result = index.install_compaction(completed).map(|installed| {
                     if installed {
                         shared.publish(index.snapshot());
-                        stats.compactions_completed +=1;
+                        stats.compactions_completed += 1;
                     }
                 });
 
@@ -305,14 +319,16 @@ fn run_index_worker(
                 shared.publish(index.snapshot());
                 return Ok(index);
             }
-            IndexCommand::GetStats { reply } =>{
+            IndexCommand::Abort => {
+                return Ok(index);
+            }
+            IndexCommand::GetStats { reply } => {
                 stats.segment_count = index.segment_count();
                 stats.memtable_term_count = index.memtable_term_count();
                 reply.send(Ok(stats.clone())).map_err(|_| {
                     io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
                 })?;
             }
-           
         }
     }
 
@@ -363,14 +379,14 @@ pub fn index_batches_parallel(
     analyzer: Analyzer,
     batches: Vec<Vec<IndexedDocument>>,
 ) -> io::Result<()> {
-    let doc_counts:Vec<u64> =batches.iter().map(|batch| batch.len() as u64).collect();
+    let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
     let segments: Vec<ImmutableSegment> = batches
         .into_par_iter()
         .map(|batch| build_segment_batch(&analyzer, batch))
         .collect();
 
-    for (segment,doc_count) in segments.into_iter().zip(doc_counts) {
-        worker.add_segment_wait(segment,doc_count)?;
+    for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
+        worker.add_segment_wait(segment, doc_count)?;
     }
 
     Ok(())
@@ -425,10 +441,11 @@ pub enum ReindexStatus {
     Failed,
 }
 
-#[derive(Debug,Clone,PartialEq,Eq,Default)]
-pub struct ReindexingStats{
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReindexingStats {
     pub status: ReindexStatus,
     pub progress: u8,
+    pub documents_indexed: u64,
     pub eta_seconds: Option<u64>,
 }
 
@@ -458,7 +475,7 @@ mod tests {
         let stats_before = worker.get_stats().expect("get_stats should succeed");
         assert_eq!(stats_before.total_documents_indexed, 0);
 
-        let doc_id:   DocId =1;
+        let doc_id: DocId = 1;
         let document = IndexedDocument::new(doc_id);
         worker
             .add_indexed_document_wait(document)
@@ -474,7 +491,7 @@ mod tests {
 
         let segment = ImmutableSegment::new(BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
         worker
-            .add_segment_wait(segment,5)
+            .add_segment_wait(segment, 5)
             .expect("add should succeed");
 
         let stats = worker.get_stats().expect("get_stats should succeed");

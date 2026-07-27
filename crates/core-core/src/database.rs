@@ -7,25 +7,28 @@ use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
     lsm::{
+        LsmIndex,
         index_worker::{IndexingStats, ReindexStatus, ReindexingStats},
         worker::CompactionWorker,
-        LsmIndex,
     },
 };
 use core_protocol::errors::CorelamoError;
 use core_query::{
-    planner::{QueryPlan, QueryPlanner},
     Query,
+    planner::{QueryPlan, QueryPlanner},
 };
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
-    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
+    search_database::{
+        self, DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit,
+    },
 };
 //logging
 use core_logs::logger;
-use slog::{error, info, Logger};
+use slog::{Logger, error, info, warn};
+use slog_async::AsyncGuard;
 //logging
 use crate::{
     command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
@@ -51,7 +54,6 @@ impl CorelamoDatabase {
     fn config_full_path_from(root: &Path) -> std::path::PathBuf {
         root.join("config.toml")
     }
-
     //INFO: just creates everything for the database, doesnt start it
     pub fn create(root: impl AsRef<Path>, options: DatabaseOptions) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
@@ -60,20 +62,20 @@ impl CorelamoDatabase {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown viss slikiti")
             .to_string();
-        if root.exists() {
-            return Err(CorelamoError::AlreadyExists(
-                format!("database at {} already exists", root.display()), //varbut japievieno global logam
-            ));
-        }
 
+        if root.exists() {
+            return Err(CorelamoError::AlreadyExists(format!(
+                "database at {} already exists",
+                root.display()
+            )));
+        }
         std::fs::create_dir_all(&root)?;
+        let log = logger::db_logger(&root, &name);
         //reindexing
         let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
-
         let policy_path = root.join("policy.toml");
         let policy = IndexPolicy::default_document();
         policy.save(&policy_path)?;
-
         options.save_to_file(Self::config_full_path_from(&root))?;
 
         let store_path = root.join("documents.bin");
@@ -89,7 +91,8 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
-            log: logger::db_logger(&name),
+
+            log,
         })
     }
 
@@ -114,7 +117,7 @@ impl CorelamoDatabase {
         let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
         let policy = IndexPolicy::load(&policy_path)?;
         let options = DatabaseOptions::load_or_default(Self::config_full_path_from(&root));
-
+        let log = logger::db_logger(&root, &name);
         Ok(Self {
             root,
             policy_path,
@@ -125,7 +128,8 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
-            log: logger::db_logger(&name),
+
+            log,
         })
     }
 
@@ -133,7 +137,7 @@ impl CorelamoDatabase {
         if self.db.is_some() {
             return Ok(());
         }
-
+        info!(self.log, "database started");
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
 
@@ -162,11 +166,12 @@ impl CorelamoDatabase {
     pub fn stop(&mut self) -> Result<(), CorelamoError> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
+            info!(self.log, "Compaction worker stopped")
         }
         if let Some(db) = self.db.take() {
             db.shutdown()?;
+            info!(self.log, "Database stopped")
         }
-        info!(self.log, "Database stopped");
         Ok(())
     }
 
@@ -197,20 +202,21 @@ impl CorelamoDatabase {
         let started = std::time::Instant::now();
         let count = inputs.len();
         let batch_size = self.options.runtime.indexing_batch_size;
+        let window_size = self.options.runtime.indexing_window_size;
 
         let result = (|| {
             let db = self.db_mut()?;
-            let report = db.put_documents_parallel(inputs, batch_size)?;
+
+            let report = db.put_documents_parallel(inputs, batch_size, window_size)?;
+
             db.flush()?;
             Ok(report)
         })();
 
         let elapsed = started.elapsed();
+
         self.metrics.indexing_requests += 1;
         self.metrics.indexing_total_time += elapsed;
-        if count == 0 {
-            return result;
-        }
         //TODO:te countign nestrada vajag salabot
         if result.is_err() {
             self.metrics.indexing_errors += 1;
@@ -223,6 +229,20 @@ impl CorelamoDatabase {
             info!(self.log, "put documents parallel";
                 "documents" => count,
                 "batch_size" =>batch_size,
+                "elapsed_ms" => elapsed.as_millis(),
+            );
+        }
+
+        if result.is_err() {
+            error!(self.log, "indexing failed";
+                "documents" => count,
+                "batch_size" => batch_size,
+                "elapsed_ms" => elapsed.as_millis(),
+            );
+        } else {
+            info!(self.log, "indexed batch";
+                "documents" => count,
+                "batch_size" => batch_size,
                 "elapsed_ms" => elapsed.as_millis(),
             );
         }
@@ -360,11 +380,49 @@ impl CorelamoDatabase {
         &self.root
     }
 
-    pub fn shutdown(&mut self) -> io::Result<()> {
+    pub fn clear(&mut self) -> io::Result<()> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
+
+        if let Some(db) = self.db.as_mut() {
+            db.index_worker().abort()?;
+        }
+
+        let index_root = self.root.join("index");
+        std::fs::remove_dir_all(&index_root).ok();
+
+        let store_path = self.root.join("documents.bin");
+        std::fs::remove_file(&store_path).ok();
+
+        //new slaves for database
+        let analyzer = Analyzer::new();
+        let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
+        let store = BinaryDocumentStore::open(&store_path)?;
+
+        let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
+
+        self.compaction_worker = if self.options.enable_background_compaction {
+            Some(CompactionWorker::start(
+                db.index_sender(),
+                self.options.runtime.compaction,
+                self.options.compaction_interval,
+            ))
+        } else {
+            None
+        };
+
+        self.db = Some(db);
+
+        Ok(())
+    }
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        if let Some(worker) = self.compaction_worker.take() {
+            info!(self.log, "Compaction worker stopped");
+            worker.stop()?;
+        }
         if let Some(db) = self.db.take() {
+            info!(self.log, "Database shut down");
             let _index = db.shutdown()?;
         }
         Ok(())
@@ -409,11 +467,12 @@ impl CorelamoDatabase {
 
         self.policy = policy;
         self.save_policy()?;
-        info!(self.log, "policy updated"; "policy" => ?self.policy);
+        info!(self.log, "policy set"; "policy" => format!("{:?}", self.policy));
         Ok(())
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
+        info!(self.log, "Flushing database");
         self.db_mut()?.flush()
     }
 
@@ -426,12 +485,14 @@ impl CorelamoDatabase {
     }
 
     pub fn save_policy(&self) -> io::Result<()> {
-        self.policy.save(&self.policy_path)
+        self.policy.save(&self.policy_path)?;
+        info!(self.log, "policy saved"; "policy" => format!("{:?}", self.policy));
+        Ok(())
     }
 
     pub fn reload_policy(&mut self) -> io::Result<()> {
         let policy = IndexPolicy::load(&self.policy_path)?;
-
+        info!(self.log, "Policy reloaded");
         self.db_mut()?.set_policy(policy.clone())?;
         self.policy = policy;
 
@@ -443,6 +504,7 @@ impl CorelamoDatabase {
         let _ = self.reindexing_tx.send(ReindexingStats {
             status: ReindexStatus::Reindexing,
             progress: 0,
+            documents_indexed: 0,
             eta_seconds: None,
         });
         let watermark = {
@@ -469,6 +531,7 @@ impl CorelamoDatabase {
             analyzer.clone(),
             self.policy.clone(),
         );
+
         staging_db.reindex_existing_documents(
             self.options.runtime.indexing_batch_size,
             &self.reindexing_tx,
@@ -509,6 +572,11 @@ impl CorelamoDatabase {
             status: ReindexStatus::Complete,
             progress: 100,
             eta_seconds: None,
+            documents_indexed: self
+                .db
+                .as_ref()
+                .map(|d| d.document_count() as u64)
+                .unwrap_or(0),
         });
         info!(self.log, "reindex complete");
         Ok(())

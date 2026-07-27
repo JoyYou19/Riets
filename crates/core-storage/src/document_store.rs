@@ -1,7 +1,4 @@
 use core_protocol::format::Format;
-//logging
-use core_logs::logger;
-use slog::{info, Logger};
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};
@@ -52,7 +49,6 @@ pub trait DocumentStore {
 pub struct MemoryDocumentStore {
     docs: BTreeMap<String, StoredDocument>,
     internal_to_external: BTreeMap<u64, String>,
-    log: Logger,
 }
 
 impl MemoryDocumentStore {
@@ -60,15 +56,14 @@ impl MemoryDocumentStore {
         //te bija self::Default()
         Self {
             docs: BTreeMap::default(),
-            internal_to_external: BTreeMap::default(),
-            log: logger::db_logger(name),
+            internal_to_external:BTreeMap::default(),
         }
     }
 }
 
 impl DocumentStore for MemoryDocumentStore {
     fn put(&mut self, doc: StoredDocument) -> std::io::Result<()> {
-        info!(self.log,"put";"external_id" => &doc.external_id,"internal_id"=> doc.internal_id);
+       
         self.internal_to_external
             .insert(doc.internal_id, doc.external_id.clone());
 
@@ -78,7 +73,7 @@ impl DocumentStore for MemoryDocumentStore {
     }
 
     fn put_batch(&mut self, docs: Vec<StoredDocument>) -> std::io::Result<()> {
-        info!(self.log, "put_batch"; "count" => docs.len());
+       
         for doc in docs {
             self.internal_to_external
                 .insert(doc.internal_id, doc.external_id.clone());
@@ -98,7 +93,7 @@ impl DocumentStore for MemoryDocumentStore {
     }
 
     fn delete(&mut self, external_id: &str) -> std::io::Result<()> {
-        info!(self.log, "delete"; "external_id" => external_id);
+       
         if let Some(doc) = self.docs.remove(external_id) {
             self.internal_to_external.remove(&doc.internal_id);
         }

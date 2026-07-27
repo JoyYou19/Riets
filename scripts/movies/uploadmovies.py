@@ -14,9 +14,20 @@ PASSWORD = "secret"
 
 POLICY = """\
 [[fields]]
+name = "id"
+xpath = 21
+index = "IdAutoIncrement"
+list = true
+[fields.weight]
+min = 90
+max = 95
+
+
+
+[[fields]]
 name = "title"
 xpath = 0
-index = "Id"
+index = "Text"
 list = true
 [fields.weight]
 min = 90
@@ -175,7 +186,7 @@ def main():
     # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
     out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/policy", POLICY, token)
+        f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
     print(f"[INFO] {out}")
 
     # 4. upload chunks
@@ -198,8 +209,9 @@ def main():
         if code != 0:
             print(f"[ERROR] Failed to upload {file}")
             print(out)
-        # else:
-        #     print(f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+        else:
+            print(
+                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
 
     # 5. reindex
     print("[INFO] Reindexing...")

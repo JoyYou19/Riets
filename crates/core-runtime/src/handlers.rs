@@ -2,27 +2,27 @@
 //so the code cood look like: state.lookup(&db_name)?
 
 use axum::{
+    Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Extension,
 };
 use core_auth::{Permission, Principal};
 use core_core::{
+    CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
         Command, DeleteCommand, LoginResponse, RetrieveCommand, RetrieveResponse, SearchCommand,
         SearchResponse,
     },
-    CorelamoDatabase, DatabaseOptions,
 };
 use slog::{error, info, o};
 
 use crate::{
+    AppState,
     db_actor::{self, DbHandle},
     doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
-    AppState,
 };
 use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
 use core_storage::search_database::DatabasePowerButtonOutcome;
@@ -335,6 +335,37 @@ pub async fn insert_handler(
     outcome
         .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
+}
+
+pub async fn clear_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match handle.clear().await {
+        Ok(_) => {}
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    HttpOk::new(
+        format!("database: {db_name}, is cleared of data and index"),
+        &ctx,
+    )
+    .into_response()
 }
 
 pub async fn delete_document_handler(
@@ -732,10 +763,6 @@ pub async fn delete_database_handler(
     drop(handle); //last Sender gone
 
     let db_path = state.databases_dir.join(&db_name);
-    let log_path = format!("logs/databases/{db_name}.log");
-    if std::path::Path::new(&log_path).exists() {
-        std::fs::remove_file(&log_path);
-    }
     let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
 
     match removed {
@@ -928,7 +955,13 @@ pub async fn get_config_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-    let options = handle.options().await;
+
+    let options = match handle.options().await {
+        Ok(opts) => opts,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
 
     match toml::to_string_pretty(&options) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
