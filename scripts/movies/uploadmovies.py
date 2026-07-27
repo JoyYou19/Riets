@@ -175,7 +175,7 @@ def main():
     # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
     out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/policy", POLICY, token)
+        f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
     print(f"[INFO] {out}")
 
     # 4. upload chunks

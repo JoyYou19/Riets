@@ -13,7 +13,7 @@ impl Default for IndexRuntimeConfig {
     fn default() -> Self {
         Self {
             flush_threshold: 100_000,
-            indexing_batch_size: 100_000,
+            indexing_batch_size: 100_000, //prieks reindex testiem samazinat 
             compaction: CompactionConfig::default(),
         }
     }

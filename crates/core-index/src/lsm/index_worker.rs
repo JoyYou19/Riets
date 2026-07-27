@@ -429,6 +429,7 @@ pub enum ReindexStatus {
 pub struct ReindexingStats{
     pub status: ReindexStatus,
     pub progress: u8,
+    pub documents_indexed:u64,
     pub eta_seconds: Option<u64>,
 }
 

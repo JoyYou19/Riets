@@ -47,7 +47,7 @@ impl<S: DocumentStore> UserDatabase<S> {
         let salt = SaltString::generate(&mut OsRng);
         let hashed = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "password hashing failed"))?
+            .map_err(|_| io::Error::other("password hashing failed"))?
             .to_string();
         self.put_user(username, hashed, &roles)
     }

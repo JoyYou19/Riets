@@ -1,7 +1,4 @@
 use core_protocol::format::Format;
-//logging
-use core_logs::logger;
-use slog::{info, Logger};
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};
