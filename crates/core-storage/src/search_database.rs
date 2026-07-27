@@ -600,6 +600,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             status: ReindexStatus::Reindexing,
             progress: 0,
             eta_seconds: None,
+            documents_indexed:0,
         });
         let mut indexed_documents = Vec::with_capacity(self.store.document_count());
         self.store.for_each_document(
@@ -645,6 +646,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 status: ReindexStatus::Reindexing,
                 progress: pct,
                 eta_seconds,
+                documents_indexed:done,
             });
         }
 
@@ -654,6 +656,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             status: ReindexStatus::Complete,
             progress: 100,
             eta_seconds: None,
+            documents_indexed:total,
         });
         Ok(())
     }

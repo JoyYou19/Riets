@@ -69,8 +69,6 @@ impl CorelamoDatabase {
         }
         std::fs::create_dir_all(&root)?;
         let log = logger::db_logger(&root, &name);
-        slog::info!(log, "immediate test line"; "test" => true);
-        std::thread::sleep(std::time::Duration::from_secs(1));
         //reindexing
         let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
         let policy_path = root.join("policy.toml");
@@ -91,6 +89,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
+       
             log,
         })
     }
@@ -127,6 +126,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
+         
             log,
         })
     }
@@ -215,9 +215,6 @@ impl CorelamoDatabase {
 
         self.metrics.indexing_requests += 1;
         self.metrics.indexing_total_time += elapsed;
-        if count == 0 {
-            return result;
-        }
         //TODO:te countign nestrada vajag salabot
         if result.is_err() {
             self.metrics.indexing_errors += 1;
@@ -383,9 +380,11 @@ impl CorelamoDatabase {
 
     pub fn shutdown(&mut self) -> io::Result<()> {
         if let Some(worker) = self.compaction_worker.take() {
+            info!(self.log, "Compaction worker stopped");
             worker.stop()?;
         }
         if let Some(db) = self.db.take() {
+            info!(self.log,"Database shut down");
             let _index = db.shutdown()?;
         }
         Ok(())
@@ -430,12 +429,14 @@ impl CorelamoDatabase {
 
         self.policy = policy;
         self.save_policy()?;
-
+        info!(self.log, "policy set"; "policy" => format!("{:?}", self.policy));
         Ok(())
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
+         info!(self.log,"Flushing database");
         self.db_mut()?.flush()
+       
     }
 
     pub fn policy(&self) -> &IndexPolicy {
@@ -454,7 +455,7 @@ impl CorelamoDatabase {
 
     pub fn reload_policy(&mut self) -> io::Result<()> {
         let policy = IndexPolicy::load(&self.policy_path)?;
-
+        info!(self.log, "Policy reloaded");
         self.db_mut()?.set_policy(policy.clone())?;
         self.policy = policy;
 
@@ -466,6 +467,7 @@ impl CorelamoDatabase {
         let _ = self.reindexing_tx.send(ReindexingStats {
             status: ReindexStatus::Reindexing,
             progress: 0,
+            documents_indexed:0,
             eta_seconds: None,
         });
         let watermark = {
@@ -492,6 +494,7 @@ impl CorelamoDatabase {
             analyzer.clone(),
             self.policy.clone(),
         );
+        
         staging_db.reindex_existing_documents(
             self.options.runtime.indexing_batch_size,
             &self.reindexing_tx,
@@ -532,6 +535,7 @@ impl CorelamoDatabase {
             status: ReindexStatus::Complete,
             progress: 100,
             eta_seconds: None,
+            documents_indexed: self.db.as_ref().map(|d| d.document_count() as u64).unwrap_or(0),
         });
         info!(self.log, "reindex complete");
         Ok(())
