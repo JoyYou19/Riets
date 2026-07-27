@@ -215,7 +215,7 @@ impl CorelamoDatabase {
 
         self.metrics.indexing_requests += 1;
         self.metrics.indexing_total_time += elapsed;
-        //TODO:te countign nestrada vajag salabot
+       
         if result.is_err() {
             self.metrics.indexing_errors += 1;
             error!(self.log, "put documents parallel failed";
@@ -408,13 +408,17 @@ impl CorelamoDatabase {
                 return Err(e);
             }
         };
+        let mut indexing = db.index_worker().get_stats()?;
+        if reindexing.documents_indexed > indexing.total_documents_indexed {
+            indexing.total_documents_indexed = reindexing.documents_indexed;
+        }
 
         Ok(DatabaseStats {
             document_count: db.document_count(),
             segment_count: db.segment_count()?,
             background_compaction_enabled: self.compaction_worker.is_some(),
             metrics: self.metrics.clone(),
-            indexing: db.index_worker().get_stats()?,
+            indexing,
             reindexing,
         })
     }
@@ -497,6 +501,7 @@ impl CorelamoDatabase {
         
         staging_db.reindex_existing_documents(
             self.options.runtime.indexing_batch_size,
+            self.options.runtime.indexing_window_size,
             &self.reindexing_tx,
         )?;
         staging_db.shutdown_into_store()?;
