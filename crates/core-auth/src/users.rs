@@ -8,7 +8,8 @@ use core_storage::{document_store::DocumentStore, search_database::SearchDatabas
 // Adjust these three to wherever your movies code imports them from:
 use core_protocol::format::Format;
 use core_storage::search_database::{DocumentInput, IndexMode};
-use crate::principal::Principal;
+
+use crate::Principal;
 
 pub struct UserDatabase<S: DocumentStore> {
     db: SearchDatabase<S>,
@@ -37,7 +38,12 @@ impl<S: DocumentStore> UserDatabase<S> {
         Ok(())
     }
 
-    pub fn add_user(&mut self, username: &str, password: &str, roles: Vec<String>) -> io::Result<()> {
+    pub fn add_user(
+        &mut self,
+        username: &str,
+        password: &str,
+        roles: Vec<String>,
+    ) -> io::Result<()> {
         let salt = SaltString::generate(&mut OsRng);
         let hashed = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -48,8 +54,8 @@ impl<S: DocumentStore> UserDatabase<S> {
 
     pub fn remove_user(&mut self, username: &str) -> bool {
         match self.db.get_document(username) {
-        Ok(Some(_)) => self.db.delete_document(username).is_ok(),
-        _ => false,
+            Ok(Some(_)) => self.db.delete_document(username).is_ok(),
+            _ => false,
         }
     }
 
@@ -83,7 +89,12 @@ impl<S: DocumentStore> UserDatabase<S> {
     pub fn verify(&mut self, username: &str, password: &str) -> Option<Principal> {
         let doc = self.db.get_document(username).ok()??;
         let stored_hash = doc.fields.get("password")?;
-        let roles: Vec<String> = doc.fields.get("roles")?.split(',').map(String::from).collect();
+        let roles: Vec<String> = doc
+            .fields
+            .get("roles")?
+            .split(',')
+            .map(String::from)
+            .collect();
 
         let parsed_hash = PasswordHash::new(stored_hash).ok()?;
         Argon2::default()

@@ -1,16 +1,19 @@
 //HEELO WORLD
 use axum::{
-    Router,
     extract::DefaultBodyLimit,
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
+    Router,
 };
-use slog::{debug, error, info, o, warn};
-use core_logs::logger;
 use core_auth::{AuthService, UserDatabase};
+use core_index::{
+    analyzer::analyzer::Analyzer,
+    lsm::{config::IndexRuntimeConfig, LsmIndex},
+};
+use core_logs::logger;
 use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::binary_store::BinaryDocumentStore;
-use core_index::{analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig}};
+use slog::{debug, error, info, o, warn};
 use std::{
     collections::HashMap,
     io,
@@ -19,11 +22,9 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-
 use tokio::signal;
 
 use crate::db_actor::DbHandle;
-
 
 mod corelamo_settings;
 mod database_helpers;
@@ -55,7 +56,7 @@ impl AppState {
 
 //TODO: maybe check if there are more possible signals
 async fn shutdown_signal() {
-    let log =slog_scope::logger();
+    let log = slog_scope::logger();
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -117,7 +118,7 @@ async fn main() -> io::Result<()> {
     let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
         Ok(s) => s,
         Err(e) => {
-           error!(log,"error loading settings:";"error"=> %e);
+            error!(log,"error loading settings:";"error"=> %e);
             process::exit(1);
         }
     };
@@ -151,12 +152,12 @@ async fn main() -> io::Result<()> {
     let databases = match database_helpers::load_saved_databases(&databases_dir) {
         Ok(dbs) => dbs,
         Err(e) => {
-             error!(log,"error loading databases " ;"error"=>%e );
+            error!(log,"error loading databases " ;"error"=>%e );
             process::exit(1);
         }
     };
 
-        info!(log,"found and loaded database(s) in total"; "databases"=>%databases.len() ,);
+    info!(log,"found and loaded database(s) in total"; "databases"=>%databases.len() ,);
     let mut handles = HashMap::new();
     let mut joins = Vec::new();
     //setup databases and their handlers
@@ -172,9 +173,9 @@ async fn main() -> io::Result<()> {
 
     let store_path = users_dir.join("documents.bin");
     let store = BinaryDocumentStore::open(&store_path).expect("failed to open users store");
-    let index_cfg=IndexRuntimeConfig::default();
-    let index = LsmIndex::new(index_cfg.flush_threshold);   // match the movies construction exactly
-    let analyzer = Analyzer::default();      // or however movies builds it
+    let index_cfg = IndexRuntimeConfig::default();
+    let index = LsmIndex::new(index_cfg.flush_threshold); // match the movies construction exactly
+    let analyzer = Analyzer::default(); // or however movies builds it
 
     let user_db = UserDatabase::new(store, index, analyzer);
     let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
@@ -283,8 +284,11 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        debug!(log,"AUTH DISABLED — You're on your own!");
-        protected_routes
+        debug!(log, "AUTH DISABLED — You're on your own!");
+
+        protected_routes.layer(axum::middleware::from_fn(
+            middleware::disabled_auth_middleware,
+        ))
     };
 
     let app = Router::new()
@@ -308,7 +312,7 @@ async fn main() -> io::Result<()> {
 
     //something or someone killed our beloved programm
 
-    info!(log,"Server stopped, shutting down databases..");
+    info!(log, "Server stopped, shutting down databases..");
     let handles = {
         let mut guard = state_for_shutdown.databases.write().unwrap();
         std::mem::take(&mut *guard)
@@ -326,6 +330,6 @@ async fn main() -> io::Result<()> {
     }
 
     //TODO: we might have extra stuff to do here later, for now i cant think of anything else
-    info!(log,"Goodbye");
+    info!(log, "Goodbye");
     Ok(())
 }
