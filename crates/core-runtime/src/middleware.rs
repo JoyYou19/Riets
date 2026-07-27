@@ -1,16 +1,19 @@
 use std::time::Instant;
 //Auth
+use crate::{http_response::HttpError, AppState};
 use axum::{
     extract::{Request, State},
-    http::{StatusCode, header},
+    http::{header, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use core_auth::{ Token};
-use core_protocol::{errors::CorelamoError::{self}, format::Format};
-use uuid::Uuid;
+use core_auth::{Principal, Token};
+use core_protocol::{
+    errors::CorelamoError::{self},
+    format::Format,
+};
 use slog::{o, warn};
-use crate::{AppState, http_response::HttpError};
+use uuid::Uuid;
 
 //INFO: everything later will need these two to return
 #[derive(Debug, Clone)]
@@ -61,7 +64,7 @@ pub async fn request_context_middleware(
     let request_id = Uuid::new_v4();
     let start = Instant::now();
     let instance = request.uri().path().to_string();
-     let log=slog_scope::logger().new(o!("component"=> "middleware"));
+    let log = slog_scope::logger().new(o!("component"=> "middleware"));
     let format = match resolve_format(&state, &request) {
         Ok(f) => f,
         Err(subtype) => {
@@ -74,13 +77,13 @@ pub async fn request_context_middleware(
                 time_start: start,
             };
             return {
-             warn!(log,"The format is unsupported";"format"=>%subtype);
-             HttpError::from_corelamo(
-                CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
-                &ctx,
-            )
-            .into_response()};
-        
+                warn!(log,"The format is unsupported";"format"=>%subtype);
+                HttpError::from_corelamo(
+                    CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
+                    &ctx,
+                )
+                .into_response()
+            };
         }
     };
     request.extensions_mut().insert(RequestContext {
@@ -99,7 +102,7 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let log=slog_scope::logger().new(o!("component"=> "middleware"));
+    let log = slog_scope::logger().new(o!("component"=> "middleware"));
     let token: Option<String> = request
         .headers()
         .get("X-Corelamo-Key")
@@ -115,7 +118,7 @@ pub async fn auth_middleware(
 
     let principal = {
         let Ok(auth) = state.auth.read() else {
-              warn!( log,"rejected request: auth service unavailable";
+            warn!( log,"rejected request: auth service unavailable";
               "method"=>%request.method(),
               "uri"=>%request.uri());
             return (StatusCode::UNAUTHORIZED, "auth service unavailable").into_response();
@@ -129,8 +132,16 @@ pub async fn auth_middleware(
             next.run(request).await
         }
         None => {
-        warn!(log,"rejected request: invalid or exipired token";"request"=>?request);
-        (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()
+            warn!(log,"rejected request: invalid or exipired token";"request"=>?request);
+            (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()
         }
     }
+}
+
+pub async fn disabled_auth_middleware(mut request: Request, next: Next) -> Response {
+    let principal = Principal::new("anonymous").with_role("admin");
+
+    request.extensions_mut().insert(principal);
+
+    next.run(request).await
 }
