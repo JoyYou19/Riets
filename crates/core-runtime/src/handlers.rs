@@ -734,10 +734,6 @@ pub async fn delete_database_handler(
     drop(handle); //last Sender gone
 
     let db_path = state.databases_dir.join(&db_name);
-    let log_path = format!("logs/databases/{db_name}.log");
-    if std::path::Path::new(&log_path).exists() {
-        std::fs::remove_file(&log_path);
-    }
     let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
 
     match removed {
