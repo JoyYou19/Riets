@@ -7,25 +7,27 @@ use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
     lsm::{
+        LsmIndex,
         index_worker::{IndexingStats, ReindexStatus, ReindexingStats},
         worker::CompactionWorker,
-        LsmIndex,
     },
 };
 use core_protocol::errors::CorelamoError;
 use core_query::{
-    planner::{QueryPlan, QueryPlanner},
     Query,
+    planner::{QueryPlan, QueryPlanner},
 };
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
-    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
+    search_database::{
+        self, DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit,
+    },
 };
 //logging
 use core_logs::logger;
-use slog::{error, info, warn, Logger};
+use slog::{Logger, error, info, warn};
 use slog_async::AsyncGuard;
 //logging
 use crate::{
@@ -89,7 +91,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
-       
+
             log,
         })
     }
@@ -126,7 +128,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
-         
+
             log,
         })
     }
@@ -378,13 +380,49 @@ impl CorelamoDatabase {
         &self.root
     }
 
+    pub fn clear(&mut self) -> io::Result<()> {
+        if let Some(worker) = self.compaction_worker.take() {
+            worker.stop()?;
+        }
+
+        if let Some(db) = self.db.as_mut() {
+            db.index_worker().abort()?;
+        }
+
+        let index_root = self.root.join("index");
+        std::fs::remove_dir_all(&index_root).ok();
+
+        let store_path = self.root.join("documents.bin");
+        std::fs::remove_file(&store_path).ok();
+
+        //new slaves for database
+        let analyzer = Analyzer::new();
+        let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
+        let store = BinaryDocumentStore::open(&store_path)?;
+
+        let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
+
+        self.compaction_worker = if self.options.enable_background_compaction {
+            Some(CompactionWorker::start(
+                db.index_sender(),
+                self.options.runtime.compaction,
+                self.options.compaction_interval,
+            ))
+        } else {
+            None
+        };
+
+        self.db = Some(db);
+
+        Ok(())
+    }
     pub fn shutdown(&mut self) -> io::Result<()> {
         if let Some(worker) = self.compaction_worker.take() {
             info!(self.log, "Compaction worker stopped");
             worker.stop()?;
         }
         if let Some(db) = self.db.take() {
-            info!(self.log,"Database shut down");
+            info!(self.log, "Database shut down");
             let _index = db.shutdown()?;
         }
         Ok(())
@@ -434,9 +472,8 @@ impl CorelamoDatabase {
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-         info!(self.log,"Flushing database");
+        info!(self.log, "Flushing database");
         self.db_mut()?.flush()
-       
     }
 
     pub fn policy(&self) -> &IndexPolicy {
@@ -467,7 +504,7 @@ impl CorelamoDatabase {
         let _ = self.reindexing_tx.send(ReindexingStats {
             status: ReindexStatus::Reindexing,
             progress: 0,
-            documents_indexed:0,
+            documents_indexed: 0,
             eta_seconds: None,
         });
         let watermark = {
@@ -494,7 +531,7 @@ impl CorelamoDatabase {
             analyzer.clone(),
             self.policy.clone(),
         );
-        
+
         staging_db.reindex_existing_documents(
             self.options.runtime.indexing_batch_size,
             &self.reindexing_tx,
@@ -535,7 +572,11 @@ impl CorelamoDatabase {
             status: ReindexStatus::Complete,
             progress: 100,
             eta_seconds: None,
-            documents_indexed: self.db.as_ref().map(|d| d.document_count() as u64).unwrap_or(0),
+            documents_indexed: self
+                .db
+                .as_ref()
+                .map(|d| d.document_count() as u64)
+                .unwrap_or(0),
         });
         info!(self.log, "reindex complete");
         Ok(())

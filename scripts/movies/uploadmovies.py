@@ -15,7 +15,7 @@ PASSWORD = "secret"
 POLICY = """\
 [[fields]]
 name = "id"
-xpath = 0
+xpath = 21
 index = "IdAutoIncrement"
 list = true
 [fields.weight]

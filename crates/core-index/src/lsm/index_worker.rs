@@ -9,9 +9,9 @@ use crate::{
     analyzer::Analyzer,
     document::IndexedDocument,
     lsm::{
+        LsmIndex,
         compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
         snapshot::SharedIndexSnapshot,
-        LsmIndex,
     },
     mem::MemIndex,
     segment::ImmutableSegment,
@@ -58,6 +58,7 @@ pub enum IndexCommand {
     GetStats {
         reply: Sender<io::Result<IndexingStats>>,
     },
+    Abort,
     Shutdown,
 }
 
@@ -208,6 +209,10 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
+    pub fn abort(&self) -> io::Result<()> {
+        self.send(IndexCommand::Abort)
+    }
+
     pub fn install_compaction(&self, completed: CompletedCompaction) -> io::Result<()> {
         self.send(IndexCommand::InstallCompaction {
             completed,
@@ -312,6 +317,9 @@ fn run_index_worker(
             IndexCommand::Shutdown => {
                 index.flush()?;
                 shared.publish(index.snapshot());
+                return Ok(index);
+            }
+            IndexCommand::Abort => {
                 return Ok(index);
             }
             IndexCommand::GetStats { reply } => {
@@ -437,7 +445,7 @@ pub enum ReindexStatus {
 pub struct ReindexingStats {
     pub status: ReindexStatus,
     pub progress: u8,
-    pub documents_indexed:u64,
+    pub documents_indexed: u64,
     pub eta_seconds: Option<u64>,
 }
 
