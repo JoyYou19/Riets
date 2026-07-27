@@ -1,14 +1,14 @@
 //HEELO WORLD
 use axum::{
+    Router,
     extract::DefaultBodyLimit,
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
-    Router,
 };
 use core_auth::{AuthService, UserDatabase};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    lsm::{config::IndexRuntimeConfig, LsmIndex},
+    lsm::{LsmIndex, config::IndexRuntimeConfig},
 };
 use core_logs::logger;
 use core_protocol::{errors::CorelamoError, format::Format};
@@ -105,9 +105,9 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     //logging izmantojot slog lib
-        let (log, _guard) = logger::program_logger();
-        let _slog_guard =slog_scope::set_global_logger(log.clone());
-        info!(log, "Program started");
+    let (log, _guard) = logger::program_logger();
+    let _slog_guard = slog_scope::set_global_logger(log.clone());
+    info!(log, "Program started");
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(overrides) => overrides,
         Err(e) => {
@@ -124,7 +124,7 @@ async fn main() -> io::Result<()> {
     };
 
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));
-    
+
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
@@ -222,6 +222,10 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/create-database",
             post(handlers::create_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/clear-database",
+            delete(handlers::clear_database_handler),
         )
         .route(
             "/api/databases/{db_name}/delete-database",

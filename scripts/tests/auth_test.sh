@@ -19,6 +19,8 @@
 #   - multi-role permission union
 #   - header case-insensitivity
 #
+#   JA NEGRIBI LAI NOTIRAS TERMINALIS, TAD AIZKOMENTEE NAKAMO RINDU
+clear
 # ==============================================================================
 
 BASE_URL="http://localhost:6006"
