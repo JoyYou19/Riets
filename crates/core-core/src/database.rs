@@ -25,7 +25,8 @@ use core_storage::{
 };
 //logging
 use core_logs::logger;
-use slog::{error, info, Logger};
+use slog::{ Logger, info, warn, error };
+use slog_async::AsyncGuard;
 //logging
 use crate::{
     command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
@@ -45,13 +46,13 @@ pub struct CorelamoDatabase {
     reindexing_tx: watch::Sender<ReindexingStats>,
     reindexing_rx: watch::Receiver<ReindexingStats>,
     log: Logger,
+
 }
 
 impl CorelamoDatabase {
     fn config_full_path_from(root: &Path) -> std::path::PathBuf {
         root.join("config.toml")
     }
-
     //INFO: just creates everything for the database, doesnt start it
     pub fn create(root: impl AsRef<Path>, options: DatabaseOptions) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
@@ -60,20 +61,23 @@ impl CorelamoDatabase {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown viss slikiti")
             .to_string();
+        
         if root.exists() {
-            return Err(CorelamoError::AlreadyExists(
-                format!("database at {} already exists", root.display()), //varbut japievieno global logam
-            ));
+            return Err(
+                CorelamoError::AlreadyExists(
+                    format!("database at {} already exists", root.display())
+                )
+            );
         }
-
         std::fs::create_dir_all(&root)?;
+        let log = logger::db_logger(&root, &name);
+        slog::info!(log, "immediate test line"; "test" => true);
+        std::thread::sleep(std::time::Duration::from_secs(1));
         //reindexing
         let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
-
         let policy_path = root.join("policy.toml");
         let policy = IndexPolicy::default_document();
         policy.save(&policy_path)?;
-
         options.save_to_file(Self::config_full_path_from(&root))?;
 
         let store_path = root.join("documents.bin");
@@ -89,7 +93,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
-            log: logger::db_logger(&name),
+            log,
         })
     }
 
@@ -102,6 +106,7 @@ impl CorelamoDatabase {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
+        
 
         if !policy_path.exists() {
             return Err(CorelamoError::NotFound(format!(
@@ -114,7 +119,7 @@ impl CorelamoDatabase {
         let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
         let policy = IndexPolicy::load(&policy_path)?;
         let options = DatabaseOptions::load_or_default(Self::config_full_path_from(&root));
-
+         let log = logger::db_logger(&root, &name);
         Ok(Self {
             root,
             policy_path,
@@ -125,7 +130,9 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             reindexing_tx,
             reindexing_rx,
-            log: logger::db_logger(&name),
+            log,
+        
+            
         })
     }
 
@@ -133,7 +140,7 @@ impl CorelamoDatabase {
         if self.db.is_some() {
             return Ok(());
         }
-
+        info!(self.log, "database started");
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
 
@@ -162,11 +169,12 @@ impl CorelamoDatabase {
     pub fn stop(&mut self) -> Result<(), CorelamoError> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
+            info!(self.log,"Compaction worker stopped")
         }
         if let Some(db) = self.db.take() {
             db.shutdown()?;
+            info!(self.log, "Database stopped")
         }
-        info!(self.log, "Database stopped");
         Ok(())
     }
 
@@ -206,6 +214,7 @@ impl CorelamoDatabase {
         })();
 
         let elapsed = started.elapsed();
+
         self.metrics.indexing_requests += 1;
         self.metrics.indexing_total_time += elapsed;
         if count == 0 {
@@ -226,6 +235,22 @@ impl CorelamoDatabase {
                 "elapsed_ms" => elapsed.as_millis(),
             );
         }
+
+   
+            if result.is_err() {
+                error!(self.log, "indexing failed";
+                    "documents" => count,
+                    "batch_size" => batch_size,
+                    "elapsed_ms" => elapsed.as_millis(),
+                );
+            } else {
+                info!(self.log, "indexed batch";
+                    "documents" => count,
+                    "batch_size" => batch_size,
+                    "elapsed_ms" => elapsed.as_millis(),
+                );
+            }
+        
 
         result
     }
@@ -409,7 +434,7 @@ impl CorelamoDatabase {
 
         self.policy = policy;
         self.save_policy()?;
-        info!(self.log, "policy updated"; "policy" => ?self.policy);
+
         Ok(())
     }
 
@@ -426,7 +451,9 @@ impl CorelamoDatabase {
     }
 
     pub fn save_policy(&self) -> io::Result<()> {
-        self.policy.save(&self.policy_path)
+        self.policy.save(&self.policy_path)?;
+        info!(self.log, "policy saved"; "policy" => format!("{:?}", self.policy));
+        Ok(())
     }
 
     pub fn reload_policy(&mut self) -> io::Result<()> {
