@@ -46,10 +46,10 @@ check_json() {
     actual=$(jq -r "$filter" /tmp/search_test_body.json 2>/dev/null)
 
     if [ "$actual" == "$expected" ]; then
-        echo "PASS  [$label] got '$actual'"
+        echo "  PASS  [$label] got '$actual'"
         PASS_COUNT=$((PASS_COUNT + 1))
     else
-        echo "FAIL  [$label] expected '$expected', got '$actual'"
+        echo "  FAIL  [$label] expected '$expected', got '$actual'"
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 }
@@ -60,10 +60,10 @@ check_json_bool() {
     local filter="$2"
 
     if jq -e "$filter" /tmp/search_test_body.json > /dev/null 2>&1; then
-        echo "PASS  [$label]"
+        echo "  PASS  [$label]"
         PASS_COUNT=$((PASS_COUNT + 1))
     else
-        echo "FAIL  [$label]"
+        echo "  FAIL  [$label]"
         echo "      body: $(cat /tmp/search_test_body.json)"
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
@@ -92,35 +92,69 @@ check "create search database" 201 \
 check "start search database" 200 \
   -X POST "$BASE_URL/api/databases/$DB/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-check "insert seed document" 200 \
-  -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"1","title":"real"}'
+check "set policy"           200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d $'
+  [[fields]]
+  name = "id"
+  xpath = 0
+  index = "Id"
+  list = true
+  auto_increment = true
+  [fields.weight]
+  min = 100
+  max = 100
+
+  [[fields]]
+  name = "title"
+  xpath = 1
+  index = "Id"
+  list = true
+  [fields.weight]
+  min = 100
+  max = 100
+  '
 
 check "insert seed document" 200 \
   -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"2","title":"case"}'
+  -d '{"id":"","title":"real"}'
 
 check "insert seed document" 200 \
   -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"3","title":"CASE"}'
+  -d '{"id":"","title":"case"}'
 
 check "insert seed document" 200 \
   -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"4","title":"CaSe"}'
+  -d '{"id":"","title":"CASE"}'
+
+check "insert seed document" 200 \
+  -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"","title":"CaSe"}'
 
 # ------------------------------------------------------------------
 # Search query tests
 # ------------------------------------------------------------------
+
+section "Basic issues"
+
+check "no document"    400 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "no query at all"    400 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{}'
+
+check "bad json"    400 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d 'bad json'
+
+check "empty query"    200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":""}'
+check_json_bool "data should be empty" '(.data | length) == 0'
+
 section "Single search term"
 
-check "non existing search term"    200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"nonexistent","docs":1}'
+check "non existing search term"    200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"notreal","docs":1}'
 check_json_bool "data should be empty" '(.data | length) == 0'
 
 check "existing search term"        200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"real","docs":1}'
 check_json_bool "data should be one" '(.data | length) == 1'
 
-check "existing search term case"        200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"case","docs":3}'
-check_json_bool "data should be empty" '(.data | length) == 3'
+check "existing search term case insensitivity"        200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"case","docs":3}'
+check_json_bool "data should be 3" '(.data | length) == 3'
 
 
 # ------------------------------------------------------------------
