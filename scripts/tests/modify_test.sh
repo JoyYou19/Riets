@@ -228,7 +228,7 @@ check "upsert empty id auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H
 
 check "upsert missing id auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"number":"10/11"}'
 
-check "retrieve check vai viss ir" 69 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "retrieve check vai viss ir. Vajadzetu but ka autoincrement upsert iedod kkadus id sakot no 9" 69 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '["7","8","9","10","11","12","13"]'
 
 check "set no autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -258,8 +258,19 @@ check "upsert an existing id" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -
 check "upsert a new id" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"what","number":"yo"}'
 
 # ------------------------------------------------------------------
+# Retrieve
+# ------------------------------------------------------------------
+
+section "Retrieve"
+
+check "retrieve " 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '["7"]'
+
+# ------------------------------------------------------------------
 # Delete
 # ------------------------------------------------------------------
+
+section "Delete"
 
 check "delete existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["1"]'
 check "delete existing text id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["bruh"]'

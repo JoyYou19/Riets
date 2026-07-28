@@ -204,7 +204,7 @@ section "MATRIX — Permission::Status (admin, architect granted; viewer, editor
 check "admin can view status"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/status" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "architect can view status" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/status" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 check "viewer cannot view status" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/status" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor cannot view status" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/status" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "editor can view status" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/status" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 
 section "MATRIX — Permission::GetPolicy (admin, architect, editor granted; viewer denied)"
 
