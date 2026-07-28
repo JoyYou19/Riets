@@ -7,14 +7,14 @@ use std::{
 use core_index::{
     analyzer::analyzer::Analyzer,
     posting::{
-        ops::{intersection, union},
         PostingList,
+        ops::{intersection, union},
     },
     search::{SearchIndex, SearchStats},
     types::XPathId,
 };
 
-use crate::{ast::Query, planner::QueryPlan, ScoredPosting, SearchHit, TopHit};
+use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan};
 
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
@@ -479,9 +479,7 @@ where
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
         match query {
             Query::Term(term) => {
-                let postings = self
-                    .execute_term(term, xpath)
-                    .unwrap_or_default();
+                let postings = self.execute_term(term, xpath).unwrap_or_default();
                 crate::scorer::score_term_hybrid(self.index, &postings, xpath)
             }
             Query::And(parts) => self.execute_scored_and(parts, xpath),
