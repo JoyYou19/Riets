@@ -5,7 +5,7 @@ use slog::{error, info};
 
 pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, CorelamoDatabase>> {
     let mut databases = HashMap::new();
-    let log=slog_scope::logger();
+    let log = slog_scope::logger();
 
     if !databases_dir.exists() {
         std::fs::create_dir_all(databases_dir)?;
@@ -31,7 +31,9 @@ pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, 
         if db.options().bootable {
             match db.start() {
                 Ok(()) => info!(log,"started database";"name"=>%name),
-                Err(e) => error!(log,"database loaded but failed to start:";"name"=>%name, "error"=>%e),
+                Err(e) => {
+                    error!(log,"database loaded but failed to start:";"name"=>%name, "error"=>%e)
+                }
             }
         } else {
             info!(log,"loaded database";"name"=>%name);

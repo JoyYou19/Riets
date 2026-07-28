@@ -6,14 +6,14 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{policy::IndexKind, IndexPolicy, IndexedDocument},
+    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
     lsm::{
+        LsmIndex,
         index_worker::{
-            build_segments_parallel, IndexCommand, IndexWorker, ReindexStatus, ReindexingStats,
+            IndexCommand, IndexWorker, ReindexStatus, ReindexingStats, build_segments_parallel,
         },
         make_batches,
         snapshot::SharedIndexSnapshot,
-        LsmIndex,
     },
 };
 
@@ -21,7 +21,7 @@ use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
-use core_query::{planner::QueryPlan, Query, QueryExecutor, SearchHit};
+use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
 use indexmap::IndexMap;
 use tokio::sync::watch;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,6 +591,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn reindex_existing_documents(
         &mut self,
         batch_size: usize,
+        window_size: usize,
         progress: &watch::Sender<ReindexingStats>,
     ) -> io::Result<()> {
         //reindexing stats
@@ -600,9 +601,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
             status: ReindexStatus::Reindexing,
             progress: 0,
             eta_seconds: None,
-            documents_indexed:0,
+            documents_indexed: 0,
         });
-        /* 
+        /*
         let mut indexed_documents = Vec::with_capacity(self.store.document_count());
         self.store.for_each_document(
             &mut (|doc| {
@@ -610,7 +611,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 Ok(())
             }),
         )?;
-        */ 
+        */
         //kristians
         let batches = self.build_indexed_batches_from_store(batch_size)?;
         let started_at = std::time::Instant::now();
@@ -619,50 +620,49 @@ impl<S: DocumentStore> SearchDatabase<S> {
         //kristians
         //process in windows?
         let mut iter = batches.into_iter().peekable();
-        while iter.peek().is_some(){
-            let window: Vec<_>= iter.by_ref().take(window_size).collect();
+        while iter.peek().is_some() {
+            let window: Vec<_> = iter.by_ref().take(window_size).collect();
             let doc_counts: Vec<u64> = window.iter().map(|batch| batch.len() as u64).collect();
             let segments = build_segments_parallel(self.analyzer.clone(), window);
             //reindexing stats
-        
+
             for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
                 self.index_worker.add_segment_wait(segment, doc_count)?;
                 done += doc_count;
             }
-                if calibrated_rate.is_none()
-                    && (done >= 1000 || started_at.elapsed() >= std::time::Duration::from_secs(5))
-                {
-                    let elapsed = started_at.elapsed().as_secs_f64();
-                    if elapsed > 0.0 {
-                        calibrated_rate = Some((done as f64) / elapsed);
-                    }
+            if calibrated_rate.is_none()
+                && (done >= 1000 || started_at.elapsed() >= std::time::Duration::from_secs(5))
+            {
+                let elapsed = started_at.elapsed().as_secs_f64();
+                if elapsed > 0.0 {
+                    calibrated_rate = Some((done as f64) / elapsed);
                 }
+            }
 
-                let pct = if total > 0 {
-                    (((done as f64) / (total as f64)) * 100.0) as u8
-                } else {
-                    0
-                };
-                let eta_seconds = calibrated_rate.map(|rate| {
-                    let remaining = total.saturating_sub(done) as f64;
-                    (remaining / rate).max(0.0) as u64
-                });
+            let pct = if total > 0 {
+                (((done as f64) / (total as f64)) * 100.0) as u8
+            } else {
+                0
+            };
+            let eta_seconds = calibrated_rate.map(|rate| {
+                let remaining = total.saturating_sub(done) as f64;
+                (remaining / rate).max(0.0) as u64
+            });
 
-                let _ = progress.send(ReindexingStats {
-                    status: ReindexStatus::Reindexing,
-                    progress: pct,
-                    eta_seconds,
-                    documents_indexed:done,
-                });
-            
+            let _ = progress.send(ReindexingStats {
+                status: ReindexStatus::Reindexing,
+                progress: pct,
+                eta_seconds,
+                documents_indexed: done,
+            });
         }
-            self.flush()?;
+        self.flush()?;
 
         let _ = progress.send(ReindexingStats {
             status: ReindexStatus::Complete,
             progress: 100,
             eta_seconds: None,
-            documents_indexed:total,
+            documents_indexed: total,
         });
         Ok(())
     }

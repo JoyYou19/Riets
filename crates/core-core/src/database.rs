@@ -21,14 +21,12 @@ use core_query::{
 use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
-    search_database::{
-        self, DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit,
-    },
+    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
 };
 //logging
 use core_logs::logger;
-use slog::{Logger, error, info, warn};
-use slog_async::AsyncGuard;
+use slog::{Logger, error, info};
+
 //logging
 use crate::{
     command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
@@ -217,7 +215,7 @@ impl CorelamoDatabase {
 
         self.metrics.indexing_requests += 1;
         self.metrics.indexing_total_time += elapsed;
-       
+
         if result.is_err() {
             self.metrics.indexing_errors += 1;
             error!(self.log, "put documents parallel failed";
