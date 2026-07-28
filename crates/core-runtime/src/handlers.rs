@@ -558,7 +558,8 @@ pub async fn upsert_document_handler(
         }
     };
 
-    let mut outcome = BatchOutcome::new("upserted", StatusCode::INTERNAL_SERVER_ERROR);
+    //                                         Ralfam nepatika "500" \/
+    let mut outcome = BatchOutcome::new("upserted", StatusCode::CONFLICT);
     outcome.fail_many(parse_failures);
 
     // actor indexes into the parsed vec; map back to the client's input array

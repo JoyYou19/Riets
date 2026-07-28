@@ -301,25 +301,32 @@ impl<S: DocumentStore> SearchDatabase<S> {
     // external_id points to the latest version
     // INFO: changed the name cuz upsert is more precise here
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
-        if let Some(old_doc) = self.store.get(&input.external_id)? {
+        let internal_id = self.allocate_internal_id();
+
+        //INFO: logic if id is auto and some idiot called upsert not insert ;)
+        let external_id = if input.external_id.is_empty() {
+            internal_id.to_string()
+        } else {
+            input.external_id
+        };
+
+        if let Some(old_doc) = self.store.get(&external_id)? {
             self.index_worker
                 .delete_document_wait(old_doc.internal_id)?;
         }
 
         let doc = StoredDocument {
-            external_id: input.external_id,
-            internal_id: self.allocate_internal_id(),
+            external_id,
+            internal_id,
             source: input.source,
             fields: input.fields,
             format: input.format,
         };
         self.store.put(doc.clone())?;
-
         if mode == IndexMode::StoreAndIndex {
             let indexed = stored_document_to_indexed(&doc, &self.policy);
             self.index_worker.add_indexed_document_wait(indexed)?;
         }
-
         Ok(())
     }
 
