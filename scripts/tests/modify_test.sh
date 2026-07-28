@@ -135,14 +135,21 @@ check "insert document without id" 409 -X POST "$BASE_URL/api/databases/$DB/inse
   -d '{"number":"none"}'
 check "insert document without id value" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"", "number":"none"}'
+
 check "insert normal document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"1", "number":"1"}'
 check "insert duplicate id" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"1", "number":"none"}'
+
 check "insert text id" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"bruh", "number":"2"}'
 check "insert duplicate text id" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"bruh", "number":"none"}'
+
+check "insert document with two ids" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"no","id":"way" "number":"none"}'
+check "insert document with two number" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"no","id":"way" "number":"none"}'
 
 check "insert document with id 3" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"3", "number":"3"}'
@@ -196,15 +203,27 @@ check "insert document without id" 200 -X POST "$BASE_URL/api/databases/$DB/inse
 
 section "Replace"
 
+check "replace non existing id" 409 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"idk","number":"none"}'
+check "replace empty id" 409 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"","number":"none"}'
+check "replace no id" 409 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"number":"one"}'
+check "replace two ids" 409 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"1","id":"2","number":"onetwo"}'
+
+check "replace existing id" 200 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"3","number":"three"}'
 
 
 # ------------------------------------------------------------------
 # Upsert
 # ------------------------------------------------------------------
+#velak kjipa bus ari partial replace funkcija
+
+check "upsert an existing id" 200 -X PUT "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"4","number":"four"}'
+check "upsert a new id" 200 -X PUT "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"what","number":"12"}'
 
 # ------------------------------------------------------------------
 # Delete
 # ------------------------------------------------------------------
+
+
 
 # ------------------------------------------------------------------
 # Cleanup
