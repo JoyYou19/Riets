@@ -257,10 +257,78 @@ check "editor can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/c
 
 section "MATRIX — Permission::SetConfig (admin, architect, editor granted; viewer denied)"
 
-check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
-check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $VIEWER_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
-check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $EDITOR_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
-check "architect can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d $'enable_background_compaction = true\nbootable = false\n[runtime]\nflush_threshold = 100000\nindexing_batch_size = 100000\n[runtime.compaction]\nmax_segments_per_compaction = 8\ncompact_when_segments_at_least = 16\n[compaction_interval]\nsecs = 1\nnanos = 0'
+check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ADMIN_TOKEN"\
+  -d '
+  enable_background_compaction = true
+  bootable = false
+
+  [runtime]
+  flush_threshold = 100000
+  indexing_batch_size = 100000
+  indexing_window_size = 10000
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
+check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $VIEWER_TOKEN"\
+  -d '
+  enable_background_compaction = true
+  bootable = false
+
+  [runtime]
+  flush_threshold = 100000
+  indexing_batch_size = 100000
+  indexing_window_size = 10000
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
+check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
+  -d '
+  enable_background_compaction = true
+  bootable = false
+
+  [runtime]
+  flush_threshold = 100000
+  indexing_batch_size = 100000
+  indexing_window_size = 10000
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
+check "architect can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"\
+  -d '
+  enable_background_compaction = true
+  bootable = false
+
+  [runtime]
+  flush_threshold = 100000
+  indexing_batch_size = 100000
+  indexing_window_size = 10000
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
 
 section "MATRIX — Permission::Reindex (admin, architect, editor granted; viewer denied)"
 

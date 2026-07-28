@@ -119,12 +119,16 @@ check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB/config" -H "X-Corelam
   -d '
   enable_background_compaction = true
   bootable = false
+
   [runtime]
   flush_threshold = 100000
   indexing_batch_size = 100000
+  indexing_window_size = 10000
+
   [runtime.compaction]
   max_segments_per_compaction = 8
   compact_when_segments_at_least = 16
+
   [compaction_interval]
   secs = 1
   nanos = 0
