@@ -90,7 +90,7 @@ pub async fn login_handler(
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("invalid login request:{e}")),
+                CorelamoError::InvalidData(format!("invalid login request:{e}")),
                 &ctx,
             )
             .into_response();

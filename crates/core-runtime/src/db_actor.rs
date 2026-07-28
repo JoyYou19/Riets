@@ -324,8 +324,8 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                         // reindex is holding the lock right now — return progress only,
                         // don't wait for it
                         let reindexing = reindexing_rx.borrow().clone();
-                        let mut indexing = IndexingStats::default();
-                        indexing.total_documents_indexed = reindexing.documents_indexed;
+                        let indexing = IndexingStats::default();
+                        //indexing.total_documents_indexed = reindexing.documents_indexed;
                         Ok(DatabaseStats {
                             document_count: 0,
                             segment_count: 0,

@@ -9,16 +9,18 @@ use core_storage::{document_store::DocumentStore, search_database::SearchDatabas
 use core_protocol::format::Format;
 use core_storage::search_database::{DocumentInput, IndexMode};
 
-use crate::Principal;
+use crate::{Principal, TokenStore, token};
 
 pub struct UserDatabase<S: DocumentStore> {
     db: SearchDatabase<S>,
+
 }
 
 impl<S: DocumentStore> UserDatabase<S> {
     pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> Self {
         Self {
             db: SearchDatabase::new(store, index, analyzer),
+   
         }
     }
 
@@ -26,6 +28,7 @@ impl<S: DocumentStore> UserDatabase<S> {
     fn put_user(&mut self, username: &str, hash: String, roles: &[String]) -> io::Result<()> {
         let mut fields = BTreeMap::new();
         fields.insert("password".to_string(), hash);
+        
         fields.insert("roles".to_string(), roles.join(","));
 
         let input = DocumentInput {
@@ -43,7 +46,7 @@ impl<S: DocumentStore> UserDatabase<S> {
         username: &str,
         password: &str,
         roles: Vec<String>,
-    ) -> io::Result<()> {
+    ) -> io::Result<()> { 
         let salt = SaltString::generate(&mut OsRng);
         let hashed = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -106,5 +109,23 @@ impl<S: DocumentStore> UserDatabase<S> {
             principal = principal.with_role(role);
         }
         Some(principal)
+    }
+    pub fn load_principal(&mut self, username: &str) -> Option<Principal> {
+    let doc = self.db.get_document(username).ok()??;
+    let roles: Vec<String> = doc
+        .fields
+        .get("roles")?
+        .split(',')
+        .map(String::from)
+        .collect();
+
+    let mut principal = Principal::new(username);
+    for role in roles {
+        principal = principal.with_role(role);
+    }
+    Some(principal)
+    }   
+    pub fn user_exists(&mut self, username: &str) -> bool {
+    matches!(self.db.get_document(username), Ok(Some(_)))
     }
 }

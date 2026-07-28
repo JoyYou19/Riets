@@ -67,8 +67,7 @@ impl Wal {
         }
         let mut g = self.inner.lock().unwrap();
         if g.poisoned {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,   //nepareizi parrakstit
+            return Err(io::Error::other(
                 "wal poisoned by prior fsync failure",
             ));
         }
