@@ -1,12 +1,13 @@
+use core::error;
 use std::path::Path;
 use slog::{Drain, Duplicate, Logger, o};
 
 pub fn db_logger(root: &Path, name: &str) -> Logger {
     let log_dir = root.join("logs");
-    std::fs::create_dir_all(&log_dir).unwrap();
+    std::fs::create_dir_all(&log_dir).unwrap_or_else(|e| panic!("Failed to create log directory: {e}"));
     let file = std::fs::OpenOptions::new()
         .create(true).append(true)
-        .open(log_dir.join(format!("{name}.log"))).unwrap();
+        .open(log_dir.join(format!("{name}.log"))).unwrap_or_else(|e| panic!("Failed to create log directory: {e}"));
     let drain = slog_term::FullFormat::new(slog_term::PlainDecorator::new(file))
         .build();
     let drain = std::sync::Mutex::new(drain).fuse();
@@ -14,10 +15,10 @@ pub fn db_logger(root: &Path, name: &str) -> Logger {
 }
 
 pub fn program_logger() -> (Logger, slog_async::AsyncGuard) {
-    std::fs::create_dir_all("logs").unwrap();
+    std::fs::create_dir_all("logs").unwrap_or_else(|e| panic!("Failed to create log directory: {e}"));
     let file = std::fs::OpenOptions::new()
         .create(true).append(true)
-        .open("logs/program.log").unwrap();
+        .open("logs/program.log").unwrap_or_else(|e| panic!("Failed to create log directory: {e}"));
     let file_drain = slog_term::FullFormat::new(slog_term::PlainDecorator::new(file))
         .build().fuse();
     let term_drain = slog_term::FullFormat::new(slog_term::TermDecorator::new().build())

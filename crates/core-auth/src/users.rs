@@ -9,7 +9,7 @@ use core_storage::{document_store::DocumentStore, search_database::SearchDatabas
 use core_protocol::format::Format;
 use core_storage::search_database::{DocumentInput, IndexMode};
 
-use crate::{Principal, TokenStore, token};
+use crate::Principal ;
 
 pub struct UserDatabase<S: DocumentStore> {
     db: SearchDatabase<S>,

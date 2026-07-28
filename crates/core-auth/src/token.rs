@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{ Duration, SystemTime };
 
-use crate::Principal;
 
 //Can change to whatever
 const TOKEN_LIFETIME: Duration = Duration::from_secs(86400);
