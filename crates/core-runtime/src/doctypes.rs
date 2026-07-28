@@ -88,7 +88,7 @@ fn parse_raw_items(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcom
         //DATABASE LOG
         parse_raw_items_parallel(raw_items, policy)
     } else {
-        println!("sequential: ");
+        //println!("sequential: ");
         parse_raw_items_sequential(raw_items, policy)
     }
 }

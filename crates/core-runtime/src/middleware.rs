@@ -1,9 +1,9 @@
 use std::time::Instant;
 //Auth
-use crate::{http_response::HttpError, AppState};
+use crate::{AppState, http_response::HttpError};
 use axum::{
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };

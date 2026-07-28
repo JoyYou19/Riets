@@ -1,5 +1,3 @@
-//FIX: sis ir tik AI generated pamats visam jutos loti slikti par so bet man vajag pacakareties lai
-//saprastu, ja izradisies hujna mainisu - nomrunds
 use std::{
     sync::{Arc, Mutex},
     thread,
@@ -21,6 +19,7 @@ use core_storage::{
 use slog::{error, info, warn};
 use slog_scope::logger;
 use tokio::sync::{mpsc, oneshot};
+
 //oneshot chanel - creates a chanel for a single message (command)
 type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
 

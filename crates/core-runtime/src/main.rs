@@ -13,7 +13,7 @@ use core_index::{
 use core_logs::logger;
 use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::binary_store::BinaryDocumentStore;
-use slog::{debug, error, info, o, warn};
+use slog::{debug, error, info, warn};
 use std::{
     collections::HashMap,
     io,
