@@ -1,5 +1,5 @@
 use std::path::Path;
-use slog::{Drain, Duplicate, Logger, error, o};
+use slog::{Drain, Duplicate, Logger, o};
 
 pub fn db_logger(root: &Path, name: &str) -> Logger {
     let log_dir = root.join("logs");

@@ -24,8 +24,12 @@ impl PolicyStore {
     let entry = self.role_permissions.entry(role).or_default();
     for permission in permissions {
         entry.insert(permission);
+        }
     }
-}
+    pub fn has_role(&self, role: &str) -> bool {
+    self.role_permissions.contains_key(role)
+    }
+
     pub fn role_has_permission(&self, role: &str, permission: &Permission) -> bool {
         self.role_permissions
             .get(role)

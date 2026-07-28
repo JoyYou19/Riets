@@ -45,8 +45,17 @@ impl AuthService {
         roles: Vec<String>,
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::CreateUser)?;
-        self.users.add_user(username, password, roles);
-        //TODO error handling
+
+        if self.users.user_exists(username) {
+        return Err(CorelamoError::AlreadyExists(format!(
+            "user '{username}' already exists"
+        )));
+        }
+        if let Some(bad) = roles.iter().find(|r| !self.policy.has_role(r)) {
+        return Err(CorelamoError::InvalidData(format!("unknown role '{bad}'")));
+         }
+        self.users.add_user(username,password, roles)
+        .map_err(|e| CorelamoError::Internal(format!("failed to create user '{username}': {e}")))?;
         Ok(())
     }
     pub fn delete_user(
@@ -56,6 +65,7 @@ impl AuthService {
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::DeleteUser)?;
         if self.users.remove_user(username) {
+            
             Ok(())
         } else {
             Err(CorelamoError::NotFound(format!(
@@ -101,11 +111,12 @@ impl AuthService {
     }
 
     pub fn login(&mut self, username: &str, password: &str) -> Option<Token> {
-        let principal = self.users.verify(username, password)?;
-        Some(self.tokens.issue(principal))
+        let _ = self.users.verify(username, password)?;
+        Some(self.tokens.issue(username.to_string()))
     }
-    pub fn authenticate(&self, token: &Token) -> Option<Principal> {
-        self.tokens.resolve(token)
+    pub fn authenticate(&mut self, token: &Token) -> Option<Principal> {
+        let username =self.tokens.resolve_username(token)?;
+        self.users.load_principal(&username)
     }
 
     pub fn check(
