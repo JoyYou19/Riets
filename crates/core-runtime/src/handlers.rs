@@ -868,7 +868,7 @@ pub async fn reindex_handler(
     };
 
     match handle.reindex().await {
-        Ok(()) => HttpOk::new(format!("reindex complete for '{db_name}'"), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("reindex started for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }

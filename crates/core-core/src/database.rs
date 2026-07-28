@@ -16,6 +16,7 @@ use core_protocol::errors::CorelamoError;
 use core_query::{
     Query,
     planner::{QueryPlan, QueryPlanner},
+    query_string_parser::parse_query,
 };
 
 use core_storage::{
@@ -256,9 +257,10 @@ impl CorelamoDatabase {
         let offset = command.offset.unwrap_or(0);
 
         let result = (|| {
-            let Some(query) = self.build_query(&command.query)? else {
+            let Some(query) = parse_query(&command.query)? else {
                 return Ok(Vec::new());
             };
+            println!("{:?}", query);
             let plan = QueryPlanner::plan(query);
             self.search_plan(&plan, command.return_fields.as_ref(), offset, limit)
         })();
@@ -296,20 +298,7 @@ impl CorelamoDatabase {
         result
     }
 
-    fn build_query(&self, input: &str) -> io::Result<Option<Query>> {
-        let terms: Vec<String> = input
-            .split_whitespace()
-            .map(|term| term.to_string())
-            .collect();
-
-        Ok(match terms.len() {
-            0 => None,
-            1 => Some(Query::Term(terms[0].clone())),
-            _ => Some(Query::And(terms.into_iter().map(Query::Term).collect())),
-        })
-    }
-
-    // TODO: Might be broken.
+    //INFO: old one now we have parse_query()
     // fn build_query(&self, input: &str) -> io::Result<Option<Query>> {
     //     let db = self.db_ref()?;
     //
