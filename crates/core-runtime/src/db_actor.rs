@@ -1,24 +1,26 @@
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-};
-
+use std::{ sync::{ Arc, Mutex }, thread };
 use core_core::{
-    CorelamoDatabase, DatabaseOptions, DatabaseStats, command_reponse_definitions::SearchCommand,
+    CorelamoDatabase,
+    DatabaseOptions,
+    DatabaseStats,
+    command_reponse_definitions::SearchCommand,
 };
-use core_index::document::IndexPolicy;
-use core_index::lsm::index_worker::IndexingStats;
-use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
+use core_index::{ document::IndexPolicy, lsm::index_worker::ReindexGuard };
+use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::{
     document_store::StoredDocument,
     search_database::{
-        DatabasePowerButtonOutcome, DeleteReport, DocumentInput, InsertReport, ReplaceReport,
+        DatabasePowerButtonOutcome,
+        DeleteReport,
+        DocumentInput,
+        InsertReport,
+        ReplaceReport,
         SearchDocumentHit,
     },
 };
-use slog::{error, info, warn};
+use slog::{ error, info, warn };
 use slog_scope::logger;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{ mpsc, oneshot };
 
 //oneshot chanel - creates a chanel for a single message (command)
 type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
@@ -107,17 +109,16 @@ impl DbHandle {
     async fn call<T>(&self, make: impl FnOnce(Reply<T>) -> DbCommand) -> Result<T, CorelamoError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
-            .send(make(reply_tx))
-            .await
+            .send(make(reply_tx)).await
             .map_err(|_| CorelamoError::Internal("database actor is gone".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| CorelamoError::Internal("database actor dropped the reply".into()))?
+        reply_rx.await.map_err(|_|
+            CorelamoError::Internal("database actor dropped the reply".into())
+        )?
     }
 
     pub async fn search(
         &self,
-        cmd: SearchCommand,
+        cmd: SearchCommand
     ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         self.call(|reply| DbCommand::Search { cmd, reply }).await
     }
@@ -148,7 +149,7 @@ impl DbHandle {
 
     pub async fn upsert(
         &self,
-        docs: Vec<DocumentInput>,
+        docs: Vec<DocumentInput>
     ) -> Result<Vec<(usize, String, Result<(), CorelamoError>)>, CorelamoError> {
         self.call(|reply| DbCommand::Upsert { docs, reply }).await
     }
@@ -161,8 +162,7 @@ impl DbHandle {
         self.call(|reply| DbCommand::GetPolicy { reply }).await
     }
     pub async fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
-        self.call(|reply| DbCommand::SetPolicy { policy, reply })
-            .await
+        self.call(|reply| DbCommand::SetPolicy { policy, reply }).await
     }
 
     pub async fn shutdown(&self) -> Result<(), CorelamoError> {
@@ -179,7 +179,7 @@ impl DbHandle {
 
     pub async fn retrieve(
         &self,
-        ids: Vec<String>,
+        ids: Vec<String>
     ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
         self.call(|reply| DbCommand::Retrieve { ids, reply }).await
     }
@@ -200,15 +200,15 @@ impl DbHandle {
         self.call(|reply| DbCommand::IsRunning { reply }).await
     }
     pub async fn set_options(&self, options: DatabaseOptions) -> Result<bool, CorelamoError> {
-        self.call(|reply| DbCommand::SetOptions { options, reply })
-            .await
+        self.call(|reply| DbCommand::SetOptions { options, reply }).await
     }
 }
 
 pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel::<DbCommand>(64);
     let log = slog_scope::logger();
-    let join = thread::Builder::new()
+    let join = thread::Builder
+        ::new()
         .name(format!("db-actor-{name}"))
         .spawn(move || {
             actor_loop(db, &mut rx, &name);
@@ -220,30 +220,40 @@ pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::
 }
 
 fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
-    let reindexing_rx = db.reindexing_receiver();
+    let progress = db.progress();
     let db = Arc::new(Mutex::new(db));
     let log = slog_scope::logger();
     while let Some(cmd) = rx.blocking_recv() {
         match cmd {
-            DbCommand::Search { cmd, reply } => {
-                with_running(&db, name, reply, |db| db.search(&cmd))
-            }
+            DbCommand::Search { cmd, reply } =>
+                with_running(&db, name, reply, |db| {
+                    db.search(&cmd).map_err(|e|
+                        CorelamoError::Internal(format!("search failed: {e}"))
+                    )
+                }),
 
-            DbCommand::Insert { docs, reply } => with_running(&db, name, reply, |db| {
-                db.put_documents_parallel(docs)
-                    .map_err(|e| CorelamoError::Internal(format!("insert failed: {e}")))
-            }),
+            DbCommand::Insert { docs, reply } =>
+                with_running(&db, name, reply, |db| {
+                    db.put_documents_parallel(docs).map_err(|e|
+                        CorelamoError::Internal(format!("insert failed: {e}"))
+                    )
+                }),
 
-            DbCommand::Retrieve { ids, reply } => with_running(&db, name, reply, |db| {
-                let mut out = Vec::with_capacity(ids.len());
-                for id in ids {
-                    let doc = db.get_document(&id).map_err(|e| {
-                        CorelamoError::Internal(format!("failed to get document '{id}': {e}"))
-                    })?;
-                    out.push((id, doc));
-                }
-                Ok(out)
-            }),
+            DbCommand::Retrieve { ids, reply } =>
+                with_running(&db, name, reply, |db| {
+                    let mut out = Vec::with_capacity(ids.len());
+                    for id in ids {
+                        let doc = db
+                            .get_document(&id)
+                            .map_err(|e| {
+                                CorelamoError::Internal(
+                                    format!("failed to get document '{id}': {e}")
+                                )
+                            })?;
+                        out.push((id, doc));
+                    }
+                    Ok(out)
+                }),
 
             DbCommand::Replace { docs, reply } => {
                 with_running(&db, name, reply, |db| replace_docs(db, docs));
@@ -253,35 +263,80 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 with_running(&db, name, reply, |db| delete_docs(db, ids));
             }
 
-            DbCommand::Upsert { docs, reply } => with_running(&db, name, reply, |db| {
-                let mut out = Vec::with_capacity(docs.len());
-                for (index, doc) in docs.into_iter().enumerate() {
-                    let id = doc.external_id.clone();
-                    let r = db
-                        .upsert_document(doc)
-                        .map_err(|e| CorelamoError::Internal(e.to_string()));
-                    out.push((index, id, r));
-                }
-                Ok(out)
-            }),
+            DbCommand::Upsert { docs, reply } =>
+                with_running(&db, name, reply, |db| {
+                    let mut out = Vec::with_capacity(docs.len());
+                    for (index, doc) in docs.into_iter().enumerate() {
+                        let id = doc.external_id.clone();
+                        let r = db
+                            .upsert_document(doc)
+                            .map_err(|e| CorelamoError::Internal(e.to_string()));
+                        out.push((index, id, r));
+                    }
+                    Ok(out)
+                }),
 
             DbCommand::Reindex { reply } => {
-                let is_running = db.lock().expect("db actor mutex poisoned").is_running();
-                let log = slog_scope::logger();
-                if !is_running {
-                    let _ = reply.send(Err({
-                        error!(log, "Database is not running";"name"=>%name);
-                        CorelamoError::DatabaseNotRunning(format!("database {name} is not running"))
-                    }));
-                    continue;
-                }
+                let params = {
+                    let mut guard = db.lock().expect("db actor mutex poisoned");
+                    if !guard.is_running() {
+                        let _ = reply.send(
+                            Err(
+                                CorelamoError::DatabaseNotRunning(
+                                    format!("database {name} is not running")
+                                )
+                            )
+                        );
+                        continue;
+                    }
+                    let total = guard.document_count_hint();
+                    // try_begin is the overlap guard: check and claim in one atomic step.
+                    if !progress.try_begin(total) {
+                        let _ = reply.send(
+                            Err(
+                                CorelamoError::Busy(
+                                    format!("database '{name}' is already reindexing")
+                                )
+                            )
+                        );
+                        continue;
+                    }
+                    // Stop compaction now: merges on the old index are discarded at swap
+                    // and compete with staging for I/O.
+                    if let Err(e) = guard.pause_compaction() {
+                        warn!(log, "could not pause compaction"; "error" => %e);
+                    }
+                    guard.reindex_params()
+                }; // lock released
+
                 let db_handle = db.clone();
+                let thread_log = log.clone();
+                let guard = ReindexGuard::new(progress.clone()); // Failed on panic or early return
+
                 std::thread::spawn(move || {
-                    let mut db = db_handle.lock().expect("db actor mutex poisoned");
-                    if let Err(e) = db.reindex() {
-                        error!(log, "Reindex failed";"error"=>%e);
+                    match CorelamoDatabase::build_staging_index(&params) {
+                        Ok(watermark) => {
+                            let mut db = db_handle.lock().expect("db actor mutex poisoned");
+                            match db.reindex_swap(watermark) {
+                                // reindex_swap sets Complete/Failed itself; settle the
+                                // guard so Drop does not overwrite it.
+                                Ok(()) => guard.succeed(),
+                                Err(_) => guard.fail(),
+                            }
+                        }
+                        Err(e) => {
+                            error!(thread_log, "reindex staging failed"; "error" => %e);
+                            let mut db = db_handle.lock().expect("db actor mutex poisoned");
+                            // staging failed with the database still intact; just restart
+                            // the compaction we paused.
+                            if let Err(e) = db.start() {
+                                error!(thread_log, "resume failed"; "error" => %e);
+                            }
+                            guard.fail();
+                        }
                     }
                 });
+
                 let _ = reply.send(Ok(()));
             }
 
@@ -327,72 +382,57 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
 
             DbCommand::GetPolicy { reply } => with_db(&db, reply, |db| Ok(db.policy().clone())),
 
-            DbCommand::SetPolicy { policy, reply } => with_db(&db, reply, |db| {
-                db.set_policy(policy).map_err(|e| {
-                    CorelamoError::Internal(format!("set policy failed on '{name}': {e}"))
-                })
-            }),
+            DbCommand::SetPolicy { policy, reply } =>
+                with_db(&db, reply, |db| {
+                    db.set_policy(policy).map_err(|e| {
+                        CorelamoError::Internal(format!("set policy failed on '{name}': {e}"))
+                    })
+                }),
 
             DbCommand::Status { reply } => {
+                let snapshot = progress.snapshot();
                 let result = match db.try_lock() {
-                    Ok(db) => {
-                        if db.is_running() {
-                            db.stats()
-                                .map(|mut stats| {
-                                    stats.reindexing = reindexing_rx.borrow().clone();
-                                    stats
-                                })
-                                .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
-                        } else {
-                            Err({
-                                error!(log, "Database is not running";"name"=>%name);
-                                CorelamoError::DatabaseNotRunning(format!(
-                                    "database {name} is not running"
-                                ))
-                            })
-                        }
-                    }
-                    Err(_) => {
-                        // reindex is holding the lock right now — return progress only,
-                        // don't wait for it
-                        let reindexing = reindexing_rx.borrow().clone();
-                        let indexing = IndexingStats::default();
-                        //indexing.total_documents_indexed = reindexing.documents_indexed;
-                        Ok(DatabaseStats {
-                            document_count: 0,
-                            segment_count: 0,
-                            background_compaction_enabled: false,
-                            metrics: Default::default(),
-                            indexing,
-                            reindexing,
-                        })
-                    }
+                    Ok(guard) if guard.is_running() =>
+                        guard
+                            .stats()
+                            .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}"))),
+                    Ok(_) =>
+                        Err(
+                            CorelamoError::DatabaseNotRunning(
+                                format!("database {name} is not running")
+                            )
+                        ),
+                    // The reindex holds the lock. Report real progress rather than waiting.
+                    Err(_) => Ok(CorelamoDatabase::stats_swapping(snapshot, Default::default())),
                 };
                 let _ = reply.send(result);
             }
 
             DbCommand::GetOptions { reply } => with_db(&db, reply, |db| Ok(db.options().clone())),
 
-            DbCommand::SetOptions { options, reply } => with_db(&db, reply, |db| {
-                db.set_options(options)?;
-                Ok(db.is_running())
-            }),
+            DbCommand::SetOptions { options, reply } =>
+                with_db(&db, reply, |db| {
+                    db.set_options(options)?;
+                    Ok(db.is_running())
+                }),
 
-            DbCommand::StartDatabase { reply } => with_db(&db, reply, |db| {
-                if db.is_running() {
-                    Ok(DatabasePowerButtonOutcome::Nochange)
-                } else {
-                    db.start().map(|()| DatabasePowerButtonOutcome::Changed)
-                }
-            }),
+            DbCommand::StartDatabase { reply } =>
+                with_db(&db, reply, |db| {
+                    if db.is_running() {
+                        Ok(DatabasePowerButtonOutcome::Nochange)
+                    } else {
+                        db.start().map(|()| DatabasePowerButtonOutcome::Changed)
+                    }
+                }),
 
-            DbCommand::StopDatabase { reply } => with_db(&db, reply, |db| {
-                if !db.is_running() {
-                    Ok(DatabasePowerButtonOutcome::Nochange)
-                } else {
-                    db.stop().map(|()| DatabasePowerButtonOutcome::Changed)
-                }
-            }),
+            DbCommand::StopDatabase { reply } =>
+                with_db(&db, reply, |db| {
+                    if !db.is_running() {
+                        Ok(DatabasePowerButtonOutcome::Nochange)
+                    } else {
+                        db.stop().map(|()| DatabasePowerButtonOutcome::Changed)
+                    }
+                }),
 
             DbCommand::Restart { reply } => with_db(&db, reply, |db| db.restart()),
 
@@ -419,15 +459,13 @@ fn with_running<T>(
     db: &Arc<Mutex<CorelamoDatabase>>,
     name: &str,
     reply: Reply<T>,
-    f: impl FnOnce(&mut CorelamoDatabase) -> Result<T, CorelamoError>,
+    f: impl FnOnce(&mut CorelamoDatabase) -> Result<T, CorelamoError>
 ) {
     let mut db = db.lock().expect("db actor mutex poisoned");
     let result = if db.is_running() {
         f(&mut db)
     } else {
-        Err(CorelamoError::DatabaseNotRunning(format!(
-            "database {name} is not running"
-        )))
+        Err(CorelamoError::DatabaseNotRunning(format!("database {name} is not running")))
     };
     let _ = reply.send(result);
 }
@@ -436,7 +474,7 @@ fn with_running<T>(
 fn with_db<T>(
     db: &Arc<Mutex<CorelamoDatabase>>,
     reply: Reply<T>,
-    f: impl FnOnce(&mut CorelamoDatabase) -> Result<T, CorelamoError>,
+    f: impl FnOnce(&mut CorelamoDatabase) -> Result<T, CorelamoError>
 ) {
     let mut db = db.lock().expect("db actor mutex poisoned");
     let _ = reply.send(f(&mut db));
@@ -445,7 +483,7 @@ fn with_db<T>(
 //helper funcion so that the call looks more readable
 fn replace_docs(
     db: &mut CorelamoDatabase,
-    docs: Vec<DocumentInput>,
+    docs: Vec<DocumentInput>
 ) -> Result<ReplaceReport, CorelamoError> {
     let mut replaced = 0;
     let mut failures = Vec::new();
@@ -466,11 +504,7 @@ fn replace_docs(
             })?;
             replaced += 1;
         } else {
-            failures.push(DocFailure::with_id(
-                index,
-                doc.external_id,
-                FailReason::NotFound,
-            ));
+            failures.push(DocFailure::with_id(index, doc.external_id, FailReason::NotFound));
         }
     }
 

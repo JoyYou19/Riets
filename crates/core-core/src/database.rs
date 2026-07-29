@@ -1,6 +1,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use core_index::{
@@ -8,7 +9,9 @@ use core_index::{
     document::IndexPolicy,
     lsm::{
         LsmIndex,
-        index_worker::{IndexingStats, ReindexStatus, ReindexingStats},
+        index_worker::{
+            IndexingStats, Phase, ProgressSnapshot, ReindexProgress, ReindexingStats,
+        },
         worker::CompactionWorker,
     },
 };
@@ -21,19 +24,45 @@ use core_query::{
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
-    document_store::StoredDocument,
+    document_store::{DocumentStore, StoredDocument},
     search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
 };
-//logging
-use core_logs::logger;
-use slog::{Logger, error, info};
 
-//logging
+use core_logs::logger;
+use slog::{Logger, error, info, warn};
+
 use crate::{
     command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
 };
 use indexmap::IndexMap;
-use tokio::sync::watch;
+
+/// Everything staging needs, cloned out under a brief lock so the build itself
+/// can run unlocked.
+pub struct ReindexParams {
+    pub root: PathBuf,
+    pub policy: IndexPolicy,
+    pub options: DatabaseOptions,
+    pub analyzer: Analyzer,
+    pub progress: Arc<ReindexProgress>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseState {
+    Running,
+    /// Handle is temporarily absent because the index swap is in progress.
+    Swapping,
+    Stopped,
+}
+
+impl DatabaseState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DatabaseState::Running => "running",
+            DatabaseState::Swapping => "swapping",
+            DatabaseState::Stopped => "stopped",
+        }
+    }
+}
 
 // Currently the main entry point to the database
 pub struct CorelamoDatabase {
@@ -44,8 +73,9 @@ pub struct CorelamoDatabase {
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     compaction_worker: Option<CompactionWorker>,
     metrics: DatabaseMetrics,
-    reindexing_tx: watch::Sender<ReindexingStats>,
-    reindexing_rx: watch::Receiver<ReindexingStats>,
+    /// Shared with the actor and the reindex thread. Never taken, never swapped,
+    /// so progress stays readable even while `db` is None.
+    progress: Arc<ReindexProgress>,
     log: Logger,
 }
 
@@ -53,13 +83,14 @@ impl CorelamoDatabase {
     fn config_full_path_from(root: &Path) -> std::path::PathBuf {
         root.join("config.toml")
     }
+
     //INFO: just creates everything for the database, doesnt start it
     pub fn create(root: impl AsRef<Path>, options: DatabaseOptions) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = root
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("unknown viss slikiti")
+            .unwrap_or("unknown")
             .to_string();
 
         if root.exists() {
@@ -70,8 +101,7 @@ impl CorelamoDatabase {
         }
         std::fs::create_dir_all(&root)?;
         let log = logger::db_logger(&root, &name);
-        //reindexing
-        let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
+
         let policy_path = root.join("policy.toml");
         let policy = IndexPolicy::default_document();
         policy.save(&policy_path)?;
@@ -88,9 +118,7 @@ impl CorelamoDatabase {
             db: None,
             compaction_worker: None,
             metrics: DatabaseMetrics::default(),
-            reindexing_tx,
-            reindexing_rx,
-
+            progress: ReindexProgress::new(),
             log,
         })
     }
@@ -112,11 +140,10 @@ impl CorelamoDatabase {
             )));
         }
 
-        //reindexing
-        let (reindexing_tx, reindexing_rx) = watch::channel(ReindexingStats::default());
         let policy = IndexPolicy::load(&policy_path)?;
         let options = DatabaseOptions::load_or_default(Self::config_full_path_from(&root));
         let log = logger::db_logger(&root, &name);
+
         Ok(Self {
             root,
             policy_path,
@@ -125,22 +152,29 @@ impl CorelamoDatabase {
             db: None,
             compaction_worker: None,
             metrics: DatabaseMetrics::default(),
-            reindexing_tx,
-            reindexing_rx,
-
+            progress: ReindexProgress::new(),
             log,
         })
+    }
+
+    /// Single construction point for the analyzer. `start`, staging, and the
+    /// post-swap database all go through here, so they cannot drift apart.
+    ///
+    /// TODO: build this from `self.options`/`self.policy` once the analyzer is
+    /// configurable. Until then the important property is that every site
+    /// agrees, not which analyzer they agree on.
+    fn analyzer(&self) -> Analyzer {
+        Analyzer::new()
     }
 
     pub fn start(&mut self) -> Result<(), CorelamoError> {
         if self.db.is_some() {
             return Ok(());
         }
-        info!(self.log, "database started");
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
 
-        let analyzer = Analyzer::new();
+        let analyzer = self.analyzer();
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let store = BinaryDocumentStore::open(&store_path)?;
 
@@ -157,27 +191,57 @@ impl CorelamoDatabase {
         };
 
         self.db = Some(db);
-        info!(self.log, "Database started");
-
+        info!(self.log, "database started");
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), CorelamoError> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
-            info!(self.log, "Compaction worker stopped")
+            info!(self.log, "compaction worker stopped");
         }
         if let Some(db) = self.db.take() {
             db.shutdown()?;
-            info!(self.log, "Database stopped")
+            info!(self.log, "database stopped");
         }
         Ok(())
     }
 
+    /// Same work as `stop`; kept as a distinct entry point for the actor's
+    /// terminal command so the two can never drift apart.
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        self.stop()
+            .map_err(|e| io::Error::other(format!("shutdown failed: {e}")))
+    }
+
     pub fn restart(&mut self) -> Result<(), CorelamoError> {
         self.stop()?;
+        self.start()?;
         info!(self.log, "database restarted");
-        self.start()
+        Ok(())
+    }
+
+    /// Stops background compaction without touching the database handle.
+    /// Called before staging so compaction is not merging the old index --
+    /// that work is discarded at swap and competes with staging for I/O.
+    pub fn pause_compaction(&mut self) -> Result<(), CorelamoError> {
+        if let Some(worker) = self.compaction_worker.take() {
+            worker.stop()?;
+            info!(self.log, "compaction paused for reindex");
+        }
+        Ok(())
+    }
+
+    fn start_compaction_worker(&mut self, db: &SearchDatabase<BinaryDocumentStore>) {
+        self.compaction_worker = if self.options.enable_background_compaction {
+            Some(CompactionWorker::start(
+                db.index_sender(),
+                self.options.runtime.compaction,
+                self.options.compaction_interval,
+            ))
+        } else {
+            None
+        };
     }
 
     pub fn set_options(&mut self, options: DatabaseOptions) -> Result<(), CorelamoError> {
@@ -205,45 +269,33 @@ impl CorelamoDatabase {
 
         let result = (|| {
             let db = self.db_mut()?;
-
             let report = db.put_documents_parallel(inputs, batch_size, window_size)?;
-
+            // NOTE: this flush is why segment count tracked HTTP request count
+            // exactly. Durability is already guaranteed by stop/shutdown; drop
+            // this call if you would rather let the memtable threshold govern.
             db.flush()?;
             Ok(report)
         })();
 
         let elapsed = started.elapsed();
-
         self.metrics.indexing_requests += 1;
         self.metrics.indexing_total_time += elapsed;
 
-        if result.is_err() {
-            self.metrics.indexing_errors += 1;
-            error!(self.log, "put documents parallel failed";
-                "documents" => count,
-                "batch_size" =>batch_size,
-                "elapsed_ms" => elapsed.as_millis(),
-            );
-        } else {
-            info!(self.log, "put documents parallel";
-                "documents" => count,
-                "batch_size" =>batch_size,
-                "elapsed_ms" => elapsed.as_millis(),
-            );
-        }
-
-        if result.is_err() {
-            error!(self.log, "indexing failed";
+        match &result {
+            Ok(_) => info!(self.log, "indexed batch";
                 "documents" => count,
                 "batch_size" => batch_size,
                 "elapsed_ms" => elapsed.as_millis(),
-            );
-        } else {
-            info!(self.log, "indexed batch";
-                "documents" => count,
-                "batch_size" => batch_size,
-                "elapsed_ms" => elapsed.as_millis(),
-            );
+            ),
+            Err(e) => {
+                self.metrics.indexing_errors += 1;
+                error!(self.log, "indexing failed";
+                    "documents" => count,
+                    "batch_size" => batch_size,
+                    "elapsed_ms" => elapsed.as_millis(),
+                    "error" => %e,
+                );
+            }
         }
 
         result
@@ -280,15 +332,12 @@ impl CorelamoDatabase {
         })();
 
         let elapsed = started.elapsed();
-
         self.metrics.search_requests += 1;
         self.metrics.search_total_time += elapsed;
 
         match &result {
             Ok(hits) => {
-                info!(
-                    self.log,
-                    "searched";
+                info!(self.log, "searched";
                     "query" => &command.query,
                     "offset" => offset,
                     "limit" => limit,
@@ -296,15 +345,14 @@ impl CorelamoDatabase {
                     "elapsed_ms" => elapsed.as_millis(),
                 );
             }
-            Err(_) => {
+            Err(e) => {
                 self.metrics.search_errors += 1;
-                error!(
-                    self.log,
-                    "search failed";
+                error!(self.log, "search failed";
                     "query" => &command.query,
                     "offset" => offset,
                     "limit" => limit,
                     "elapsed_ms" => elapsed.as_millis(),
+                    "error" => %e,
                 );
             }
         }
@@ -365,158 +413,122 @@ impl CorelamoDatabase {
             .search_document_hits_plan(plan, return_fields, offset, limit)
     }
 
-    // pub fn search_top_k(&mut self, query: &Query, k: usize) -> io::Result<Vec<SearchDocumentHit>> {
-    //     self.db_mut()?
-    //         .search_document_hits_all_fields_top_k(query, k)
-    // }
-
     pub fn analyze_query_term(&self, term: &str) -> io::Result<Option<String>> {
         Ok(self.db_ref()?.analyze_query_term(term))
     }
-    pub fn reindexing_receiver(&self) -> watch::Receiver<ReindexingStats> {
-        self.reindexing_rx.clone()
+
+    /// Shared progress handle. The actor clones this once and reads it without
+    /// taking the database mutex.
+    pub fn progress(&self) -> Arc<ReindexProgress> {
+        Arc::clone(&self.progress)
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    //FIX: wee need some way to filter the logs please like last:x or date:
-    pub fn get_logs(&self) -> Result<String, CorelamoError> {
-        let log_dir = self.root.join("logs");
-        let name = self
-            .root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        let log_file = log_dir.join(format!("{name}.log"));
-
-        if !log_file.exists() {
-            return Ok(String::new());
-        }
-
-        std::fs::read_to_string(&log_file)
-            .map_err(|e| CorelamoError::Internal(format!("failed to read logs: {e}")))
-    }
-
-    pub fn clear_logs(&mut self) -> Result<(), CorelamoError> {
-        //delete logs
-        let logs_dir = self.root.join("logs");
-        if logs_dir.exists() {
-            std::fs::remove_dir_all(&logs_dir)?;
-            std::fs::create_dir_all(&logs_dir)?;
-        }
-        //fresh start
-        let name = self
-            .root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        self.log = logger::db_logger(&self.root, &name);
-
-        info!(self.log, "logs cleared");
-        Ok(())
+    /// Cheap denominator for the reindex. O(1).
+    pub fn document_count_hint(&self) -> u64 {
+        self.db.as_ref().map(|d| d.document_count() as u64).unwrap_or(0)
     }
 
     pub fn clear(&mut self) -> io::Result<()> {
+        // Shut the old database down BEFORE removing its files, otherwise the
+        // live handle keeps writing to an unlinked inode (or the removal fails
+        // outright on Windows).
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-
-        if let Some(db) = self.db.as_mut() {
-            db.index_worker().abort()?;
-        }
+        if let Some(db) = self.db.take()
+            && let Err(e) = db.shutdown() {
+                warn!(self.log, "clear: shutdown of old database failed"; "error" => %e);
+            }
 
         let index_root = self.root.join("index");
-        std::fs::remove_dir_all(&index_root).ok();
-
         let store_path = self.root.join("documents.bin");
+        std::fs::remove_dir_all(&index_root).ok();
+        std::fs::remove_dir_all(self.root.join("index.new")).ok();
+        std::fs::remove_dir_all(self.root.join("index.old")).ok();
         std::fs::remove_file(&store_path).ok();
 
-        //new slaves for database
-        let analyzer = Analyzer::new();
+        let analyzer = self.analyzer();
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let store = BinaryDocumentStore::open(&store_path)?;
-
         let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
-        self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
-        } else {
-            None
-        };
-
+        self.start_compaction_worker(&db);
         self.db = Some(db);
-
+        info!(self.log, "database cleared");
         Ok(())
     }
 
-    pub fn shutdown(&mut self) -> io::Result<()> {
-        if let Some(worker) = self.compaction_worker.take() {
-            info!(self.log, "Compaction worker stopped");
-            worker.stop()?;
+    pub fn state(&self) -> DatabaseState {
+        if self.db.is_some() {
+            DatabaseState::Running
+        } else if self.progress.phase().is_running() {
+            DatabaseState::Swapping
+        } else {
+            DatabaseState::Stopped
         }
-        if let Some(db) = self.db.take() {
-            info!(self.log, "Database shut down");
-            let _index = db.shutdown()?;
-        }
-        Ok(())
     }
-    // ja notiek reindex stats nevar dabut tapec fallback uz reindexing tikai
+
+    /// Stats for a running database. The reindexing block always comes from the
+    /// progress snapshot, so it can never disagree with what the actor reports
+    /// while the lock is held elsewhere.
     pub fn stats(&self) -> io::Result<DatabaseStats> {
-        let reindexing = self.reindexing_rx.borrow().clone();
-        let db = match self.db_ref() {
-            Ok(db) => db,
-            Err(e) => {
-                if reindexing.status == ReindexStatus::Reindexing {
-                    return Ok(DatabaseStats {
-                        document_count: 0,
-                        segment_count: 0,
-                        background_compaction_enabled: false,
-                        metrics: self.metrics.clone(),
-                        indexing: IndexingStats::default(),
-                        reindexing,
-                    });
-                }
-                return Err(e);
-            }
-        };
+        let snapshot = self.progress.snapshot();
+        let db = self.db_ref()?;
+
         let mut indexing = db.index_worker().get_stats()?;
-        if reindexing.documents_indexed > indexing.total_documents_indexed {
-            indexing.total_documents_indexed = reindexing.documents_indexed;
+        // During a reindex the staging index owns the real counter, so surface
+        // the progress value when it is ahead.
+        if snapshot.done > indexing.total_documents_indexed {
+            indexing.total_documents_indexed = snapshot.done;
         }
 
         Ok(DatabaseStats {
+            database_state: DatabaseState::Running,
             document_count: db.document_count(),
             segment_count: db.segment_count()?,
             background_compaction_enabled: self.compaction_worker.is_some(),
             metrics: self.metrics.clone(),
             indexing,
-            reindexing,
+            reindexing: snapshot.into(),
+            reindexing_total: snapshot.total,
         })
+    }
+
+    /// Stats when the database handle is unavailable because the swap holds it.
+    /// Reports real progress counters instead of fabricating zeros.
+    pub fn stats_swapping(snapshot: ProgressSnapshot, metrics: DatabaseMetrics) -> DatabaseStats {
+        DatabaseStats {
+            database_state: DatabaseState::Swapping,
+            document_count: 0,
+            segment_count: 0,
+            background_compaction_enabled: false,
+            metrics,
+            indexing: IndexingStats {
+                total_documents_indexed: snapshot.done,
+                ..Default::default()
+            },
+            reindexing: snapshot.into(),
+            reindexing_total: snapshot.total,
+        }
     }
 
     //SMART SHIIT: if database running update the policy if not just validate->update file
     pub fn set_policy(&mut self, policy: IndexPolicy) -> io::Result<()> {
         policy.validate()?;
-
         if self.db.is_some() {
             self.db_mut()?.set_policy(policy.clone())?;
         }
-
         self.policy = policy;
         self.save_policy()?;
-        info!(self.log, "policy set"; "policy" => format!("{:?}", self.policy));
+        info!(self.log, "policy set");
         Ok(())
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        info!(self.log, "Flushing database");
         self.db_mut()?.flush()
     }
 
@@ -530,62 +542,106 @@ impl CorelamoDatabase {
 
     pub fn save_policy(&self) -> io::Result<()> {
         self.policy.save(&self.policy_path)?;
-        info!(self.log, "policy saved"; "policy" => format!("{:?}", self.policy));
         Ok(())
     }
 
     pub fn reload_policy(&mut self) -> io::Result<()> {
         let policy = IndexPolicy::load(&self.policy_path)?;
-        info!(self.log, "Policy reloaded");
         self.db_mut()?.set_policy(policy.clone())?;
         self.policy = policy;
-
+        info!(self.log, "policy reloaded");
         Ok(())
     }
 
-    pub fn reindex(&mut self) -> io::Result<()> {
-        info!(self.log, "reindex started");
-        let _ = self.reindexing_tx.send(ReindexingStats {
-            status: ReindexStatus::Reindexing,
-            progress: 0,
-            documents_indexed: 0,
-            eta_seconds: None,
-        });
-        let watermark = {
-            let mut max_id = 0u64;
-            self.db_ref()?.for_each_document(
-                &mut (|doc| {
-                    max_id = max_id.max(doc.internal_id);
-                    Ok(())
-                }),
-            )?;
-            max_id
-        };
-        let temp_index_root = self.root.join("index.new");
+    // ---------------------------------------------------------------- reindex
+
+    /// Cheap accessor so the actor can clone what staging needs.
+    pub fn reindex_params(&self) -> ReindexParams {
+        ReindexParams {
+            root: self.root.clone(),
+            policy: self.policy.clone(),
+            options: self.options.clone(),
+            analyzer: self.analyzer(),
+            progress: self.progress(),
+        }
+    }
+
+    /// Runs with NO lock held. Builds index.new from documents.bin.
+    /// Returns the watermark: highest internal_id present when staging opened
+    /// its snapshot of the store.
+    ///
+    /// INVARIANT: documents *updated* or *deleted* while this runs are not
+    /// picked up -- the catch-up pass keys on internal_id and therefore only
+    /// covers appends. Safe for append-only ingest; revisit before the upsert
+    /// and delete endpoints see concurrent use during a reindex.
+    pub fn build_staging_index(params: &ReindexParams) -> io::Result<u64> {
+        let temp_index_root = params.root.join("index.new");
         std::fs::remove_dir_all(&temp_index_root).ok();
         std::fs::create_dir_all(&temp_index_root)?;
 
-        let analyzer = Analyzer::new();
+        let read_store = BinaryDocumentStore::open(params.root.join("documents.bin"))?;
+        let watermark = read_store.max_internal_id();
+
         let new_index =
-            LsmIndex::persistent(&temp_index_root, self.options.runtime.flush_threshold)?;
-        let read_store = BinaryDocumentStore::open(self.root.join("documents.bin"))?;
-        let mut staging_db = SearchDatabase::with_policy(
+            LsmIndex::persistent(&temp_index_root, params.options.runtime.flush_threshold)?;
+        let mut staging = SearchDatabase::with_policy(
             read_store,
             new_index,
-            analyzer.clone(),
-            self.policy.clone(),
+            params.analyzer.clone(),
+            params.policy.clone(),
         );
 
-        staging_db.reindex_existing_documents(
-            self.options.runtime.indexing_batch_size,
-            self.options.runtime.indexing_window_size,
-            &self.reindexing_tx,
+        staging.reindex_existing_documents(
+            params.options.runtime.indexing_batch_size,
+            params.options.runtime.indexing_window_size,
+            params.progress.as_ref(),
         )?;
-        staging_db.shutdown_into_store()?;
+        staging.shutdown_into_store()?;
 
-        if let Some(worker) = self.compaction_worker.take() {
-            worker.stop()?;
+        // Guard against a staging build that flushed nothing: renaming an empty
+        // index over a working one is silent data loss.
+        let bytes: u64 = std::fs::read_dir(&temp_index_root)?
+            .filter_map(Result::ok)
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        if bytes == 0 && watermark > 0 {
+            return Err(io::Error::other(
+                "staging index is empty after build, refusing to swap",
+            ));
         }
+
+        Ok(watermark)
+    }
+
+    /// Runs WITH the lock held. Short: rename, catch up, install.
+    ///
+    /// Every failure path restores a working database: no exit leaves `self.db`
+    /// as None.
+    pub fn reindex_swap(&mut self, watermark: u64) -> io::Result<()> {
+        self.progress.set_phase(Phase::Swapping);
+        // A leftover index.old from an earlier failed run makes the first
+        // rename fail with ENOTEMPTY.
+        std::fs::remove_dir_all(self.root.join("index.old")).ok();
+
+        let result = self.reindex_swap_inner(watermark);
+
+        match &result {
+            Ok(()) => {
+                self.progress.set_phase(Phase::Complete);
+                std::fs::remove_dir_all(self.root.join("index.old")).ok();
+                info!(self.log, "reindex complete");
+            }
+            Err(e) => {
+                error!(self.log, "reindex swap failed"; "error" => %e);
+                self.progress.set_phase(Phase::Failed);
+                self.restore_after_failed_swap();
+            }
+        }
+        result
+    }
+
+    fn reindex_swap_inner(&mut self, watermark: u64) -> io::Result<()> {
         let old_db = self
             .db
             .take()
@@ -594,46 +650,63 @@ impl CorelamoDatabase {
 
         let index_root = self.root.join("index");
         std::fs::rename(&index_root, self.root.join("index.old"))?;
-        std::fs::rename(&temp_index_root, &index_root)?;
+        std::fs::rename(self.root.join("index.new"), &index_root)?;
+        // Make the rename durable before anything else touches the directory.
+        if let Ok(dir) = std::fs::File::open(&self.root) {
+            let _ = dir.sync_all();
+        }
+
+        let analyzer = self.analyzer();
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let mut db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
-        // catch-up pass: index anything written after the watermark
-        db.reindex_documents_after(watermark, self.options.runtime.indexing_batch_size)?;
+        // The store's current count is the real denominator: it includes
+        // anything appended while staging ran unlocked.
+        self.progress.set_total(db.document_count() as u64);
+        self.progress.set_phase(Phase::CatchUp);
 
-        self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
-        } else {
-            None
-        };
+        db.reindex_documents_after(
+            watermark,
+            self.options.runtime.indexing_batch_size,
+            self.progress.as_ref(),
+        )?;
 
+        self.start_compaction_worker(&db);
         self.db = Some(db);
-        std::fs::remove_dir_all(self.root.join("index.old")).ok();
-        let _ = self.reindexing_tx.send(ReindexingStats {
-            status: ReindexStatus::Complete,
-            progress: 100,
-            eta_seconds: None,
-            documents_indexed: self
-                .db
-                .as_ref()
-                .map(|d| d.document_count() as u64)
-                .unwrap_or(0),
-        });
-        info!(self.log, "reindex complete");
         Ok(())
+    }
+
+    /// Best effort: put index.old back if the new index never landed, then
+    /// reopen from disk. `start()` already rebuilds index, store and worker.
+    fn restore_after_failed_swap(&mut self) {
+        let index_root = self.root.join("index");
+        let old = self.root.join("index.old");
+
+        if !index_root.exists() && old.exists()
+            && let Err(e) = std::fs::rename(&old, &index_root) {
+                error!(self.log, "could not restore index.old"; "error" => %e);
+            }
+        std::fs::remove_dir_all(self.root.join("index.new")).ok();
+
+        if self.db.is_none() {
+            match self.start() {
+                Ok(()) => warn!(self.log, "database restored after failed reindex"),
+                Err(e) => error!(self.log, "database did NOT recover after failed reindex";
+                    "error" => %e),
+            }
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatabaseStats {
+    pub database_state: DatabaseState,
     pub document_count: usize,
     pub segment_count: usize,
     pub background_compaction_enabled: bool,
     pub metrics: DatabaseMetrics,
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
+    /// Denominator behind `reindexing.progress`, so a client can show "n of m".
+    pub reindexing_total: u64,
 }

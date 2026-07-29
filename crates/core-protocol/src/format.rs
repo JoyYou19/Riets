@@ -59,6 +59,7 @@ impl From<CorelamoError> for std::io::Error {
             | CorelamoError::UnknownRole(msg)
             | CorelamoError::Unauthorized(msg)
             | CorelamoError::Internal(msg) => Error::other(msg),
+            | CorelamoError::Busy(msg)=>Error::other(msg)
         }
     }
 }
