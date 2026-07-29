@@ -618,34 +618,48 @@ impl<S: DocumentStore> SearchDatabase<S> {
         )?;
         */
         //kristians
+        let store = &self.store;
+        let worker = &self.index_worker;
+        let analyzer = &self.analyzer;
+        let policy = &self.policy;
+
         let batches = self.build_indexed_batches_from_store(batch_size)?;
         let started_at = std::time::Instant::now();
-
         let mut done: u64 = 0;
+        let mut current: Vec<IndexedDocument> = Vec::with_capacity(batch_size);
+        let mut pending: Vec<Vec<IndexedDocument>> = Vec::with_capacity(window_size);
         //kristians
         //process in windows?
-        let mut iter = batches.into_iter().peekable();
-        while iter.peek().is_some() {
-            let window: Vec<_> = iter.by_ref().take(window_size).collect();
-            let doc_counts: Vec<u64> = window
+        fn publish_window(
+            worker: &IndexWorker,
+            analyzer: &Analyzer,
+            pending: &mut Vec<Vec<IndexedDocument>>,
+            done: &mut u64,
+            total: u64,
+            started_at: &std::time::Instant,
+            progress: &watch::Sender<ReindexingStats>
+        ) -> io::Result<()> {
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let batches = std::mem::take(pending);
+            let counts: Vec<u64> = batches
                 .iter()
-                .map(|batch| batch.len() as u64)
+                .map(|b| b.len() as u64)
                 .collect();
-            let segments = build_segments_parallel(self.analyzer.clone(), window);
-            //reindexing stats
+            let segments = build_segments_parallel(analyzer.clone(), batches);
 
-            for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
-                self.index_worker.add_segment_wait(segment, doc_count)?;
-                done += doc_count;
+            for (segment, count) in segments.into_iter().zip(counts) {
+                worker.add_segment_wait(segment, count)?;
+                *done += count;
             }
 
-            let pct = if total > 0 { (((done as f64) / (total as f64)) * 100.0) as u8 } else { 0 };
+            let pct = if total > 0 { (((*done as f64) / (total as f64)) * 100.0) as u8 } else { 0 };
             let eta_seconds = {
                 let elapsed = started_at.elapsed().as_secs_f64();
-                if elapsed > 0.0 && done > 0 {
-                    let rate = (done as f64) / elapsed;
-                    let remaining = total.saturating_sub(done) as f64;
-                    Some((remaining / rate).max(0.0) as u64)
+                if elapsed > 0.0 && *done > 0 {
+                    let rate = (*done as f64) / elapsed;
+                    Some(((total.saturating_sub(*done) as f64) / rate).max(0.0) as u64)
                 } else {
                     None
                 }
@@ -655,9 +669,40 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 status: ReindexStatus::Reindexing,
                 progress: pct,
                 eta_seconds,
-                documents_indexed: done,
+                documents_indexed: *done,
             });
+            Ok(())
         }
+
+        store.for_each_document(
+            &mut (|doc| {
+                current.push(stored_document_to_indexed(doc, policy));
+
+                if current.len() >= batch_size {
+                    pending.push(std::mem::take(&mut current));
+                    current = Vec::with_capacity(batch_size);
+
+                    if pending.len() >= window_size {
+                        publish_window(
+                            worker,
+                            analyzer,
+                            &mut pending,
+                            &mut done,
+                            total,
+                            &started_at,
+                            progress
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+        )?;
+
+        if !current.is_empty() {
+            pending.push(current);
+        }
+        publish_window(worker, analyzer, &mut pending, &mut done, total, &started_at, progress)?;
+
         self.flush()?;
 
         let _ = progress.send(ReindexingStats {

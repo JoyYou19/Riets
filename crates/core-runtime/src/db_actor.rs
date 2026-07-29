@@ -1,13 +1,13 @@
 use std::{ sync::{ Arc, Mutex }, thread };
-use std::sync::atomic::{AtomicBool,Ordering};
+use std::sync::atomic::{ AtomicBool, Ordering };
 use core_core::{
     CorelamoDatabase,
     DatabaseOptions,
     DatabaseStats,
     command_reponse_definitions::SearchCommand,
 };
-use core_index::{document::IndexPolicy, lsm::index_worker::ReindexingStats};
-use core_index::lsm::index_worker::{ReindexStatus,IndexingStats};
+use core_index::{ document::IndexPolicy, lsm::index_worker::ReindexingStats };
+use core_index::lsm::index_worker::{ ReindexStatus, IndexingStats };
 use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::{
     document_store::StoredDocument,
@@ -209,7 +209,7 @@ pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::
 
 fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
     let reindexing_rx = db.reindexing_receiver();
-    let reindexing =Arc::new(AtomicBool::new(false));
+    let reindexing = Arc::new(AtomicBool::new(false));
     let db = Arc::new(Mutex::new(db));
     let log = slog_scope::logger();
     while let Some(cmd) = rx.blocking_recv() {
@@ -272,7 +272,6 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                     );
                     continue;
                 }
-
                 let params = {
                     let db_guard = db.lock().expect("db actor mutex poisoned");
                     if !db_guard.is_running() {
@@ -293,7 +292,13 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 let flag = reindexing.clone();
                 let log = slog_scope::logger();
                 let (root, policy, options, tx) = params;
-
+                let _ = tx.send(ReindexingStats {
+                    status: ReindexStatus::Reindexing,
+                    progress: 0,
+                    eta_seconds: None,
+                    documents_indexed: 0,
+                });
+                reindexing.store(true, Ordering::SeqCst);
                 std::thread::spawn(move || {
                     match CorelamoDatabase::build_staging_index(root, policy, options, tx.clone()) {
                         Ok(watermark) => {
