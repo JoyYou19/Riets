@@ -1,10 +1,9 @@
 use rand::rngs::OsRng;
 use rand::RngCore;
-use sha2::{ Digest, Sha256 };
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::time::{ Duration, SystemTime };
-
+use std::time::{Duration, SystemTime};
 
 //Can change to whatever
 const TOKEN_LIFETIME: Duration = Duration::from_secs(86400);
@@ -46,11 +45,9 @@ impl TokenStore {
         self.tokens
             .write()
             .unwrap_or_else(
-                |
-                    e: std::sync::PoisonError<
-                        std::sync::RwLockWriteGuard<'_, HashMap<String, TokenEntry>>
-                    >
-                | e.into_inner()
+                |e: std::sync::PoisonError<
+                    std::sync::RwLockWriteGuard<'_, HashMap<String, TokenEntry>>,
+                >| e.into_inner(),
             )
             .insert(hashed, entry);
         token
@@ -69,11 +66,9 @@ impl TokenStore {
         self.tokens
             .write()
             .unwrap_or_else(
-                |
-                    e: std::sync::PoisonError<
-                        std::sync::RwLockWriteGuard<'_, HashMap<String, TokenEntry>>
-                    >
-                | e.into_inner()
+                |e: std::sync::PoisonError<
+                    std::sync::RwLockWriteGuard<'_, HashMap<String, TokenEntry>>,
+                >| e.into_inner(),
             )
             .remove(&hashed);
     }
