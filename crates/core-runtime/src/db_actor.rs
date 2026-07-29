@@ -6,7 +6,7 @@ use core_core::{
     DatabaseStats,
     command_reponse_definitions::SearchCommand,
 };
-use core_index::{ document::IndexPolicy, lsm::index_worker::ReindexingStats };
+use core_index::{ document::IndexPolicy, lsm::index_worker::{ReindexGuard, ReindexingStats} };
 use core_index::lsm::index_worker::{ ReindexStatus, IndexingStats };
 use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::{
@@ -208,8 +208,7 @@ pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::
 }
 
 fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
-    let reindexing_rx = db.reindexing_receiver();
-    let reindexing = Arc::new(AtomicBool::new(false));
+    let progress = db.progress();
     let db = Arc::new(Mutex::new(db));
     let log = slog_scope::logger();
     while let Some(cmd) = rx.blocking_recv() {
@@ -266,15 +265,9 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 }),
 
             DbCommand::Reindex { reply } => {
-                if reindexing.load(Ordering::SeqCst) {
-                    let _ = reply.send(
-                        Err(CorelamoError::Busy(format!("database '{name}' is already reindexing")))
-                    );
-                    continue;
-                }
                 let params = {
-                    let db_guard = db.lock().expect("db actor mutex poisoned");
-                    if !db_guard.is_running() {
+                    let mut guard = db.lock().expect("db actor mutex poisoned");
+                    if !guard.is_running() {
                         let _ = reply.send(
                             Err(
                                 CorelamoError::DatabaseNotRunning(
@@ -284,42 +277,52 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                         );
                         continue;
                     }
-                    db_guard.reindex_params()
+                    let total = guard.document_count_hint();
+                    // try_begin is the overlap guard: check and claim in one atomic step.
+                    if !progress.try_begin(total) {
+                        let _ = reply.send(
+                            Err(
+                                CorelamoError::Busy(
+                                    format!("database '{name}' is already reindexing")
+                                )
+                            )
+                        );
+                        continue;
+                    }
+                    // Stop compaction now: merges on the old index are discarded at swap
+                    // and compete with staging for I/O.
+                    if let Err(e) = guard.pause_compaction() {
+                        warn!(log, "could not pause compaction"; "error" => %e);
+                    }
+                    guard.reindex_params()
                 }; // lock released
 
-                reindexing.store(true, Ordering::SeqCst);
                 let db_handle = db.clone();
-                let flag = reindexing.clone();
-                let log = slog_scope::logger();
-                let (root, policy, options, tx) = params;
-                let _ = tx.send(ReindexingStats {
-                    status: ReindexStatus::Reindexing,
-                    progress: 0,
-                    eta_seconds: None,
-                    documents_indexed: 0,
-                });
-                reindexing.store(true, Ordering::SeqCst);
+                let thread_log = log.clone();
+                let guard = ReindexGuard::new(progress.clone()); // Failed on panic or early return
+
                 std::thread::spawn(move || {
-                    match CorelamoDatabase::build_staging_index(root, policy, options, tx.clone()) {
+                    match CorelamoDatabase::build_staging_index(&params) {
                         Ok(watermark) => {
                             let mut db = db_handle.lock().expect("db actor mutex poisoned");
-                            if let Err(e) = db.reindex_swap(watermark) {
-                                error!(log, "reindex swap failed"; "error" => %e);
-                                let _ = tx.send(ReindexingStats {
-                                    status: ReindexStatus::Failed,
-                                    ..Default::default()
-                                });
+                            match db.reindex_swap(watermark) {
+                                // reindex_swap sets Complete/Failed itself; settle the
+                                // guard so Drop does not overwrite it.
+                                Ok(()) => guard.succeed(),
+                                Err(_) => guard.fail(),
                             }
                         }
                         Err(e) => {
-                            error!(log, "reindex staging failed"; "error" => %e);
-                            let _ = tx.send(ReindexingStats {
-                                status: ReindexStatus::Failed,
-                                ..Default::default()
-                            });
+                            error!(thread_log, "reindex staging failed"; "error" => %e);
+                            let mut db = db_handle.lock().expect("db actor mutex poisoned");
+                            // staging failed with the database still intact; just restart
+                            // the compaction we paused.
+                            if let Err(e) = db.start() {
+                                error!(thread_log, "resume failed"; "error" => %e);
+                            }
+                            guard.fail();
                         }
                     }
-                    flag.store(false, Ordering::SeqCst);
                 });
 
                 let _ = reply.send(Ok(()));
@@ -356,39 +359,20 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 }),
 
             DbCommand::Status { reply } => {
+                let snapshot = progress.snapshot();
                 let result = match db.try_lock() {
-                    Ok(db) => {
-                        if db.is_running() {
-                            db.stats()
-                                .map(|mut stats| {
-                                    stats.reindexing = reindexing_rx.borrow().clone();
-                                    stats
-                                })
-                                .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
-                        } else {
-                            Err({
-                                error!(log, "Database is not running";"name"=>%name);
-                                CorelamoError::DatabaseNotRunning(
-                                    format!("database {name} is not running")
-                                )
-                            })
-                        }
-                    }
-                    Err(_) => {
-                        // reindex is holding the lock right now — return progress only,
-                        // don't wait for it
-                        let reindexing = reindexing_rx.borrow().clone();
-                        let indexing = IndexingStats::default();
-                        //indexing.total_documents_indexed = reindexing.documents_indexed;
-                        Ok(DatabaseStats {
-                            document_count: 0,
-                            segment_count: 0,
-                            background_compaction_enabled: false,
-                            metrics: Default::default(),
-                            indexing,
-                            reindexing,
-                        })
-                    }
+                    Ok(guard) if guard.is_running() =>
+                        guard
+                            .stats()
+                            .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}"))),
+                    Ok(_) =>
+                        Err(
+                            CorelamoError::DatabaseNotRunning(
+                                format!("database {name} is not running")
+                            )
+                        ),
+                    // The reindex holds the lock. Report real progress rather than waiting.
+                    Err(_) => Ok(CorelamoDatabase::stats_swapping(snapshot, Default::default())),
                 };
                 let _ = reply.send(result);
             }

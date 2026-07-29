@@ -1,8 +1,13 @@
 use rayon::prelude::*;
 use std::{
     io,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicU8, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use crate::{
@@ -437,11 +442,13 @@ pub enum ReindexStatus {
     #[default]
     Idle,
     Reindexing,
+    Swapping,
+    CatchUp,
     Complete,
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct ReindexingStats {
     pub status: ReindexStatus,
     pub progress: u8,
@@ -449,7 +456,224 @@ pub struct ReindexingStats {
     pub eta_seconds: Option<u64>,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Phase {
+    #[default]
+    Idle = 0,
+    Reindexing = 1,
+    Swapping = 2,
+    CatchUp = 3,
+    Complete = 4,
+    Failed = 5,
+}
+
+impl Phase {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Phase::Reindexing,
+            2 => Phase::Swapping,
+            3 => Phase::CatchUp,
+            4 => Phase::Complete,
+            5 => Phase::Failed,
+            _ => Phase::Idle,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Phase::Idle => "idle",
+            Phase::Reindexing => "reindexing",
+            Phase::Swapping => "swapping",
+            Phase::CatchUp => "catch_up",
+            Phase::Complete => "complete",
+            Phase::Failed => "failed",
+        }
+    }
+
+    pub fn is_running(self) -> bool {
+        matches!(self, Phase::Reindexing | Phase::Swapping | Phase::CatchUp)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ProgressSnapshot {
+    pub phase: Phase,
+    pub done: u64,
+    pub total: u64,
+    pub percent: u8,
+    pub eta_seconds: Option<u64>,
+}
+
+impl From<ProgressSnapshot> for ReindexingStats {
+    fn from(s: ProgressSnapshot) -> Self {
+        ReindexingStats {
+            status: match s.phase {
+                Phase::Idle => ReindexStatus::Idle,
+                Phase::Reindexing => ReindexStatus::Reindexing,
+                Phase::Swapping => ReindexStatus::Swapping,
+                Phase::CatchUp => ReindexStatus::CatchUp,
+                Phase::Complete => ReindexStatus::Complete,
+                Phase::Failed => ReindexStatus::Failed,
+            },
+            progress: s.percent,
+            documents_indexed: s.done,
+            eta_seconds: s.eta_seconds,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ReindexProgress {
+    phase: AtomicU8,
+    total: AtomicU64,
+    done: AtomicU64,
+    started: Mutex<Option<Instant>>,
+}
+
+impl ReindexProgress {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            phase: AtomicU8::new(Phase::Idle as u8),
+            total: AtomicU64::new(0),
+            done: AtomicU64::new(0),
+            started: Mutex::new(None),
+        })
+    }
+
+    /// Claims the reindex slot. Returns false if one is already running.
+    pub fn try_begin(&self, total: u64) -> bool {
+        loop {
+            let current = self.phase.load(Ordering::Acquire);
+            if Phase::from_u8(current).is_running() {
+                return false;
+            }
+            match self.phase.compare_exchange_weak(
+                current,
+                Phase::Reindexing as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+        self.total.store(total, Ordering::Relaxed);
+        self.done.store(0, Ordering::Relaxed);
+        if let Ok(mut started) = self.started.lock() {
+            *started = Some(Instant::now());
+        }
+        true
+    }
+
+    pub fn add(&self, docs: u64) {
+        self.done.fetch_add(docs, Ordering::Relaxed);
+    }
+
+    pub fn grow_total(&self, extra: u64) {
+        self.total.fetch_add(extra, Ordering::Relaxed);
+    }
+
+    pub fn set_total(&self, total: u64) {
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    pub fn set_phase(&self, phase: Phase) {
+        self.phase.store(phase as u8, Ordering::Release);
+    }
+
+    pub fn phase(&self) -> Phase {
+        Phase::from_u8(self.phase.load(Ordering::Acquire))
+    }
+
+    pub fn snapshot(&self) -> ProgressSnapshot {
+        let phase = self.phase();
+        let total = self.total.load(Ordering::Relaxed);
+        let raw_done = self.done.load(Ordering::Relaxed);
+        let done = if total > 0 { raw_done.min(total) } else { raw_done };
+
+        let percent = if phase == Phase::Complete {
+            100
+        } else if total == 0 {
+            0
+        } else {
+            ((done * 100) / total) as u8
+        };
+
+        ProgressSnapshot {
+            phase,
+            done,
+            total,
+            percent,
+            eta_seconds: self.eta(phase, done, total),
+        }
+    }
+
+    fn eta(&self, phase: Phase, done: u64, total: u64) -> Option<u64> {
+        if !matches!(phase, Phase::Reindexing | Phase::CatchUp) {
+            return None;
+        }
+        if done == 0 || total == 0 || done >= total {
+            return None;
+        }
+        let started = (*self.started.lock().ok()?)?;
+        let elapsed = started.elapsed().as_secs_f64();
+        if elapsed < 2.0 {
+            return None;
+        }
+        let rate = done as f64 / elapsed;
+        if rate <= f64::EPSILON {
+            return None;
+        }
+        let remaining = (total - done) as f64 / rate;
+        if !remaining.is_finite() {
+            return None;
+        }
+        Some(round_eta(remaining))
+    }
+}
+
+fn round_eta(secs: f64) -> u64 {
+    let s = secs.ceil().clamp(0.0, u32::MAX as f64) as u64;
+    match s {
+        0..=30 => s,
+        31..=300 => s.div_ceil(5) * 5,
+        _ => s.div_ceil(30) * 30,
+    }
+}
+
+/// Panic-safe terminal state: if the reindex thread unwinds, the drop marks the
+/// run failed instead of leaving the phase stuck at `Reindexing`.
+pub struct ReindexGuard {
+    progress: Arc<ReindexProgress>,
+    settled: bool,
+}
+
+impl ReindexGuard {
+    pub fn new(progress: Arc<ReindexProgress>) -> Self {
+        Self { progress, settled: false }
+    }
+
+    pub fn succeed(mut self) {
+        self.progress.set_phase(Phase::Complete);
+        self.settled = true;
+    }
+
+    pub fn fail(mut self) {
+        self.progress.set_phase(Phase::Failed);
+        self.settled = true;
+    }
+}
+
+impl Drop for ReindexGuard {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.progress.set_phase(Phase::Failed);
+        }
+    }
+}
 #[cfg(test)]
+
 mod tests {
     use super::*;
     use std::collections::BTreeMap;

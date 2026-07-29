@@ -9,9 +9,11 @@ use core_index::{
         index_worker::{
             IndexCommand,
             IndexWorker,
+            ReindexProgress,
             ReindexStatus,
             ReindexingStats,
             build_segments_parallel,
+            index_batches_parallel,
         },
         make_batches,
         snapshot::SharedIndexSnapshot,
@@ -597,17 +599,11 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         batch_size: usize,
         window_size: usize,
-        progress: &watch::Sender<ReindexingStats>
+        progress: &ReindexProgress
     ) -> io::Result<()> {
         //reindexing stats
         let total = self.store.document_count() as u64;
 
-        let _ = progress.send(ReindexingStats {
-            status: ReindexStatus::Reindexing,
-            progress: 0,
-            eta_seconds: None,
-            documents_indexed: 0,
-        });
         /*
         let mut indexed_documents = Vec::with_capacity(self.store.document_count());
         self.store.for_each_document(
@@ -634,43 +630,18 @@ impl<S: DocumentStore> SearchDatabase<S> {
             worker: &IndexWorker,
             analyzer: &Analyzer,
             pending: &mut Vec<Vec<IndexedDocument>>,
-            done: &mut u64,
-            total: u64,
-            started_at: &std::time::Instant,
-            progress: &watch::Sender<ReindexingStats>
+            progress: &ReindexProgress
         ) -> io::Result<()> {
             if pending.is_empty() {
                 return Ok(());
             }
-            let batches = std::mem::take(pending);
-            let counts: Vec<u64> = batches
+            let count: u64 = pending
                 .iter()
                 .map(|b| b.len() as u64)
-                .collect();
-            let segments = build_segments_parallel(analyzer.clone(), batches);
-
-            for (segment, count) in segments.into_iter().zip(counts) {
-                worker.add_segment_wait(segment, count)?;
-                *done += count;
-            }
-
-            let pct = if total > 0 { (((*done as f64) / (total as f64)) * 100.0) as u8 } else { 0 };
-            let eta_seconds = {
-                let elapsed = started_at.elapsed().as_secs_f64();
-                if elapsed > 0.0 && *done > 0 {
-                    let rate = (*done as f64) / elapsed;
-                    Some(((total.saturating_sub(*done) as f64) / rate).max(0.0) as u64)
-                } else {
-                    None
-                }
-            };
-
-            let _ = progress.send(ReindexingStats {
-                status: ReindexStatus::Reindexing,
-                progress: pct,
-                eta_seconds,
-                documents_indexed: *done,
-            });
+                .sum();
+            let batches = std::mem::take(pending);
+            index_batches_parallel(worker, analyzer.clone(), batches)?;
+            progress.add(count);
             Ok(())
         }
 
@@ -683,15 +654,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     current = Vec::with_capacity(batch_size);
 
                     if pending.len() >= window_size {
-                        publish_window(
-                            worker,
-                            analyzer,
-                            &mut pending,
-                            &mut done,
-                            total,
-                            &started_at,
-                            progress
-                        )?;
+                        publish_window(worker, analyzer, &mut pending, progress)?;
                     }
                 }
                 Ok(())
@@ -701,16 +664,10 @@ impl<S: DocumentStore> SearchDatabase<S> {
         if !current.is_empty() {
             pending.push(current);
         }
-        publish_window(worker, analyzer, &mut pending, &mut done, total, &started_at, progress)?;
+        publish_window(worker, analyzer, &mut pending, progress)?;
 
         self.flush()?;
 
-        let _ = progress.send(ReindexingStats {
-            status: ReindexStatus::Complete,
-            progress: 100,
-            eta_seconds: None,
-            documents_indexed: total,
-        });
         Ok(())
     }
 
@@ -719,7 +676,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn reindex_documents_after(
         &mut self,
         watermark_internal_id: u64,
-        batch_size: usize
+        batch_size: usize,
+        progress: &ReindexProgress
     ) -> io::Result<()> {
         let mut indexed_documents = Vec::new();
 
