@@ -320,7 +320,7 @@ impl CorelamoDatabase {
             let Some(query) = self.build_query(&command.query)? else {
                 return Ok(Vec::new());
             };
-            //INFO: you can see how the query got parsed to our structs
+            //INFO: you can see how the query got parsed + analyzed to our structs
             let parsedq = format!("{:?}", query);
             info!(self.log, "query parsing result";
                 "output" => parsedq,

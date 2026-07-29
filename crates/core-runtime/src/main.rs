@@ -278,11 +278,11 @@ async fn main() -> io::Result<()> {
             post(handlers::update_user_roles_handler),
         )
         .route(
-            "/api/databases/{db_name}/config",
+            "/api/databases/{db_name}/get-config",
             get(handlers::get_config_handler),
         )
         .route(
-            "/api/databases/{db_name}/config",
+            "/api/databases/{db_name}/set-config",
             put(handlers::set_config_handler),
         )
         .route(

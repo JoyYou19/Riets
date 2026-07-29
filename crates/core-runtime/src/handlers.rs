@@ -33,7 +33,7 @@ use crate::{
 use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
-use std::{collections::BTreeMap, fmt::format};
+use std::collections::BTreeMap;
 
 //authorizations
 use serde::Deserialize;

@@ -35,14 +35,14 @@ pub struct SearchCommand {
 }
 
 pub struct SearchResponse {
-    docs: Vec<FieldNode>,
+    docs: Vec<(String, FieldNode)>,
 }
 
 impl SearchResponse {
     pub fn from_hits(docs: Vec<(String, BTreeMap<String, String>)>) -> Result<Self, CorelamoError> {
         let mut trees = Vec::with_capacity(docs.len());
-        for (_id, fields) in docs {
-            trees.push(unflatten(fields)?);
+        for (id, fields) in docs {
+            trees.push((id, unflatten(fields)?));
         }
         Ok(Self { docs: trees })
     }
@@ -50,7 +50,17 @@ impl SearchResponse {
 
 impl ResponseData for SearchResponse {
     fn to_json(&self) -> Result<Value, CorelamoError> {
-        Ok(Value::Array(self.docs.iter().map(tree_to_json).collect()))
+        Ok(Value::Array(
+            self.docs
+                .iter()
+                .map(|(id, tree)| {
+                    json!({
+                        "id": id,
+                        "data": tree_to_json(tree)
+                    })
+                })
+                .collect(),
+        ))
     }
 
     // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {}
@@ -85,13 +95,17 @@ impl Command for RetrieveCommand {
 }
 
 pub struct RetrieveResponse {
-    documents: Vec<Vec<u8>>,
+    documents: Vec<(String, Vec<u8>)>,
     not_found: Vec<String>,
     skipped: Vec<String>,
 }
 
 impl RetrieveResponse {
-    pub fn new(documents: Vec<Vec<u8>>, not_found: Vec<String>, skipped: Vec<String>) -> Self {
+    pub fn new(
+        documents: Vec<(String, Vec<u8>)>,
+        not_found: Vec<String>,
+        skipped: Vec<String>,
+    ) -> Self {
         Self {
             documents,
             not_found,
@@ -102,29 +116,29 @@ impl RetrieveResponse {
 
 impl ResponseData for RetrieveResponse {
     fn to_json(&self) -> Result<Value, CorelamoError> {
-        let mut docs = Vec::with_capacity(self.documents.len());
-        for bytes in &self.documents {
-            let v: Value = serde_json::from_slice(bytes).map_err(|e| {
-                CorelamoError::Internal(format!(
-                    "stored document is not valid JSON (corruption): {e}"
-                ))
-            })?;
-            docs.push(v);
-        }
+        let docs = self
+            .documents
+            .iter()
+            .map(|(id, bytes)| {
+                let data: Value = serde_json::from_slice(bytes).map_err(|e| {
+                    CorelamoError::Internal(format!(
+                        "stored document '{id}' is not valid JSON (corruption): {e}"
+                    ))
+                })?;
 
-        let mut obj = serde_json::Map::new();
-        obj.insert("documents".to_string(), Value::Array(docs));
-        obj.insert(
-            "not_found".to_string(),
-            Value::Array(self.not_found.iter().cloned().map(Value::String).collect()),
-        );
-        obj.insert(
-            "skipped_ids".to_string(),
-            Value::Array(self.skipped.iter().cloned().map(Value::String).collect()),
-        );
-        Ok(Value::Object(obj))
+                Ok(serde_json::json!({
+                    "id": id,
+                    "data": data
+                }))
+            })
+            .collect::<Result<Vec<Value>, CorelamoError>>()?;
+
+        Ok(serde_json::json!({
+            "documents": docs,
+            "not_found": self.not_found,
+            "skipped_ids": self.skipped,
+        }))
     }
-
     // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {
     //     todo!();
     // }

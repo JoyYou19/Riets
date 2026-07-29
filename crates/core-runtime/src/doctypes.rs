@@ -224,12 +224,12 @@ fn value_to_string(value: &Value) -> String {
 pub fn convert_from_storage(
     docs: &[StoredDocument],
     format: Format,
-) -> (Vec<Vec<u8>>, Vec<ExternalDocId>) {
+) -> (Vec<(String, Vec<u8>)>, Vec<ExternalDocId>) {
     let mut output = Vec::with_capacity(docs.len());
     let mut skipped = Vec::new();
     for doc in docs {
         if doc.format == format {
-            output.push(doc.source.clone());
+            output.push((doc.external_id.clone(), doc.source.clone()));
         } else {
             skipped.push(doc.external_id.clone());
         }
