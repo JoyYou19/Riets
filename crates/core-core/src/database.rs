@@ -9,9 +9,7 @@ use core_index::{
     document::IndexPolicy,
     lsm::{
         LsmIndex,
-        index_worker::{
-            IndexingStats, Phase, ProgressSnapshot, ReindexProgress, ReindexingStats,
-        },
+        index_worker::{IndexingStats, Phase, ProgressSnapshot, ReindexProgress, ReindexingStats},
         worker::CompactionWorker,
     },
 };
@@ -429,7 +427,48 @@ impl CorelamoDatabase {
 
     /// Cheap denominator for the reindex. O(1).
     pub fn document_count_hint(&self) -> u64 {
-        self.db.as_ref().map(|d| d.document_count() as u64).unwrap_or(0)
+        self.db
+            .as_ref()
+            .map(|d| d.document_count() as u64)
+            .unwrap_or(0)
+    }
+
+    //FIX: wee need some way to filter the logs please like last:x or date:
+    pub fn get_logs(&self) -> Result<String, CorelamoError> {
+        let log_dir = self.root.join("logs");
+        let name = self
+            .root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let log_file = log_dir.join(format!("{name}.log"));
+
+        if !log_file.exists() {
+            return Ok(String::new());
+        }
+
+        std::fs::read_to_string(&log_file)
+            .map_err(|e| CorelamoError::Internal(format!("failed to read logs: {e}")))
+    }
+
+    pub fn clear_logs(&mut self) -> Result<(), CorelamoError> {
+        //delete logs
+        let logs_dir = self.root.join("logs");
+        if logs_dir.exists() {
+            std::fs::remove_dir_all(&logs_dir)?;
+            std::fs::create_dir_all(&logs_dir)?;
+        }
+        //fresh start
+        let name = self
+            .root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        self.log = logger::db_logger(&self.root, &name);
+
+        info!(self.log, "logs cleared");
+        Ok(())
     }
 
     pub fn clear(&mut self) -> io::Result<()> {
@@ -440,9 +479,10 @@ impl CorelamoDatabase {
             worker.stop()?;
         }
         if let Some(db) = self.db.take()
-            && let Err(e) = db.shutdown() {
-                warn!(self.log, "clear: shutdown of old database failed"; "error" => %e);
-            }
+            && let Err(e) = db.shutdown()
+        {
+            warn!(self.log, "clear: shutdown of old database failed"; "error" => %e);
+        }
 
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
@@ -682,10 +722,12 @@ impl CorelamoDatabase {
         let index_root = self.root.join("index");
         let old = self.root.join("index.old");
 
-        if !index_root.exists() && old.exists()
-            && let Err(e) = std::fs::rename(&old, &index_root) {
-                error!(self.log, "could not restore index.old"; "error" => %e);
-            }
+        if !index_root.exists()
+            && old.exists()
+            && let Err(e) = std::fs::rename(&old, &index_root)
+        {
+            error!(self.log, "could not restore index.old"; "error" => %e);
+        }
         std::fs::remove_dir_all(self.root.join("index.new")).ok();
 
         if self.db.is_none() {
@@ -710,3 +752,4 @@ pub struct DatabaseStats {
     /// Denominator behind `reindexing.progress`, so a client can show "n of m".
     pub reindexing_total: u64,
 }
+
