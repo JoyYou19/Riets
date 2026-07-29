@@ -1,5 +1,3 @@
-
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Permission {
     //basic
@@ -10,6 +8,8 @@ pub enum Permission {
     Delete,
     Status,
     Replace,
+    GetLogs,
+    ClearLogs,
     //databases
     CreateDatabase,
     DeleteDatabase,
@@ -41,22 +41,24 @@ impl Permission {
             "CreateDatabase" => Some(Permission::CreateDatabase),
             "ListDatabase" => Some(Permission::ListDatabase),
             "DeleteDatabase" => Some(Permission::DeleteDatabase),
-            "Status" =>Some(Permission::Status),
-            "Reindex" =>Some(Permission::Reindex),
-            "GetPolicy" =>Some(Permission::GetPolicy),
+            "DeleteLogs" => Some(Permission::ClearLogs),
+            "Status" => Some(Permission::Status),
+            "Reindex" => Some(Permission::Reindex),
+            "GetPolicy" => Some(Permission::GetPolicy),
             "PostPolicy" => Some(Permission::PostPolicy),
             "ChangeID" => Some(Permission::ChangeID),
-            "CreateUser" =>Some(Permission::CreateUser),
-            "DeleteUser" =>Some(Permission::DeleteUser),
-            "UpdateRole" =>Some(Permission::UpdateRole),
-            "UpdatePwd" =>Some(Permission::UpdatePwd),
+            "CreateUser" => Some(Permission::CreateUser),
+            "DeleteUser" => Some(Permission::DeleteUser),
+            "UpdateRole" => Some(Permission::UpdateRole),
+            "UpdatePwd" => Some(Permission::UpdatePwd),
             "Replace" => Some(Permission::Replace),
-            "GetConfig" =>Some(Permission::GetConfig),
-            "SetConfig" =>Some(Permission::SetConfig),
-            "StartDB" =>Some(Permission::StartDB),
+            "GetConfig" => Some(Permission::GetConfig),
+            "SetConfig" => Some(Permission::SetConfig),
+            "StartDB" => Some(Permission::StartDB),
             "StopDB" => Some(Permission::StopDB),
-            "RestartDB" =>Some(Permission::RestartDB),
+            "RestartDB" => Some(Permission::RestartDB),
             _ => None,
         }
     }
 }
+

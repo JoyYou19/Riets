@@ -220,6 +220,14 @@ async fn main() -> io::Result<()> {
             delete(handlers::delete_document_handler),
         )
         .route(
+            "/api/databases/{db_name}/get-logs",
+            get(handlers::get_logs_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/clear-logs",
+            delete(handlers::clear_logs_handler),
+        )
+        .route(
             "/api/databases/{db_name}/create-database",
             post(handlers::create_database_handler),
         )
@@ -288,7 +296,7 @@ async fn main() -> io::Result<()> {
             middleware::auth_middleware,
         ))
     } else {
-        debug!(log, "AUTH DISABLED — You're on your own!");
+        warn!(log, "AUTH DISABLED — You're on your own!");
 
         protected_routes.layer(axum::middleware::from_fn(
             middleware::disabled_auth_middleware,
@@ -298,6 +306,7 @@ async fn main() -> io::Result<()> {
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        //TODO: Make configurable
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
         .layer(from_fn_with_state(
             state.clone(),

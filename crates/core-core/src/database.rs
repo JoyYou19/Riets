@@ -381,6 +381,44 @@ impl CorelamoDatabase {
         &self.root
     }
 
+    //FIX: wee need some way to filter the logs please like last:x or date:
+    pub fn get_logs(&self) -> Result<String, CorelamoError> {
+        let log_dir = self.root.join("logs");
+        let name = self
+            .root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let log_file = log_dir.join(format!("{name}.log"));
+
+        if !log_file.exists() {
+            return Ok(String::new());
+        }
+
+        std::fs::read_to_string(&log_file)
+            .map_err(|e| CorelamoError::Internal(format!("failed to read logs: {e}")))
+    }
+
+    pub fn clear_logs(&mut self) -> Result<(), CorelamoError> {
+        //delete logs
+        let logs_dir = self.root.join("logs");
+        if logs_dir.exists() {
+            std::fs::remove_dir_all(&logs_dir)?;
+            std::fs::create_dir_all(&logs_dir)?;
+        }
+        //fresh start
+        let name = self
+            .root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        self.log = logger::db_logger(&self.root, &name);
+
+        info!(self.log, "logs cleared");
+        Ok(())
+    }
+
     pub fn clear(&mut self) -> io::Result<()> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
@@ -417,6 +455,7 @@ impl CorelamoDatabase {
 
         Ok(())
     }
+
     pub fn shutdown(&mut self) -> io::Result<()> {
         if let Some(worker) = self.compaction_worker.take() {
             info!(self.log, "Compaction worker stopped");
