@@ -23,7 +23,6 @@ use core_protocol::{
 };
 use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
 use indexmap::IndexMap;
-use tokio::sync::watch;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,

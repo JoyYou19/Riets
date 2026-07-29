@@ -419,11 +419,10 @@ impl CorelamoDatabase {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-        if let Some(db) = self.db.take() {
-            if let Err(e) = db.shutdown() {
+        if let Some(db) = self.db.take()
+            && let Err(e) = db.shutdown() {
                 warn!(self.log, "clear: shutdown of old database failed"; "error" => %e);
             }
-        }
 
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
@@ -663,11 +662,10 @@ impl CorelamoDatabase {
         let index_root = self.root.join("index");
         let old = self.root.join("index.old");
 
-        if !index_root.exists() && old.exists() {
-            if let Err(e) = std::fs::rename(&old, &index_root) {
+        if !index_root.exists() && old.exists()
+            && let Err(e) = std::fs::rename(&old, &index_root) {
                 error!(self.log, "could not restore index.old"; "error" => %e);
             }
-        }
         std::fs::remove_dir_all(self.root.join("index.new")).ok();
 
         if self.db.is_none() {

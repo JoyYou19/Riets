@@ -1,13 +1,11 @@
 use std::{ sync::{ Arc, Mutex }, thread };
-use std::sync::atomic::{ AtomicBool, Ordering };
 use core_core::{
     CorelamoDatabase,
     DatabaseOptions,
     DatabaseStats,
     command_reponse_definitions::SearchCommand,
 };
-use core_index::{ document::IndexPolicy, lsm::index_worker::{ReindexGuard, ReindexingStats} };
-use core_index::lsm::index_worker::{ ReindexStatus, IndexingStats };
+use core_index::{ document::IndexPolicy, lsm::index_worker::ReindexGuard };
 use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::{
     document_store::StoredDocument,
