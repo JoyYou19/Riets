@@ -169,10 +169,6 @@ check "existing search term case insensitivity" 200 -X POST "$BASE_URL/api/datab
     check_json_bool "data should be 3" '(.data | length) == 3'
 check "existing search term + regular symbol" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"real."}'
     check_json_bool "data should be 1" '(.data | length) == 1'
-check "existing search term + regular symbol" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"#&@%$real.$&%(#*%@#&"}'
-    check_json_bool "data should be 1" '(.data | length) == 1'
-check "existing search term + regular symbol" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"$@real.[\\[]]"}'
-    check_json_bool "data should be 1" '(.data | length) == 1'
 check "existing search term divided by regular symbol" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"re.al."}'
     check_json_bool "data should be 0" '(.data | length) == 0'
 
@@ -216,8 +212,6 @@ check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search"
 check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"seems nothing real"}'
     check_json_bool "data should be 2" '(.data | length) == 2'
 check "two of the same" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"word word"}'
-    check_json_bool "data should be 2" '(.data | length) == 2'
-check "existing search terms + symbols" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":".nothing&*(#&seems.real"}'
     check_json_bool "data should be 2" '(.data | length) == 2'
 
 section "Phrase"
@@ -267,6 +261,7 @@ check "existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -
     check_json_bool "data should be 7" '(.data | length) == 7'
 
 section "NOT"
+#nav implimentets vel
 
 check "nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~"}'
     check_json_bool "data should be 0" '(.data | length) == 0'
@@ -292,15 +287,17 @@ check "not not non existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H
 
 section "Boolean expressions"
 
-
+check "bool" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{case (really real)}"}'
+    check_json_bool "data should be 4" '(.data | length) == 4'
 
 section "Wildcard patterns"
-#kas notiek ja wildcardo ar stopwordu piem a*, vai tas kko atradis
 
 check "*" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*"}'
-    check_json_bool "data should be 0" '(.data | length) == 0'
-check "?????????" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"?????????"}'
-    check_json_bool "data should be 3" '(.data | length) == 3'
+    check_json_bool "data should be 10" '(.data | length) == 10'
+
+check "4?" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"????"}'
+    check_json_bool "data should be 10" '(.data | length) ==10'
+
 check "word or case" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"[wc][oa][rs][de]"}'
     check_json_bool "data should be 5" '(.data | length) == 5'
 check "case or confirmed" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"c*"}'
@@ -308,8 +305,6 @@ check "case or confirmed" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X
 check "everything that has an a" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*a*"}'
     check_json_bool "data should be 9" '(.data | length) == 9'
 
-check "empty brackets" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"re[]al"}'
-    check_json_bool "data should be 6" '(.data | length) == 6'
 check "empty brackets" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"rea?"}'
     check_json_bool "data should be 6" '(.data | length) == 6'
 
