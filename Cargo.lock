@@ -524,6 +524,7 @@ name = "core-query"
 version = "0.1.0"
 dependencies = [
  "core-index",
+ "core-protocol",
  "core-testkit",
  "criterion",
  "tracing",

@@ -33,7 +33,7 @@ use crate::{
 use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::format};
 
 //authorizations
 use serde::Deserialize;
@@ -361,6 +361,52 @@ pub async fn clear_database_handler(
     }
 
     HttpOk::new(format!("database: {db_name}, is cleared of data and index"), &ctx).into_response()
+}
+
+pub async fn get_logs_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match handle.get_logs().await {
+        Ok(m) => HttpOk::raw(StatusCode::OK, "text/plain", m, &ctx),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn clear_logs_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::ClearLogs) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match handle.clear_logs().await {
+        Ok(_) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
 }
 
 pub async fn delete_document_handler(

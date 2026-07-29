@@ -15,8 +15,7 @@ pub struct DatabaseOptions {
 
 impl DatabaseOptions {
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let toml_string =
-            toml::to_string_pretty(self).map_err(io::Error::other)?;
+        let toml_string = toml::to_string_pretty(self).map_err(io::Error::other)?;
         fs::write(path, toml_string)
     }
 
@@ -31,7 +30,7 @@ impl DatabaseOptions {
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     //WARN: user for invalid config
-                   /*  tracing::warn!(
+                    /*  tracing::warn!(
                         path=%path.as_ref().display(),
                         error=%e,
                         "Could not load options from the path. Using defaults.",
@@ -51,7 +50,8 @@ impl Default for DatabaseOptions {
             runtime: IndexRuntimeConfig::default(),
             enable_background_compaction: true,
             compaction_interval: Duration::from_secs(1),
-            bootable: false,
+            //INFO: gnjau default jabut false
+            bootable: true,
         }
     }
 }

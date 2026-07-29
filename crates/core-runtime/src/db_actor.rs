@@ -40,6 +40,12 @@ pub enum DbCommand {
     Clear {
         reply: Reply<()>,
     },
+    GetLogs {
+        reply: Reply<String>,
+    },
+    ClearLogs {
+        reply: Reply<()>,
+    },
     Retrieve {
         ids: Vec<String>,
         reply: Reply<Vec<(String, Option<StoredDocument>)>>,
@@ -131,6 +137,14 @@ impl DbHandle {
 
     pub async fn clear(&self) -> Result<(), CorelamoError> {
         self.call(|reply| DbCommand::Clear { reply }).await
+    }
+
+    pub async fn get_logs(&self) -> Result<String, CorelamoError> {
+        self.call(|reply| DbCommand::GetLogs { reply }).await
+    }
+
+    pub async fn clear_logs(&self) -> Result<(), CorelamoError> {
+        self.call(|reply| DbCommand::ClearLogs { reply }).await
     }
 
     pub async fn upsert(
@@ -330,6 +344,25 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 let result = {
                     let mut db = db.lock().expect("db actor mutex poisoned");
                     db.clear().map_err(|e| {
+                        error!(logger(), "Database Clear failed"; "error" => %e);
+                        CorelamoError::Internal(format!("failed to clear database {name}: {e}"))
+                    })
+                };
+                let _ = reply.send(result);
+            }
+
+            DbCommand::GetLogs { reply } => {
+                let result = {
+                    let db = db.lock().expect("db actor mutex poisoned");
+                    db.get_logs()
+                };
+                let _ = reply.send(result);
+            }
+
+            DbCommand::ClearLogs { reply } => {
+                let result = {
+                    let mut db = db.lock().expect("db actor mutex poisoned");
+                    db.clear_logs().map_err(|e| {
                         error!(logger(), "Database Clear failed"; "error" => %e);
                         CorelamoError::Internal(format!("failed to clear database {name}: {e}"))
                     })
