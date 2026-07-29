@@ -529,6 +529,7 @@ pub struct ReindexProgress {
     total: AtomicU64,
     done: AtomicU64,
     started: Mutex<Option<Instant>>,
+    first_add:Mutex<Option<Instant>>
 }
 
 impl ReindexProgress {
@@ -538,6 +539,7 @@ impl ReindexProgress {
             total: AtomicU64::new(0),
             done: AtomicU64::new(0),
             started: Mutex::new(None),
+            first_add: Mutex::new(None)
         })
     }
 
@@ -560,14 +562,17 @@ impl ReindexProgress {
         }
         self.total.store(total, Ordering::Relaxed);
         self.done.store(0, Ordering::Relaxed);
-        if let Ok(mut started) = self.started.lock() {
-            *started = Some(Instant::now());
+        if let Ok(mut t) = self.first_add.lock() {
+            *t=None;
         }
         true
     }
 
     pub fn add(&self, docs: u64) {
-        self.done.fetch_add(docs, Ordering::Relaxed);
+       if self.done.fetch_add(docs, Ordering::Relaxed) == 0
+        && let Ok(mut t) = self.first_add.lock() {
+            t.get_or_insert_with(Instant::now);
+        }
     }
 
     pub fn grow_total(&self, extra: u64) {
@@ -610,27 +615,33 @@ impl ReindexProgress {
     }
 
     fn eta(&self, phase: Phase, done: u64, total: u64) -> Option<u64> {
-        if !matches!(phase, Phase::Reindexing | Phase::CatchUp) {
-            return None;
-        }
-        if done == 0 || total == 0 || done >= total {
-            return None;
-        }
-        let started = (*self.started.lock().ok()?)?;
-        let elapsed = started.elapsed().as_secs_f64();
-        if elapsed < 2.0 {
-            return None;
-        }
-        let rate = done as f64 / elapsed;
-        if rate <= f64::EPSILON {
-            return None;
-        }
-        let remaining = (total - done) as f64 / rate;
-        if !remaining.is_finite() {
-            return None;
-        }
-        Some(round_eta(remaining))
+    if !matches!(phase, Phase::Reindexing | Phase::CatchUp) {
+        return None;
     }
+    if done == 0 || total == 0 || done >= total {
+        return None;
+    }
+    // One window's worth of work divided by a couple of seconds is noise.
+    // Wait for 2% before publishing a number.
+    if done.saturating_mul(50) < total {
+        return None;
+    }
+
+    let started = (*self.first_add.lock().ok()?)?;
+    let elapsed = started.elapsed().as_secs_f64();
+    if elapsed < 2.0 {
+        return None;
+    }
+    let rate = done as f64 / elapsed;
+    if rate <= f64::EPSILON {
+        return None;
+    }
+    let remaining = (total - done) as f64 / rate;
+    if !remaining.is_finite() {
+        return None;
+    }
+    Some(round_eta(remaining))
+    }   
 }
 
 fn round_eta(secs: f64) -> u64 {
