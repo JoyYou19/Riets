@@ -54,7 +54,6 @@ impl CorelamoError {
             CorelamoError::UnknownRole(_) => "unknown_role",
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
-            
         }
     }
 

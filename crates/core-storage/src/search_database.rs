@@ -122,6 +122,10 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &self.index_worker
     }
 
+    pub fn get_analyzer(&self) -> &Analyzer {
+        &self.analyzer
+    }
+
     pub fn with_policy(store: S, index: LsmIndex, analyzer: Analyzer, policy: IndexPolicy) -> Self {
         let next_internal_id = store.max_internal_id() + 1;
         let snapshot = SharedIndexSnapshot::empty();
@@ -477,17 +481,19 @@ impl<S: DocumentStore> SearchDatabase<S> {
             return Ok(Vec::new());
         }
 
-        println!(
-            "offset={}, limit={}, requested={}, returned={}",
-            offset,
-            limit,
-            requested_hits,
-            hits.len(),
-        );
+        // println!(
+        //     "offset={}, limit={}, requested={}, returned={}",
+        //     offset,
+        //     limit,
+        //     requested_hits,
+        //     hits.len(),
+        // );
 
-        for (i, hit) in hits.iter().take(15).enumerate() {
-            println!("{i}: doc={} score={}", hit.doc_id, hit.score);
-        }
+        //INFO: nahuj sito printu lmao
+        // for (i, hit) in hits.iter().take(15).enumerate() {
+        //     println!("{i}: doc={} score={}", hit.doc_id, hit.score);
+        // }
+
         // I don't want to allocate another Vec and also lets not touch skipped docs
         hits.drain(..offset);
         hits.truncate(limit);
