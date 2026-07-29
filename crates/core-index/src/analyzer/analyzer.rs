@@ -25,6 +25,7 @@ impl Default for Analyzer {
 
 impl Analyzer {
     pub fn new() -> Self {
+        //TODO: configurable:
         let stopwords: HashSet<String> = [
             "a", "an", "the", "and", "or", "of", "is", "it", "this", "that", "he", "she", "you",
             "i", "am", "are", "was", "were", "be", "been", "being", "to", "in", "on", "for",

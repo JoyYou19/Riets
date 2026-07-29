@@ -1,5 +1,5 @@
 use crate::ast::Query;
-use core_index::wildcard::WildcardPattern;
+use core_index::{analyzer::Analyzer, wildcard::WildcardPattern};
 use core_protocol::errors::CorelamoError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +57,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, CorelamoError> {
                 }
                 if !closed {
                     return Err(CorelamoError::InvalidData(
-                        "unterminated \"xxx\" in query".to_string(),
+                        "unterminated \"quotes\" in query".to_string(),
                     ));
                 }
                 let words = buf.split_whitespace().map(str::to_string).collect();
@@ -195,11 +195,81 @@ pub fn parse_query(input: &str) -> Result<Option<Query>, CorelamoError> {
     let items = parser.parse_sequence(Closer::Eof)?;
 
     //finally we only have xxx AND xxx ADN xxx
+    //TODO: elastic offers a default operator to be AND/OR
     let query = make_and(items);
 
     // "" () {} count as emtpy/invalid
     match &query {
         Query::And(inner) | Query::Or(inner) if inner.is_empty() => Ok(None),
         _ => Ok(Some(query)),
+    }
+}
+
+//INFO: after string->ast we still need to analyze each word there the same way when indexing
+pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
+    match query {
+        Query::Term(word) => analyze_term(&word, analyzer),
+        Query::Phrase(words) => analyze_phrase(&words, analyzer),
+
+        //for these just lowercase cuz like "ca[tnb]" is not a real word lmao
+        Query::Prefix(p) => non_empty(p.to_lowercase()).map(Query::Prefix),
+        Query::Wildcard(p) => non_empty(p.to_lowercase()).map(Query::Wildcard),
+
+        Query::And(subs) => combine(subs, analyzer, Query::And),
+        Query::Or(subs) => combine(subs, analyzer, Query::Or),
+    }
+}
+
+fn analyze_term(word: &str, analyzer: &Analyzer) -> Option<Query> {
+    let mut tokens = analyzer.analyze(word).into_iter().map(|t| t.text);
+    //this is also the check for if returned nothing
+    let first = tokens.next()?;
+    match tokens.next() {
+        None => Some(Query::Term(first)),
+        Some(second) => {
+            //if the analyzer gave us 2+ words from one they all should be in a and
+            let mut terms = vec![Query::Term(first), Query::Term(second)];
+            terms.extend(tokens.map(Query::Term));
+            Some(Query::And(terms))
+        }
+    }
+}
+
+fn non_empty(s: String) -> Option<String> {
+    if s.is_empty() { None } else { Some(s) }
+}
+
+//for and/or to do some recurcursion
+fn combine(subs: Vec<Query>, analyzer: &Analyzer, make: fn(Vec<Query>) -> Query) -> Option<Query> {
+    let mut kept: Vec<Query> = subs
+        .into_iter()
+        .filter_map(|q| analyze_query(q, analyzer))
+        .collect();
+    match kept.len() {
+        0 => None,
+        1 => kept.pop(),
+        _ => Some(make(kept)),
+    }
+}
+
+fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
+    let text = words.join(" ");
+    let tokens: Vec<String> = analyzer
+        .analyze(&text)
+        .into_iter()
+        .map(|t| t.text)
+        .collect();
+    match tokens.len() {
+        0 => None,
+        1 => Some(Query::Term(tokens.into_iter().next().unwrap())),
+        _ => Some(Query::Phrase(tokens)),
+    }
+}
+
+//INFO: main thing to go from string -> parsed+analyzed query
+pub fn parse_and_analyze(input: &str, analyzer: &Analyzer) -> Result<Option<Query>, CorelamoError> {
+    match parse_query(input)? {
+        Some(raw) => Ok(analyze_query(raw, analyzer)),
+        None => Ok(None),
     }
 }

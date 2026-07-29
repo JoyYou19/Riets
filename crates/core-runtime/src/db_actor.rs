@@ -211,10 +211,9 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
     let log = slog_scope::logger();
     while let Some(cmd) = rx.blocking_recv() {
         match cmd {
-            DbCommand::Search { cmd, reply } => with_running(&db, name, reply, |db| {
-                db.search(&cmd)
-                    .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")))
-            }),
+            DbCommand::Search { cmd, reply } => {
+                with_running(&db, name, reply, |db| db.search(&cmd))
+            }
 
             DbCommand::Insert { docs, reply } => with_running(&db, name, reply, |db| {
                 db.put_documents_parallel(docs)

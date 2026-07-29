@@ -16,7 +16,7 @@ use core_protocol::errors::CorelamoError;
 use core_query::{
     Query,
     planner::{QueryPlan, QueryPlanner},
-    query_string_parser::parse_query,
+    query_string_parser::parse_and_analyze,
 };
 
 use core_storage::{
@@ -249,18 +249,32 @@ impl CorelamoDatabase {
         result
     }
 
+    pub fn build_query(&self, input: &str) -> Result<Option<Query>, CorelamoError> {
+        let db = self.db_ref()?;
+        parse_and_analyze(input, db.get_analyzer())
+    }
+
     //INFO: changed the function call to take a SearchCommand not just a string of query
-    pub fn search(&mut self, command: &SearchCommand) -> io::Result<Vec<SearchDocumentHit>> {
+    pub fn search(
+        &mut self,
+        command: &SearchCommand,
+    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         let started = std::time::Instant::now();
         //TODO: make the docs 10 default configurable
         let limit = command.docs.unwrap_or(10);
         let offset = command.offset.unwrap_or(0);
 
         let result = (|| {
-            let Some(query) = parse_query(&command.query)? else {
+            let Some(query) = self.build_query(&command.query)? else {
                 return Ok(Vec::new());
             };
-            println!("{:?}", query);
+            //INFO: you can see how the query got parsed to our structs
+            let parsedq = format!("{:?}", query);
+            info!(self.log, "query parsing result";
+                "output" => parsedq,
+                "input" => &command.query,
+
+            );
             let plan = QueryPlanner::plan(query);
             self.search_plan(&plan, command.return_fields.as_ref(), offset, limit)
         })();
@@ -295,7 +309,7 @@ impl CorelamoDatabase {
             }
         }
 
-        result
+        return result.map_err(CorelamoError::from);
     }
 
     //INFO: old one now we have parse_query()
