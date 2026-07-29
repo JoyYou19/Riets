@@ -250,14 +250,14 @@ check "admin can delete user"        200 -X DELETE "$BASE_URL/api/users/crud_$RU
 
 section "MATRIX — Permission::GetConfig (admin, architect, editor granted; viewer denied)"
 
-check "admin can view config"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "viewer cannot view config" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "architect can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
-check "editor can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "admin can view config"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "viewer cannot view config" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "architect can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "editor can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 
 section "MATRIX — Permission::SetConfig (admin, architect, editor granted; viewer denied)"
 
-check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ADMIN_TOKEN"\
+check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false
@@ -275,7 +275,7 @@ check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_D
   secs = 1
   nanos = 0
   '
-check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $VIEWER_TOKEN"\
+check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $VIEWER_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false
@@ -293,7 +293,7 @@ check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_D
   secs = 1
   nanos = 0
   '
-check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
+check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false
@@ -311,7 +311,7 @@ check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/c
   secs = 1
   nanos = 0
   '
-check "architect can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"\
+check "architect can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false

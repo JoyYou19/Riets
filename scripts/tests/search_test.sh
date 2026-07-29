@@ -115,7 +115,7 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   max = 100
   '
 
-check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB/config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false
@@ -283,7 +283,6 @@ check "not not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-
     check_json_bool "data should be 6" '(.data | length) == 6'
 check "not not non existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~~nereal"}'
     check_json_bool "data should be 0" '(.data | length) == 0'
-
 
 section "Boolean expressions"
 
