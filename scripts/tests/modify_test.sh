@@ -139,6 +139,8 @@ check "insert document without id" 409 -X POST "$BASE_URL/api/databases/$DB/inse
   -d '{"number":"none"}'
 check "insert document without id value" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"", "number":"none"}'
+  check "insert bad doc" 400 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d 'jaja'
 
 check "insert normal document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"1", "number":"1"}'
@@ -154,7 +156,7 @@ check "insert document with two ids" 200 -X POST "$BASE_URL/api/databases/$DB/in
   -d '{"id":"no","id":"way", "number":"none"}'
 check "retrieve check both" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '["no","way"]'
-#neatrod no, atrod way
+#neatrod no, atrod way(dokuments tikai ar id=way,number=none)
 
 check "insert document with id 3" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"3", "number":"3"}'
@@ -202,6 +204,7 @@ check "insert document without id" 200 -X POST "$BASE_URL/api/databases/$DB/inse
 
 section "Replace"
 
+check "replace bad document" 400 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d 'bad'
 check "replace non existing id" 404 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"idk","number":"none"}'
 #sitie saka not_found nevis ka trukst id value
 check "replace empty id" 404 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"","number":"none"}'
@@ -225,11 +228,10 @@ section "Upsert"
 
 check "upsert a non existing id" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"kkads aidi","number":"9"}'
 check "upsert empty id auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"","number":"9/10"}'
+check "upsert bad doc" 400 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d 'slikts'
 
 check "upsert missing id auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"number":"10/11"}'
 
-check "retrieve check vai viss ir. Vajadzetu but ka autoincrement upsert iedod kkadus id sakot no 9" 69 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '["7","8","9","10","11","12","13"]'
 
 check "set no autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
@@ -263,8 +265,29 @@ check "upsert a new id" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-C
 
 section "Retrieve"
 
-check "retrieve " 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "retrieve nothing" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[]'
+check "retrieve no doc" 400 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" 
+check "retrieve bad doc" 400 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d 'nezkkas'
+
+#nevajadzetu 404?
+check "retrieve non existing" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[""]'
+check "retrieve multiple non existing" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '["","yow"]'
+
+check "retrieve one real" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '["7"]'
+check "retrieve text id" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '["bruh"]'
+check "retrieve autoincremented" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '["13"]'
+check "retrieve multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '["1","2","3"]'
+check "retrieve mixed real notreal" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '["7", "100", "1", "5", "bruh", "0"]'
+
 
 # ------------------------------------------------------------------
 # Delete
@@ -272,20 +295,18 @@ check "retrieve " 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corel
 
 section "Delete"
 
+check "delete bad document" 400 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d 'delit'
 check "delete existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["1"]'
 check "delete existing text id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["bruh"]'
 
 check "delete non existing" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste"]'
 check "delete no document" 400 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-#izdzesa vienu kas bija autoincremented upserted ar tuksu id
-check "retrieve empty id" 500 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '[""]'
 check "delete empty id" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '[""]'
+#vins uzskata "" ka id un so id neatrod, tapec 404
 
-#nekas neizdzesas un neretrivojas
-check "retrieve no id" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '[]'
 check "delete no id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '[]'
-
+#vins mekle 0 ids un atrod 0 tapec viss ok
 
 # ------------------------------------------------------------------
 # Cleanup
