@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 core-index = { path = "../core-index" }
+core-protocol = {path = "../core-protocol"}
 [dev-dependencies]
 criterion = { workspace = true }
 core-testkit = { path = "../core-testkit" }

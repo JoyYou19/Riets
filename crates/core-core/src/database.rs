@@ -16,6 +16,7 @@ use core_protocol::errors::CorelamoError;
 use core_query::{
     Query,
     planner::{QueryPlan, QueryPlanner},
+    query_string_parser::parse_and_analyze,
 };
 
 use core_storage::{
@@ -248,8 +249,16 @@ impl CorelamoDatabase {
         result
     }
 
+    pub fn build_query(&self, input: &str) -> Result<Option<Query>, CorelamoError> {
+        let db = self.db_ref()?;
+        parse_and_analyze(input, db.get_analyzer())
+    }
+
     //INFO: changed the function call to take a SearchCommand not just a string of query
-    pub fn search(&mut self, command: &SearchCommand) -> io::Result<Vec<SearchDocumentHit>> {
+    pub fn search(
+        &mut self,
+        command: &SearchCommand,
+    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         let started = std::time::Instant::now();
         //TODO: make the docs 10 default configurable
         let limit = command.docs.unwrap_or(10);
@@ -259,6 +268,13 @@ impl CorelamoDatabase {
             let Some(query) = self.build_query(&command.query)? else {
                 return Ok(Vec::new());
             };
+            //INFO: you can see how the query got parsed to our structs
+            let parsedq = format!("{:?}", query);
+            info!(self.log, "query parsing result";
+                "output" => parsedq,
+                "input" => &command.query,
+
+            );
             let plan = QueryPlanner::plan(query);
             self.search_plan(&plan, command.return_fields.as_ref(), offset, limit)
         })();
@@ -293,23 +309,10 @@ impl CorelamoDatabase {
             }
         }
 
-        result
+        return result.map_err(CorelamoError::from);
     }
 
-    fn build_query(&self, input: &str) -> io::Result<Option<Query>> {
-        let terms: Vec<String> = input
-            .split_whitespace()
-            .map(|term| term.to_string())
-            .collect();
-
-        Ok(match terms.len() {
-            0 => None,
-            1 => Some(Query::Term(terms[0].clone())),
-            _ => Some(Query::And(terms.into_iter().map(Query::Term).collect())),
-        })
-    }
-
-    // TODO: Might be broken.
+    //INFO: old one now we have parse_query()
     // fn build_query(&self, input: &str) -> io::Result<Option<Query>> {
     //     let db = self.db_ref()?;
     //
