@@ -20,7 +20,7 @@ use core_query::{
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
-    document_store::StoredDocument,
+    document_store::{StoredDocument,DocumentStore},
     search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
 };
 //logging
@@ -501,46 +501,47 @@ impl CorelamoDatabase {
         Ok(())
     }
 
-    pub fn reindex(&mut self) -> io::Result<()> {
-        info!(self.log, "reindex started");
-        let _ = self.reindexing_tx.send(ReindexingStats {
-            status: ReindexStatus::Reindexing,
-            progress: 0,
-            documents_indexed: 0,
-            eta_seconds: None,
-        });
-        let watermark = {
-            let mut max_id = 0u64;
-            self.db_ref()?.for_each_document(
-                &mut (|doc| {
-                    max_id = max_id.max(doc.internal_id);
-                    Ok(())
-                }),
-            )?;
-            max_id
-        };
-        let temp_index_root = self.root.join("index.new");
+    /// Cheap accessor so the actor can clone what staging needs.
+    pub fn reindex_params(
+        &self,
+    ) -> (PathBuf, IndexPolicy, DatabaseOptions, watch::Sender<ReindexingStats>) {
+        (
+            self.root.clone(),
+            self.policy.clone(),
+            self.options.clone(),
+            self.reindexing_tx.clone(),
+        )
+    }
+    /// Runs with NO lock held. Builds index.new from documents.bin.
+    /// Returns the watermark: highest internal_id at staging start.
+    pub fn build_staging_index(
+        root: PathBuf,
+        policy: IndexPolicy,
+        options: DatabaseOptions,
+        progress: watch::Sender<ReindexingStats>,
+    ) -> io::Result<u64> {
+        let temp_index_root = root.join("index.new");
         std::fs::remove_dir_all(&temp_index_root).ok();
         std::fs::create_dir_all(&temp_index_root)?;
 
+        let read_store = BinaryDocumentStore::open(root.join("documents.bin"))?;
+        let watermark = read_store.max_internal_id();
+
         let analyzer = Analyzer::new();
-        let new_index =
-            LsmIndex::persistent(&temp_index_root, self.options.runtime.flush_threshold)?;
-        let read_store = BinaryDocumentStore::open(self.root.join("documents.bin"))?;
-        let mut staging_db = SearchDatabase::with_policy(
-            read_store,
-            new_index,
-            analyzer.clone(),
-            self.policy.clone(),
-        );
+        let new_index = LsmIndex::persistent(&temp_index_root, options.runtime.flush_threshold)?;
+        let mut staging = SearchDatabase::with_policy(read_store, new_index, analyzer, policy);
 
-        staging_db.reindex_existing_documents(
-            self.options.runtime.indexing_batch_size,
-            self.options.runtime.indexing_window_size,
-            &self.reindexing_tx,
+        staging.reindex_existing_documents(
+            options.runtime.indexing_batch_size,
+            options.runtime.indexing_window_size,
+            &progress,
         )?;
-        staging_db.shutdown_into_store()?;
+        staging.shutdown_into_store()?;
 
+        Ok(watermark)
+    }
+    // Runs WITH the lock held. Short: stop worker, rename, catch up, install.
+    pub fn reindex_swap(&mut self, watermark: u64) -> io::Result<()> {
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
@@ -552,11 +553,12 @@ impl CorelamoDatabase {
 
         let index_root = self.root.join("index");
         std::fs::rename(&index_root, self.root.join("index.old"))?;
-        std::fs::rename(&temp_index_root, &index_root)?;
+        std::fs::rename(self.root.join("index.new"), &index_root)?;
+
+        let analyzer = Analyzer::new();
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let mut db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
-        // catch-up pass: index anything written after the watermark
         db.reindex_documents_after(watermark, self.options.runtime.indexing_batch_size)?;
 
         self.compaction_worker = if self.options.enable_background_compaction {
@@ -571,6 +573,7 @@ impl CorelamoDatabase {
 
         self.db = Some(db);
         std::fs::remove_dir_all(self.root.join("index.old")).ok();
+
         let _ = self.reindexing_tx.send(ReindexingStats {
             status: ReindexStatus::Complete,
             progress: 100,

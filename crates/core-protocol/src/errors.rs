@@ -37,6 +37,8 @@ pub enum CorelamoError {
 
     #[error("conflict: {0}")]
     DatabaseAlreadyRunning(String),
+    #[error("Busy:{0}")]
+    Busy(String),
 }
 
 //INFO: helpers to get all needed info from an error to http response
@@ -54,6 +56,7 @@ impl CorelamoError {
             CorelamoError::UnknownRole(_) => "unknown_role",
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
+            CorelamoError::Busy(_) => "Reindex is busy",
             
         }
     }
@@ -71,6 +74,7 @@ impl CorelamoError {
             CorelamoError::UnknownRole(_) => "Role Error",
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
+            CorelamoError::Busy(_) => "Service Unavailable",
         }
     }
 
@@ -87,6 +91,7 @@ impl CorelamoError {
             | CorelamoError::DatabaseNotRunning(msg)
             | CorelamoError::DatabaseAlreadyRunning(msg)
             | CorelamoError::UnknownRole(msg) => msg.clone(),
+            | CorelamoError::Busy(msg)=> msg.clone(),
         }
     }
 }

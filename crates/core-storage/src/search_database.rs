@@ -1,27 +1,25 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    io,
-};
+use std::{ collections::{ BTreeMap, HashSet }, io };
 
-use crate::document_store::{DocumentStore, StoredDocument};
+use crate::document_store::{ DocumentStore, StoredDocument };
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{ IndexPolicy, IndexedDocument, policy::IndexKind },
     lsm::{
         LsmIndex,
         index_worker::{
-            IndexCommand, IndexWorker, ReindexStatus, ReindexingStats, build_segments_parallel,
+            IndexCommand,
+            IndexWorker,
+            ReindexStatus,
+            ReindexingStats,
+            build_segments_parallel,
         },
         make_batches,
         snapshot::SharedIndexSnapshot,
     },
 };
 
-use core_protocol::{
-    errors::{DocFailure, FailReason},
-    format::Format,
-};
-use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use core_protocol::{ errors::{ DocFailure, FailReason }, format::Format };
+use core_query::{ Query, QueryExecutor, SearchHit, planner::QueryPlan };
 use indexmap::IndexMap;
 use tokio::sync::watch;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +146,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
     pub fn for_each_document(
         &self,
-        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
+        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>
     ) -> io::Result<()> {
         self.store.for_each_document(f)
     }
@@ -193,7 +191,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         inputs: Vec<DocumentInput>,
         batch_size: usize,
-        window_size: usize,
+        window_size: usize
     ) -> io::Result<InsertReport> {
         let mut pipeline = self.begin_import(batch_size, window_size);
 
@@ -282,7 +280,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn put_document_store_only_return_indexed(
         &mut self,
-        input: DocumentInput,
+        input: DocumentInput
     ) -> io::Result<IndexedDocument> {
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -311,8 +309,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         };
 
         if let Some(old_doc) = self.store.get(&external_id)? {
-            self.index_worker
-                .delete_document_wait(old_doc.internal_id)?;
+            self.index_worker.delete_document_wait(old_doc.internal_id)?;
         }
 
         let doc = StoredDocument {
@@ -332,8 +329,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
-            self.index_worker
-                .delete_document_wait(old_doc.internal_id)?;
+            self.index_worker.delete_document_wait(old_doc.internal_id)?;
         }
 
         self.store.delete(external_id)
@@ -353,7 +349,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_documents(
         &mut self,
         query: &Query,
-        xpath: u32,
+        xpath: u32
     ) -> io::Result<Vec<StoredDocument>> {
         let hits = self.search(query, xpath);
 
@@ -371,7 +367,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_hits(
         &mut self,
         query: &Query,
-        xpath: u32,
+        xpath: u32
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let hits = self.search(query, xpath);
 
@@ -395,7 +391,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         query: &Query,
         xpath: u32,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -407,7 +403,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_hits_all_fields_top_k(
         &mut self,
         query: &Query,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -421,7 +417,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_results_all_fields_top_k(
         &mut self,
         query: &Query,
-        k: usize,
+        k: usize
     ) -> io::Result<SearchDocumentResults> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -450,18 +446,20 @@ impl<S: DocumentStore> SearchDatabase<S> {
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
         offset: usize,
-        limit: usize,
+        limit: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
-        let requested_hits = offset.checked_add(limit).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "offset and limit exceed the supported range",
-            )
-        })?;
+        let requested_hits = offset
+            .checked_add(limit)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "offset and limit exceed the supported range"
+                )
+            })?;
 
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&snapshot, &self.analyzer);
@@ -482,7 +480,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             offset,
             limit,
             requested_hits,
-            hits.len(),
+            hits.len()
         );
 
         for (i, hit) in hits.iter().take(15).enumerate() {
@@ -498,7 +496,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     fn resolve_document_hits(
         &mut self,
         hits: Vec<SearchHit>,
-        return_fields: Option<&IndexMap<String, bool>>,
+        return_fields: Option<&IndexMap<String, bool>>
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let mut results = Vec::new();
 
@@ -565,7 +563,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn build_indexed_batches_from_store(
         &self,
-        batch_size: usize,
+        batch_size: usize
     ) -> io::Result<Vec<Vec<IndexedDocument>>> {
         let mut batches = Vec::new();
         let mut current = Vec::with_capacity(batch_size);
@@ -580,7 +578,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 }
 
                 Ok(())
-            }),
+            })
         )?;
 
         if !current.is_empty() {
@@ -599,7 +597,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         batch_size: usize,
         window_size: usize,
-        progress: &watch::Sender<ReindexingStats>,
+        progress: &watch::Sender<ReindexingStats>
     ) -> io::Result<()> {
         //reindexing stats
         let total = self.store.document_count() as u64;
@@ -622,14 +620,17 @@ impl<S: DocumentStore> SearchDatabase<S> {
         //kristians
         let batches = self.build_indexed_batches_from_store(batch_size)?;
         let started_at = std::time::Instant::now();
-        let mut calibrated_rate: Option<f64> = None;
+
         let mut done: u64 = 0;
         //kristians
         //process in windows?
         let mut iter = batches.into_iter().peekable();
         while iter.peek().is_some() {
             let window: Vec<_> = iter.by_ref().take(window_size).collect();
-            let doc_counts: Vec<u64> = window.iter().map(|batch| batch.len() as u64).collect();
+            let doc_counts: Vec<u64> = window
+                .iter()
+                .map(|batch| batch.len() as u64)
+                .collect();
             let segments = build_segments_parallel(self.analyzer.clone(), window);
             //reindexing stats
 
@@ -637,24 +638,18 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 self.index_worker.add_segment_wait(segment, doc_count)?;
                 done += doc_count;
             }
-            if calibrated_rate.is_none()
-                && (done >= 1000 || started_at.elapsed() >= std::time::Duration::from_secs(5))
-            {
-                let elapsed = started_at.elapsed().as_secs_f64();
-                if elapsed > 0.0 {
-                    calibrated_rate = Some((done as f64) / elapsed);
-                }
-            }
 
-            let pct = if total > 0 {
-                (((done as f64) / (total as f64)) * 100.0) as u8
-            } else {
-                0
+            let pct = if total > 0 { (((done as f64) / (total as f64)) * 100.0) as u8 } else { 0 };
+            let eta_seconds = {
+                let elapsed = started_at.elapsed().as_secs_f64();
+                if elapsed > 0.0 && done > 0 {
+                    let rate = (done as f64) / elapsed;
+                    let remaining = total.saturating_sub(done) as f64;
+                    Some((remaining / rate).max(0.0) as u64)
+                } else {
+                    None
+                }
             };
-            let eta_seconds = calibrated_rate.map(|rate| {
-                let remaining = total.saturating_sub(done) as f64;
-                (remaining / rate).max(0.0) as u64
-            });
 
             let _ = progress.send(ReindexingStats {
                 status: ReindexStatus::Reindexing,
@@ -679,7 +674,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn reindex_documents_after(
         &mut self,
         watermark_internal_id: u64,
-        batch_size: usize,
+        batch_size: usize
     ) -> io::Result<()> {
         let mut indexed_documents = Vec::new();
 
@@ -689,7 +684,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     indexed_documents.push(stored_document_to_indexed(doc, &self.policy));
                 }
                 Ok(())
-            }),
+            })
         )?;
 
         if indexed_documents.is_empty() {
@@ -697,7 +692,10 @@ impl<S: DocumentStore> SearchDatabase<S> {
         }
 
         let batches = make_batches(indexed_documents, batch_size);
-        let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+        let doc_counts: Vec<u64> = batches
+            .iter()
+            .map(|batch| batch.len() as u64)
+            .collect();
         let segments = build_segments_parallel(self.analyzer.clone(), batches);
 
         for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
@@ -730,7 +728,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
 fn visible_fields(
     doc: &StoredDocument,
     policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
+    resolved: Option<&IndexMap<String, bool>>
 ) -> BTreeMap<String, String> {
     doc.fields
         .iter()
@@ -742,7 +740,7 @@ fn visible_fields(
 fn should_include(
     path: &str,
     policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
+    resolved: Option<&IndexMap<String, bool>>
 ) -> bool {
     if let Some(rf) = resolved {
         let mut candidate = path;
@@ -762,8 +760,7 @@ fn should_include(
     }
 
     let top_level = path.split('/').next().unwrap_or(path);
-    policy
-        .fields
+    policy.fields
         .iter()
         .find(|f| f.name == top_level)
         .map(|f| f.list)
@@ -778,13 +775,10 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         } else {
             let external_id = input.external_id;
 
-            if self.db.store.get(&external_id)?.is_some() || !self.seen.insert(external_id.clone())
-            {
-                self.failures.push(DocFailure::with_id(
-                    input_index,
-                    external_id,
-                    FailReason::DuplicatePrimaryId,
-                ));
+            if self.db.store.get(&external_id)?.is_some() || !self.seen.insert(external_id.clone()) {
+                self.failures.push(
+                    DocFailure::with_id(input_index, external_id, FailReason::DuplicatePrimaryId)
+                );
 
                 return Ok(());
             }
@@ -837,7 +831,10 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         let batches = std::mem::take(&mut self.pending_batches);
 
-        let counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+        let counts: Vec<u64> = batches
+            .iter()
+            .map(|batch| batch.len() as u64)
+            .collect();
 
         let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
 

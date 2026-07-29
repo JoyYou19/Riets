@@ -65,6 +65,7 @@ fn error_to_status(err: &CorelamoError) -> StatusCode {
         CorelamoError::UnknownRole(_) => StatusCode::NOT_FOUND,
         CorelamoError::DatabaseAlreadyRunning(_) => StatusCode::CONFLICT,
         CorelamoError::DatabaseNotRunning(_) => StatusCode::CONFLICT,
+        CorelamoError::Busy(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
