@@ -56,14 +56,13 @@ impl MemoryDocumentStore {
         //te bija self::Default()
         Self {
             docs: BTreeMap::default(),
-            internal_to_external:BTreeMap::default(),
+            internal_to_external: BTreeMap::default(),
         }
     }
 }
 
 impl DocumentStore for MemoryDocumentStore {
     fn put(&mut self, doc: StoredDocument) -> std::io::Result<()> {
-       
         self.internal_to_external
             .insert(doc.internal_id, doc.external_id.clone());
 
@@ -73,7 +72,6 @@ impl DocumentStore for MemoryDocumentStore {
     }
 
     fn put_batch(&mut self, docs: Vec<StoredDocument>) -> std::io::Result<()> {
-       
         for doc in docs {
             self.internal_to_external
                 .insert(doc.internal_id, doc.external_id.clone());
@@ -93,7 +91,6 @@ impl DocumentStore for MemoryDocumentStore {
     }
 
     fn delete(&mut self, external_id: &str) -> std::io::Result<()> {
-       
         if let Some(doc) = self.docs.remove(external_id) {
             self.internal_to_external.remove(&doc.internal_id);
         }
