@@ -307,6 +307,9 @@ check "everything that has an a" 200 -X POST "$BASE_URL/api/databases/$DB/search
 check "empty brackets" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"rea?"}'
     check_json_bool "data should be 6" '(.data | length) == 6'
 
+check "shortened version check" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"confirme?"}'
+    check_json_bool "data should be 2" '(.data | length) == 2'
+
 #Wildcards combo seeding
 #...........
 check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -327,6 +330,10 @@ check "combo" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Ke
     check_json_bool "data should be 6" '(.data | length) == 6'
 check "combo" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"ch[au]*"}'
     check_json_bool "data should be 1" '(.data | length) == 1'
+
+section "Numeric"
+
+
 
 # ------------------------------------------------------------------
 # Cleanup
