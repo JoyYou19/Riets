@@ -49,7 +49,7 @@ fn timestamp(w: &mut dyn io::Write) -> io::Result<()>{
 pub fn db_logger(root: &Path, name: &str) -> Logger {
     let file = DailyLog::new(root.join("logs"), name)
         .unwrap_or_else(|e| panic!("Failed to open log file:{e}"));
-    let drain = slog_term::FullFormat::new(slog_term::PlainDecorator::new(file))
+    let drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
         .use_custom_timestamp(timestamp)
         .build();
     let drain = std::sync::Mutex::new(drain).fuse();
@@ -59,10 +59,10 @@ pub fn db_logger(root: &Path, name: &str) -> Logger {
 pub fn program_logger() -> (Logger, slog_async::AsyncGuard) {
     let file = DailyLog::new("logs", "program")
         .unwrap_or_else(|e| panic!("Failed to open log file: {e}"));
-    let file_drain = slog_term::FullFormat::new(slog_term::PlainDecorator::new(file))
+    let file_drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
         .use_custom_timestamp(timestamp)
         .build().fuse();
-    let term_drain = slog_term::FullFormat::new(slog_term::TermDecorator::new().build())
+    let term_drain = slog_term::CompactFormat::new(slog_term::TermDecorator::new().build())
         .build().fuse();
     let both = Duplicate::new(file_drain, term_drain).fuse();
     let (drain, guard) = slog_async::Async::new(both)
