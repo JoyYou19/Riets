@@ -501,6 +501,7 @@ dependencies = [
 name = "core-logs"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crc32fast",
  "slog",
  "slog-async",
