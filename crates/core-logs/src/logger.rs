@@ -1,5 +1,5 @@
 
-use std::{fs::{File, OpenOptions, write}, io::{self,Write}, path::{Path, PathBuf}};
+use std::{fs::{File, OpenOptions}, io::{self,Write}, path::{Path, PathBuf}};
 use slog::{Drain, Duplicate, Logger, o};
 use chrono::{Local,NaiveDate};
 

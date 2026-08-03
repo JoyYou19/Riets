@@ -218,15 +218,11 @@ impl CorelamoDatabase {
             match record {
                 WalRecord::Create(inputs) => {
                     info!(self.log, "WAL replay: Create"; "documents" => inputs.len());
-                    db
-                        .put_documents_parallel(
-                            inputs,
-                            self.options.runtime.indexing_batch_size,
-                            self.options.runtime.indexing_window_size
-                        )
-                        .map_err(|e|
-                            CorelamoError::Internal(format!("recovery apply failed: {e}"))
-                        )?;
+                    let _ = db.put_documents_parallel(
+                        inputs,
+                        self.options.runtime.indexing_batch_size,
+                        self.options.runtime.indexing_window_size
+                    );
                 }
                 WalRecord::Upsert(input) => {
                     info!(self.log, "WAL replay: Upsert"; "external_id" => &input.external_id);
@@ -248,11 +244,7 @@ impl CorelamoDatabase {
                     }
                 }
                 WalRecord::Delete { external_id } => {
-                    db
-                        .delete_document(&external_id)
-                        .map_err(|e|
-                            CorelamoError::Internal(format!("recovery apply failed: {e}"))
-                        )?;
+                    let _ = db.delete_document(&external_id);
                     info!(self.log, "WAL replay: Delete"; "external_id" => external_id);
                 }
                 WalRecord::Clear => {
@@ -364,9 +356,7 @@ impl CorelamoDatabase {
             let offset = self.wal
                 .append(&encoded)
                 .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
-            self.wal
-                .append(&encoded)
-                .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
+            
             info!(self.log, "WAL append";
                 "operation" => "create",
                 "documents" => inputs.len(),
@@ -463,7 +453,7 @@ impl CorelamoDatabase {
             }
         }
 
-        return result.map_err(CorelamoError::from);
+        result.map_err(CorelamoError::from)
     }
 
     //INFO: old one now we have parse_query()
