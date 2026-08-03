@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -30,7 +31,9 @@ use core_logs::logger;
 use slog::{Logger, error, info, warn};
 
 use crate::{
-    command_reponse_definitions::SearchCommand, metrics::DatabaseMetrics, options::DatabaseOptions,
+    command_reponse_definitions::{LookupCommand, SearchCommand},
+    metrics::DatabaseMetrics,
+    options::DatabaseOptions,
 };
 use indexmap::IndexMap;
 
@@ -133,7 +136,7 @@ impl CorelamoDatabase {
 
         if !policy_path.exists() {
             return Err(CorelamoError::NotFound(format!(
-                "no database found at {}",
+                "no policy found at {}, considering database to be corupted",
                 root.display()
             )));
         }
@@ -163,6 +166,15 @@ impl CorelamoDatabase {
     /// agrees, not which analyzer they agree on.
     fn analyzer(&self) -> Analyzer {
         Analyzer::new()
+    }
+
+    pub fn lookup(
+        &mut self,
+        command: &LookupCommand,
+    ) -> Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>), CorelamoError> {
+        self.db_mut()?
+            .lookup_documents(&command.ids, command.return_fields.as_ref())
+            .map_err(CorelamoError::from)
     }
 
     pub fn start(&mut self) -> Result<(), CorelamoError> {
@@ -752,4 +764,3 @@ pub struct DatabaseStats {
     /// Denominator behind `reindexing.progress`, so a client can show "n of m".
     pub reindexing_total: u64,
 }
-

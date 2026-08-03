@@ -11,8 +11,8 @@ use core_auth::{Permission, Principal};
 use core_core::{
     CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
-        Command, DeleteCommand, LoginResponse, LookupCommand, LookupResponse, RetrieveCommand,
-        RetrieveResponse, SearchCommand, SearchResponse,
+        Command, DeleteCommand, LoginResponse, RetrieveCommand, RetrieveResponse, SearchCommand,
+        SearchResponse,
     },
 };
 use slog::{error, info, o};
@@ -52,6 +52,21 @@ struct UpdatePasswordRequest {
 #[derive(Deserialize)]
 struct UpdateRolesRequest {
     roles: Vec<String>,
+}
+
+fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
+    if name.is_empty()
+        || name.starts_with('.')
+        || name.ends_with(".corrupted")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
+        return Err(CorelamoError::InvalidData(format!(
+            "invalid database name '{name}'"
+        )));
+    }
+    Ok(())
 }
 
 fn require_body(body: &str) -> Result<&str, CorelamoError> {
@@ -245,37 +260,6 @@ pub async fn retrieve_handler(
     HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
-pub async fn lookup_handler(
-    State(state): State<AppState>,
-    Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-    body: String,
-) -> Response {
-    let command = match LookupCommand::parse(&body, ctx.format) {
-        Ok(cmd) => cmd,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    let (found, not_found) = match handle.lookup(command).await {
-        Ok(r) => r,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    let hit_count = found.len();
-    let resp = match LookupResponse::from_hits(found, not_found) {
-        Ok(r) => r,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
-}
-
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -354,7 +338,6 @@ pub async fn insert_handler(
     outcome.succeed_many(report.inserted);
     outcome.fail_many(parse_failures);
 
-    // storage indexes into the parsed vec; map back to the client's input array
     for mut failure in report.failures {
         failure.index = failure.index.and_then(|i| doc_indices.get(i).copied());
         outcome.fail_doc(failure);
@@ -672,6 +655,11 @@ pub async fn create_database_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
+
+    if let Err(e) = validate_db_name(&db_name) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     {
         let dbs = match state.databases.read() {
             Ok(g) => g,
@@ -683,6 +671,7 @@ pub async fn create_database_handler(
                 .into_response();
             }
         };
+
         if dbs.contains_key(&db_name) {
             return HttpError::from_corelamo(
                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
@@ -810,6 +799,7 @@ pub async fn delete_database_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
+
     let handle = {
         let mut dbs = match state.databases.write() {
             Ok(g) => g,
@@ -821,29 +811,30 @@ pub async fn delete_database_handler(
                 .into_response();
             }
         };
-        match dbs.remove(&db_name) {
-            Some(h) => h,
-            None => {
-                return HttpError::from_corelamo(
-                    CorelamoError::NotFound(format!("database '{db_name}' not found")),
-                    &ctx,
-                )
-                .into_response();
-            }
-        }
-    }; //guard dropped
+        dbs.remove(&db_name)
+    };
 
-    if let Err(e) = handle.shutdown().await {
+    let db_path = state.databases_dir.join(&db_name);
+
+    if let Some(handle) = handle {
+        if let Err(e) = handle.shutdown().await {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("failed to shutdown database '{db_name}': {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    } else if !db_path.exists() {
         return HttpError::from_corelamo(
-            CorelamoError::Internal(format!("failed to shutdown database '{db_name}': {e}")),
+            CorelamoError::NotFound(format!("database '{db_name}' not found")),
             &ctx,
         )
         .into_response();
     }
-    drop(handle); //last Sender gone
 
-    let db_path = state.databases_dir.join(&db_name);
-    let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
+    let path_for_task = db_path.clone();
+    let removed =
+        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&path_for_task)).await;
 
     match removed {
         Ok(Ok(())) => {
@@ -886,6 +877,7 @@ pub async fn stats_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
+
     let stats = handle.stats().await;
     match stats {
         Ok(stats) => {
@@ -1122,6 +1114,121 @@ pub async fn restart_database_handler(
     }
 }
 
+pub async fn recover_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    let log = slog_scope::logger().new(o!("components" => "handlers"));
+    if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let base_name = db_name
+        .strip_suffix(".corrupted")
+        .unwrap_or(&db_name)
+        .to_string();
+    let corrupted_path = state.databases_dir.join(format!("{base_name}.corrupted"));
+    let target_path = state.databases_dir.join(&base_name);
+
+    {
+        let dbs = match state.databases.read() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        if dbs.contains_key(&base_name) {
+            return HttpError::from_corelamo(
+                CorelamoError::AlreadyExists(format!("database '{base_name}' is already loaded")),
+                &ctx,
+            )
+            .into_response();
+        }
+    }
+
+    if !corrupted_path.exists() {
+        return HttpError::from_corelamo(
+            CorelamoError::NotFound(format!("no corrupted database '{base_name}' to recover")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    // 1. Health check IN PLACE — no rename, so a still-broken db just stays quarantined.
+    let check_path = corrupted_path.clone();
+    match tokio::task::spawn_blocking(move || CorelamoDatabase::load(&check_path)).await {
+        Ok(Ok(_)) => {} // healthy — promote it below
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(
+                CorelamoError::DatabaseCorrupted(format!(
+                    "database '{base_name}' is still broken: {e}"
+                )),
+                &ctx,
+            )
+            .into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("recover check panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    }
+
+    // 2. It's healthy: rename out of quarantine, then load at the real path.
+    if let Err(e) = std::fs::rename(&corrupted_path, &target_path) {
+        return HttpError::from_corelamo(
+            CorelamoError::Internal(format!("failed to un-quarantine '{base_name}': {e}")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let load_path = target_path.clone();
+    let db = match tokio::task::spawn_blocking(move || CorelamoDatabase::load(&load_path)).await {
+        Ok(Ok(db)) => db,
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("failed to load recovered '{base_name}': {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("recover load panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let (handle, _join) = db_actor::spawn_db_actor(db, base_name.clone());
+    {
+        let mut dbs = match state.databases.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        dbs.insert(base_name.clone(), handle);
+    }
+
+    info!(log, "database recovered"; "name" => %base_name);
+    HttpOk::new(format!("database '{base_name}' recovered"), &ctx).into_response()
+}
+
 pub async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
@@ -1146,14 +1253,29 @@ pub async fn list_databases_handler(
             .collect()
     };
 
-    let count = handles.len();
-
-    let mut entries = Vec::with_capacity(count);
+    let mut entries = Vec::with_capacity(handles.len());
     for (name, handle) in handles {
         let running = handle.is_running().await.unwrap_or(false);
-        entries.push(json!({ "name": name, "running": running }));
+        entries.push(json!({ "name": name, "status": "ok", "running": running }));
     }
 
+    if let Ok(dir) = std::fs::read_dir(&state.databases_dir) {
+        for entry in dir.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            if dir_name.ends_with(".corrupted") {
+                entries.push(json!({
+                    "name": dir_name,
+                    "status": "corrupted",
+                    "running": false,
+                }));
+            }
+        }
+    }
+
+    let count = entries.len();
     HttpOk::with_data(
         format!("{count} database(s)"),
         json!({ "databases": entries }),
@@ -1161,6 +1283,7 @@ pub async fn list_databases_handler(
     )
     .into_response()
 }
+
 pub async fn create_user_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
