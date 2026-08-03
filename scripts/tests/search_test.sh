@@ -113,24 +113,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   [fields.weight]
   min = 100
   max = 100
-
-  [[fields]]
-  name = "number"
-  xpath = 1
-  index = "Number"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-
-  [[fields]]
-  name = "date"
-  xpath = 1
-  index = "Date"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
   '
 
 check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
