@@ -7,7 +7,6 @@ pub struct UserId(pub String);
 pub struct Principal {
     pub id: UserId,
     pub roles: HashSet<String>,
-
 }
 
 impl Principal {
@@ -15,7 +14,6 @@ impl Principal {
         Self {
             id: UserId(id.into()),
             roles: HashSet::new(),
-            
         }
     }
 

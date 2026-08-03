@@ -149,6 +149,53 @@ pub struct DeleteCommand {
     pub ids: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LookupCommand {
+    pub ids: Vec<String>,
+    pub return_fields: Option<IndexMap<String, bool>>,
+}
+
+impl Command for LookupCommand {
+    fn from_json(body: &str) -> Result<Self, CorelamoError> {
+        serde_json::from_str(body).map_err(CorelamoError::from)
+    }
+}
+
+pub struct LookupResponse {
+    docs: Vec<(String, FieldNode)>,
+    not_found: Vec<String>,
+}
+
+impl LookupResponse {
+    pub fn from_hits(
+        docs: Vec<(String, BTreeMap<String, String>)>,
+        not_found: Vec<String>,
+    ) -> Result<Self, CorelamoError> {
+        let mut trees = Vec::with_capacity(docs.len());
+        for (id, fields) in docs {
+            trees.push((id, unflatten(fields)?));
+        }
+        Ok(Self {
+            docs: trees,
+            not_found,
+        })
+    }
+}
+
+impl ResponseData for LookupResponse {
+    fn to_json(&self) -> Result<Value, CorelamoError> {
+        let documents: Vec<Value> = self
+            .docs
+            .iter()
+            .map(|(id, tree)| json!({ "id": id, "data": tree_to_json(tree) }))
+            .collect();
+        Ok(json!({
+            "documents": documents,
+            "not_found": self.not_found,
+        }))
+    }
+}
+
 impl Command for DeleteCommand {
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
         let ids: Vec<String> = serde_json::from_str(body)
