@@ -9,9 +9,7 @@ use core_index::{
     document::{IndexPolicy, IndexedDocument, policy::IndexKind},
     lsm::{
         LsmIndex,
-        index_worker::{
-            IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel,
-        },
+        index_worker::{IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel},
         make_batches,
         snapshot::SharedIndexSnapshot,
     },
@@ -207,82 +205,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         pipeline.finish()
     }
 
-    // pub fn put_documents_parallel(
-    //     &mut self,
-    //     inputs: Vec<DocumentInput>,
-    //     batch_size: usize,
-    // ) -> io::Result<InsertReport> {
-    //     use std::time::Instant;
-    //     let total_started = Instant::now();
-    //     let started = Instant::now();
-    //
-    //     let mut stored_documents = Vec::with_capacity(inputs.len());
-    //     let mut indexed_documents = Vec::with_capacity(inputs.len());
-    //
-    //     let mut failures = Vec::new();
-    //     let mut seen: HashSet<String> = HashSet::new();
-    //
-    //     //INFO: bik porno ar Id/AutoID un kaa logika strada
-    //     //FIX: izdomat to logiku lidz galam piem kas notiek ja ir auto 1 2 3 un tad kads ieliiek
-    //     //id:7 yk?
-    //     for (index, input) in inputs.into_iter().enumerate() {
-    //         let (internal_id, external_id) = if input.external_id.is_empty() {
-    //             let internal_id = self.allocate_internal_id();
-    //             (internal_id, internal_id.to_string())
-    //         } else {
-    //             let external_id = input.external_id;
-    //             if self.store.get(&external_id)?.is_some() || !seen.insert(external_id.clone()) {
-    //                 failures.push(DocFailure::with_id(
-    //                     index,
-    //                     external_id,
-    //                     FailReason::DuplicatePrimaryId,
-    //                 ));
-    //                 continue;
-    //             }
-    //             (self.allocate_internal_id(), external_id)
-    //         };
-    //
-    //         let doc = StoredDocument {
-    //             external_id,
-    //             internal_id,
-    //             source: input.source,
-    //             fields: input.fields,
-    //             format: input.format,
-    //         };
-    //
-    //         indexed_documents.push(stored_document_to_indexed(&doc, &self.policy));
-    //         stored_documents.push(doc);
-    //     }
-    //
-    //     let inserted = stored_documents.len() as u32;
-    //     // tracing::info!(time=?started.elapsed(), "Document conversion time");
-    //     let started = Instant::now();
-    //     self.store.put_batch(stored_documents)?;
-    //     // tracing::info!(time=?started.elapsed(),"Document store batch write time");
-    //
-    //     let started = Instant::now();
-    //     let batches = make_batches(indexed_documents, batch_size);
-    //     // tracing::info!(time=?started.elapsed(),batches=%batches.len(), "Batch splitting" );
-    //     let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
-    //     let started = Instant::now();
-    //     let segments = build_segments_parallel(self.analyzer.clone(), batches);
-    //     /*tracing::info!(
-    //         time=?started.elapsed(),
-    //         segments=%segments.len(),
-    //         "Parallel segment build",
-    //     );
-    //     */
-    //     let started = Instant::now();
-    //     for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
-    //         self.index_worker.add_segment_wait(segment, doc_count)?;
-    //     }
-    //     // tracing::info!(time=?started.elapsed(), "Segment publish/write");
-    //
-    //     // tracing::info!(total_time=?total_started.elapsed(),"TOTAL Parallel document putting" );
-    //
-    //     Ok(InsertReport { inserted, failures })
-    // }
-
     pub fn put_document_store_only_return_indexed(
         &mut self,
         input: DocumentInput,
@@ -386,7 +308,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     external_id: doc.external_id.clone(),
                     internal_id: doc.internal_id,
                     score: hit.score,
-                    fields: visible_fields(&doc, &self.policy, None),
+                    fields: visible_fields(&doc.fields, &self.policy, None),
                 });
             }
         }
@@ -446,6 +368,26 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let hits = self.resolve_document_hits(top_hits, None)?;
 
         Ok(SearchDocumentResults { total_hits, hits })
+    }
+
+    //lookup-retrieves+filters document based on request
+    pub fn lookup_documents(
+        &mut self,
+        ids: &[String],
+        return_fields: Option<&IndexMap<String, bool>>,
+    ) -> io::Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>)> {
+        let mut found = Vec::new();
+        let mut not_found = Vec::new();
+        for id in ids {
+            match self.get_document(id)? {
+                Some(doc) => found.push((
+                    doc.external_id,
+                    visible_fields(&doc.fields, &self.policy, return_fields),
+                )),
+                None => not_found.push(id.clone()),
+            }
+        }
+        Ok((found, not_found))
     }
 
     pub fn search_document_hits_plan(
@@ -513,7 +455,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     external_id: doc.external_id.clone(),
                     internal_id: doc.internal_id,
                     score: hit.score,
-                    fields: visible_fields(&doc, &self.policy, return_fields),
+                    fields: visible_fields(&doc.fields, &self.policy, return_fields),
                 });
             }
         }
@@ -567,8 +509,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
         todo!("needs LsmINdex reset/clear before rebuilding")
     }
-
-    
 
     pub fn shutdown_into_store(self) -> io::Result<S> {
         let _inex = self.index_worker.shutdown()?;
@@ -686,11 +626,11 @@ fn publish_window(
 }
 
 fn visible_fields(
-    doc: &StoredDocument,
+    fields: &BTreeMap<String, String>,
     policy: &IndexPolicy,
     resolved: Option<&IndexMap<String, bool>>,
 ) -> BTreeMap<String, String> {
-    doc.fields
+    fields
         .iter()
         .filter(|(path, _)| should_include(path, policy, resolved))
         .map(|(path, value)| (path.clone(), value.clone()))

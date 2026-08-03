@@ -1,5 +1,6 @@
 use core_core::{
-    CorelamoDatabase, DatabaseOptions, DatabaseStats, command_reponse_definitions::SearchCommand,
+    CorelamoDatabase, DatabaseOptions, DatabaseStats,
+    command_reponse_definitions::{LookupCommand, SearchCommand},
 };
 use core_index::{document::IndexPolicy, lsm::index_worker::ReindexGuard};
 use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
@@ -13,6 +14,7 @@ use core_storage::{
 use slog::{error, info, warn};
 use slog_scope::logger;
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     thread,
 };
@@ -26,6 +28,11 @@ pub enum DbCommand {
     Search {
         cmd: SearchCommand,
         reply: Reply<Vec<SearchDocumentHit>>,
+    },
+    Lookup {
+        cmd: LookupCommand,
+        //                 id             fields                not found
+        reply: Reply<(Vec<(String, BTreeMap<String, String>)>, Vec<String>)>,
     },
     GetPolicy {
         reply: Reply<IndexPolicy>,
@@ -167,6 +174,13 @@ impl DbHandle {
         self.call(|reply| DbCommand::Shutdown { reply }).await
     }
 
+    pub async fn lookup(
+        &self,
+        cmd: LookupCommand,
+    ) -> Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>), CorelamoError> {
+        self.call(|reply| DbCommand::Lookup { cmd, reply }).await
+    }
+
     pub async fn stats(&self) -> Result<DatabaseStats, CorelamoError> {
         self.call(|reply| DbCommand::Status { reply }).await
     }
@@ -227,6 +241,10 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 db.search(&cmd)
                     .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")))
             }),
+
+            DbCommand::Lookup { cmd, reply } => {
+                with_running(&db, name, reply, |db| db.lookup(&cmd))
+            }
 
             DbCommand::Insert { docs, reply } => with_running(&db, name, reply, |db| {
                 db.put_documents_parallel(docs)

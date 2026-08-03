@@ -3,6 +3,7 @@ pub enum Permission {
     //basic
     Search,
     Retrieve,
+    Lookup,
     Insert,
     Upsert,
     Delete,
@@ -38,6 +39,7 @@ impl Permission {
             "Retrieve" => Some(Permission::Retrieve),
             "Insert" => Some(Permission::Insert),
             "Delete" => Some(Permission::Delete),
+            "Lookup" => Some(Permission::Lookup),
             "CreateDatabase" => Some(Permission::CreateDatabase),
             "ListDatabase" => Some(Permission::ListDatabase),
             "DeleteDatabase" => Some(Permission::DeleteDatabase),
@@ -61,4 +63,3 @@ impl Permission {
         }
     }
 }
-

@@ -1,4 +1,7 @@
-use crate::{Permission, PolicyStore};
+use crate::{
+    Permission::{self, Lookup},
+    PolicyStore,
+};
 
 pub fn default_policy() -> PolicyStore {
     let mut policy = PolicyStore::new();
@@ -16,6 +19,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::Replace,
             Permission::GetLogs,
             Permission::ClearLogs,
+            Permission::Lookup,
             //databases
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
