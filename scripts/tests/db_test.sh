@@ -247,7 +247,7 @@ check "set policy nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/
   '
 check "set empty policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d ''
-check "set invalid toml policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set invalid toml policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ACorelamoError::Internal(format!("failed to get stats: {e}")),DMIN_TOKEN" \
   -d '
   [[fields]]
   name = id
@@ -482,11 +482,77 @@ check "set policy two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-policy" -H 
   min = 100
   max = 100
   '
-
+#
 
 section "Config"
 
-check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "get config no database" 404 -X GET "$BASE_URL/api/databases/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "get config empty database" 404 -X GET "$BASE_URL/api/databases//get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "get config nonexistent database" 404 -X GET "$BASE_URL/api/databases/yo/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "get config one" 200 -X GET "$BASE_URL/api/databases/$DB1/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "get config two" 200 -X GET "$BASE_URL/api/databases/$DB2/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "set empty config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d ''
+check "set invalid toml config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d 'this shit invalid'
+check "set invalid config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '
+  enable_background_compaction = hujz
+  bootable = nezinu
+
+  [runtime]
+  flush_threshold = 1000000000000000000000000000
+  indexing_batch_size = yes
+  indexing_window_size = 10yo000
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
+check "set repeating fields config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '
+  enable_background_compaction = true
+  bootable = false
+  bootable = true
+
+  [runtime]
+  flush_threshold = 100000
+  indexing_batch_size = 100000
+  indexing_window_size = 10000
+  indexing_window_size = 1
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
+check "set config missing field" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '
+  enable_background_compaction = true
+  bootable = false
+
+  [runtime]
+  flush_threshold = 100000
+  indexing_window_size = 10000
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
+check "set config one" 200 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false
@@ -504,9 +570,31 @@ check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Co
   secs = 1
   nanos = 0
   '
+check "set config two" 200 -X PUT "$BASE_URL/api/databases/$DB2/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '
+  enable_background_compaction = true
+  bootable = false
 
+  [runtime]
+  flush_threshold = 100000
+  indexing_batch_size = 100000
+  indexing_window_size = 10000
+
+  [runtime.compaction]
+  max_segments_per_compaction = 8
+  compact_when_segments_at_least = 16
+
+  [compaction_interval]
+  secs = 1
+  nanos = 0
+  '
+#
 
 section "Delete-database"
+
+check "delete no database" 404 -X DELETE "$BASE_URL/api/databases/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "delete database empty" 404 -X DELETE "$BASE_URL/api/databases//delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "delete nonexistent database" 404 -X DELETE "$BASE_URL/api/databases/yo/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "delete database one" 200 -X DELETE "$BASE_URL/api/databases/$DB1/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "delete database two" 200 -X DELETE "$BASE_URL/api/databases/$DB2/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
