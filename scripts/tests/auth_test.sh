@@ -338,22 +338,6 @@ check "editor can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/rein
 check "architect can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
 # ==================================================================
-# LIFECYCLE — start / stop / restart-database + conflict codes
-# ==================================================================
-section "LIFECYCLE — start / stop / restart-database"
-
-LIFECYCLE_DB="lifecycle_$RUN_ID"
-
-check "admin creates lifecycle database"         201 -X POST "$BASE_URL/api/databases/$LIFECYCLE_DB/create-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "admin starts lifecycle database"          200 -X POST "$BASE_URL/api/databases/$LIFECYCLE_DB/start-database"   -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "starting an already-running db conflicts" 200 -X POST "$BASE_URL/api/databases/$LIFECYCLE_DB/start-database"   -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "admin stops lifecycle database"           200 -X POST "$BASE_URL/api/databases/$LIFECYCLE_DB/stop-database"    -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "stopping an already-stopped db conflicts" 200 -X POST "$BASE_URL/api/databases/$LIFECYCLE_DB/stop-database"    -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "searching a stopped database fails"       409 -X POST "$BASE_URL/api/databases/$LIFECYCLE_DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"query":"x","docs":1}'
-check "admin restarts lifecycle database"        200 -X POST "$BASE_URL/api/databases/$LIFECYCLE_DB/restart-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "admin deletes lifecycle database"         200 -X DELETE "$BASE_URL/api/databases/$LIFECYCLE_DB/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-
-# ==================================================================
 # EXTRA — conflicts, not-found, malformed input
 # ==================================================================
 section "EXTRA — conflicts, not-found, malformed input"

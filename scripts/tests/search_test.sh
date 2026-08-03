@@ -113,6 +113,24 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   [fields.weight]
   min = 100
   max = 100
+
+  [[fields]]
+  name = "number"
+  xpath = 1
+  index = "Number"
+  list = true
+  [fields.weight]
+  min = 100
+  max = 100
+
+  [[fields]]
+  name = "date"
+  xpath = 1
+  index = "Date"
+  list = true
+  [fields.weight]
+  min = 100
+  max = 100
   '
 
 check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -240,10 +258,6 @@ check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB
 check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"confirmed a real\""}'
     check_json_bool "data should be 1" '(.data | length) == 1'
 
-section "Exact match"
-
-
-
 section "OR"
 
 check "non existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{database management}"}'
@@ -326,13 +340,33 @@ check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H
   -d '{"title":"cpu"}'
 #...........
 
-check "combo" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"c?[au]*"}'
+check "combo1" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"c?[au]*"}'
     check_json_bool "data should be 6" '(.data | length) == 6'
-check "combo" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"ch[au]*"}'
+check "combo2" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"ch[au]*"}'
     check_json_bool "data should be 1" '(.data | length) == 1'
+
 
 section "Numeric"
 
+#Numeric seeding
+#...........
+check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"club"}'
+check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"crane"}'
+  check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"chapter"}'
+check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"country"}'
+check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"cruel"}'
+  check "insert seed document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"cpu"}'
+#...........
+
+
+section "Exact match"
+#te mosh check kko ne data, piem konkretu id
 
 
 # ------------------------------------------------------------------
