@@ -286,6 +286,11 @@ impl CorelamoDatabase {
             db.shutdown()?;
             info!(self.log, "database stopped");
         }
+         self.wal.reset()
+        .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+        self.wal.write_checkpoint(0)
+            .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
+        info!(self.log, "WAL reset on clean shutdown");
         Ok(())
     }
 
