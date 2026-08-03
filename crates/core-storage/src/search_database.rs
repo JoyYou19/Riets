@@ -21,6 +21,8 @@ use core_protocol::{
 };
 use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
 use indexmap::IndexMap;
+use serde::{Serialize,Deserialize};
+use bincode::{Encode,Decode};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,
@@ -89,7 +91,7 @@ pub enum DatabasePowerButtonOutcome {
     Nochange,
 }
 
-#[derive(Debug)]
+#[derive(Debug,Serialize,Deserialize,Clone,PartialEq,Encode,Decode)]
 pub struct DocumentInput {
     pub external_id: String,
     pub fields: BTreeMap<String, String>, //Don't know if this can be HashMap instead

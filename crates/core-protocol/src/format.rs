@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
-
+use bincode::{Decode, Encode};
 use crate::errors::CorelamoError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[repr(u8)]
 pub enum Format {
     JSON = 1,
