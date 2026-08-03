@@ -10,25 +10,26 @@ use core_index::{
     document::IndexPolicy,
     lsm::{
         LsmIndex,
-        index_worker::{IndexingStats, Phase, ProgressSnapshot, ReindexProgress, ReindexingStats},
+        index_worker::{ IndexingStats, Phase, ProgressSnapshot, ReindexProgress, ReindexingStats },
         worker::CompactionWorker,
     },
 };
 use core_protocol::errors::CorelamoError;
 use core_query::{
     Query,
-    planner::{QueryPlan, QueryPlanner},
+    planner::{ QueryPlan, QueryPlanner },
     query_string_parser::parse_and_analyze,
 };
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
-    document_store::{DocumentStore, StoredDocument},
-    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
+    document_store::{ DocumentStore, StoredDocument },
+    search_database::{ DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit },
+    wal::{ Wal, WalRecord },
 };
 
-use core_logs::logger;
-use slog::{Logger, error, info, warn};
+use core_logs::{ logger };
+use slog::{ Logger, error, info, warn };
 
 use crate::{
     command_reponse_definitions::{LookupCommand, SearchCommand},
@@ -74,10 +75,9 @@ pub struct CorelamoDatabase {
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     compaction_worker: Option<CompactionWorker>,
     metrics: DatabaseMetrics,
-    /// Shared with the actor and the reindex thread. Never taken, never swapped,
-    /// so progress stays readable even while `db` is None.
     progress: Arc<ReindexProgress>,
     log: Logger,
+    wal: Wal,
 }
 
 impl CorelamoDatabase {
@@ -95,13 +95,18 @@ impl CorelamoDatabase {
             .to_string();
 
         if root.exists() {
-            return Err(CorelamoError::AlreadyExists(format!(
-                "database at {} already exists",
-                root.display()
-            )));
+            return Err(
+                CorelamoError::AlreadyExists(
+                    format!("database at {} already exists", root.display())
+                )
+            );
         }
         std::fs::create_dir_all(&root)?;
+        //logging
         let log = logger::db_logger(&root, &name);
+        let wal = Wal::open(root.join("wal.log"), core_storage::wal::SyncMode::SyncEach).map_err(|e|
+            CorelamoError::Internal(format!("failed to open WAL: {e}"))
+        )?;
 
         let policy_path = root.join("policy.toml");
         let policy = IndexPolicy::default_document();
@@ -121,6 +126,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             progress: ReindexProgress::new(),
             log,
+            wal,
         })
     }
 
@@ -143,7 +149,11 @@ impl CorelamoDatabase {
 
         let policy = IndexPolicy::load(&policy_path)?;
         let options = DatabaseOptions::load_or_default(Self::config_full_path_from(&root));
+        //logging
         let log = logger::db_logger(&root, &name);
+        let wal = Wal::open(root.join("wal.log"), core_storage::wal::SyncMode::SyncEach).map_err(|e|
+            CorelamoError::Internal(format!("failed to open WAL: {e}"))
+        )?;
 
         Ok(Self {
             root,
@@ -155,6 +165,7 @@ impl CorelamoDatabase {
             metrics: DatabaseMetrics::default(),
             progress: ReindexProgress::new(),
             log,
+            wal,
         })
     }
 
@@ -183,19 +194,80 @@ impl CorelamoDatabase {
         }
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
-
         let analyzer = self.analyzer();
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let store = BinaryDocumentStore::open(&store_path)?;
+        let mut db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
 
-        let db = SearchDatabase::with_policy(store, index, analyzer, self.policy.clone());
-
+        //recovery
+        let checkpoint = self.wal
+            .read_checkpoint()
+            .map_err(|e| CorelamoError::Internal(format!("failed to read WAL checkpoint: {e}")))?;
+        let records = self.wal
+            .replay_from(checkpoint)
+            .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
+        info!(self.log, "WAL recovery started";
+            "checkpoint" => checkpoint,
+            "durable_offset" => self.wal.durable_offset(),
+            "records_to_replay" => records.len(),
+);
+        for (_offset, payload) in records {
+            let (record, _): (WalRecord, usize) = bincode
+                ::decode_from_slice(&payload, bincode::config::standard())
+                .map_err(|e| CorelamoError::Internal(format!("failed to decode WAL record: {e}")))?;
+            match record {
+                WalRecord::Create(inputs) => {
+                    info!(self.log, "WAL replay: Create"; "documents" => inputs.len());
+                    db
+                        .put_documents_parallel(
+                            inputs,
+                            self.options.runtime.indexing_batch_size,
+                            self.options.runtime.indexing_window_size
+                        )
+                        .map_err(|e|
+                            CorelamoError::Internal(format!("recovery apply failed: {e}"))
+                        )?;
+                }
+                WalRecord::Upsert(input) => {
+                    info!(self.log, "WAL replay: Upsert"; "external_id" => &input.external_id);
+                    db
+                        .upsert_document(input, IndexMode::StoreAndIndex)
+                        .map_err(|e|
+                            CorelamoError::Internal(format!("recovery apply failed: {e}"))
+                        )?;
+                }
+                WalRecord::Modify { external_id, payload } => {
+                    info!(self.log, "WAL replay: Modify"; "external_id" => external_id);
+                    // decide: does Modify mean upsert-by-id? if so:
+                    if let Some(doc) = payload.into_iter().next() {
+                        db
+                            .upsert_document(doc, IndexMode::StoreAndIndex)
+                            .map_err(|e|
+                                CorelamoError::Internal(format!("recovery apply failed: {e}"))
+                            )?;
+                    }
+                }
+                WalRecord::Delete { external_id } => {
+                    db
+                        .delete_document(&external_id)
+                        .map_err(|e|
+                            CorelamoError::Internal(format!("recovery apply failed: {e}"))
+                        )?;
+                    info!(self.log, "WAL replay: Delete"; "external_id" => external_id);
+                }
+                WalRecord::Clear => {
+                    // skip -- clear was already applied before this WAL record was written
+                }
+            }
+        }
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
+            Some(
+                CompactionWorker::start(
+                    db.index_sender(),
+                    self.options.runtime.compaction,
+                    self.options.compaction_interval
+                )
+            )
         } else {
             None
         };
@@ -220,8 +292,7 @@ impl CorelamoDatabase {
     /// Same work as `stop`; kept as a distinct entry point for the actor's
     /// terminal command so the two can never drift apart.
     pub fn shutdown(&mut self) -> io::Result<()> {
-        self.stop()
-            .map_err(|e| io::Error::other(format!("shutdown failed: {e}")))
+        self.stop().map_err(|e| io::Error::other(format!("shutdown failed: {e}")))
     }
 
     pub fn restart(&mut self) -> Result<(), CorelamoError> {
@@ -244,11 +315,13 @@ impl CorelamoDatabase {
 
     fn start_compaction_worker(&mut self, db: &SearchDatabase<BinaryDocumentStore>) {
         self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-            ))
+            Some(
+                CompactionWorker::start(
+                    db.index_sender(),
+                    self.options.runtime.compaction,
+                    self.options.compaction_interval
+                )
+            )
         } else {
             None
         };
@@ -270,7 +343,7 @@ impl CorelamoDatabase {
 
     pub fn put_documents_parallel(
         &mut self,
-        inputs: Vec<DocumentInput>,
+        inputs: Vec<DocumentInput>
     ) -> io::Result<InsertReport> {
         let started = std::time::Instant::now();
         let count = inputs.len();
@@ -278,6 +351,23 @@ impl CorelamoDatabase {
         let window_size = self.options.runtime.indexing_window_size;
 
         let result = (|| {
+            //WALis
+            let record = WalRecord::Create(inputs.clone());
+            let encoded = bincode
+                ::encode_to_vec(&record, bincode::config::standard())
+                .map_err(|e| io::Error::other(format!("wal encode failed: {e}")))?;
+            let offset = self.wal
+                .append(&encoded)
+                .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
+            self.wal
+                .append(&encoded)
+                .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
+            info!(self.log, "WAL append";
+                "operation" => "create",
+                "documents" => inputs.len(),
+                "offset" => offset,
+                "durable_offset" => self.wal.durable_offset(),
+            );
             let db = self.db_mut()?;
             let report = db.put_documents_parallel(inputs, batch_size, window_size)?;
             // NOTE: this flush is why segment count tracked HTTP request count
@@ -292,7 +382,8 @@ impl CorelamoDatabase {
         self.metrics.indexing_total_time += elapsed;
 
         match &result {
-            Ok(_) => info!(self.log, "indexed batch";
+            Ok(_) =>
+                info!(self.log, "indexed batch";
                 "documents" => count,
                 "batch_size" => batch_size,
                 "elapsed_ms" => elapsed.as_millis(),
@@ -319,7 +410,7 @@ impl CorelamoDatabase {
     //INFO: changed the function call to take a SearchCommand not just a string of query
     pub fn search(
         &mut self,
-        command: &SearchCommand,
+        command: &SearchCommand
     ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         let started = std::time::Instant::now();
         //TODO: make the docs 10 default configurable
@@ -388,12 +479,25 @@ impl CorelamoDatabase {
     //
 
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
+        let record = WalRecord::Delete { external_id: external_id.to_string() };
+        let encoded = bincode
+            ::encode_to_vec(&record, bincode::config::standard())
+            .map_err(|e| io::Error::other(format!("wal encode failed: {e}")))?;
+        self.wal
+            .append(&encoded)
+            .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
         self.db_mut()?.delete_document(external_id)
     }
 
     pub fn upsert_document(&mut self, input: DocumentInput) -> io::Result<()> {
-        self.db_mut()?
-            .upsert_document(input, IndexMode::StoreAndIndex)
+        let record = WalRecord::Upsert(input.clone());
+        let encoded = bincode
+            ::encode_to_vec(&record, bincode::config::standard())
+            .map_err(|e| io::Error::other(format!("wal encode failed: {e}")))?;
+        self.wal
+            .append(&encoded)
+            .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
+        self.db_mut()?.upsert_document(input, IndexMode::StoreAndIndex)
     }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
@@ -401,15 +505,11 @@ impl CorelamoDatabase {
     }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
-        self.db
-            .as_mut()
-            .ok_or_else(|| io::Error::other("database is closed"))
+        self.db.as_mut().ok_or_else(|| io::Error::other("database is closed"))
     }
 
     fn db_ref(&self) -> io::Result<&SearchDatabase<BinaryDocumentStore>> {
-        self.db
-            .as_ref()
-            .ok_or_else(|| io::Error::other("database is closed"))
+        self.db.as_ref().ok_or_else(|| io::Error::other("database is closed"))
     }
 
     pub fn search_plan(
@@ -417,10 +517,9 @@ impl CorelamoDatabase {
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
         offset: usize,
-        limit: usize,
+        limit: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?
-            .search_document_hits_plan(plan, return_fields, offset, limit)
+        self.db_mut()?.search_document_hits_plan(plan, return_fields, offset, limit)
     }
 
     pub fn analyze_query_term(&self, term: &str) -> io::Result<Option<String>> {
@@ -448,8 +547,7 @@ impl CorelamoDatabase {
     //FIX: wee need some way to filter the logs please like last:x or date:
     pub fn get_logs(&self) -> Result<String, CorelamoError> {
         let log_dir = self.root.join("logs");
-        let name = self
-            .root
+        let name = self.root
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
@@ -459,7 +557,8 @@ impl CorelamoDatabase {
             return Ok(String::new());
         }
 
-        std::fs::read_to_string(&log_file)
+        std::fs
+            ::read_to_string(&log_file)
             .map_err(|e| CorelamoError::Internal(format!("failed to read logs: {e}")))
     }
 
@@ -471,8 +570,7 @@ impl CorelamoDatabase {
             std::fs::create_dir_all(&logs_dir)?;
         }
         //fresh start
-        let name = self
-            .root
+        let name = self.root
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
@@ -484,15 +582,20 @@ impl CorelamoDatabase {
     }
 
     pub fn clear(&mut self) -> io::Result<()> {
+        let record = WalRecord::Clear;
+        let encoded = bincode
+            ::encode_to_vec(&record, bincode::config::standard())
+            .map_err(|e| io::Error::other(format!("failed to encode WAL record: {e}")))?;
+        self.wal
+            .append(&encoded)
+            .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
         // Shut the old database down BEFORE removing its files, otherwise the
         // live handle keeps writing to an unlinked inode (or the removal fails
         // outright on Windows).
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
         }
-        if let Some(db) = self.db.take()
-            && let Err(e) = db.shutdown()
-        {
+        if let Some(db) = self.db.take() && let Err(e) = db.shutdown() {
             warn!(self.log, "clear: shutdown of old database failed"; "error" => %e);
         }
 
@@ -510,6 +613,8 @@ impl CorelamoDatabase {
 
         self.start_compaction_worker(&db);
         self.db = Some(db);
+        self.wal.reset().map_err(|e| io::Error::other(format!("wal reset failed: {e}")))?;
+        info!(self.log, "WAL reset after clear");
         info!(self.log, "database cleared");
         Ok(())
     }
@@ -634,33 +739,34 @@ impl CorelamoDatabase {
         let read_store = BinaryDocumentStore::open(params.root.join("documents.bin"))?;
         let watermark = read_store.max_internal_id();
 
-        let new_index =
-            LsmIndex::persistent(&temp_index_root, params.options.runtime.flush_threshold)?;
+        let new_index = LsmIndex::persistent(
+            &temp_index_root,
+            params.options.runtime.flush_threshold
+        )?;
         let mut staging = SearchDatabase::with_policy(
             read_store,
             new_index,
             params.analyzer.clone(),
-            params.policy.clone(),
+            params.policy.clone()
         );
 
         staging.reindex_existing_documents(
             params.options.runtime.indexing_batch_size,
             params.options.runtime.indexing_window_size,
-            params.progress.as_ref(),
+            params.progress.as_ref()
         )?;
         staging.shutdown_into_store()?;
 
         // Guard against a staging build that flushed nothing: renaming an empty
         // index over a working one is silent data loss.
-        let bytes: u64 = std::fs::read_dir(&temp_index_root)?
+        let bytes: u64 = std::fs
+            ::read_dir(&temp_index_root)?
             .filter_map(Result::ok)
             .filter_map(|e| e.metadata().ok())
             .map(|m| m.len())
             .sum();
         if bytes == 0 && watermark > 0 {
-            return Err(io::Error::other(
-                "staging index is empty after build, refusing to swap",
-            ));
+            return Err(io::Error::other("staging index is empty after build, refusing to swap"));
         }
 
         Ok(watermark)
@@ -694,10 +800,7 @@ impl CorelamoDatabase {
     }
 
     fn reindex_swap_inner(&mut self, watermark: u64) -> io::Result<()> {
-        let old_db = self
-            .db
-            .take()
-            .ok_or_else(|| io::Error::other("database is closed"))?;
+        let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
         let store = old_db.shutdown_into_store()?;
 
         let index_root = self.root.join("index");
@@ -720,7 +823,7 @@ impl CorelamoDatabase {
         db.reindex_documents_after(
             watermark,
             self.options.runtime.indexing_batch_size,
-            self.progress.as_ref(),
+            self.progress.as_ref()
         )?;
 
         self.start_compaction_worker(&db);
@@ -734,10 +837,7 @@ impl CorelamoDatabase {
         let index_root = self.root.join("index");
         let old = self.root.join("index.old");
 
-        if !index_root.exists()
-            && old.exists()
-            && let Err(e) = std::fs::rename(&old, &index_root)
-        {
+        if !index_root.exists() && old.exists() && let Err(e) = std::fs::rename(&old, &index_root) {
             error!(self.log, "could not restore index.old"; "error" => %e);
         }
         std::fs::remove_dir_all(self.root.join("index.new")).ok();
@@ -745,7 +845,8 @@ impl CorelamoDatabase {
         if self.db.is_none() {
             match self.start() {
                 Ok(()) => warn!(self.log, "database restored after failed reindex"),
-                Err(e) => error!(self.log, "database did NOT recover after failed reindex";
+                Err(e) =>
+                    error!(self.log, "database did NOT recover after failed reindex";
                     "error" => %e),
             }
         }
