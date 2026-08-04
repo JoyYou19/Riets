@@ -1,13 +1,8 @@
 use rayon::prelude::*;
 use std::{
-    io,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, AtomicU8, Ordering},
-        mpsc::{self, Receiver, Sender},
-    },
-    thread::{self, JoinHandle},
-    time::Instant,
+    io, sync::{
+        Arc, Mutex, atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering}, mpsc::{self, Receiver, Sender},
+    }, thread::{self, JoinHandle}, time::Instant,
 };
 
 use crate::{
@@ -529,6 +524,7 @@ pub struct ReindexProgress {
     total: AtomicU64,
     done: AtomicU64,
     started: Mutex<Option<Instant>>,
+    cancel: AtomicBool,
     first_add:Mutex<Option<Instant>>
 }
 
@@ -539,7 +535,8 @@ impl ReindexProgress {
             total: AtomicU64::new(0),
             done: AtomicU64::new(0),
             started: Mutex::new(None),
-            first_add: Mutex::new(None)
+            first_add: Mutex::new(None),
+            cancel: AtomicBool::new(false)
         })
     }
 
@@ -585,6 +582,13 @@ impl ReindexProgress {
 
     pub fn set_phase(&self, phase: Phase) {
         self.phase.store(phase as u8, Ordering::Release);
+    }
+    pub fn request_cancel(&self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
     }
 
     pub fn phase(&self) -> Phase {

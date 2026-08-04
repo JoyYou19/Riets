@@ -22,7 +22,6 @@ pub enum SyncMode {
     SyncEach, // fsync before every acknowledgment (default, safe)
     Manual, // caller must invoke flush(); appends are not durable until then
 }
-
 struct Inner {
     file: File,
     durable_offset: u64, // end of last fsynced record; readers may not pass this
@@ -53,7 +52,7 @@ pub struct Wal {
 impl Wal {
     pub fn open(path: impl AsRef<Path>, mode: SyncMode) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new().create(true).read(true).write(true).open(&path)?;
+        let file = OpenOptions::create(&mut OpenOptions::new(), true).read(true).write(true).open(&path)?;
         let mut inner = Inner {
             file,
             durable_offset: 0,

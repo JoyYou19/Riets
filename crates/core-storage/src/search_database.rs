@@ -10,7 +10,6 @@ use core_index::{
     lsm::{
         LsmIndex,
         index_worker::{IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel},
-        make_batches,
         snapshot::SharedIndexSnapshot,
     },
 };
@@ -83,6 +82,12 @@ pub struct ReplaceReport {
 pub struct DeleteReport {
     pub deleted: u32,
     pub failures: Vec<DocFailure>,
+}
+
+//Norcha check
+pub enum PendingOp{
+    Index { doc: IndexedDocument },
+    Tombstone { internal_id: u64 },
 }
 
 //start stop database (already stopped/started)
@@ -523,6 +528,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
         window_size: usize,
         progress: &ReindexProgress,
     ) -> io::Result<()> {
+
+        
         // Shared borrows so the closure can publish while the store iterates.
         let store = &self.store;
         let analyzer = &self.analyzer;
@@ -533,7 +540,11 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let mut pending: Vec<Vec<IndexedDocument>> = Vec::with_capacity(window_size);
 
         store.for_each_document(&mut |doc| {
+            if progress.is_cancelled() {
+                return Err(io::Error::other("reindex cancelled"));
+            }
             current.push(stored_document_to_indexed(doc, policy));
+
 
             if current.len() >= batch_size {
                 pending.push(std::mem::replace(
@@ -547,6 +558,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             }
             Ok(())
         })?;
+        
 
         if !current.is_empty() {
             pending.push(current);
@@ -555,38 +567,24 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
         self.flush()
     }
-    pub fn reindex_documents_after(
-        &mut self,
-        watermark_internal_id: u64,
-        batch_size: usize,
-        progress: &ReindexProgress,
-    ) -> io::Result<()> {
-        let mut indexed_documents = Vec::new();
-
-        self.store.for_each_document(
-            &mut (|doc| {
-                if doc.internal_id > watermark_internal_id {
-                    indexed_documents.push(stored_document_to_indexed(doc, &self.policy));
-                }
-                Ok(())
-            }),
-        )?;
-
-        if indexed_documents.is_empty() {
-            return Ok(());
-        }
-
-        let batches = make_batches(indexed_documents, batch_size);
-        let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
-        let segments = build_segments_parallel(self.analyzer.clone(), batches);
-
-        for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
-            self.index_worker.add_segment_wait(segment, doc_count)?;
-            progress.add(doc_count);
-        }
-
-        self.flush()
+    //Norcha check
+    /// Converts a stored document using the current policy, for queueing.
+    pub fn to_indexed(&self, doc: &StoredDocument) -> IndexedDocument {
+        stored_document_to_indexed(doc, &self.policy)
     }
+
+    pub fn apply_pending(&mut self, ops: Vec<PendingOp>) -> io::Result<()> {
+        for op in ops {
+            match op {
+                PendingOp::Index { doc } => self.index_worker.add_indexed_document_wait(doc)?,
+                PendingOp::Tombstone { internal_id } => {
+                    self.index_worker.delete_document_wait(internal_id)?
+                }
+            }
+        }
+        Ok(())
+    }
+    
 }
 
 fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> IndexedDocument {
