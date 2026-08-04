@@ -23,9 +23,11 @@ use core_query::{
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
-    document_store::{ DocumentStore, StoredDocument },
-    search_database::{ DocumentInput, IndexMode, InsertReport,PendingOp, SearchDatabase, SearchDocumentHit },
-    wal::{ Wal, WalRecord },
+    document_store::{DocumentStore, StoredDocument},
+    search_database::{
+        DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase, SearchDocumentHit,
+    },
+    wal::{Wal, WalRecord},
 };
 
 use core_logs::logger;
@@ -393,7 +395,11 @@ impl CorelamoDatabase {
         if result.is_ok() {
             for id in ids {
                 let doc = match self.db_mut() {
-                    Ok(db) => db.get_document(&id).ok().flatten().map(|d| db.to_indexed(&d)),
+                    Ok(db) => db
+                        .get_document(&id)
+                        .ok()
+                        .flatten()
+                        .map(|d| db.to_indexed(&d)),
                     Err(_) => None,
                 };
                 if let Some(doc) = doc {
@@ -519,7 +525,10 @@ impl CorelamoDatabase {
             .append(&encoded)
             .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
 
-        let old = self.db_mut()?.get_document(external_id)?.map(|d| d.internal_id);
+        let old = self
+            .db_mut()?
+            .get_document(external_id)?
+            .map(|d| d.internal_id);
         self.db_mut()?.delete_document(external_id)?;
         if let Some(internal_id) = old {
             self.queue_op(PendingOp::Tombstone { internal_id });
@@ -536,9 +545,13 @@ impl CorelamoDatabase {
             .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
 
         let external = input.external_id.clone();
-        let old = self.db_mut()?.get_document(&external)?.map(|d| d.internal_id);
+        let old = self
+            .db_mut()?
+            .get_document(&external)?
+            .map(|d| d.internal_id);
 
-        self.db_mut()?.upsert_document(input, IndexMode::StoreAndIndex)?;
+        self.db_mut()?
+            .upsert_document(input, IndexMode::StoreAndIndex)?;
 
         if let Some(internal_id) = old {
             self.queue_op(PendingOp::Tombstone { internal_id });
@@ -898,7 +911,10 @@ impl CorelamoDatabase {
     }
 
     fn reindex_swap_inner(&mut self, _watermark: u64) -> io::Result<()> {
-        let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
+        let old_db = self
+            .db
+            .take()
+            .ok_or_else(|| io::Error::other("database is closed"))?;
         let store = old_db.shutdown_into_store()?;
 
         let index_root = self.root.join("index");
@@ -921,7 +937,6 @@ impl CorelamoDatabase {
         let ops = std::mem::take(&mut self.pending_ops);
         db.apply_pending(ops)?;
         db.flush()?;
-
 
         self.start_compaction_worker(&db);
         self.db = Some(db);
