@@ -196,6 +196,11 @@ impl ResponseData for LookupResponse {
     }
 }
 
+#[derive(Deserialize)]
+pub struct GetLogsRequest {
+    pub date: Option<String>,
+}
+
 impl Command for DeleteCommand {
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
         let ids: Vec<String> = serde_json::from_str(body)

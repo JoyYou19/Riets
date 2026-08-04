@@ -288,6 +288,37 @@ check "retrieve multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve
 check "retrieve mixed real notreal" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '["7", "100", "1", "5", "bruh", "0"]'
 
+# ------------------------------------------------------------------
+# Lookup
+# ------------------------------------------------------------------
+
+section "Lookup"
+
+check "lookup nothing" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":[""],"return_fields": {"number":true}}'
+check "lookup no doc" 400 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" 
+check "lookup bad doc" 400 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d 'nezkkas'
+
+check "lookup non existing" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["nenenenene"]}'
+check "lookup multiple non existing" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["nenenenene","jajajajjaj"]}'
+#  -d '{"ids":["nenenenene","jajajajjaj"],"return_fields": {"id":false,"number":true}}'
+
+check "lookup one real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["7"],"return_fields": {"id":false,"number":true}}'
+check "lookup text id" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["bruh"]}'
+check "lookup autoincremented" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["13"]}'
+check "lookup multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["1","2","3"]}'
+check "lookup multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["1","1"]}'
+check "lookup mixed real notreal" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"ids":["7","100","1","5","bruh","0"]}'
+
 
 # ------------------------------------------------------------------
 # Delete

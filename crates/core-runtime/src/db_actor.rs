@@ -46,6 +46,7 @@ pub enum DbCommand {
         reply: Reply<()>,
     },
     GetLogs {
+        date: Option<String>,
         reply: Reply<String>,
     },
     ClearLogs {
@@ -144,8 +145,8 @@ impl DbHandle {
         self.call(|reply| DbCommand::Clear { reply }).await
     }
 
-    pub async fn get_logs(&self) -> Result<String, CorelamoError> {
-        self.call(|reply| DbCommand::GetLogs { reply }).await
+    pub async fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
+        self.call(|reply| DbCommand::GetLogs { date, reply }).await
     }
 
     pub async fn clear_logs(&self) -> Result<(), CorelamoError> {
@@ -381,10 +382,10 @@ fn actor_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &s
                 let _ = reply.send(result);
             }
 
-            DbCommand::GetLogs { reply } => {
+            DbCommand::GetLogs { date, reply } => {
                 let result = {
                     let db = db.lock().expect("db actor mutex poisoned");
-                    db.get_logs()
+                    db.get_logs(date)
                 };
                 let _ = reply.send(result);
             }

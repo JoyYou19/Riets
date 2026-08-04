@@ -11,8 +11,8 @@ use core_auth::{Permission, Principal};
 use core_core::{
     CorelamoDatabase, DatabaseOptions,
     command_reponse_definitions::{
-        Command, DeleteCommand, LoginResponse, LookupCommand, LookupResponse, RetrieveCommand,
-        RetrieveResponse, SearchCommand, SearchResponse,
+        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, LookupResponse,
+        RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
     },
 };
 use slog::{error, info, o};
@@ -406,6 +406,7 @@ pub async fn get_logs_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -418,8 +419,24 @@ pub async fn get_logs_handler(
         }
     };
 
-    match handle.get_logs().await {
-        Ok(m) => HttpOk::raw(StatusCode::OK, "text/plain", m, &ctx),
+    let date = if body.trim().is_empty() {
+        None
+    } else {
+        //insane smukais porno lai dabutu date: "" aaraa
+        match serde_json::from_str::<GetLogsRequest>(body.trim()) {
+            Ok(req) => req.date,
+            Err(e) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::InvalidData(format!("invalid get-logs request: {e}")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    };
+
+    match handle.get_logs(date).await {
+        Ok(msg) => HttpOk::raw(StatusCode::OK, "text/plain", msg, &ctx),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -923,7 +940,7 @@ pub async fn stats_handler(
         }
         //TODO: upate once stats gets updated with errors
         Err(e) => HttpError::from_corelamo(
-            CorelamoError::Internal(format!("failed to get stats: {e}")),
+            CorelamoError::Conflict(format!("failed to get stats: {e}")),
             &ctx,
         )
         .into_response(),
