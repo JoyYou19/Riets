@@ -28,10 +28,10 @@ pub trait DocumentStore {
 
         Ok(())
     }
-    fn get(&mut self, external_id: &str) -> std::io::Result<Option<StoredDocument>>;
+    fn get(&self, external_id: &str) -> std::io::Result<Option<StoredDocument>>;
     fn delete(&mut self, external_id: &str) -> std::io::Result<()>;
     fn max_internal_id(&self) -> u64;
-    fn get_by_internal_id(&mut self, internal_id: u64) -> std::io::Result<Option<StoredDocument>>;
+    fn get_by_internal_id(&self, internal_id: u64) -> std::io::Result<Option<StoredDocument>>;
 
     fn document_count(&self) -> usize;
     fn contains(&self, external_id: &str) -> io::Result<bool>;
@@ -82,7 +82,7 @@ impl DocumentStore for MemoryDocumentStore {
         Ok(())
     }
 
-    fn get(&mut self, external_id: &str) -> std::io::Result<Option<StoredDocument>> {
+    fn get(&self, external_id: &str) -> std::io::Result<Option<StoredDocument>> {
         Ok(self.docs.get(external_id).cloned())
     }
 
@@ -106,7 +106,7 @@ impl DocumentStore for MemoryDocumentStore {
             .unwrap_or(0)
     }
 
-    fn get_by_internal_id(&mut self, internal_id: u64) -> std::io::Result<Option<StoredDocument>> {
+    fn get_by_internal_id(&self, internal_id: u64) -> std::io::Result<Option<StoredDocument>> {
         let Some(external_id) = self.internal_to_external.get(&internal_id) else {
             return Ok(None);
         };

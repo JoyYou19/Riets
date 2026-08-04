@@ -148,7 +148,7 @@ impl DocumentStore for BinaryDocumentStore {
         Ok(self.docs.contains_key(external_id))
     }
 
-    fn get(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
+    fn get(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         Ok(self.docs.get(external_id).cloned())
     }
 
@@ -170,7 +170,7 @@ impl DocumentStore for BinaryDocumentStore {
             .unwrap_or(0)
     }
 
-    fn get_by_internal_id(&mut self, internal_id: u64) -> io::Result<Option<StoredDocument>> {
+    fn get_by_internal_id(&self, internal_id: u64) -> io::Result<Option<StoredDocument>> {
         let Some(external_id) = self.internal_to_external.get(&internal_id) else {
             return Ok(None);
         };

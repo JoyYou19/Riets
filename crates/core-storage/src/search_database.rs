@@ -14,14 +14,14 @@ use core_index::{
     },
 };
 
+use bincode::{Decode, Encode};
 use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
 use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
 use indexmap::IndexMap;
-use serde::{Serialize,Deserialize};
-use bincode::{Encode,Decode};
+use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,
@@ -96,7 +96,7 @@ pub enum DatabasePowerButtonOutcome {
     Nochange,
 }
 
-#[derive(Debug,Serialize,Deserialize,Clone,PartialEq,Encode,Decode)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Encode, Decode)]
 pub struct DocumentInput {
     pub external_id: String,
     pub fields: BTreeMap<String, String>, //Don't know if this can be HashMap instead
@@ -271,7 +271,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.store.delete(external_id)
     }
 
-    pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
+    pub fn get_document(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         self.store.get(external_id)
     }
 
@@ -379,7 +379,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     //lookup-retrieves+filters document based on request
     pub fn lookup_documents(
-        &mut self,
+        &self,
         ids: &[String],
         return_fields: Option<&IndexMap<String, bool>>,
     ) -> io::Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>)> {
@@ -398,7 +398,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     pub fn search_document_hits_plan(
-        &mut self,
+        &self,
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
         offset: usize,
@@ -450,7 +450,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     fn resolve_document_hits(
-        &mut self,
+        &self,
         hits: Vec<SearchHit>,
         return_fields: Option<&IndexMap<String, bool>>,
     ) -> io::Result<Vec<SearchDocumentHit>> {
