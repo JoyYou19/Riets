@@ -14,6 +14,7 @@ impl RequestTimer {
     }
 }
 
+//WARN: in database.rs i use this with mutex to avoid &mut self, might need improvement idk
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DatabaseMetrics {
     pub search_requests: u64,
