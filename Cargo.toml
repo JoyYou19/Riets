@@ -16,7 +16,7 @@ members = [
   # "crates/core-admin",
   # "crates/core-migration",
   "crates/core-logs",
-  "creates/core-backup"]
+  "creates/core-backup", "core-backup"]
 
 [workspace.package]
 edition = "2024"
