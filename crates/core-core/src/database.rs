@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use core_index::{
@@ -23,9 +23,11 @@ use core_query::{
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
-    document_store::{ DocumentStore, StoredDocument },
-    search_database::{ DocumentInput, IndexMode, InsertReport,PendingOp, SearchDatabase, SearchDocumentHit },
-    wal::{ Wal, WalRecord },
+    document_store::{DocumentStore, StoredDocument},
+    search_database::{
+        DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase, SearchDocumentHit,
+    },
+    wal::{Wal, WalRecord},
 };
 
 use core_logs::logger;
@@ -74,7 +76,7 @@ pub struct CorelamoDatabase {
     options: DatabaseOptions,
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     compaction_worker: Option<CompactionWorker>,
-    metrics: DatabaseMetrics,
+    metrics: Mutex<DatabaseMetrics>,
     progress: Arc<ReindexProgress>,
     log: Logger,
     wal: Wal,
@@ -124,8 +126,8 @@ impl CorelamoDatabase {
             policy,
             options,
             db: None,
+            metrics: Mutex::new(DatabaseMetrics::default()),
             compaction_worker: None,
-            metrics: DatabaseMetrics::default(),
             progress: ReindexProgress::new(),
             log,
             wal,
@@ -164,7 +166,7 @@ impl CorelamoDatabase {
             options,
             db: None,
             compaction_worker: None,
-            metrics: DatabaseMetrics::default(),
+            metrics: Mutex::new(DatabaseMetrics::default()),
             progress: ReindexProgress::new(),
             log,
             wal,
@@ -183,10 +185,10 @@ impl CorelamoDatabase {
     }
 
     pub fn lookup(
-        &mut self,
+        &self,
         command: &LookupCommand,
     ) -> Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>), CorelamoError> {
-        self.db_mut()?
+        self.db_ref()?
             .lookup_documents(&command.ids, command.return_fields.as_ref())
             .map_err(CorelamoError::from)
     }
@@ -393,7 +395,11 @@ impl CorelamoDatabase {
         if result.is_ok() {
             for id in ids {
                 let doc = match self.db_mut() {
-                    Ok(db) => db.get_document(&id).ok().flatten().map(|d| db.to_indexed(&d)),
+                    Ok(db) => db
+                        .get_document(&id)
+                        .ok()
+                        .flatten()
+                        .map(|d| db.to_indexed(&d)),
                     Err(_) => None,
                 };
                 if let Some(doc) = doc {
@@ -403,8 +409,14 @@ impl CorelamoDatabase {
         }
 
         let elapsed = started.elapsed();
-        self.metrics.indexing_requests += 1;
-        self.metrics.indexing_total_time += elapsed;
+        {
+            let mut m = self.metrics.lock().unwrap();
+            m.indexing_requests += 1;
+            m.indexing_total_time += elapsed;
+            if result.is_err() {
+                m.indexing_errors += 1;
+            }
+        }
 
         match &result {
             Ok(_) => info!(self.log, "indexed batch";
@@ -413,7 +425,6 @@ impl CorelamoDatabase {
                 "elapsed_ms" => elapsed.as_millis(),
             ),
             Err(e) => {
-                self.metrics.indexing_errors += 1;
                 error!(self.log, "indexing failed";
                     "documents" => count,
                     "batch_size" => batch_size,
@@ -432,10 +443,7 @@ impl CorelamoDatabase {
     }
 
     //INFO: changed the function call to take a SearchCommand not just a string of query
-    pub fn search(
-        &mut self,
-        command: &SearchCommand,
-    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+    pub fn search(&self, command: &SearchCommand) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         let started = std::time::Instant::now();
         //TODO: make the docs 10 default configurable
         let limit = command.docs.unwrap_or(10);
@@ -457,8 +465,14 @@ impl CorelamoDatabase {
         })();
 
         let elapsed = started.elapsed();
-        self.metrics.search_requests += 1;
-        self.metrics.search_total_time += elapsed;
+        {
+            let mut m = self.metrics.lock().unwrap();
+            m.search_requests += 1;
+            m.search_total_time += elapsed;
+            if result.is_err() {
+                m.search_errors += 1;
+            }
+        }
 
         match &result {
             Ok(hits) => {
@@ -471,7 +485,6 @@ impl CorelamoDatabase {
                 );
             }
             Err(e) => {
-                self.metrics.search_errors += 1;
                 error!(self.log, "search failed";
                     "query" => &command.query,
                     "offset" => offset,
@@ -512,7 +525,10 @@ impl CorelamoDatabase {
             .append(&encoded)
             .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
 
-        let old = self.db_mut()?.get_document(external_id)?.map(|d| d.internal_id);
+        let old = self
+            .db_mut()?
+            .get_document(external_id)?
+            .map(|d| d.internal_id);
         self.db_mut()?.delete_document(external_id)?;
         if let Some(internal_id) = old {
             self.queue_op(PendingOp::Tombstone { internal_id });
@@ -529,9 +545,13 @@ impl CorelamoDatabase {
             .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
 
         let external = input.external_id.clone();
-        let old = self.db_mut()?.get_document(&external)?.map(|d| d.internal_id);
+        let old = self
+            .db_mut()?
+            .get_document(&external)?
+            .map(|d| d.internal_id);
 
-        self.db_mut()?.upsert_document(input, IndexMode::StoreAndIndex)?;
+        self.db_mut()?
+            .upsert_document(input, IndexMode::StoreAndIndex)?;
 
         if let Some(internal_id) = old {
             self.queue_op(PendingOp::Tombstone { internal_id });
@@ -546,8 +566,8 @@ impl CorelamoDatabase {
         Ok(())
     }
 
-    pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
-        self.db_mut()?.get_document(external_id)
+    pub fn get_document(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
+        self.db_ref()?.get_document(external_id)
     }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
@@ -563,13 +583,13 @@ impl CorelamoDatabase {
     }
 
     pub fn search_plan(
-        &mut self,
+        &self,
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
         offset: usize,
         limit: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {
-        self.db_mut()?
+        self.db_ref()?
             .search_document_hits_plan(plan, return_fields, offset, limit)
     }
 
@@ -737,7 +757,7 @@ impl CorelamoDatabase {
             document_count: db.document_count(),
             segment_count: db.segment_count()?,
             background_compaction_enabled: self.compaction_worker.is_some(),
-            metrics: self.metrics.clone(),
+            metrics: self.metrics.lock().unwrap().clone(),
             indexing,
             reindexing: snapshot.into(),
             reindexing_total: snapshot.total,
@@ -891,7 +911,10 @@ impl CorelamoDatabase {
     }
 
     fn reindex_swap_inner(&mut self, _watermark: u64) -> io::Result<()> {
-        let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
+        let old_db = self
+            .db
+            .take()
+            .ok_or_else(|| io::Error::other("database is closed"))?;
         let store = old_db.shutdown_into_store()?;
 
         let index_root = self.root.join("index");
@@ -914,7 +937,6 @@ impl CorelamoDatabase {
         let ops = std::mem::take(&mut self.pending_ops);
         db.apply_pending(ops)?;
         db.flush()?;
-
 
         self.start_compaction_worker(&db);
         self.db = Some(db);
