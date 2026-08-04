@@ -530,3 +530,36 @@ pub fn spawn_backup_actor(
 
             info!(log, "Backup actor started"; "backup_dir" => %back
 
+in this approach, the backup_handler function is called whenever the WAL is flushed. It takes two boolean parameters: wal_flushed and clean_database_stop, to determine the type of backup to perform.
+
+If wal_flushed is true, indicating that the WAL threshold has been reached, the perform_full_backup function is called to create a full backup of the entire database file.
+
+If clean_database_stop is true, indicating a clean database shutdown, the perform_incremental_backup function is called to create an incremental backup by copying the relevant WAL files.
+
+The perform_full_backup function copies the entire database file to the backup location, along with necessary metadata such as the timestamp and backup type. It also deletes old WAL files that are no longer needed for incremental backups.
+
+
+fn backup_handler(wal_flushed: bool, clean_database_stop: bool) {
+    if wal_flushed {
+        // WAL threshold reached, perform a full backup
+        perform_full_backup();
+    }
+    
+    if clean_database_stop {
+        // Clean database stop, perform an incremental backup
+        perform_incremental_backup();
+    }
+}
+
+fn perform_full_backup() {
+    // Copy the entire database file to the backup location
+    // Include necessary metadata (e.g., timestamp, backup type)
+    // Delete old WAL files that are no longer needed for incremental backups
+}
+
+fn perform_incremental_backup() {
+    // Identify the WAL files that contain changes since the last backup
+    // Copy those WAL files to the backup location
+    // Include necessary metadata (e.g., timestamp, backup type, WAL file range)
+    // Update the backup catalog to track the incremental backup
+}
