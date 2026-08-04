@@ -23,9 +23,9 @@ use core_query::{
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
-    document_store::{DocumentStore, StoredDocument},
-    search_database::{DocumentInput, IndexMode, InsertReport, SearchDatabase, SearchDocumentHit},
-    wal::{Wal, WalRecord},
+    document_store::{ DocumentStore, StoredDocument },
+    search_database::{ DocumentInput, IndexMode, InsertReport,PendingOp, SearchDatabase, SearchDocumentHit },
+    wal::{ Wal, WalRecord },
 };
 
 use core_logs::logger;
@@ -78,9 +78,13 @@ pub struct CorelamoDatabase {
     progress: Arc<ReindexProgress>,
     log: Logger,
     wal: Wal,
+    pending_ops: Vec<PendingOp>,
 }
 
 impl CorelamoDatabase {
+    //Norcha paskaties
+    const MAX_PENDING_OPS: usize = 500_000;
+
     fn config_full_path_from(root: &Path) -> std::path::PathBuf {
         root.join("config.toml")
     }
@@ -125,6 +129,7 @@ impl CorelamoDatabase {
             progress: ReindexProgress::new(),
             log,
             wal,
+            pending_ops: Vec::new(),
         })
     }
 
@@ -163,6 +168,7 @@ impl CorelamoDatabase {
             progress: ReindexProgress::new(),
             log,
             wal,
+            pending_ops: Vec::new(),
         })
     }
 
@@ -347,6 +353,13 @@ impl CorelamoDatabase {
         let batch_size = self.options.runtime.indexing_batch_size;
         let window_size = self.options.runtime.indexing_window_size;
 
+        // Captured before `inputs` is consumed below.
+        let ids: Vec<String> = if self.progress.phase().is_running() {
+            inputs.iter().map(|i| i.external_id.clone()).collect()
+        } else {
+            Vec::new()
+        };
+
         let result = (|| {
             //WALis
             let record = WalRecord::Create(inputs.clone());
@@ -369,8 +382,25 @@ impl CorelamoDatabase {
             // exactly. Durability is already guaranteed by stop/shutdown; drop
             // this call if you would rather let the memtable threshold govern.
             db.flush()?;
+            if let Err(e) = self.wal.write_checkpoint(offset) {
+                warn!(self.log, "checkpoint write failed"; "error" => %e);
+            }
             Ok(report)
         })();
+
+        // Queue for replay against the new index, outside the closure so the
+        // mutable borrow of `self` has ended.
+        if result.is_ok() {
+            for id in ids {
+                let doc = match self.db_mut() {
+                    Ok(db) => db.get_document(&id).ok().flatten().map(|d| db.to_indexed(&d)),
+                    Err(_) => None,
+                };
+                if let Some(doc) = doc {
+                    self.queue_op(PendingOp::Index { doc });
+                }
+            }
+        }
 
         let elapsed = started.elapsed();
         self.metrics.indexing_requests += 1;
@@ -481,7 +511,13 @@ impl CorelamoDatabase {
         self.wal
             .append(&encoded)
             .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
-        self.db_mut()?.delete_document(external_id)
+
+        let old = self.db_mut()?.get_document(external_id)?.map(|d| d.internal_id);
+        self.db_mut()?.delete_document(external_id)?;
+        if let Some(internal_id) = old {
+            self.queue_op(PendingOp::Tombstone { internal_id });
+        }
+        Ok(())
     }
 
     pub fn upsert_document(&mut self, input: DocumentInput) -> io::Result<()> {
@@ -491,8 +527,23 @@ impl CorelamoDatabase {
         self.wal
             .append(&encoded)
             .map_err(|e| io::Error::other(format!("failed to append WAL record: {e}")))?;
-        self.db_mut()?
-            .upsert_document(input, IndexMode::StoreAndIndex)
+
+        let external = input.external_id.clone();
+        let old = self.db_mut()?.get_document(&external)?.map(|d| d.internal_id);
+
+        self.db_mut()?.upsert_document(input, IndexMode::StoreAndIndex)?;
+
+        if let Some(internal_id) = old {
+            self.queue_op(PendingOp::Tombstone { internal_id });
+        }
+        let queued = {
+            let db = self.db_mut()?;
+            db.get_document(&external)?.map(|doc| db.to_indexed(&doc))
+        };
+        if let Some(doc) = queued {
+            self.queue_op(PendingOp::Index { doc });
+        }
+        Ok(())
     }
 
     pub fn get_document(&mut self, external_id: &str) -> io::Result<Option<StoredDocument>> {
@@ -814,6 +865,9 @@ impl CorelamoDatabase {
     /// Every failure path restores a working database: no exit leaves `self.db`
     /// as None.
     pub fn reindex_swap(&mut self, watermark: u64) -> io::Result<()> {
+        if self.progress.is_cancelled() {
+            return Err(io::Error::other("reindex cancelled before swap"));
+        }
         self.progress.set_phase(Phase::Swapping);
         // A leftover index.old from an earlier failed run makes the first
         // rename fail with ENOTEMPTY.
@@ -836,11 +890,8 @@ impl CorelamoDatabase {
         result
     }
 
-    fn reindex_swap_inner(&mut self, watermark: u64) -> io::Result<()> {
-        let old_db = self
-            .db
-            .take()
-            .ok_or_else(|| io::Error::other("database is closed"))?;
+    fn reindex_swap_inner(&mut self, _watermark: u64) -> io::Result<()> {
+        let old_db = self.db.take().ok_or_else(|| io::Error::other("database is closed"))?;
         let store = old_db.shutdown_into_store()?;
 
         let index_root = self.root.join("index");
@@ -860,11 +911,10 @@ impl CorelamoDatabase {
         self.progress.set_total(db.document_count() as u64);
         self.progress.set_phase(Phase::CatchUp);
 
-        db.reindex_documents_after(
-            watermark,
-            self.options.runtime.indexing_batch_size,
-            self.progress.as_ref(),
-        )?;
+        let ops = std::mem::take(&mut self.pending_ops);
+        db.apply_pending(ops)?;
+        db.flush()?;
+
 
         self.start_compaction_worker(&db);
         self.db = Some(db);
@@ -892,6 +942,19 @@ impl CorelamoDatabase {
                     "error" => %e),
             }
         }
+        self.pending_ops.clear();
+    }
+    fn queue_op(&mut self, op: PendingOp) {
+        if !self.progress.phase().is_running() {
+            return;
+        }
+        if self.pending_ops.len() >= Self::MAX_PENDING_OPS {
+            warn!(self.log, "pending mutation queue full, cancelling reindex");
+            self.progress.request_cancel();
+            self.pending_ops.clear();
+            return;
+        }
+        self.pending_ops.push(op);
     }
 }
 
