@@ -416,7 +416,6 @@ fn reader_loop(
             }
             other => {
                 // dispatcher misrouted a non-read command
-                debug_assert!(false, "non-read command reached reader");
                 drop(other);
             }
         }

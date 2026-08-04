@@ -6,7 +6,7 @@ use std::path::{ Path, PathBuf };
 use std::sync::Mutex;
 use serde::{ Serialize, Deserialize };
 use bincode::{ Encode, Decode };
-const MAX_ENTRY_SIZE: u32 = 64 * 1024 * 1024;
+const MAX_ENTRY_SIZE: u32 = 64 * 1024 * 1024; //japarbauda
 const HEADER_SIZE: u64 = 8;
 const MIN_RECORD_SIZE: u64 = HEADER_SIZE + 1;
 

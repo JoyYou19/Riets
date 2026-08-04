@@ -1,22 +1,16 @@
-use core_storage::wal::{Wal, WalRecord};
+use core_storage::wal::Wal;
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::fs::{self, File};
-use std::process::Output;
 use serde::{Serialize, Deserialize};
-use bincode::{Encode, Decode};
-use brotli::enc::BrotliEncoderOptions;
-
-use crate::backup;
-
-
-
+use brotlic::{BrotliEncoderOptions, CompressorWriter, Quality};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
     pub backup_id: String,
     pub created_at: u64,
     pub backup_type: BackupType,
-    pub wal_offset: u64,  // WAL offset at backup time
+    pub wal_offset: u64,
     pub document_count: u64,
 }
 
@@ -32,19 +26,27 @@ pub struct BackupManager {
     last_backup_offset: u64,
     last_backup_id: Option<String>,
 }
-//viss ar errors
+
 #[derive(Debug)]
 pub enum BackupError {
     IoError(std::io::Error),
-    SerdeError(std::io::Error),
+    SerdeError(serde_json::Error),
     BincodeError(String),
     WalError(String),
 }
+
 impl From<std::io::Error> for BackupError {
     fn from(error: std::io::Error) -> Self {
         BackupError::IoError(error)
     }
 }
+
+impl From<serde_json::Error> for BackupError {
+    fn from(error: serde_json::Error) -> Self {
+        BackupError::SerdeError(error)
+    }
+}
+
 impl std::fmt::Display for BackupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -56,7 +58,6 @@ impl std::fmt::Display for BackupError {
     }
 }
 
-//helper functions
 fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -64,7 +65,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
         let file_type = entry.file_type()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
@@ -74,24 +74,46 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn compression_specs() -> BrotliEncoderOptions {
-    let mut options = BrotliEncoderOptions::new();
-    options.quality = 11; // Maximum quality (0-11)
-    options.lgwin = 22; // Window size (10-24)
-    options
-}
+fn compress_file(src: &Path, dst: &Path) -> io::Result<()> {
+    let src_file = File::open(src)?;
+    let mut reader = BufReader::new(src_file);
 
+    let dst_file = File::create(dst)?;
+    let mut compressor = CompressorWriter::with_encoder(
+        BrotliEncoderOptions::new()
+            .quality(Quality::new(11).unwrap())
+            .build()
+            .unwrap(),
+        BufWriter::new(dst_file),
+    );
+
+    let mut buffer = vec![0u8; 8192];
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        compressor.write_all(&buffer[..bytes_read])?;
+    }
+    compressor.flush()?;
+    Ok(())
+}
 
 impl BackupManager {
     pub fn new(backup_dir: PathBuf, wal: Wal) -> Self {
-        let mut encoder = BrotliEncoderOptions::new(Vector::new(), compression_specs());
-        let path = backup_dir.join("backup_state.json");
-        let (last_backup_offset, last_bakcup_id) = if let Ok 
-        (state) = fs::read_to_string(&state_path){
-            (state.last_offsetmstate.last_backup_id)
-        }else{
-            (0,None)
+        let state_path = backup_dir.join("backup_state.json");
+        let (last_backup_offset, last_backup_id) = if let Ok(state) = fs::read_to_string(&state_path) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+                let offset = parsed["last_offset"].as_u64().unwrap_or(0);
+                let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
+                (offset, id)
+            } else {
+                (0, None)
+            }
+        } else {
+            (0, None)
         };
+
         Self {
             backup_dir,
             wal,
@@ -100,42 +122,21 @@ impl BackupManager {
         }
     }
 
-    /// Create a full backup (copy documents.bin + index + WAL)
     pub fn create_full_backup(&self, db_root: &Path) -> Result<BackupManifest, BackupError> {
         let backup_id = format!("full_{}", chrono::Utc::now().timestamp());
         let backup_path = self.backup_dir.join(&backup_id);
         fs::create_dir_all(&backup_path)?;
 
-        // Copy document store
+        compress_file(
+            &db_root.join("documents.bin"),
+            &backup_path.join("documents.bin.br"),
+        )?;
 
-        let existing_documents = File::open(db_root.join("documents.bin"))?;
-        let existing_index= File::open(db_root.join("index"))?;
-        let mut doc_reader= BufReader::new(backup_documents);
-        let mut index_reader= BufReader::new(existing_index);
-        let mut buffer =vec![0; 8192]; //random lielums
-        let backup_documents = File::create(backup_path.join("documents.bin"))?;
-        let backup_index = File::create(backup_path.join("index"))?;
-        loop{
-            let bytes_read = doc_reader.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-            encoder.copy(&buffer[..bytes_read], &mut backup_documents)?;
-            let mut output = encoder.take_output()?;
-            backup_index.write_all(&output)?;
-        }
-        
-        // fs::copy(
-        //     db_root.join("documents.bin"),
-        //     backup_path.join("documents.bin")
-        // )?;
-        // // Copy index directory
-        // copy_dir_recursive(
-        //     &db_root.join("index"),
-        //     &backup_path.join("index")
-        // )?;
+        compress_file(
+            &db_root.join("index"),
+            &backup_path.join("index.br"),
+        )?;
 
-        // Record WAL offset
         let wal_offset = self.wal.durable_offset();
 
         let manifest = BackupManifest {
@@ -143,31 +144,27 @@ impl BackupManager {
             created_at: chrono::Utc::now().timestamp() as u64,
             backup_type: BackupType::Full,
             wal_offset,
-            document_count: 0, // You'd get this from the database
+            document_count: 0,
         };
 
-        // Save manifest
         let manifest_path = backup_path.join("manifest.json");
         fs::write(&manifest_path, serde_json::to_string(&manifest)?)?;
 
         Ok(manifest)
     }
 
-    /// Create incremental backup (only WAL records since last backup)
-    pub fn create_incremental_backup(&self) -> Result<BackupManifest, BackupError> {
+    pub fn create_incremental_backup(&mut self) -> Result<BackupManifest, BackupError> {
         let backup_id = format!("incr_{}", chrono::Utc::now().timestamp());
         let backup_path = self.backup_dir.join(&backup_id);
         fs::create_dir_all(&backup_path)?;
 
-        // Get WAL records since last backup
-        let records = self.wal.replay_from(self.last_backup_offset)?;
+        let records = self.wal.replay_from(self.last_backup_offset)
+            .map_err(|e| BackupError::WalError(e.to_string()))?;
 
-        // Save WAL records
         let wal_path = backup_path.join("wal_records.bin");
-        let mut file = fs::File::create(&wal_path)?;
+        let mut file = File::create(&wal_path)?;
 
         for (offset, payload) in records {
-            // Write offset and payload
             file.write_all(&offset.to_le_bytes())?;
             file.write_all(&(payload.len() as u32).to_le_bytes())?;
             file.write_all(&payload)?;
@@ -181,50 +178,36 @@ impl BackupManager {
             document_count: 0,
         };
 
-        // Save manifest
         let manifest_path = backup_path.join("manifest.json");
         fs::write(&manifest_path, serde_json::to_string(&manifest)?)?;
 
-        // Update last backup offset
         self.last_backup_offset = manifest.wal_offset;
 
         Ok(manifest)
     }
 
-    /// Restore from backups
     pub fn restore(&self, backup_id: &str, target_dir: &Path) -> Result<(), BackupError> {
         let backup_path = self.backup_dir.join(backup_id);
 
-        // Read manifest
         let manifest: BackupManifest = serde_json::from_str(
             &fs::read_to_string(backup_path.join("manifest.json"))?
         )?;
 
         match manifest.backup_type {
             BackupType::Full => {
-                // Restore full backup
-                fs::copy(// partaisit lai zipped nokope tad atver 
-                    backup_path.join("documents.bin"),
-                    target_dir.join("documents.bin")
+                // decompress .br files back to target
+                fs::copy(
+                    backup_path.join("documents.bin.br"),
+                    target_dir.join("documents.bin.br"),
                 )?;
-                copy_dir_recursive(
-                    &backup_path.join("index"),
-                    &target_dir.join("index")
-                )?;
+                // TODO: decompress .br files at target
             }
-            BackupType::Incremental => { //kkada huina
-                
-                // Apply WAL records to existing database
-                // This would need to be integrated with your database restore logic
+            BackupType::Incremental => {
                 let wal_records = fs::read(backup_path.join("wal_records.bin"))?;
-                // Parse and apply records...
+                // TODO: parse and apply records
             }
         }
 
         Ok(())
     }
 }
-
-
-
-
