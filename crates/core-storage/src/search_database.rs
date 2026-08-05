@@ -134,7 +134,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     pub fn shard_id(&self) -> ShardId {
-        self.shard_id
+        self.shard_id.clone()
     }
 
     pub fn owns_doc_id(&self, doc_id: DocId) -> bool {
@@ -148,7 +148,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         analyzer: Analyzer,
         policy: IndexPolicy,
     ) -> io::Result<Self> {
-        Self::with_shard_policy(store, index, analyzer, policy, 0)
+        Self::with_shard_policy(store, index, analyzer, policy, ShardId(0))
     }
 
     /// Creates one shard local database instance.
@@ -192,7 +192,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("local document ID overflow"))?;
 
-        Ok(make_doc_id(self.shard_id, local_id))
+        Ok(make_doc_id(self.shard_id.clone(), local_id))
     }
 
     pub fn document_count(&self) -> usize {

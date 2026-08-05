@@ -2,7 +2,7 @@
 pub type DocId = u64;
 pub type Position = u32;
 pub type XPathId = u32;
-
+use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TermKey {
     pub xpath: XPathId,
@@ -31,9 +31,27 @@ pub struct FieldStats {
 }
 
 // Sharding IDs
-
+#[derive(Debug, Clone,Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub struct ShardId(pub u16);
+impl std::fmt::Display for ShardId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl From<u16> for ShardId {
+    fn from(v: u16) -> Self { ShardId(v) }
+}
+impl From<ShardId> for u16 {
+    fn from(s: ShardId) -> Self { s.0 }
+}
+impl TryFrom<usize> for ShardId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(v: usize) -> Result<Self, Self::Error> {
+        Ok(ShardId(u16::try_from(v)?))
+    }
+}
 // Identifies the shard that owns the document
-pub type ShardId = u16;
+
 pub type LocalDocId = u64;
 
 pub const SHARD_BITS: u32 = 16;
@@ -48,12 +66,12 @@ pub fn make_doc_id(shard: ShardId, local: LocalDocId) -> DocId {
         local <= MAX_LOCAL_DOC_ID,
         "local document ID {local} exceeds the {LOCAL_BITS}-bit limit"
     );
-    ((shard as u64) << LOCAL_BITS) | local
+    ((shard.0 as u64) << LOCAL_BITS) | local
 }
 
 // Returns the shard that owns a globally packed document ID
 pub fn shard_of(doc: DocId) -> ShardId {
-    (doc >> LOCAL_BITS) as ShardId
+    ShardId((doc >> LOCAL_BITS) as u16)
 }
 
 // Returns the shard-local id contained in a globally packed document ID
