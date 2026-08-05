@@ -18,6 +18,9 @@ impl TermKey {
     }
 }
 
+//TODO: vajag testus prieks taa kaa uztaisaas shardID, kaa tas tiek assigned convertots uz
+//external+internal.....
+
 // Cached entry of the field stats, once computed in the index, will store smaller information
 // TODO: Need to persist this on the disk probably, could be a good small size increase, but decent
 // performance benefit

@@ -525,6 +525,7 @@ dependencies = [
  "core-query",
  "core-storage",
  "indexmap",
+ "parking_lot",
  "serde",
  "serde_json",
  "slog",

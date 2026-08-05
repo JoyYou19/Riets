@@ -6,13 +6,13 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{policy::IndexKind, IndexPolicy, IndexedDocument},
+    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
     lsm::{
-        index_worker::{build_segments_parallel, IndexCommand, IndexWorker, ReindexProgress},
-        snapshot::SharedIndexSnapshot,
         LsmIndex,
+        index_worker::{IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel},
+        snapshot::SharedIndexSnapshot,
     },
-    types::{local_of, make_doc_id, shard_of, DocId, LocalDocId, ShardId, MAX_LOCAL_DOC_ID},
+    types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
 use bincode::{Decode, Encode};
@@ -20,7 +20,7 @@ use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
-use core_query::{planner::QueryPlan, Query, QueryExecutor, SearchHit};
+use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
