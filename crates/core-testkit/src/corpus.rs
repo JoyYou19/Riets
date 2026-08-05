@@ -4,11 +4,12 @@ use std::{
     path::Path,
 };
 
+use core_index::types::DocId;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TestDocument {
-    pub id: u64,
+    pub id: DocId,
     pub title: String,
     pub body: String,
 }

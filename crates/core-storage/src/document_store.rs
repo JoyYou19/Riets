@@ -1,10 +1,11 @@
+use core_index::types::{DocId, MAX_LOCAL_DOC_ID};
 use core_protocol::format::Format;
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};
 
 pub type ExternalDocId = String;
-pub type InternalDocId = u64;
+pub type InternalDocId = DocId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredDocument {
@@ -30,8 +31,8 @@ pub trait DocumentStore {
     }
     fn get(&self, external_id: &str) -> std::io::Result<Option<StoredDocument>>;
     fn delete(&mut self, external_id: &str) -> std::io::Result<()>;
-    fn max_internal_id(&self) -> u64;
-    fn get_by_internal_id(&self, internal_id: u64) -> std::io::Result<Option<StoredDocument>>;
+    fn max_internal_id(&self) -> DocId;
+    fn get_by_internal_id(&self, internal_id: DocId) -> std::io::Result<Option<StoredDocument>>;
 
     fn document_count(&self) -> usize;
     fn contains(&self, external_id: &str) -> io::Result<bool>;
@@ -48,7 +49,7 @@ pub trait DocumentStore {
 #[derive(Debug)]
 pub struct MemoryDocumentStore {
     docs: BTreeMap<String, StoredDocument>,
-    internal_to_external: BTreeMap<u64, String>,
+    internal_to_external: BTreeMap<DocId, String>,
 }
 
 impl MemoryDocumentStore {
@@ -98,7 +99,7 @@ impl DocumentStore for MemoryDocumentStore {
         Ok(())
     }
 
-    fn max_internal_id(&self) -> u64 {
+    fn max_internal_id(&self) -> DocId {
         self.docs
             .values()
             .map(|doc| doc.internal_id)
@@ -106,7 +107,7 @@ impl DocumentStore for MemoryDocumentStore {
             .unwrap_or(0)
     }
 
-    fn get_by_internal_id(&self, internal_id: u64) -> std::io::Result<Option<StoredDocument>> {
+    fn get_by_internal_id(&self, internal_id: DocId) -> std::io::Result<Option<StoredDocument>> {
         let Some(external_id) = self.internal_to_external.get(&internal_id) else {
             return Ok(None);
         };

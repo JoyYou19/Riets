@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use core_index::types::DocId;
 use core_protocol::format::Format;
 
 use crate::document_store::{DocumentStore, StoredDocument};
@@ -18,7 +19,7 @@ const OP_DELETE: u8 = 2;
 pub struct BinaryDocumentStore {
     path: PathBuf,
     docs: BTreeMap<String, StoredDocument>,
-    internal_to_external: BTreeMap<u64, String>,
+    internal_to_external: BTreeMap<DocId, String>,
 }
 
 impl BinaryDocumentStore {
@@ -162,7 +163,7 @@ impl DocumentStore for BinaryDocumentStore {
         Ok(())
     }
 
-    fn max_internal_id(&self) -> u64 {
+    fn max_internal_id(&self) -> DocId {
         self.docs
             .values()
             .map(|doc| doc.internal_id)
@@ -170,7 +171,7 @@ impl DocumentStore for BinaryDocumentStore {
             .unwrap_or(0)
     }
 
-    fn get_by_internal_id(&self, internal_id: u64) -> io::Result<Option<StoredDocument>> {
+    fn get_by_internal_id(&self, internal_id: DocId) -> io::Result<Option<StoredDocument>> {
         let Some(external_id) = self.internal_to_external.get(&internal_id) else {
             return Ok(None);
         };
