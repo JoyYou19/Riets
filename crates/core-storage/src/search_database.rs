@@ -410,7 +410,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     pub fn search_document_hits_all_fields_top_k(
-        &mut self,
+        &self,
         query: &Query,
         k: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {

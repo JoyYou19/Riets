@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -6,7 +5,7 @@ use crate::ShardDb;
 use crate::{DatabaseOptions, shard_for};
 use core_index::document::IndexPolicy;
 use core_protocol::errors::CorelamoError;
-use core_storage::search_database::{DocumentInput, InsertReport, SearchDocumentHit};
+use core_storage::search_database::{DocumentInput, InsertReport};
 
 pub struct ShardManager {
     shards: Vec<ShardDb>,
@@ -164,32 +163,32 @@ impl ShardManager {
         Ok(())
     }
 
-    pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-        // Group by shard
-        let mut by_shard: HashMap<u16, Vec<DocumentInput>> = HashMap::new();
-        for input in inputs {
-            let shard_id = shard_for(&input.external_id, self.shards.len() as u16);
-            by_shard
-                .entry(shard_id)
-                .or_insert_with(Vec::new)
-                .push(input);
-        }
-
-        // Insert each shard's batch (each shard locks itself)
-        let mut total_inserted = 0;
-        let mut total_failures = Vec::new();
-
-        for (shard_id, shard_inputs) in by_shard {
-            let report = self.shards[shard_id as usize].insert(shard_inputs)?;
-            total_inserted += report.inserted;
-            total_failures.extend(report.failures);
-        }
-
-        Ok(InsertReport {
-            inserted: total_inserted,
-            failures: total_failures,
-        })
-    }
+    // pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+    //     // Group by shard
+    //     let mut by_shard: HashMap<u16, Vec<DocumentInput>> = HashMap::new();
+    //     for input in inputs {
+    //         let shard_id = shard_for(&input.external_id, self.shards.len() as u16);
+    //         by_shard
+    //             .entry(shard_id)
+    //             .or_insert_with(Vec::new)
+    //             .push(input);
+    //     }
+    //
+    //     // Insert each shard's batch (each shard locks itself)
+    //     let mut total_inserted = 0;
+    //     let mut total_failures = Vec::new();
+    //
+    //     for (shard_id, shard_inputs) in by_shard {
+    //         let report = self.shards[shard_id as usize].insert(shard_inputs)?;
+    //         total_inserted += report.inserted;
+    //         total_failures.extend(report.failures);
+    //     }
+    //
+    //     Ok(InsertReport {
+    //         inserted: total_inserted,
+    //         failures: total_failures,
+    //     })
+    // }
 
     // pub fn search(
     //     &self,

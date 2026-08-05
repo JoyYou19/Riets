@@ -1,13 +1,12 @@
 pub mod command_reponse_definitions;
 pub mod command_response_helpers;
-mod database;
 pub mod metrics;
 mod options;
+mod shard_db;
 mod shard_manager;
 
-pub use database::DatabaseStats;
-pub use database::ShardDb;
 pub use options::DatabaseOptions;
+pub use shard_db::ShardDb;
 
 pub fn shard_for(external_id: &str, num_shards: u16) -> u16 {
     use std::collections::hash_map::DefaultHasher;
