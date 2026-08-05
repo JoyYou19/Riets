@@ -66,6 +66,18 @@ impl ShardManager {
         })
     }
 
+    pub fn create_and_start(
+        root: PathBuf,
+        num_shards: u16,
+        options: DatabaseOptions,
+    ) -> Result<Self, CorelamoError> {
+        let mut manager = Self::create(root, num_shards, options)?;
+        if manager.options().bootable {
+            manager.start_all()?;
+        }
+        Ok(manager)
+    }
+
     pub fn load(root: PathBuf, expected_num_shards: u16) -> Result<Self, CorelamoError> {
         let shards_dir = root.join("shards");
 
