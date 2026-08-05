@@ -234,10 +234,10 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/clear-logs",
             delete(handlers::clear_logs_handler),
         )
-        // .route(
-        //     "/api/databases/{db_name}/create-database",
-        //     post(handlers::create_database_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/create-database",
+            post(handlers::create_database_handler),
+        )
         .route(
             "/api/databases/{db_name}/clear-database",
             delete(handlers::clear_database_handler),

@@ -15,7 +15,7 @@ use core_storage::{
 use crossbeam_channel as xchan;
 use slog::{error, info, warn};
 use slog_scope::logger;
-use std::{collections::BTreeMap, sync::Arc, thread};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
 
 //creates a chanel for a single message (command)

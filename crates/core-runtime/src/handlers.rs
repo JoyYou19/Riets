@@ -15,6 +15,7 @@ use core_core::{
         Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, LookupResponse,
         RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
     },
+    shard_manager::ShardManager,
 };
 use slog::{error, info, o};
 
@@ -680,87 +681,90 @@ pub async fn upsert_document_handler(
         .into_response()
 }
 
-// pub async fn create_database_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
-//     //    return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//     {
-//         let dbs = match state.databases.read() {
-//             Ok(g) => g,
-//             Err(_) => {
-//                 return HttpError::from_corelamo(
-//                     CorelamoError::Internal("databases lock poisoned".into()),
-//                     &ctx,
-//                 )
-//                 .into_response();
-//             }
-//         };
-//         if dbs.contains_key(&db_name) {
-//             return HttpError::from_corelamo(
-//                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-//                 &ctx,
-//             )
-//             .into_response();
-//         }
-//     }
-//
-//     let db_path = state.databases_dir.join(&db_name);
-//
-//     let created =
-//         tokio::task::spawn_blocking(move || ShardDb::create(&db_path, DatabaseOptions::default()))
-//             .await;
-//
-//     let db = match created {
-//         Ok(Ok(db)) => db,
-//         Ok(Err(e)) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//         Err(e) => {
-//             return HttpError::from_corelamo(
-//                 CorelamoError::Internal(format!("create task panicked: {e}")),
-//                 &ctx,
-//             )
-//             .into_response();
-//         }
-//     };
-//
-//     let (handle, join) = db_actor::spawn_db_actor(db, db_name.clone());
-//     {
-//         let mut dbs = match state.databases.write() {
-//             Ok(g) => g,
-//             Err(_) => {
-//                 return HttpError::from_corelamo(
-//                     CorelamoError::Internal("databases lock poisoned".into()),
-//                     &ctx,
-//                 )
-//                 .into_response();
-//             }
-//         };
-//         if dbs.contains_key(&db_name) {
-//             drop(dbs);
-//             drop(handle);
-//             let _ = join.join();
-//             return HttpError::from_corelamo(
-//                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-//                 &ctx,
-//             )
-//             .into_response();
-//         }
-//         dbs.insert(db_name.clone(), handle);
-//     }
-//
-//     HttpOk::with_status(
-//         StatusCode::CREATED,
-//         format!("database '{db_name}' created"),
-//         &ctx,
-//     )
-//     .into_response()
-// }
+pub async fn create_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    //Extension(principal): Extension<Principal>,
+) -> Response {
+    //if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+    {
+        let dbs = match state.databases.read() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        if dbs.contains_key(&db_name) {
+            return HttpError::from_corelamo(
+                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+                &ctx,
+            )
+            .into_response();
+        }
+    }
+
+    let db_path = state.databases_dir.join(&db_name);
+
+    let created = tokio::task::spawn_blocking(move || {
+        //FIX: 1 shard only
+        let manager = ShardManager::create(db_path, 1, DatabaseOptions::default())?;
+        Ok::<_, CorelamoError>(manager)
+    })
+    .await;
+
+    let manager = match created {
+        Ok(Ok(mgr)) => mgr,
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("create task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let (handle, join) = db_actor::spawn_db_actor(manager, db_name.clone());
+    {
+        let mut dbs = match state.databases.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        if dbs.contains_key(&db_name) {
+            drop(dbs);
+            drop(handle);
+            let _ = join.join();
+            return HttpError::from_corelamo(
+                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+                &ctx,
+            )
+            .into_response();
+        }
+        dbs.insert(db_name.clone(), handle);
+    }
+
+    HttpOk::with_status(
+        StatusCode::CREATED,
+        format!("database '{db_name}' created"),
+        &ctx,
+    )
+    .into_response()
+}
 
 pub async fn start_database_handler(
     State(state): State<AppState>,
