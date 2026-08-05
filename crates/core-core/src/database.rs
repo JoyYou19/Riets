@@ -67,7 +67,7 @@ impl DatabaseState {
 }
 
 // Currently the main entry point to the database
-pub struct CorelamoDatabase {
+pub struct ShardDb {
     root: PathBuf,
     policy_path: PathBuf,
     policy: IndexPolicy,
@@ -81,7 +81,7 @@ pub struct CorelamoDatabase {
     pending_ops: Vec<PendingOp>,
 }
 
-impl CorelamoDatabase {
+impl ShardDb {
     //Norcha paskaties
     const MAX_PENDING_OPS: usize = 500_000;
 

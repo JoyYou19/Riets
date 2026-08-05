@@ -1,8 +1,11 @@
 use core_core::{
-    CorelamoDatabase, DatabaseOptions, DatabaseStats,
+    DatabaseOptions, DatabaseStats, ShardDb,
     command_reponse_definitions::{LookupCommand, SearchCommand},
 };
-use core_index::{document::{self, IndexPolicy}, lsm::index_worker::ReindexGuard};
+use core_index::{
+    document::{self, IndexPolicy},
+    lsm::index_worker::ReindexGuard,
+};
 use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
 use core_storage::{
     document_store::StoredDocument,
@@ -21,6 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
 
 type ShardDb = document::search_database::ShardDatabase; //TODO
+
 //INFO: how many listeners for search/lookup/retrieve
 //TODO: make configurable
 const READER_THREADS: usize = 4;
@@ -249,7 +253,7 @@ impl DbHandle {
     }
 }
 
-pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::JoinHandle<()>) {
+pub fn spawn_db_actor(db: ShardDb, name: String) -> (DbHandle, thread::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel::<DbCommand>(64);
     let log = slog_scope::logger();
     let join = thread::Builder::new()
@@ -263,7 +267,7 @@ pub fn spawn_db_actor(db: CorelamoDatabase, name: String) -> (DbHandle, thread::
 }
 
 //this doesnt really do anything heavy just routes to Read Write Shutdown
-fn dispatcher_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
+fn dispatcher_loop(db: ShardDb, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
     let progress = db.progress();
     let log = slog_scope::logger();
 
@@ -324,7 +328,7 @@ fn dispatcher_loop(db: CorelamoDatabase, rx: &mut mpsc::Receiver<DbCommand>, nam
     let _ = writer_join.join();
 
     //all clear we can close everythin
-    
+
     match shutdown_reply {
         Some(reply) => {
             let result = {
@@ -352,11 +356,11 @@ fn reader_loop(
 ) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            DbCommand::Search { cmd, reply } =>  {
+            DbCommand::Search { cmd, reply } => {
                 db.search(&cmd)
                     .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")));
                 let _ = reply.send(result);
-            },
+            }
 
             DbCommand::Lookup { cmd, reply } => {
                 db.lookup(&cmd);
@@ -372,12 +376,11 @@ fn reader_loop(
                     out.push((id, doc));
                 }
                 let _ = reply.send(Ok(out));
-            },
-          
+            }
 
             DbCommand::GetOptions { reply } => {
-              db.options().clone();
-              let _ = reply.send(result);
+                db.options().clone();
+                let _ = reply.send(result);
             }
             DbCommand::GetPolicy { reply } => {
                 db.policy().clone();
@@ -394,23 +397,18 @@ fn reader_loop(
             DbCommand::Status { reply } => {
                 let snapshot = progress.snapshot();
                 let result = match db.is_running() {
-                   
                     Some(_) => Err(CorelamoError::DatabaseNotRunning(format!(
                         "database {name} is not running"
                     ))),
                     None if progress.phase().is_running() => {
                         // a reindex really holds the lock: report progress, don't wait
-                        Ok(CorelamoDatabase::stats_swapping(
-                            snapshot,
-                            Default::default(),
-                        ))
+                        Ok(ShardDb::stats_swapping(snapshot, Default::default()))
                     }
                     None => {
                         // a normal write holds the lock: block briefly for a real reading
-                        
+
                         if db.is_running() {
-                            db
-                                .stats()
+                            db.stats()
                                 .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
                         } else {
                             Err(CorelamoError::DatabaseNotRunning(format!(
@@ -430,7 +428,7 @@ fn reader_loop(
 }
 
 fn writer_loop(
-    db: CorelamoDatabase,
+    db: ShardDb,
     rx: &xchan::Receiver<DbCommand>,
     name: &str,
     progress: &Arc<core_index::lsm::index_worker::ReindexProgress>,
@@ -448,13 +446,12 @@ fn writer_loop(
             DbCommand::Replace { docs, reply } => {
                 let result = replace_docs(&mut db, docs);
                 let _ = reply.send(result);
-             
             }
             DbCommand::Delete { ids, reply } => {
-                 let result = delete_docs(&mut db, ids);
-                 let _ = reply.send(result);
+                let result = delete_docs(&mut db, ids);
+                let _ = reply.send(result);
             }
-            DbCommand::Upsert { docs, reply } =>  {
+            DbCommand::Upsert { docs, reply } => {
                 let mut out = Vec::with_capacity(docs.len());
                 for (index, doc) in docs.into_iter().enumerate() {
                     let id = doc.external_id.clone();
@@ -464,9 +461,8 @@ fn writer_loop(
                     out.push((index, id, r));
                 }
                 let _ = reply.send(Ok(out));
-            },
+            }
             DbCommand::Clear { reply } => {
-                
                 let result = guard.clear().map_err(|e| {
                     error!(logger(), "Database Clear failed"; "error" => %e);
                     CorelamoError::Internal(format!("failed to clear database {name}: {e}"))
@@ -474,7 +470,6 @@ fn writer_loop(
                 let _ = reply.send(result);
             }
             DbCommand::ClearLogs { reply } => {
-               
                 let result = guard.clear_logs().map_err(|e| {
                     error!(logger(), "Database ClearLogs failed"; "error" => %e);
                     CorelamoError::Internal(format!("failed to clear logs for {name}: {e}"))
@@ -486,13 +481,12 @@ fn writer_loop(
                     CorelamoError::Internal(format!("set policy failed on '{name}': {e}"))
                 });
                 let _ = reply.send(result);
-            },
-            DbCommand::SetOptions { options, reply } =>  {
+            }
+            DbCommand::SetOptions { options, reply } => {
                 db.set_options(options)?;
                 db.is_running();
-                
-            },
-            DbCommand::StartDatabase { reply } =>  {
+            }
+            DbCommand::StartDatabase { reply } => {
                 let result = if db.is_running() {
                     Ok(DatabasePowerButtonOutcome::Nochange)
                 } else {
@@ -500,14 +494,14 @@ fn writer_loop(
                 };
                 let _ = reply.send(result);
             }
-            DbCommand::StopDatabase { reply } =>  {
+            DbCommand::StopDatabase { reply } => {
                 let result = if !db.is_running() {
                     Ok(DatabasePowerButtonOutcome::Nochange)
                 } else {
                     db.stop().map(|()| DatabasePowerButtonOutcome::Changed)
-                };  
+                };
                 let _ = reply.send(result);
-            },
+            }
             DbCommand::Restart { reply } => {
                 db.restart();
                 let _ = reply.send(result);
@@ -529,7 +523,6 @@ fn handle_reindex(
     log: &slog::Logger,
 ) {
     let params = {
-       
         let total = ShardDb.document_count_hint();
         if !progress.try_begin(total) {
             let _ = reply.send(Err(CorelamoError::Busy(format!(
@@ -547,13 +540,11 @@ fn handle_reindex(
     let thread_log = log.clone();
     let guard = ReindexGuard::new(progress.clone());
     std::thread::spawn(move || {
-        match CorelamoDatabase::build_staging_index(&params) {
-            Ok(watermark) => {
-                match db.reindex_swap(watermark) {
-                    Ok(()) => guard.succeed(),
-                    Err(_) => guard.fail(),
-                }
-            }
+        match ShardDb::build_staging_index(&params) {
+            Ok(watermark) => match db.reindex_swap(watermark) {
+                Ok(()) => guard.succeed(),
+                Err(_) => guard.fail(),
+            },
             Err(e) => {
                 error!(thread_log, "reindex staging failed"; "error" => %e);
                 // staging failed with the database still intact; just restart
@@ -568,13 +559,9 @@ fn handle_reindex(
     let _ = reply.send(Ok(()));
 }
 
-
-
-
-
 //helper funcion so that the call looks more readable
 fn replace_docs(
-    db: &mut CorelamoDatabase,
+    db: &mut ShardDb,
     docs: Vec<DocumentInput>,
 ) -> Result<ReplaceReport, CorelamoError> {
     let mut replaced = 0;
@@ -605,7 +592,7 @@ fn replace_docs(
     Ok(ReplaceReport { replaced, failures })
 }
 
-fn delete_docs(db: &mut CorelamoDatabase, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+fn delete_docs(db: &mut ShardDb, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
     let mut deleted = 0;
     let mut failures = Vec::new();
     let log = slog_scope::logger();
