@@ -5,13 +5,10 @@ use std::{
 };
 
 use core_index::{
-    analyzer::analyzer::Analyzer,
-    posting::{
+    analyzer::analyzer::Analyzer, posting::{
         PostingList,
         ops::{intersection, union},
-    },
-    search::{SearchIndex, SearchStats},
-    types::XPathId,
+    }, search::{SearchIndex, SearchStats}, types::{DocId, XPathId},
 };
 
 use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan};
@@ -333,7 +330,7 @@ where
         let xpaths: Vec<_> = xpaths.into_iter().collect();
         let candidate_k = (k * 50).max(100).min(2_000);
 
-        let mut by_doc = HashMap::<u64, SearchHit>::new();
+        let mut by_doc = HashMap::<DocId, SearchHit>::new();
 
         // One retrieval phase across all fields.
         for xpath in &xpaths {
@@ -344,7 +341,7 @@ where
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
                         existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
+                        existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -408,7 +405,7 @@ where
             return Vec::new();
         }
 
-        let mut by_doc = HashMap::<u64, SearchHit>::new();
+        let mut by_doc = HashMap::<DocId, SearchHit>::new();
 
         for xpath in xpaths {
             for hit in self.search_top_k(query, xpath, k) {
@@ -455,7 +452,7 @@ where
     ) -> Vec<SearchHit> {
         use std::collections::BTreeMap;
 
-        let mut by_doc = BTreeMap::<u64, SearchHit>::new();
+        let mut by_doc = BTreeMap::<DocId, SearchHit>::new();
 
         for xpath in xpaths {
             for hit in self.search(query, xpath) {

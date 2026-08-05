@@ -336,7 +336,7 @@ fn read_doc_lengths(
     let mut doc_lengths = std::collections::BTreeMap::new();
 
     for _ in 0..count {
-        let doc_id = cursor.read_u64()?;
+        let doc_id = cursor.read_u64()?;// read doc_id
         let xpath = cursor.read_u32()?;
         let len = cursor.read_u32()?;
         doc_lengths.insert((doc_id, xpath), len);

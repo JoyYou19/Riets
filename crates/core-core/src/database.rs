@@ -6,13 +6,11 @@ use std::{
 };
 
 use core_index::{
-    analyzer::Analyzer,
-    document::IndexPolicy,
-    lsm::{
+    analyzer::Analyzer, document::IndexPolicy, lsm::{
         LsmIndex,
         index_worker::{IndexingStats, Phase, ProgressSnapshot, ReindexProgress, ReindexingStats},
         worker::CompactionWorker,
-    },
+    }, types::DocId,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::{
@@ -840,7 +838,7 @@ impl CorelamoDatabase {
     /// picked up -- the catch-up pass keys on internal_id and therefore only
     /// covers appends. Safe for append-only ingest; revisit before the upsert
     /// and delete endpoints see concurrent use during a reindex.
-    pub fn build_staging_index(params: &ReindexParams) -> io::Result<u64> {
+    pub fn build_staging_index(params: &ReindexParams) -> io::Result<DocId> {
         let temp_index_root = params.root.join("index.new");
         std::fs::remove_dir_all(&temp_index_root).ok();
         std::fs::create_dir_all(&temp_index_root)?;
@@ -884,7 +882,7 @@ impl CorelamoDatabase {
     ///
     /// Every failure path restores a working database: no exit leaves `self.db`
     /// as None.
-    pub fn reindex_swap(&mut self, watermark: u64) -> io::Result<()> {
+    pub fn reindex_swap(&mut self, watermark: DocId) -> io::Result<()> {
         if self.progress.is_cancelled() {
             return Err(io::Error::other("reindex cancelled before swap"));
         }
@@ -910,7 +908,7 @@ impl CorelamoDatabase {
         result
     }
 
-    fn reindex_swap_inner(&mut self, _watermark: u64) -> io::Result<()> {
+    fn reindex_swap_inner(&mut self, _watermark: DocId) -> io::Result<()> {
         let old_db = self
             .db
             .take()

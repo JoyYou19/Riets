@@ -200,7 +200,7 @@ fn write_doc_lengths(
 ) -> io::Result<()> {
     write_u32(out, doc_lengths.len() as u32)?;
 
-    for (&(doc_id, xpath), &len) in doc_lengths {
+    for (&(doc_id, xpath), &len) in doc_lengths { //maybe change to DocId
         write_u64(out, doc_id)?;
         write_u32(out, xpath)?;
         write_u32(out, len)?;
