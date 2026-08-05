@@ -713,8 +713,10 @@ pub async fn create_database_handler(
     let db_path = state.databases_dir.join(&db_name);
 
     let created = tokio::task::spawn_blocking(move || {
-        //FIX: 1 shard only
-        let manager = ShardManager::create(db_path, 1, DatabaseOptions::default())?;
+        let mut manager = ShardManager::create_and_start(db_path, 1, DatabaseOptions::default())?;
+        if manager.options().bootable {
+            manager.start_all()?;
+        }
         Ok::<_, CorelamoError>(manager)
     })
     .await;

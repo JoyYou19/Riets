@@ -104,6 +104,7 @@ async fn shutdown_signal() {
 
     warn!(log,"Shutting down gracefully..."; "shutdown_signal"=>%reason,);
 }
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
     //logging izmantojot slog lib
