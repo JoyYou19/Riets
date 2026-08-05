@@ -255,7 +255,7 @@ pub fn spawn_db_actor(
     manager: ShardManager,
     name: String,
 ) -> (DbHandle, std::thread::JoinHandle<()>) {
-    let manager = Arc::new(manager);
+    
     let (tx, mut rx) = mpsc::channel::<DbCommand>(64);
     let log = slog_scope::logger();
 
@@ -272,7 +272,7 @@ pub fn spawn_db_actor(
 }
 
 //this doesnt really do anything heavy just routes to Read Write Shutdown
-fn dispatcher_loop(manager: Arc<ShardManager>, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
+fn dispatcher_loop(manager: ShardManager, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
     let log = slog_scope::logger();
 
     let (read_tx, read_rx) = xchan::unbounded::<DbCommand>();
@@ -340,47 +340,46 @@ fn dispatcher_loop(manager: Arc<ShardManager>, rx: &mut mpsc::Receiver<DbCommand
     info!(log, "dispatcher stopped"; "db_actor" => %name);
 }
 
-fn reader_loop(manager: Arc<ShardManager>, rx: &xchan::Receiver<DbCommand>, name: &str) {
+fn reader_loop(manager: ShardManager, rx: &xchan::Receiver<DbCommand>, name: &str) {
     let log = slog_scope::logger();
 
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            // DbCommand::Search { cmd, reply } => {
-            //     db.search(&cmd)
-            //         .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")));
-            //     let _ = reply.send(result);
-            // }
-            //
+             DbCommand::Search { cmd, reply } => {
+                let result= manager.search(&cmd)
+                     .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")));
+               let _ = reply.send(result);
+            }
+            
             // DbCommand::Lookup { cmd, reply } => {
-            //     db.lookup(&cmd);
+            //     let result = manager.lookup(&cmd).map_err(|e| CorelamoError::Internal(format!("lookup failed: {e}")));
             //     let _ = reply.send(result);
             // }
-            //
+            
             // DbCommand::Retrieve { ids, reply } => {
             //     let mut out = Vec::with_capacity(ids.len());
             //     for id in ids {
-            //         let doc = db.get_document(&id).map_err(|e| {
+            //         let doc = manager.get_document(&id).map_err(|e| {
             //             CorelamoError::Internal(format!("failed to get document '{id}': {e}"))
             //         })?;
             //         out.push((id, doc));
             //     }
             //     let _ = reply.send(Ok(out));
             // }
-            //
+            
             // DbCommand::GetOptions { reply } => {
-            //     db.options().clone();
-            //     let _ = reply.send(result);
+            //     let result = manager.options().clone();
+            //     let _ = reply.send(Ok(result));
             // }
             // DbCommand::GetPolicy { reply } => {
-            //     db.policy().clone();
-            //     let _ = reply.send(result);
+                
+            //     let _ = reply.send(Ok(manager.policy().clone()));
             // }
             // DbCommand::IsRunning { reply } => {
-            //     db.is_running();
-            //     let _ = reply.send(result);
+            //     let _ = reply.send(Ok(manager.is_running()));
             // }
             // DbCommand::GetLogs { date, reply } => {
-            //     db.get_logs(date);
+            //     let result = manager.get_logs(date).map_err(|e| CorelamoError::Internal(format!("get logs failed: {e}")));
             //     let _ = reply.send(result);
             // }
             // DbCommand::Status { reply } => {
