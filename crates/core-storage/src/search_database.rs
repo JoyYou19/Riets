@@ -6,12 +6,13 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{policy::IndexKind, IndexPolicy, IndexedDocument},
     lsm::{
-        LsmIndex,
-        index_worker::{IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel},
+        index_worker::{build_segments_parallel, IndexCommand, IndexWorker, ReindexProgress},
         snapshot::SharedIndexSnapshot,
+        LsmIndex,
     },
+    types::{local_of, make_doc_id, shard_of, DocId, LocalDocId, ShardId, MAX_LOCAL_DOC_ID},
 };
 
 use bincode::{Decode, Encode};
@@ -19,7 +20,7 @@ use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
-use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use core_query::{planner::QueryPlan, Query, QueryExecutor, SearchHit};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +67,9 @@ pub struct SearchDatabase<S: DocumentStore> {
     snapshot: SharedIndexSnapshot,
     analyzer: Analyzer,
     policy: IndexPolicy,
-    next_internal_id: u64,
+
+    shard_id: ShardId,
+    next_local_id: LocalDocId,
 }
 
 pub struct InsertReport {
@@ -85,9 +88,9 @@ pub struct DeleteReport {
 }
 
 //Norcha check
-pub enum PendingOp{
+pub enum PendingOp {
     Index { doc: IndexedDocument },
-    Tombstone { internal_id: u64 },
+    Tombstone { internal_id: DocId },
 }
 
 //start stop database (already stopped/started)
@@ -108,7 +111,7 @@ pub struct DocumentInput {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchDocumentHit {
     pub external_id: String,
-    pub internal_id: u64,
+    pub internal_id: DocId,
     pub score: f32,
     pub fields: BTreeMap<String, String>,
 }
@@ -119,7 +122,7 @@ pub struct SearchDocumentResults {
 }
 
 impl<S: DocumentStore> SearchDatabase<S> {
-    pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> Self {
+    pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> io::Result<Self> {
         Self::with_policy(store, index, analyzer, IndexPolicy::default_document())
     }
     pub fn index_worker(&self) -> &IndexWorker {
@@ -130,25 +133,66 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &self.analyzer
     }
 
-    pub fn with_policy(store: S, index: LsmIndex, analyzer: Analyzer, policy: IndexPolicy) -> Self {
-        let next_internal_id = store.max_internal_id() + 1;
+    pub fn shard_id(&self) -> ShardId {
+        self.shard_id
+    }
+
+    pub fn owns_doc_id(&self, doc_id: DocId) -> bool {
+        shard_of(doc_id) == self.shard_id
+    }
+
+    // WARN: This is old, must be changed, backwards compatibility here is 0
+    pub fn with_policy(
+        store: S,
+        index: LsmIndex,
+        analyzer: Analyzer,
+        policy: IndexPolicy,
+    ) -> io::Result<Self> {
+        Self::with_shard_policy(store, index, analyzer, policy, 0)
+    }
+
+    /// Creates one shard local database instance.
+    /* Each shard must receive a distinct shardId
+    The shard allocates only local sequences and packs them into globally unique document IDs.*/
+    pub fn with_shard_policy(
+        store: S,
+        index: LsmIndex,
+        analyzer: Analyzer,
+        policy: IndexPolicy,
+        shard_id: ShardId,
+    ) -> io::Result<Self> {
+        let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+
         let snapshot = SharedIndexSnapshot::empty();
         let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone());
 
-        Self {
+        Ok(Self {
             store,
             index_worker,
             snapshot,
             analyzer,
             policy,
-            next_internal_id,
-        }
+            shard_id,
+            next_local_id,
+        })
     }
 
-    fn allocate_internal_id(&mut self) -> u64 {
-        let id = self.next_internal_id;
-        self.next_internal_id += 1;
-        id
+    /// Allocates the next globally unique ID owned by this shard.
+    fn allocate_internal_id(&mut self) -> io::Result<DocId> {
+        if self.next_local_id > MAX_LOCAL_DOC_ID {
+            return Err(io::Error::other(format!(
+                "document ID space exhausted for shard {}",
+                self.shard_id
+            )));
+        }
+
+        let local_id = self.next_local_id;
+        self.next_local_id = self
+            .next_local_id
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("local document ID overflow"))?;
+
+        Ok(make_doc_id(self.shard_id, local_id))
     }
 
     pub fn document_count(&self) -> usize {
@@ -164,7 +208,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn put_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let doc = StoredDocument {
             external_id: input.external_id,
-            internal_id: self.allocate_internal_id(),
+            internal_id: self.allocate_internal_id()?,
             source: input.source,
             fields: input.fields,
             format: input.format,
@@ -179,22 +223,36 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(())
     }
 
-    pub fn begin_import(&mut self, batch_size: usize, window_size: usize) -> IndexPipeline<'_, S> {
-        IndexPipeline {
-            db: self,
+    pub fn begin_import(
+        &mut self,
+        batch_size: usize,
+        window_size: usize,
+    ) -> io::Result<IndexPipeline<'_, S>> {
+        if batch_size == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "batch_size must be greater than zero",
+            ));
+        }
 
+        if window_size == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "window_size must be greater than zero",
+            ));
+        }
+
+        Ok(IndexPipeline {
+            db: self,
             batch_size,
             window_size,
-
             current_store_batch: Vec::with_capacity(batch_size),
             current_batch: Vec::with_capacity(batch_size),
-
             pending_batches: Vec::with_capacity(window_size),
-
             inserted: 0,
             failures: Vec::new(),
             seen: HashSet::new(),
-        }
+        })
     }
 
     pub fn put_documents_parallel(
@@ -203,10 +261,10 @@ impl<S: DocumentStore> SearchDatabase<S> {
         batch_size: usize,
         window_size: usize,
     ) -> io::Result<InsertReport> {
-        let mut pipeline = self.begin_import(batch_size, window_size);
+        let mut pipeline = self.begin_import(batch_size, window_size)?;
 
-        for (i, input) in inputs.into_iter().enumerate() {
-            pipeline.push(input, i)?;
+        for (input_index, input) in inputs.into_iter().enumerate() {
+            pipeline.push(input, input_index)?;
         }
 
         pipeline.finish()
@@ -218,7 +276,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     ) -> io::Result<IndexedDocument> {
         let doc = StoredDocument {
             external_id: input.external_id,
-            internal_id: self.allocate_internal_id(),
+            internal_id: self.allocate_internal_id()?,
             source: input.source,
             fields: input.fields,
             format: input.format,
@@ -233,7 +291,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     // external_id points to the latest version
     // INFO: changed the name cuz upsert is more precise here
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
-        let internal_id = self.allocate_internal_id();
+        let internal_id = self.allocate_internal_id()?;
 
         //INFO: logic if id is auto and some idiot called upsert not insert ;)
         let external_id = if input.external_id.is_empty() {
@@ -269,6 +327,21 @@ impl<S: DocumentStore> SearchDatabase<S> {
         }
 
         self.store.delete(external_id)
+    }
+
+    pub fn delete_internal_document(&mut self, doc_id: DocId) -> io::Result<()> {
+        if !self.owns_doc_id(doc_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "document {doc_id} belongs to shard {}, not shard {}",
+                    shard_of(doc_id),
+                    self.shard_id,
+                ),
+            ));
+        }
+
+        self.index_worker.delete_document_wait(doc_id)
     }
 
     pub fn get_document(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
@@ -528,8 +601,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         window_size: usize,
         progress: &ReindexProgress,
     ) -> io::Result<()> {
-
-        
         // Shared borrows so the closure can publish while the store iterates.
         let store = &self.store;
         let analyzer = &self.analyzer;
@@ -545,7 +616,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
             }
             current.push(stored_document_to_indexed(doc, policy));
 
-
             if current.len() >= batch_size {
                 pending.push(std::mem::replace(
                     &mut current,
@@ -558,7 +628,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
             }
             Ok(())
         })?;
-        
 
         if !current.is_empty() {
             pending.push(current);
@@ -584,7 +653,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         }
         Ok(())
     }
-    
 }
 
 fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> IndexedDocument {
@@ -670,14 +738,14 @@ fn should_include(
 
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
-        let (internal_id, external_id) = if input.external_id.is_empty() {
-            let id = self.db.allocate_internal_id();
-            (id, id.to_string())
+        let internal_id = self.db.allocate_internal_id()?;
+
+        let external_id = if input.external_id.is_empty() {
+            self.allocate_generated_external_id(internal_id)?
         } else {
             let external_id = input.external_id;
 
-            if self.db.store.get(&external_id)?.is_some() || !self.seen.insert(external_id.clone())
-            {
+            if self.external_id_exists(&external_id)? {
                 self.failures.push(DocFailure::with_id(
                     input_index,
                     external_id,
@@ -687,7 +755,9 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
                 return Ok(());
             }
 
-            (self.db.allocate_internal_id(), external_id)
+            self.seen.insert(external_id.clone());
+
+            external_id
         };
 
         let stored = StoredDocument {
@@ -710,6 +780,33 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         }
 
         Ok(())
+    }
+
+    // Checks both persisted documents and IDs
+    fn external_id_exists(&self, external_id: &str) -> io::Result<bool> {
+        if self.seen.contains(external_id) {
+            return Ok(true);
+        }
+
+        self.db.store.contains(external_id)
+    }
+
+    // Generates an external ID for documents that dont have one
+    //
+    // packed global document ids are used as the generated external ID
+    // (THIS IS NOT AUTOINCREMENT WE FUCK THEM)
+    fn allocate_generated_external_id(&mut self, mut internal_id: DocId) -> io::Result<String> {
+        loop {
+            let external_id = internal_id.to_string();
+
+            if !self.external_id_exists(&external_id)? {
+                self.seen.insert(external_id.clone());
+
+                return Ok(external_id);
+            }
+
+            internal_id = self.db.allocate_internal_id()?;
+        }
     }
 
     pub fn finish(mut self) -> io::Result<InsertReport> {
@@ -768,4 +865,33 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         Ok(())
     }
+}
+
+fn next_local_id_for_shard<S: DocumentStore>(
+    store: &S,
+    shard_id: ShardId,
+) -> io::Result<LocalDocId> {
+    let max_global_id = store.max_internal_id();
+
+    if max_global_id == 0 {
+        return Ok(1);
+    }
+
+    let stored_shard = shard_of(max_global_id);
+
+    if stored_shard != shard_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "document store belongs to shard {stored_shard}, \
+                 but was opened as shard {shard_id}",
+            ),
+        ));
+    }
+
+    let max_local_id = local_of(max_global_id);
+
+    max_local_id
+        .checked_add(1)
+        .ok_or_else(|| io::Error::other(format!("document ID space is full for shard {shard_id}",)))
 }
