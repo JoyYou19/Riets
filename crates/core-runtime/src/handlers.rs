@@ -7,9 +7,10 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal};
+//use core_auth::{Permission, Principal};
+//
 use core_core::{
-    CorelamoDatabase, DatabaseOptions,
+    DatabaseOptions, ShardDb,
     command_reponse_definitions::{
         Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, LookupResponse,
         RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
@@ -64,74 +65,74 @@ fn require_body(body: &str) -> Result<&str, CorelamoError> {
         Ok(trimmed)
     }
 }
-fn check_permission(
-    state: &AppState,
-    principal: &Principal,
-    permission: Permission,
-) -> Result<(), CorelamoError> {
-    let auth = state
-        .auth
-        .read()
-        .map_err(|_| CorelamoError::Internal("auth service unavailable".into()))?;
-    auth.check(principal, permission)
-}
-pub async fn login_handler(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<RequestContext>,
-    body: String,
-) -> Response {
-    let body = match require_body(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-    let req: LoginRequest = match serde_json::from_str(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::InvalidData(format!("invalid login request:{e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    };
-
-    let token = {
-        let Ok(mut auth) = state.auth.write() else {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal("auth service lock poisoned".to_string()),
-                &ctx,
-            )
-            .into_response();
-        };
-        auth.login(&req.username, &req.password)
-    }; // write guard dropped here
-
-    match token {
-        Some(token) => {
-            let resp = LoginResponse { token: token.0 };
-            HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
-        }
-        None => HttpError::from_corelamo(
-            CorelamoError::Unauthorized("invalid username or password".to_string()),
-            &ctx,
-        )
-        .into_response(),
-    }
-}
+// fn check_permission(
+//     state: &AppState,
+//     principal: &Principal,
+//     permission: Permission,
+// ) -> Result<(), CorelamoError> {
+//     let auth = state
+//         .auth
+//         .read()
+//         .map_err(|_| CorelamoError::Internal("auth service unavailable".into()))?;
+//     auth.check(principal, permission)
+// }
+// pub async fn login_handler(
+//     State(state): State<AppState>,
+//     Extension(ctx): Extension<RequestContext>,
+//     body: String,
+// ) -> Response {
+//     let body = match require_body(&body) {
+//         Ok(b) => b,
+//         Err(e) => {
+//             return HttpError::from_corelamo(e, &ctx).into_response();
+//         }
+//     };
+//     let req: LoginRequest = match serde_json::from_str(body) {
+//         Ok(r) => r,
+//         Err(e) => {
+//             return HttpError::from_corelamo(
+//                 CorelamoError::InvalidData(format!("invalid login request:{e}")),
+//                 &ctx,
+//             )
+//             .into_response();
+//         }
+//     };
+//
+//     let token = {
+//         let Ok(mut auth) = state.auth.write() else {
+//             return HttpError::from_corelamo(
+//                 CorelamoError::Internal("auth service lock poisoned".to_string()),
+//                 &ctx,
+//             )
+//             .into_response();
+//         };
+//         auth.login(&req.username, &req.password)
+//     }; // write guard dropped here
+//
+//     match token {
+//         Some(token) => {
+//             let resp = LoginResponse { token: token.0 };
+//             HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
+//         }
+//         None => HttpError::from_corelamo(
+//             CorelamoError::Unauthorized("invalid username or password".to_string()),
+//             &ctx,
+//         )
+//         .into_response(),
+//     }
+// }
 
 //TODO: total_hits: xxx kkadu
 pub async fn search_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Search) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -183,13 +184,12 @@ pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-
+    // Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Retrieve) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::Retrieve) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -245,47 +245,47 @@ pub async fn retrieve_handler(
     HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
-pub async fn lookup_handler(
-    State(state): State<AppState>,
-    Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-    body: String,
-) -> Response {
-    let command = match LookupCommand::parse(&body, ctx.format) {
-        Ok(cmd) => cmd,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    let (found, not_found) = match handle.lookup(command).await {
-        Ok(r) => r,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    let hit_count = found.len();
-    let resp = match LookupResponse::from_hits(found, not_found) {
-        Ok(r) => r,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
-}
+// pub async fn lookup_handler(
+//     State(state): State<AppState>,
+//     Path(db_name): Path<String>,
+//     Extension(ctx): Extension<RequestContext>,
+//     //Extension(principal): Extension<Principal>,
+//     body: String,
+// ) -> Response {
+//     // let command = match LookupCommand::parse(&body, ctx.format) {
+//     //     Ok(cmd) => cmd,
+//     //     Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+//     // };
+//
+//     let handle = match state.lookup(&db_name) {
+//         Ok(h) => h,
+//         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+//     };
+//
+//     let (found, not_found) = match handle.lookup(command).await {
+//         Ok(r) => r,
+//         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+//     };
+//
+//     let hit_count = found.len();
+//     let resp = match LookupResponse::from_hits(found, not_found) {
+//         Ok(r) => r,
+//         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+//     };
+//
+//     HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
+// }
 
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -374,11 +374,11 @@ pub async fn clear_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //   if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
 
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
@@ -405,12 +405,12 @@ pub async fn get_logs_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
+    //return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
 
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
@@ -445,11 +445,11 @@ pub async fn clear_logs_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::ClearLogs) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //    if let Err(e) = check_permission(&state, &principal, Permission::ClearLogs) {
+    //return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
 
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
@@ -468,12 +468,12 @@ pub async fn delete_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //    Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -521,12 +521,12 @@ pub async fn replace_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    // Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -600,12 +600,12 @@ pub async fn upsert_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Upsert) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::Upsert) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -680,98 +680,97 @@ pub async fn upsert_document_handler(
         .into_response()
 }
 
-pub async fn create_database_handler(
-    State(state): State<AppState>,
-    Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-    {
-        let dbs = match state.databases.read() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-        if dbs.contains_key(&db_name) {
-            return HttpError::from_corelamo(
-                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
-        }
-    }
-
-    let db_path = state.databases_dir.join(&db_name);
-
-    let created = tokio::task::spawn_blocking(move || {
-        CorelamoDatabase::create(&db_path, DatabaseOptions::default())
-    })
-    .await;
-
-    let db = match created {
-        Ok(Ok(db)) => db,
-        Ok(Err(e)) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("create task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    };
-
-    let (handle, join) = db_actor::spawn_db_actor(db, db_name.clone());
-    {
-        let mut dbs = match state.databases.write() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-        if dbs.contains_key(&db_name) {
-            drop(dbs);
-            drop(handle);
-            let _ = join.join();
-            return HttpError::from_corelamo(
-                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
-        }
-        dbs.insert(db_name.clone(), handle);
-    }
-
-    HttpOk::with_status(
-        StatusCode::CREATED,
-        format!("database '{db_name}' created"),
-        &ctx,
-    )
-    .into_response()
-}
+// pub async fn create_database_handler(
+//     State(state): State<AppState>,
+//     Path(db_name): Path<String>,
+//     Extension(ctx): Extension<RequestContext>,
+//     //Extension(principal): Extension<Principal>,
+// ) -> Response {
+//     //if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
+//     //    return HttpError::from_corelamo(e, &ctx).into_response();
+//     //}
+//     {
+//         let dbs = match state.databases.read() {
+//             Ok(g) => g,
+//             Err(_) => {
+//                 return HttpError::from_corelamo(
+//                     CorelamoError::Internal("databases lock poisoned".into()),
+//                     &ctx,
+//                 )
+//                 .into_response();
+//             }
+//         };
+//         if dbs.contains_key(&db_name) {
+//             return HttpError::from_corelamo(
+//                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+//                 &ctx,
+//             )
+//             .into_response();
+//         }
+//     }
+//
+//     let db_path = state.databases_dir.join(&db_name);
+//
+//     let created =
+//         tokio::task::spawn_blocking(move || ShardDb::create(&db_path, DatabaseOptions::default()))
+//             .await;
+//
+//     let db = match created {
+//         Ok(Ok(db)) => db,
+//         Ok(Err(e)) => {
+//             return HttpError::from_corelamo(e, &ctx).into_response();
+//         }
+//         Err(e) => {
+//             return HttpError::from_corelamo(
+//                 CorelamoError::Internal(format!("create task panicked: {e}")),
+//                 &ctx,
+//             )
+//             .into_response();
+//         }
+//     };
+//
+//     let (handle, join) = db_actor::spawn_db_actor(db, db_name.clone());
+//     {
+//         let mut dbs = match state.databases.write() {
+//             Ok(g) => g,
+//             Err(_) => {
+//                 return HttpError::from_corelamo(
+//                     CorelamoError::Internal("databases lock poisoned".into()),
+//                     &ctx,
+//                 )
+//                 .into_response();
+//             }
+//         };
+//         if dbs.contains_key(&db_name) {
+//             drop(dbs);
+//             drop(handle);
+//             let _ = join.join();
+//             return HttpError::from_corelamo(
+//                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+//                 &ctx,
+//             )
+//             .into_response();
+//         }
+//         dbs.insert(db_name.clone(), handle);
+//     }
+//
+//     HttpOk::with_status(
+//         StatusCode::CREATED,
+//         format!("database '{db_name}' created"),
+//         &ctx,
+//     )
+//     .into_response()
+// }
 
 pub async fn start_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::StartDB) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::StartDB) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -794,11 +793,11 @@ pub async fn stop_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::StopDB) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::StopDB) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -821,12 +820,12 @@ pub async fn delete_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
     let log = slog_scope::logger().new(o!("components"=> "handlers"));
-    if let Err(e) = check_permission(&state, &principal, Permission::DeleteDatabase) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::DeleteDatabase) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = {
         let mut dbs = match state.databases.write() {
             Ok(g) => g,
@@ -888,74 +887,74 @@ pub async fn delete_database_handler(
     }
 }
 
-pub async fn stats_handler(
-    State(state): State<AppState>,
-    Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Status) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-    let stats = handle.stats().await;
-    match stats {
-        Ok(stats) => {
-            let indexing = &stats.indexing;
-            let reindexing = &stats.reindexing;
-            HttpOk::with_data(
-                format!("stats for '{db_name}'"),
-                json!({
-                    "document_count": stats.document_count,
-                    "segment_count": stats.segment_count,
-                    "background_compaction_enabled": stats.background_compaction_enabled,
-                    "metrics": {
-                          "search_requests": stats.metrics.search_requests,
-                          "search_errors": stats.metrics.search_errors,
-                          "indexing_requests": stats.metrics.indexing_requests,
-                          "indexing_errors": stats.metrics.indexing_errors,
-                         },
-                    "indexed": {
-                        "total_documents_indexed": indexing.total_documents_indexed,
-                        "total_documents_deleted": indexing.total_documents_deleted,
-                        "segments_written": indexing.segments_written,
-                        "compactions_completed": indexing.compactions_completed,
-                        "memtable_term_count": indexing.memtable_term_count,
-                        "segment_count": indexing.segment_count,
-                    },
-                    "reindexing": {
-                        "status": reindexing.status,
-                        "progress": reindexing.progress,
-                        "eta_seconds": reindexing.eta_seconds
-                    }
-                }),
-                &ctx,
-            )
-            .into_response()
-        }
-        //TODO: upate once stats gets updated with errors
-        Err(e) => HttpError::from_corelamo(
-            CorelamoError::Conflict(format!("failed to get stats: {e}")),
-            &ctx,
-        )
-        .into_response(),
-    }
-}
+// pub async fn stats_handler(
+//     State(state): State<AppState>,
+//     Path(db_name): Path<String>,
+//     Extension(ctx): Extension<RequestContext>,
+//     //Extension(principal): Extension<Principal>,
+// ) -> Response {
+//     // if let Err(e) = check_permission(&state, &principal, Permission::Status) {
+//     //     return HttpError::from_corelamo(e, &ctx).into_response();
+//     // }
+//     let handle = match state.lookup(&db_name) {
+//         Ok(h) => h,
+//         Err(e) => {
+//             return HttpError::from_corelamo(e, &ctx).into_response();
+//         }
+//     };
+//     let stats = handle.stats().await;
+//     match stats {
+//         Ok(stats) => {
+//             let indexing = &stats.indexing;
+//             let reindexing = &stats.reindexing;
+//             HttpOk::with_data(
+//                 format!("stats for '{db_name}'"),
+//                 json!({
+//                     "document_count": stats.document_count,
+//                     "segment_count": stats.segment_count,
+//                     "background_compaction_enabled": stats.background_compaction_enabled,
+//                     "metrics": {
+//                           "search_requests": stats.metrics.search_requests,
+//                           "search_errors": stats.metrics.search_errors,
+//                           "indexing_requests": stats.metrics.indexing_requests,
+//                           "indexing_errors": stats.metrics.indexing_errors,
+//                          },
+//                     "indexed": {
+//                         "total_documents_indexed": indexing.total_documents_indexed,
+//                         "total_documents_deleted": indexing.total_documents_deleted,
+//                         "segments_written": indexing.segments_written,
+//                         "compactions_completed": indexing.compactions_completed,
+//                         "memtable_term_count": indexing.memtable_term_count,
+//                         "segment_count": indexing.segment_count,
+//                     },
+//                     "reindexing": {
+//                         "status": reindexing.status,
+//                         "progress": reindexing.progress,
+//                         "eta_seconds": reindexing.eta_seconds
+//                     }
+//                 }),
+//                 &ctx,
+//             )
+//             .into_response()
+//         }
+//         //TODO: upate once stats gets updated with errors
+//         Err(e) => HttpError::from_corelamo(
+//             CorelamoError::Conflict(format!("failed to get stats: {e}")),
+//             &ctx,
+//         )
+//         .into_response(),
+//     }
+// }
 
 pub async fn reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -979,11 +978,11 @@ pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -1008,12 +1007,12 @@ pub async fn set_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    // Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -1045,11 +1044,11 @@ pub async fn get_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -1074,12 +1073,12 @@ pub async fn set_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
+    //   return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -1119,11 +1118,11 @@ pub async fn restart_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::RestartDB) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::RestartDB) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -1142,11 +1141,11 @@ pub async fn restart_database_handler(
 pub async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::ListDatabase) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::ListDatabase) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handles: Vec<(String, DbHandle)> = {
         let dbs = match state.databases.read() {
             Ok(g) => g,
@@ -1178,120 +1177,119 @@ pub async fn list_databases_handler(
     )
     .into_response()
 }
-pub async fn create_user_handler(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-
-    body: String,
-) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::CreateUser) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-    let body = match require_body(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-    let req: CreateUserRequest = match serde_json::from_str(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::InvalidData(format!("invalid create-user request: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    };
-
-    let Ok(mut auth) = state.auth.write() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
-            &ctx,
-        )
-        .into_response();
-    };
-    match auth.create_user(&principal, &req.username, &req.password, req.roles) {
-        Ok(()) => HttpOk::new(format!("user '{}' created", req.username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-    }
-}
-pub async fn delete_user_handler(
-    State(state): State<AppState>,
-    Path(username): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::DeleteUser) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
-    match auth.delete_user(&principal, &username) {
-        Ok(()) => HttpOk::new(format!("user '{}' deleted", username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-    }
-}
-
-pub async fn update_user_password_handler(
-    State(state): State<AppState>,
-    Path(username): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-    body: String,
-) -> Response {
-    //varbut japieliek tas check permission
-    let body = match require_body(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-    let req: UpdatePasswordRequest = match serde_json::from_str(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::InvalidData(format!("invalid update-password request: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    };
-
-    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
-    match auth.update_user_password(&principal, &username, &req.password) {
-        Ok(()) => HttpOk::new(format!("password updated for '{}'", username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-    }
-}
-
-pub async fn update_user_roles_handler(
-    State(state): State<AppState>,
-    Path(username): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-    body: String,
-) -> Response {
-    let body = match require_body(&body) {
-        Ok(b) => b,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-    let req: UpdateRolesRequest = match serde_json::from_str(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::InvalidData(format!("invalid update-roles request: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    };
-
-    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
-    match auth.update_user_roles(&principal, &username, req.roles) {
-        Ok(()) => HttpOk::new(format!("roles updated for '{}'", username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-    }
-}
+// pub async fn create_user_handler(
+//     State(state): State<AppState>,
+//     Extension(ctx): Extension<RequestContext>,
+//     //Extension(principal): Extension<Principal>,
+//     body: String,
+// ) -> Response {
+//     // if let Err(e) = check_permission(&state, &principal, Permission::CreateUser) {
+//     //     return HttpError::from_corelamo(e, &ctx).into_response();
+//     // }
+//     let body = match require_body(&body) {
+//         Ok(b) => b,
+//         Err(e) => {
+//             return HttpError::from_corelamo(e, &ctx).into_response();
+//         }
+//     };
+//     let req: CreateUserRequest = match serde_json::from_str(body) {
+//         Ok(r) => r,
+//         Err(e) => {
+//             return HttpError::from_corelamo(
+//                 CorelamoError::InvalidData(format!("invalid create-user request: {e}")),
+//                 &ctx,
+//             )
+//             .into_response();
+//         }
+//     };
+//
+//     let Ok(mut auth) = state.auth.write() else {
+//         return HttpError::from_corelamo(
+//             CorelamoError::Internal("auth service lock poisoned".to_string()),
+//             &ctx,
+//         )
+//         .into_response();
+//     };
+//     match auth.create_user(&principal, &req.username, &req.password, req.roles) {
+//         Ok(()) => HttpOk::new(format!("user '{}' created", req.username), &ctx).into_response(),
+//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+//     }
+// }
+// pub async fn delete_user_handler(
+//     State(state): State<AppState>,
+//     Path(username): Path<String>,
+//     Extension(ctx): Extension<RequestContext>,
+//     Extension(principal): Extension<Principal>,
+// ) -> Response {
+//     if let Err(e) = check_permission(&state, &principal, Permission::DeleteUser) {
+//         return HttpError::from_corelamo(e, &ctx).into_response();
+//     }
+//     let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
+//     match auth.delete_user(&principal, &username) {
+//         Ok(()) => HttpOk::new(format!("user '{}' deleted", username), &ctx).into_response(),
+//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+//     }
+// }
+//
+// pub async fn update_user_password_handler(
+//     State(state): State<AppState>,
+//     Path(username): Path<String>,
+//     Extension(ctx): Extension<RequestContext>,
+//     Extension(principal): Extension<Principal>,
+//     body: String,
+// ) -> Response {
+//     //varbut japieliek tas check permission
+//     let body = match require_body(&body) {
+//         Ok(b) => b,
+//         Err(e) => {
+//             return HttpError::from_corelamo(e, &ctx).into_response();
+//         }
+//     };
+//     let req: UpdatePasswordRequest = match serde_json::from_str(body) {
+//         Ok(r) => r,
+//         Err(e) => {
+//             return HttpError::from_corelamo(
+//                 CorelamoError::InvalidData(format!("invalid update-password request: {e}")),
+//                 &ctx,
+//             )
+//             .into_response();
+//         }
+//     };
+//
+//     let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
+//     match auth.update_user_password(&principal, &username, &req.password) {
+//         Ok(()) => HttpOk::new(format!("password updated for '{}'", username), &ctx).into_response(),
+//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+//     }
+// }
+//
+// pub async fn update_user_roles_handler(
+//     State(state): State<AppState>,
+//     Path(username): Path<String>,
+//     Extension(ctx): Extension<RequestContext>,
+//     Extension(principal): Extension<Principal>,
+//     body: String,
+// ) -> Response {
+//     let body = match require_body(&body) {
+//         Ok(b) => b,
+//         Err(e) => {
+//             return HttpError::from_corelamo(e, &ctx).into_response();
+//         }
+//     };
+//     let req: UpdateRolesRequest = match serde_json::from_str(body) {
+//         Ok(r) => r,
+//         Err(e) => {
+//             return HttpError::from_corelamo(
+//                 CorelamoError::InvalidData(format!("invalid update-roles request: {e}")),
+//                 &ctx,
+//             )
+//             .into_response();
+//         }
+//     };
+//
+//     let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
+//     match auth.update_user_roles(&principal, &username, req.roles) {
+//         Ok(()) => HttpOk::new(format!("roles updated for '{}'", username), &ctx).into_response(),
+//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+//     }
+// }

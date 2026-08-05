@@ -4,10 +4,26 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseStats {
+    pub database_state: DatabaseState,
+    pub document_count: usize,
+    pub segment_count: usize,
+    pub background_compaction_enabled: bool,
+    pub metrics: DatabaseMetrics,
+    pub indexing: IndexingStats,
+    pub reindexing: ReindexingStats,
+    pub reindexing_total: u64,
+}
+
 use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
-    lsm::{LsmIndex, index_worker::ReindexProgress, worker::CompactionWorker},
+    lsm::{
+        LsmIndex,
+        index_worker::{IndexingStats, ReindexProgress, ReindexingStats},
+        worker::CompactionWorker,
+    },
     types::DocId,
 };
 use core_protocol::errors::CorelamoError;

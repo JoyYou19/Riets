@@ -626,7 +626,6 @@ name = "core-runtime"
 version = "0.1.0"
 dependencies = [
  "axum",
- "core-auth",
  "core-core",
  "core-index",
  "core-logs",

@@ -6,7 +6,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 
-use core_auth::{AuthService, UserDatabase};
+//use core_auth::{AuthService, UserDatabase};
 use core_index::{
     analyzer::analyzer::Analyzer,
     lsm::{LsmIndex, config::IndexRuntimeConfig},
@@ -41,7 +41,7 @@ pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, DbHandle>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
-    pub auth: Arc<RwLock<AuthService>>,
+    //    pub auth: Arc<RwLock<AuthService>>,
 }
 
 impl AppState {
@@ -159,17 +159,18 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    info!(log,"found and loaded database(s) in total"; "databases"=>%databases.len() ,);
+    info!(log,"found and loaded database(s) in total"; "databases"=>%databases.len());
+
     let mut handles = HashMap::new();
     let mut joins = Vec::new();
-    //setup databases and their handlers
-    for (db_name, db) in databases {
-        let (handle, join) = db_actor::spawn_db_actor(db, db_name.clone());
+
+    // Setup databases and their handlers
+    for (db_name, manager) in databases {
+        let (handle, join) = db_actor::spawn_db_actor(manager, db_name.clone());
         handles.insert(db_name, handle);
         joins.push(join);
     }
 
-    //Autorizacijas prikoli
     let users_dir = root_path.join("users");
     std::fs::create_dir_all(&users_dir).expect("failed to create users data dir");
 
@@ -179,21 +180,21 @@ async fn main() -> io::Result<()> {
     let index = LsmIndex::new(index_cfg.flush_threshold); // match the movies construction exactly
     let analyzer = Analyzer::default(); // or however movies builds it
 
-    let user_db = UserDatabase::new(store, index, analyzer);
-    let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
+    //let user_db = UserDatabase::new(store, index, analyzer);
+    //let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
 
     let state = AppState {
         databases: Arc::new(RwLock::new(handles)),
         databases_dir,
         default_format,
-        auth,
+        // auth,
     };
 
     //this clone is ok since it just += 1 for Arc
     let state_for_shutdown = state.clone();
 
     //login
-    let public_routes = Router::new().route("/api/login", post(handlers::login_handler));
+    //let public_routes = Router::new().route("/api/login", post(handlers::login_handler));
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
@@ -209,10 +210,10 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/retrieve",
             post(handlers::retrieve_handler),
         )
-        .route(
-            "/api/databases/{db_name}/lookup",
-            post(handlers::lookup_handler),
-        )
+        // .route(
+        //     "/api/databases/{db_name}/lookup",
+        //     post(handlers::lookup_handler),
+        // )
         .route(
             "/api/databases/{db_name}/replace",
             put(handlers::replace_document_handler),
@@ -233,10 +234,10 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/clear-logs",
             delete(handlers::clear_logs_handler),
         )
-        .route(
-            "/api/databases/{db_name}/create-database",
-            post(handlers::create_database_handler),
-        )
+        // .route(
+        //     "/api/databases/{db_name}/create-database",
+        //     post(handlers::create_database_handler),
+        // )
         .route(
             "/api/databases/{db_name}/clear-database",
             delete(handlers::clear_database_handler),
@@ -254,10 +255,10 @@ async fn main() -> io::Result<()> {
             post(handlers::stop_database_handler),
         )
         .route("/api/list-databases", get(handlers::list_databases_handler))
-        .route(
-            "/api/databases/{db_name}/status",
-            get(handlers::stats_handler),
-        )
+        // .route(
+        //     "/api/databases/{db_name}/status",
+        //     get(handlers::stats_handler),
+        // )
         .route(
             "/api/databases/{db_name}/reindex",
             post(handlers::reindex_handler),
@@ -270,19 +271,19 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/set-policy",
             post(handlers::set_policy_handler),
         )
-        .route("/api/users", post(handlers::create_user_handler))
-        .route(
-            "/api/users/{username}",
-            delete(handlers::delete_user_handler),
-        )
-        .route(
-            "/api/users/{username}/password",
-            post(handlers::update_user_password_handler),
-        )
-        .route(
-            "/api/users/{username}/roles",
-            post(handlers::update_user_roles_handler),
-        )
+        // .route("/api/users", post(handlers::create_user_handler))
+        // .route(
+        //     "/api/users/{username}",
+        //     delete(handlers::delete_user_handler),
+        // )
+        // .route(
+        //     "/api/users/{username}/password",
+        //     post(handlers::update_user_password_handler),
+        // )
+        // .route(
+        //     "/api/users/{username}/roles",
+        //     post(handlers::update_user_roles_handler),
+        // )
         .route(
             "/api/databases/{db_name}/get-config",
             get(handlers::get_config_handler),
@@ -296,21 +297,21 @@ async fn main() -> io::Result<()> {
             post(handlers::restart_database_handler),
         );
 
-    let protected_routes = if enable_auth {
-        protected_routes.layer(from_fn_with_state(
-            state.clone(),
-            middleware::auth_middleware,
-        ))
-    } else {
-        warn!(log, "AUTH DISABLED — You're on your own!");
-
-        protected_routes.layer(axum::middleware::from_fn(
-            middleware::disabled_auth_middleware,
-        ))
-    };
+    // let protected_routes = if enable_auth {
+    //     //  protected_routes.layer(from_fn_with_state(
+    //     //    state.clone(),
+    //     //       middleware::auth_middleware,
+    //     // ))
+    // } else {
+    //     warn!(log, "AUTH DISABLED — You're on your own!");
+    //
+    //     //protected_routes.layer(axum::middleware::from_fn(
+    //     //   middleware::disabled_auth_middleware,
+    //     // ))
+    // };
 
     let app = Router::new()
-        .merge(public_routes)
+        //.merge(public_routes)
         .merge(protected_routes)
         //TODO: Make configurable
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
