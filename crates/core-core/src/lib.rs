@@ -3,7 +3,7 @@ pub mod command_response_helpers;
 pub mod metrics;
 mod options;
 mod shard_db;
-mod shard_manager;
+pub mod shard_manager;
 
 pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;

@@ -1,17 +1,15 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::DatabaseOptions;
 use crate::ShardDb;
-use crate::{DatabaseOptions, shard_for};
 use core_index::document::IndexPolicy;
 use core_protocol::errors::CorelamoError;
-use core_storage::search_database::{DocumentInput, InsertReport};
 
 pub struct ShardManager {
-    shards: Vec<ShardDb>,
+    pub shards: Vec<ShardDb>,
     root: PathBuf,
-    policy: IndexPolicy,
-    options: DatabaseOptions,
+    pub policy: IndexPolicy,
+    pub options: DatabaseOptions,
 }
 
 impl ShardManager {

@@ -1,11 +1,9 @@
 use core_core::{
-    DatabaseOptions, DatabaseStats, ShardDb,
+    DatabaseOptions, ShardDb,
     command_reponse_definitions::{LookupCommand, SearchCommand},
+    shard_manager::ShardManager,
 };
-use core_index::{
-    document::{self, IndexPolicy},
-    lsm::index_worker::ReindexGuard,
-};
+use core_index::{document::IndexPolicy, lsm::index_worker::ReindexGuard};
 use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
 use core_storage::{
     document_store::StoredDocument,
@@ -23,7 +21,7 @@ use tokio::sync::{mpsc, oneshot};
 //creates a chanel for a single message (command)
 type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
 
-type ShardDb = document::search_database::ShardDatabase; //TODO
+//type ShardDb = document::search_database::ShardDatabase; //TODO
 
 //INFO: how many listeners for search/lookup/retrieve
 //TODO: make configurable
@@ -60,9 +58,9 @@ pub enum DbCommand {
         ids: Vec<String>,
         reply: Reply<Vec<(String, Option<StoredDocument>)>>,
     },
-    Status {
-        reply: Reply<DatabaseStats>,
-    },
+    // Status {
+    //     reply: Reply<DatabaseStats>,
+    // },
     GetOptions {
         reply: Reply<DatabaseOptions>,
     },
@@ -120,7 +118,7 @@ fn classify(cmd: &DbCommand) -> Class {
         Search { .. }
         | Lookup { .. }
         | Retrieve { .. }
-        | Status { .. }
+       // | Status { .. }
         | GetOptions { .. }
         | GetPolicy { .. }
         | IsRunning { .. }
@@ -216,9 +214,9 @@ impl DbHandle {
         self.call(|reply| DbCommand::Lookup { cmd, reply }).await
     }
 
-    pub async fn stats(&self) -> Result<DatabaseStats, CorelamoError> {
-        self.call(|reply| DbCommand::Status { reply }).await
-    }
+    // pub async fn stats(&self) -> Result<DatabaseStats, CorelamoError> {
+    //     self.call(|reply| DbCommand::Status { reply }).await
+    //   }
 
     pub async fn options(&self) -> Result<DatabaseOptions, CorelamoError> {
         self.call(|reply| DbCommand::GetOptions { reply }).await
@@ -253,55 +251,63 @@ impl DbHandle {
     }
 }
 
-pub fn spawn_db_actor(db: ShardDb, name: String) -> (DbHandle, thread::JoinHandle<()>) {
+pub fn spawn_db_actor(
+    manager: ShardManager,
+    name: String,
+) -> (DbHandle, std::thread::JoinHandle<()>) {
+    let manager = Arc::new(manager);
     let (tx, mut rx) = mpsc::channel::<DbCommand>(64);
     let log = slog_scope::logger();
-    let join = thread::Builder::new()
-        .name(format!("db-actorc-{name}"))
+
+    let manager_for_dispatcher = manager.clone();
+    let join = std::thread::Builder::new()
+        .name(format!("db-actor-{name}"))
         .spawn(move || {
-            dispatcher_loop(db, &mut rx, &name);
+            dispatcher_loop(manager_for_dispatcher, &mut rx, &name);
             info!(log, "exiting"; "db_actor" => %name);
         })
         .expect("failed to spawn db actor thread");
+
     (DbHandle { tx }, join)
 }
 
 //this doesnt really do anything heavy just routes to Read Write Shutdown
-fn dispatcher_loop(db: ShardDb, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
-    let progress = db.progress();
+fn dispatcher_loop(manager: Arc<ShardManager>, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
     let log = slog_scope::logger();
 
     let (read_tx, read_rx) = xchan::unbounded::<DbCommand>();
     let (write_tx, write_rx) = xchan::unbounded::<DbCommand>();
 
-    //N threads for reads
+    // N threads for reads
     let mut reader_joins = Vec::with_capacity(READER_THREADS);
     for i in 0..READER_THREADS {
-        let db = db.clone();
+        let manager = manager.clone();
         let read_rx = read_rx.clone();
-        let progress = progress.clone();
         let name = name.to_string();
+
         reader_joins.push(
-            thread::Builder::new()
+            std::thread::Builder::new()
                 .name(format!("db-reader-{name}-{i}"))
-                .spawn(move || reader_loop(&db, &read_rx, &name, &progress))
+                .spawn(move || reader_loop(manager, &read_rx, &name))
                 .expect("failed to spawn reader thread"),
         );
     }
     drop(read_rx);
 
-    // writer - one thread
+    // Writer - one thread
     let writer_join = {
-        let db = db.clone();
-        let progress = progress.clone();
+        let manager = manager.clone();
         let name = name.to_string();
-        thread::Builder::new()
+
+        std::thread::Builder::new()
             .name(format!("db-writer-{name}"))
-            .spawn(move || writer_loop(ShardDb, &write_rx, &name, &progress))
+            .spawn(move || writer_loop(manager, &write_rx, &name))
             .expect("failed to spawn writer thread")
     };
 
-    // route
+    drop(manager);
+
+    // Route commands
     let mut shutdown_reply = None;
     while let Some(cmd) = rx.blocking_recv() {
         match classify(&cmd) {
@@ -327,98 +333,81 @@ fn dispatcher_loop(db: ShardDb, rx: &mut mpsc::Receiver<DbCommand>, name: &str) 
     }
     let _ = writer_join.join();
 
-    //all clear we can close everythin
-
-    match shutdown_reply {
-        Some(reply) => {
-            let result = {
-                db.shutdown().map_err(|e| {
-                    error!(log, "Shutdown failed"; "error" => %e);
-                    CorelamoError::Internal(format!("shutdown failed: {e}"))
-                })
-            };
-            let _ = reply.send(result);
-        }
-        None => {
-            warn!(log, "channel closed without shutdown, stopping"; "db_actor" => %name);
-            if let Err(e) = guard.stop() {
-                error!(log, "stop failed"; "db_actor" => %name, "error" => %e);
-            }
-        }
+    if let Some(reply) = shutdown_reply {
+        let _ = reply.send(Ok(()));
     }
+
+    info!(log, "dispatcher stopped"; "db_actor" => %name);
 }
 
-fn reader_loop(
-    db: ShardDb,
-    rx: &xchan::Receiver<DbCommand>,
-    name: &str,
-    progress: &Arc<core_index::lsm::index_worker::ReindexProgress>,
-) {
+fn reader_loop(manager: Arc<ShardManager>, rx: &xchan::Receiver<DbCommand>, name: &str) {
+    let log = slog_scope::logger();
+
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            DbCommand::Search { cmd, reply } => {
-                db.search(&cmd)
-                    .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")));
-                let _ = reply.send(result);
-            }
-
-            DbCommand::Lookup { cmd, reply } => {
-                db.lookup(&cmd);
-                let _ = reply.send(result);
-            }
-
-            DbCommand::Retrieve { ids, reply } => {
-                let mut out = Vec::with_capacity(ids.len());
-                for id in ids {
-                    let doc = db.get_document(&id).map_err(|e| {
-                        CorelamoError::Internal(format!("failed to get document '{id}': {e}"))
-                    })?;
-                    out.push((id, doc));
-                }
-                let _ = reply.send(Ok(out));
-            }
-
-            DbCommand::GetOptions { reply } => {
-                db.options().clone();
-                let _ = reply.send(result);
-            }
-            DbCommand::GetPolicy { reply } => {
-                db.policy().clone();
-                let _ = reply.send(result);
-            }
-            DbCommand::IsRunning { reply } => {
-                db.is_running();
-                let _ = reply.send(result);
-            }
-            DbCommand::GetLogs { date, reply } => {
-                db.get_logs(date);
-                let _ = reply.send(result);
-            }
-            DbCommand::Status { reply } => {
-                let snapshot = progress.snapshot();
-                let result = match db.is_running() {
-                    Some(_) => Err(CorelamoError::DatabaseNotRunning(format!(
-                        "database {name} is not running"
-                    ))),
-                    None if progress.phase().is_running() => {
-                        // a reindex really holds the lock: report progress, don't wait
-                        Ok(ShardDb::stats_swapping(snapshot, Default::default()))
-                    }
-                    None => {
-                        // a normal write holds the lock: block briefly for a real reading
-
-                        if db.is_running() {
-                            db.stats()
-                                .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
-                        } else {
-                            Err(CorelamoError::DatabaseNotRunning(format!(
-                                "database {name} is not running"
-                            )))
-                        }
-                    }
-                };
-                let _ = reply.send(result);
-            }
+            // DbCommand::Search { cmd, reply } => {
+            //     db.search(&cmd)
+            //         .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")));
+            //     let _ = reply.send(result);
+            // }
+            //
+            // DbCommand::Lookup { cmd, reply } => {
+            //     db.lookup(&cmd);
+            //     let _ = reply.send(result);
+            // }
+            //
+            // DbCommand::Retrieve { ids, reply } => {
+            //     let mut out = Vec::with_capacity(ids.len());
+            //     for id in ids {
+            //         let doc = db.get_document(&id).map_err(|e| {
+            //             CorelamoError::Internal(format!("failed to get document '{id}': {e}"))
+            //         })?;
+            //         out.push((id, doc));
+            //     }
+            //     let _ = reply.send(Ok(out));
+            // }
+            //
+            // DbCommand::GetOptions { reply } => {
+            //     db.options().clone();
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::GetPolicy { reply } => {
+            //     db.policy().clone();
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::IsRunning { reply } => {
+            //     db.is_running();
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::GetLogs { date, reply } => {
+            //     db.get_logs(date);
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::Status { reply } => {
+            //     let snapshot = progress.snapshot();
+            //     let result = match db.is_running() {
+            //         Some(_) => Err(CorelamoError::DatabaseNotRunning(format!(
+            //             "database {name} is not running"
+            //         ))),
+            //         None if progress.phase().is_running() => {
+            //             // a reindex really holds the lock: report progress, don't wait
+            //             Ok(ShardDb::stats_swapping(snapshot, Default::default()))
+            //         }
+            //         None => {
+            //             // a normal write holds the lock: block briefly for a real reading
+            //
+            //             if db.is_running() {
+            //                 db.stats()
+            //                     .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
+            //             } else {
+            //                 Err(CorelamoError::DatabaseNotRunning(format!(
+            //                     "database {name} is not running"
+            //                 )))
+            //             }
+            //         }
+            //     };
+            //     let _ = reply.send(result);
+            // }
             other => {
                 // dispatcher misrouted a non-read command
                 drop(other);
@@ -427,86 +416,82 @@ fn reader_loop(
     }
 }
 
-fn writer_loop(
-    db: ShardDb,
-    rx: &xchan::Receiver<DbCommand>,
-    name: &str,
-    progress: &Arc<core_index::lsm::index_worker::ReindexProgress>,
-) {
+fn writer_loop(manager: Arc<ShardManager>, rx: &xchan::Receiver<DbCommand>, name: &str) {
     let log = slog_scope::logger();
+
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            DbCommand::Insert { docs, reply } => {
-                let result = db.put_documents_parallel(docs).map_err(|e| {
-                    error!(log, "Insert failed"; "error" => %e);
-                    CorelamoError::Internal(format!("insert failed: {e}"))
-                });
-                let _ = reply.send(result);
-            }
-            DbCommand::Replace { docs, reply } => {
-                let result = replace_docs(&mut db, docs);
-                let _ = reply.send(result);
-            }
-            DbCommand::Delete { ids, reply } => {
-                let result = delete_docs(&mut db, ids);
-                let _ = reply.send(result);
-            }
-            DbCommand::Upsert { docs, reply } => {
-                let mut out = Vec::with_capacity(docs.len());
-                for (index, doc) in docs.into_iter().enumerate() {
-                    let id = doc.external_id.clone();
-                    let r = db
-                        .upsert_document(doc)
-                        .map_err(|e| CorelamoError::Internal(e.to_string()));
-                    out.push((index, id, r));
-                }
-                let _ = reply.send(Ok(out));
-            }
-            DbCommand::Clear { reply } => {
-                let result = guard.clear().map_err(|e| {
-                    error!(logger(), "Database Clear failed"; "error" => %e);
-                    CorelamoError::Internal(format!("failed to clear database {name}: {e}"))
-                });
-                let _ = reply.send(result);
-            }
-            DbCommand::ClearLogs { reply } => {
-                let result = guard.clear_logs().map_err(|e| {
-                    error!(logger(), "Database ClearLogs failed"; "error" => %e);
-                    CorelamoError::Internal(format!("failed to clear logs for {name}: {e}"))
-                });
-                let _ = reply.send(result);
-            }
-            DbCommand::SetPolicy { policy, reply } => {
-                db.set_policy(policy).map_err(|e| {
-                    CorelamoError::Internal(format!("set policy failed on '{name}': {e}"))
-                });
-                let _ = reply.send(result);
-            }
-            DbCommand::SetOptions { options, reply } => {
-                db.set_options(options)?;
-                db.is_running();
-            }
-            DbCommand::StartDatabase { reply } => {
-                let result = if db.is_running() {
-                    Ok(DatabasePowerButtonOutcome::Nochange)
-                } else {
-                    db.start().map(|()| DatabasePowerButtonOutcome::Changed)
-                };
-                let _ = reply.send(result);
-            }
-            DbCommand::StopDatabase { reply } => {
-                let result = if !db.is_running() {
-                    Ok(DatabasePowerButtonOutcome::Nochange)
-                } else {
-                    db.stop().map(|()| DatabasePowerButtonOutcome::Changed)
-                };
-                let _ = reply.send(result);
-            }
-            DbCommand::Restart { reply } => {
-                db.restart();
-                let _ = reply.send(result);
-            }
-            DbCommand::Reindex { reply } => handle_reindex(db, name, progress, reply, &log),
+            // DbCommand::Insert { docs, reply } => {
+            //     let result = db.put_documents_parallel(docs).map_err(|e| {
+            //         error!(log, "Insert failed"; "error" => %e);
+            //         CorelamoError::Internal(format!("insert failed: {e}"))
+            //     });
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::Replace { docs, reply } => {
+            //     let result = replace_docs(&mut db, docs);
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::Delete { ids, reply } => {
+            //     let result = delete_docs(&mut db, ids);
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::Upsert { docs, reply } => {
+            //     let mut out = Vec::with_capacity(docs.len());
+            //     for (index, doc) in docs.into_iter().enumerate() {
+            //         let id = doc.external_id.clone();
+            //         let r = db
+            //             .upsert_document(doc)
+            //             .map_err(|e| CorelamoError::Internal(e.to_string()));
+            //         out.push((index, id, r));
+            //     }
+            //     let _ = reply.send(Ok(out));
+            // }
+            // DbCommand::Clear { reply } => {
+            //     let result = guard.clear().map_err(|e| {
+            //         error!(logger(), "Database Clear failed"; "error" => %e);
+            //         CorelamoError::Internal(format!("failed to clear database {name}: {e}"))
+            //     });
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::ClearLogs { reply } => {
+            //     let result = guard.clear_logs().map_err(|e| {
+            //         error!(logger(), "Database ClearLogs failed"; "error" => %e);
+            //         CorelamoError::Internal(format!("failed to clear logs for {name}: {e}"))
+            //     });
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::SetPolicy { policy, reply } => {
+            //     db.set_policy(policy).map_err(|e| {
+            //         CorelamoError::Internal(format!("set policy failed on '{name}': {e}"))
+            //     });
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::SetOptions { options, reply } => {
+            //     db.set_options(options)?;
+            //     db.is_running();
+            // }
+            // DbCommand::StartDatabase { reply } => {
+            //     let result = if db.is_running() {
+            //         Ok(DatabasePowerButtonOutcome::Nochange)
+            //     } else {
+            //         db.start().map(|()| DatabasePowerButtonOutcome::Changed)
+            //     };
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::StopDatabase { reply } => {
+            //     let result = if !db.is_running() {
+            //         Ok(DatabasePowerButtonOutcome::Nochange)
+            //     } else {
+            //         db.stop().map(|()| DatabasePowerButtonOutcome::Changed)
+            //     };
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::Restart { reply } => {
+            //     db.restart();
+            //     let _ = reply.send(result);
+            // }
+            // DbCommand::Reindex { reply } => handle_reindex(db, name, progress, reply, &log),
             other => {
                 debug_assert!(false, "non-write command reached writer");
                 drop(other);
@@ -515,104 +500,104 @@ fn writer_loop(
     }
 }
 
-fn handle_reindex(
-    db: ShardDb,
-    name: &str,
-    progress: &Arc<core_index::lsm::index_worker::ReindexProgress>,
-    reply: Reply<()>,
-    log: &slog::Logger,
-) {
-    let params = {
-        let total = ShardDb.document_count_hint();
-        if !progress.try_begin(total) {
-            let _ = reply.send(Err(CorelamoError::Busy(format!(
-                "database '{name}' is already reindexing"
-            ))));
-            return;
-        }
-        if let Err(e) = ShardDb.pause_compaction() {
-            warn!(log, "could not pause compaction"; "error" => %e);
-        }
-        ShardDb.reindex_params()
-    };
-
-    let db_handle = db.clone();
-    let thread_log = log.clone();
-    let guard = ReindexGuard::new(progress.clone());
-    std::thread::spawn(move || {
-        match ShardDb::build_staging_index(&params) {
-            Ok(watermark) => match db.reindex_swap(watermark) {
-                Ok(()) => guard.succeed(),
-                Err(_) => guard.fail(),
-            },
-            Err(e) => {
-                error!(thread_log, "reindex staging failed"; "error" => %e);
-                // staging failed with the database still intact; just restart
-                // the compaction we paused.
-                if let Err(e) = db.start() {
-                    error!(thread_log, "resume failed"; "error" => %e);
-                }
-                guard.fail();
-            }
-        }
-    });
-    let _ = reply.send(Ok(()));
-}
-
-//helper funcion so that the call looks more readable
-fn replace_docs(
-    db: &mut ShardDb,
-    docs: Vec<DocumentInput>,
-) -> Result<ReplaceReport, CorelamoError> {
-    let mut replaced = 0;
-    let mut failures = Vec::new();
-    let log = slog_scope::logger();
-    for (index, doc) in docs.into_iter().enumerate() {
-        let exists = db
-            .get_document(&doc.external_id)
-            .map_err(|e| {
-                error!(log, "existence check failed"; "error" => %e);
-                CorelamoError::Internal(format!("existence check failed: {e}"))
-            })?
-            .is_some();
-        if exists {
-            db.upsert_document(doc).map_err(|e| {
-                error!(log, "Replace failed"; "error" => %e);
-                CorelamoError::Internal(format!("replace failed: {e}"))
-            })?;
-            replaced += 1;
-        } else {
-            failures.push(DocFailure::with_id(
-                index,
-                doc.external_id,
-                FailReason::NotFound,
-            ));
-        }
-    }
-    Ok(ReplaceReport { replaced, failures })
-}
-
-fn delete_docs(db: &mut ShardDb, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
-    let mut deleted = 0;
-    let mut failures = Vec::new();
-    let log = slog_scope::logger();
-    for (index, id) in ids.into_iter().enumerate() {
-        let exists = db
-            .get_document(&id)
-            .map_err(|e| {
-                error!(log, "Failed lookup"; "error" => %e, "id" => %id);
-                CorelamoError::Internal(format!("failed to lookup '{id}': {e}"))
-            })?
-            .is_some();
-        if exists {
-            db.delete_document(&id).map_err(|e| {
-                error!(log, "failed to delete"; "error" => %e, "id" => %id);
-                CorelamoError::Internal(format!("failed to delete '{id}': {e}"))
-            })?;
-            deleted += 1;
-        } else {
-            failures.push(DocFailure::with_id(index, id, FailReason::NotFound));
-        }
-    }
-    Ok(DeleteReport { deleted, failures })
-}
+// fn handle_reindex(
+//     db: ShardDb,
+//     name: &str,
+//     progress: &Arc<core_index::lsm::index_worker::ReindexProgress>,
+//     reply: Reply<()>,
+//     log: &slog::Logger,
+// ) {
+//     let params = {
+//         let total = ShardDb.document_count_hint();
+//         if !progress.try_begin(total) {
+//             let _ = reply.send(Err(CorelamoError::Busy(format!(
+//                 "database '{name}' is already reindexing"
+//             ))));
+//             return;
+//         }
+//         if let Err(e) = ShardDb.pause_compaction() {
+//             warn!(log, "could not pause compaction"; "error" => %e);
+//         }
+//         ShardDb.reindex_params()
+//     };
+//
+//     let db_handle = db.clone();
+//     let thread_log = log.clone();
+//     let guard = ReindexGuard::new(progress.clone());
+//     std::thread::spawn(move || {
+//         match ShardDb::build_staging_index(&params) {
+//             Ok(watermark) => match db.reindex_swap(watermark) {
+//                 Ok(()) => guard.succeed(),
+//                 Err(_) => guard.fail(),
+//             },
+//             Err(e) => {
+//                 error!(thread_log, "reindex staging failed"; "error" => %e);
+//                 // staging failed with the database still intact; just restart
+//                 // the compaction we paused.
+//                 if let Err(e) = db.start() {
+//                     error!(thread_log, "resume failed"; "error" => %e);
+//                 }
+//                 guard.fail();
+//             }
+//         }
+//     });
+//     let _ = reply.send(Ok(()));
+// }
+//
+// //helper funcion so that the call looks more readable
+// fn replace_docs(
+//     db: &mut ShardDb,
+//     docs: Vec<DocumentInput>,
+// ) -> Result<ReplaceReport, CorelamoError> {
+//     let mut replaced = 0;
+//     let mut failures = Vec::new();
+//     let log = slog_scope::logger();
+//     for (index, doc) in docs.into_iter().enumerate() {
+//         let exists = db
+//             .get_document(&doc.external_id)
+//             .map_err(|e| {
+//                 error!(log, "existence check failed"; "error" => %e);
+//                 CorelamoError::Internal(format!("existence check failed: {e}"))
+//             })?
+//             .is_some();
+//         if exists {
+//             db.upsert_document(doc).map_err(|e| {
+//                 error!(log, "Replace failed"; "error" => %e);
+//                 CorelamoError::Internal(format!("replace failed: {e}"))
+//             })?;
+//             replaced += 1;
+//         } else {
+//             failures.push(DocFailure::with_id(
+//                 index,
+//                 doc.external_id,
+//                 FailReason::NotFound,
+//             ));
+//         }
+//     }
+//     Ok(ReplaceReport { replaced, failures })
+// }
+//
+// fn delete_docs(db: &mut ShardDb, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+//     let mut deleted = 0;
+//     let mut failures = Vec::new();
+//     let log = slog_scope::logger();
+//     for (index, id) in ids.into_iter().enumerate() {
+//         let exists = db
+//             .get_document(&id)
+//             .map_err(|e| {
+//                 error!(log, "Failed lookup"; "error" => %e, "id" => %id);
+//                 CorelamoError::Internal(format!("failed to lookup '{id}': {e}"))
+//             })?
+//             .is_some();
+//         if exists {
+//             db.delete_document(&id).map_err(|e| {
+//                 error!(log, "failed to delete"; "error" => %e, "id" => %id);
+//                 CorelamoError::Internal(format!("failed to delete '{id}': {e}"))
+//             })?;
+//             deleted += 1;
+//         } else {
+//             failures.push(DocFailure::with_id(index, id, FailReason::NotFound));
+//         }
+//     }
+//     Ok(DeleteReport { deleted, failures })
+// }
