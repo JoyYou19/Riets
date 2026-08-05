@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::DatabaseOptions;
 use crate::ShardDb;
 use core_index::document::IndexPolicy;
+use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 
 pub struct ShardManager {
@@ -48,7 +49,12 @@ impl ShardManager {
             let shard_root = shards_dir.join(format!("shard-{}", shard_id));
 
             //create shard 3000
-            let db = ShardDb::create_shard(&shard_root, shard_id, options.clone(), policy.clone())?;
+            let db = ShardDb::create_shard(
+                &shard_root,
+                ShardId::from(shard_id),
+                options.clone(),
+                policy.clone(),
+            )?;
             shards.push(db);
         }
 

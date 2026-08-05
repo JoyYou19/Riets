@@ -24,7 +24,7 @@ use core_index::{
         index_worker::{IndexingStats, ReindexProgress, ReindexingStats},
         worker::CompactionWorker,
     },
-    types::DocId,
+    types::{DocId, ShardId},
 };
 use core_protocol::errors::CorelamoError;
 use core_query::{Query, query_string_parser::parse_and_analyze};
@@ -65,7 +65,7 @@ impl DatabaseState {
 }
 
 pub struct ShardDb {
-    shard_id: u16,
+    shard_id: ShardId,
     root: PathBuf,
 
     policy: IndexPolicy,
@@ -87,7 +87,7 @@ impl ShardDb {
 
     pub fn create_shard(
         root: impl AsRef<Path>,
-        shard_id: u16,
+        shard_id: ShardId,
         options: DatabaseOptions,
         policy: IndexPolicy,
     ) -> Result<Self, CorelamoError> {
@@ -156,7 +156,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
 
         Ok(Self {
-            shard_id,
+            shard_id: ShardId::from(shard_id),
             root,
             policy: policy.clone(),
             options: options.clone(),
@@ -296,7 +296,7 @@ impl ShardDb {
         Ok(())
     }
 
-    pub fn shard_id(&self) -> u16 {
+    pub fn shard_id(&self) -> ShardId {
         self.shard_id
     }
 

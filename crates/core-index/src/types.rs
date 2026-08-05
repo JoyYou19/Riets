@@ -31,18 +31,34 @@ pub struct FieldStats {
 }
 
 // Sharding IDs
-#[derive(Debug, Clone,Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub struct ShardId(pub u16);
 impl std::fmt::Display for ShardId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
+
+impl slog::Value for ShardId {
+    fn serialize(
+        &self,
+        _record: &slog::Record,
+        key: slog::Key,
+        serializer: &mut dyn slog::Serializer,
+    ) -> slog::Result {
+        serializer.emit_u16(key, self.0)
+    }
+}
+
 impl From<u16> for ShardId {
-    fn from(v: u16) -> Self { ShardId(v) }
+    fn from(v: u16) -> Self {
+        ShardId(v)
+    }
 }
 impl From<ShardId> for u16 {
-    fn from(s: ShardId) -> Self { s.0 }
+    fn from(s: ShardId) -> Self {
+        s.0
+    }
 }
 impl TryFrom<usize> for ShardId {
     type Error = std::num::TryFromIntError;
