@@ -34,7 +34,10 @@ use crate::{
     http_response::{ BatchOutcome, HttpError, HttpOk },
     middleware::RequestContext,
 };
-use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
+use core_protocol::{
+    command_reponse_definitions::{Command, LookupCommand, LookupResponse},
+    errors::{CorelamoError, DocFailure, FailReason},
+};
 use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
 use std::{ collections::BTreeMap, sync::Arc };
@@ -136,96 +139,36 @@ pub async fn search_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // }
-    let body = match require_body(&body) {
-        Ok(b) => b.to_string(),
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-
-    let command: SearchCommand = match SearchCommand::parse(&body, ctx.format) {
+    let command = match LookupCommand::parse(&body, ctx.format) {
         Ok(cmd) => cmd,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let query = command.query.clone();
-
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let manager = match state.lookup(&db_name) {
+        Ok(m) => m,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    let manager = Arc::clone(&handle);
-    let hits = match tokio::task::spawn_blocking(move || manager.search(&command)).await {
-        Ok(Ok(hits)) => hits,
-        Ok(Err(e)) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+
+    let result = tokio::task::spawn_blocking(move || manager.lookup(&command)).await;
+
+    let resp = match result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
         Err(e) => {
             return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("search task panicked: {e}")),
-                &ctx
-            ).into_response();
+                CorelamoError::Internal(format!("lookup task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
         }
     };
 
-    let hit_count = hits.len();
-    let projected: Vec<(String, BTreeMap<String, String>)> = hits
-        .into_iter()
-        .map(|hit| (hit.external_id, hit.fields))
-        .collect();
-
-    let resp = match SearchResponse::from_hits(projected) {
-        Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-
-    HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
+    let hit_count = resp.docs.len();
+    HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
 }
 
-//TODO: cant really see the id if auto-increment :(
-
-// // pub async fn lookup_handler(
-// //     State(state): State<AppState>,
-// //     Path(db_name): Path<String>,
-// //     Extension(ctx): Extension<RequestContext>,
-// //     //Extension(principal): Extension<Principal>,
-// //     body: String,
-// // ) -> Response {
-// //     // let command = match LookupCommand::parse(&body, ctx.format) {
-// //     //     Ok(cmd) => cmd,
-// //     //     Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     // };
-// //
-// //     let handle = match state.lookup(&db_name) {
-// //         Ok(h) => h,
-// //         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     };
-// //
-// //     let (found, not_found) = match handle.lookup(command).await {
-// //         Ok(r) => r,
-// //         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     };
-// //
-// //     let hit_count = found.len();
-// //     let resp = match LookupResponse::from_hits(found, not_found) {
-// //         Ok(r) => r,
-// //         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     };
-// //
-// //     HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
-// // }
-//
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

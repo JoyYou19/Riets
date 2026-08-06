@@ -201,6 +201,14 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/insert",
             post(handlers::insert_handler),
         )
+        // .route(
+        //     "/api/databases/{db_name}/retrieve",
+        //     post(handlers::retrieve_handler),
+        // )
+        .route(
+            "/api/databases/{db_name}/lookup",
+            post(handlers::lookup_handler),
+        )
         .route(
             "/api/databases/{db_name}/retrieve",
             post(handlers::retrieve_handler),

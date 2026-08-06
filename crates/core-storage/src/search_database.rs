@@ -17,7 +17,8 @@ use core_index::{
 
 use bincode::{Decode, Encode};
 use core_protocol::{
-    errors::{DocFailure, FailReason},
+    command_reponse_definitions::{LookupCommand, LookupResponse},
+    errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
 use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
@@ -455,7 +456,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &self,
         ids: &[String],
         return_fields: Option<&IndexMap<String, bool>>,
-    ) -> io::Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>)> {
+    ) -> io::Result<LookupResponse> {
         let mut found = Vec::new();
         let mut not_found = Vec::new();
         for id in ids {
@@ -467,7 +468,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 None => not_found.push(id.clone()),
             }
         }
-        Ok((found, not_found))
+        LookupResponse::from_hits(found, not_found).map_err(io::Error::other)
     }
 
     pub fn search_document_hits_plan(
@@ -794,7 +795,6 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     }
 
     // Generates an external ID for documents that dont have one
-    //
     // packed global document ids are used as the generated external ID
     // (THIS IS NOT AUTOINCREMENT WE FUCK THEM)
     fn allocate_generated_external_id(&mut self, mut internal_id: DocId) -> io::Result<String> {
@@ -804,7 +804,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
             if !self.external_id_exists(&external_id)? {
                 self.seen.insert(external_id.clone());
 
-                return Ok(external_id);
+                return Ok(external_id.to_string());
             }
 
             internal_id = self.db.allocate_internal_id()?;
