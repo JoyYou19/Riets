@@ -10,7 +10,7 @@ pub struct DatabaseStats {
     pub document_count: usize,
     pub segment_count: usize,
     pub background_compaction_enabled: bool,
-    pub metrics: DatabaseMetrics,
+    //pub metrics: DatabaseMetrics,
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
     pub reindexing_total: u64,
@@ -605,3 +605,7 @@ impl ShardDb {
         self.pending_ops.push(op);
     }
 }
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<ShardDb>();
+};

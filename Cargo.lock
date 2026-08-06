@@ -524,6 +524,7 @@ dependencies = [
  "core-protocol",
  "core-query",
  "core-storage",
+ "crossbeam-channel",
  "indexmap",
  "parking_lot",
  "serde",

@@ -1,4 +1,4 @@
-use core_index::types::{DocId, MAX_LOCAL_DOC_ID};
+use core_index::types::DocId;
 use core_protocol::format::Format;
 use std::{collections::BTreeMap, io};
 

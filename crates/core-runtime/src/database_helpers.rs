@@ -29,17 +29,7 @@ pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, 
             }
         };
 
-        // Start shards if bootable
-        if manager.options().bootable {
-            match manager.start_all() {
-                Ok(()) => info!(log,"started database";"name"=>%name),
-                Err(e) => {
-                    error!(log,"database loaded but failed to start:";"name"=>%name, "error"=>%e)
-                }
-            }
-        } else {
-            info!(log,"loaded database";"name"=>%name);
-        }
+        
 
         databases.insert(name, manager);
     }

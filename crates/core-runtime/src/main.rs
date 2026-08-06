@@ -167,9 +167,7 @@ async fn main() -> io::Result<()> {
 
     // Setup databases and their handlers
     for (db_name, manager) in databases {
-        let (handle, join) = db_actor::spawn_db_actor(manager, db_name.clone());
-        handles.insert(db_name, handle);
-        joins.push(join);
+    handles.insert(db_name, DbHandle::new(manager,db_name));
     }
 
     let users_dir = root_path.join("users");

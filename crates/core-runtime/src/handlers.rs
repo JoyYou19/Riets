@@ -3,30 +3,39 @@
 
 use axum::{
     Extension,
-    extract::{Path, State},
+    extract::{ Path, State },
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{ IntoResponse, Response },
 };
 //use core_auth::{Permission, Principal};
 //
 use core_core::{
-    DatabaseOptions, ShardDb,
+    DatabaseOptions,
+    ShardDb,
     command_reponse_definitions::{
-        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, LookupResponse,
-        RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        Command,
+        DeleteCommand,
+        GetLogsRequest,
+        LoginResponse,
+        LookupCommand,
+        LookupResponse,
+        RetrieveCommand,
+        RetrieveResponse,
+        SearchCommand,
+        SearchResponse,
     },
     shard_manager::ShardManager,
 };
-use slog::{error, info, o};
+use slog::{ error, info, o };
 
 use crate::{
     AppState,
-    db_actor::{self, DbHandle},
+    db_actor::{ self, DbHandle },
     doctypes,
-    http_response::{BatchOutcome, HttpError, HttpOk},
+    http_response::{ BatchOutcome, HttpError, HttpOk },
     middleware::RequestContext,
 };
-use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
+use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -59,13 +68,12 @@ struct UpdateRolesRequest {
 fn require_body(body: &str) -> Result<&str, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        Err(CorelamoError::InvalidData(
-            "request body is empty".to_string(),
-        ))
+        Err(CorelamoError::InvalidData("request body is empty".to_string()))
     } else {
         Ok(trimmed)
     }
 }
+
 // fn check_permission(
 //     state: &AppState,
 //     principal: &Principal,
@@ -129,7 +137,7 @@ pub async fn search_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
     //     return HttpError::from_corelamo(e, &ctx).into_response();
@@ -186,7 +194,7 @@ pub async fn retrieve_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     // Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::Retrieve) {
     //     return HttpError::from_corelamo(e, &ctx).into_response();
@@ -282,7 +290,7 @@ pub async fn insert_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
     //    return HttpError::from_corelamo(e, &ctx).into_response();
@@ -306,9 +314,8 @@ pub async fn insert_handler(
         Ok(false) => {
             return HttpError::from_corelamo(
                 CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -323,9 +330,9 @@ pub async fn insert_handler(
     };
 
     let format = ctx.format;
-    let parsed =
-        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
-            .await;
+    let parsed = tokio::task::spawn_blocking(move ||
+        doctypes::parse_documents(&body, format, &policy)
+    ).await;
 
     let outcome = match parsed {
         Ok(Ok(o)) => o,
@@ -335,9 +342,8 @@ pub async fn insert_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     };
 
@@ -366,15 +372,13 @@ pub async fn insert_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome
-        .into_ok(StatusCode::OK, title, &db_name, &ctx)
-        .into_response()
+    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
 }
 
 pub async fn clear_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     //   if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
@@ -395,11 +399,7 @@ pub async fn clear_database_handler(
         }
     }
 
-    HttpOk::new(
-        format!("database: {db_name}, is cleared of data and index"),
-        &ctx,
-    )
-    .into_response()
+    HttpOk::new(format!("database: {db_name}, is cleared of data and index"), &ctx).into_response()
 }
 
 pub async fn get_logs_handler(
@@ -407,7 +407,7 @@ pub async fn get_logs_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
     //return HttpError::from_corelamo(e, &ctx).into_response();
@@ -429,9 +429,8 @@ pub async fn get_logs_handler(
             Err(e) => {
                 return HttpError::from_corelamo(
                     CorelamoError::InvalidData(format!("invalid get-logs request: {e}")),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         }
     };
@@ -445,7 +444,7 @@ pub async fn get_logs_handler(
 pub async fn clear_logs_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     //    if let Err(e) = check_permission(&state, &principal, Permission::ClearLogs) {
@@ -470,7 +469,7 @@ pub async fn delete_document_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //    Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
     //    return HttpError::from_corelamo(e, &ctx).into_response();
@@ -513,9 +512,7 @@ pub async fn delete_document_handler(
         outcome.failed_count()
     );
 
-    outcome
-        .into_ok(StatusCode::OK, title, &db_name, &ctx)
-        .into_response()
+    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
 }
 
 pub async fn replace_document_handler(
@@ -523,7 +520,7 @@ pub async fn replace_document_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     // Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
     //    return HttpError::from_corelamo(e, &ctx).into_response();
@@ -550,9 +547,9 @@ pub async fn replace_document_handler(
     };
 
     let format = ctx.format;
-    let parsed =
-        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
-            .await;
+    let parsed = tokio::task::spawn_blocking(move ||
+        doctypes::parse_documents(&body, format, &policy)
+    ).await;
 
     let parse_outcome = match parsed {
         Ok(Ok(o)) => o,
@@ -562,9 +559,8 @@ pub async fn replace_document_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     };
 
@@ -592,9 +588,7 @@ pub async fn replace_document_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome
-        .into_ok(StatusCode::OK, title, &db_name, &ctx)
-        .into_response()
+    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
 }
 
 pub async fn upsert_document_handler(
@@ -602,7 +596,7 @@ pub async fn upsert_document_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::Upsert) {
     //     return HttpError::from_corelamo(e, &ctx).into_response();
@@ -627,9 +621,9 @@ pub async fn upsert_document_handler(
     };
 
     let format = ctx.format;
-    let parsed =
-        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
-            .await;
+    let parsed = tokio::task::spawn_blocking(move ||
+        doctypes::parse_documents(&body, format, &policy)
+    ).await;
 
     let parse_outcome = match parsed {
         Ok(Ok(o)) => o,
@@ -639,9 +633,8 @@ pub async fn upsert_document_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     };
 
@@ -663,11 +656,14 @@ pub async fn upsert_document_handler(
     for (index, id, result) in results {
         match result {
             Ok(()) => outcome.succeed(),
-            Err(e) => outcome.fail_doc(DocFailure::new(
-                doc_indices.get(index).copied(),
-                Some(id),
-                FailReason::Internal(e.message()),
-            )),
+            Err(e) =>
+                outcome.fail_doc(
+                    DocFailure::new(
+                        doc_indices.get(index).copied(),
+                        Some(id),
+                        FailReason::Internal(e.message())
+                    )
+                ),
         }
     }
 
@@ -676,15 +672,13 @@ pub async fn upsert_document_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome
-        .into_ok(StatusCode::OK, title, &db_name, &ctx)
-        .into_response()
+    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
 }
 
 pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
@@ -696,30 +690,23 @@ pub async fn create_database_handler(
             Err(_) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         };
         if dbs.contains_key(&db_name) {
             return HttpError::from_corelamo(
                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     }
 
     let db_path = state.databases_dir.join(&db_name);
 
     let created = tokio::task::spawn_blocking(move || {
-        let mut manager = ShardManager::create_and_start(db_path, 1, DatabaseOptions::default())?;
-        if manager.options().bootable {
-            manager.start_all()?;
-        }
-        Ok::<_, CorelamoError>(manager)
-    })
-    .await;
+        ShardManager::create(db_path, 1, DatabaseOptions::default())
+    }).await;
 
     let manager = match created {
         Ok(Ok(mgr)) => mgr,
@@ -729,49 +716,46 @@ pub async fn create_database_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("create task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     };
 
-    let (handle, join) = db_actor::spawn_db_actor(manager, db_name.clone());
+    let handle = DbHandle::new(manager, db_name.clone());
+
     {
         let mut dbs = match state.databases.write() {
             Ok(g) => g,
             Err(_) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         };
         if dbs.contains_key(&db_name) {
-            drop(dbs);
-            drop(handle);
-            let _ = join.join();
-            return HttpError::from_corelamo(
-                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
-        }
-        dbs.insert(db_name.clone(), handle);
+        drop(dbs);
+        let _ = handle.shutdown().await;
+        return HttpError::from_corelamo(
+            CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
+            &ctx,
+        )
+        .into_response();
+    }
+    dbs.insert(db_name.clone(), handle);
     }
 
     HttpOk::with_status(
         StatusCode::CREATED,
         format!("database '{db_name}' created"),
-        &ctx,
-    )
-    .into_response()
+        &ctx
+    ).into_response()
 }
 
 pub async fn start_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::StartDB) {
@@ -798,7 +782,7 @@ pub async fn start_database_handler(
 pub async fn stop_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::StopDB) {
@@ -825,7 +809,7 @@ pub async fn stop_database_handler(
 pub async fn delete_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     let log = slog_scope::logger().new(o!("components"=> "handlers"));
@@ -838,9 +822,8 @@ pub async fn delete_database_handler(
             Err(_) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         };
         match dbs.remove(&db_name) {
@@ -848,9 +831,8 @@ pub async fn delete_database_handler(
             None => {
                 return HttpError::from_corelamo(
                     CorelamoError::NotFound(format!("database '{db_name}' not found")),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         }
     }; //guard dropped
@@ -858,9 +840,8 @@ pub async fn delete_database_handler(
     if let Err(e) = handle.shutdown().await {
         return HttpError::from_corelamo(
             CorelamoError::Internal(format!("failed to shutdown database '{db_name}': {e}")),
-            &ctx,
-        )
-        .into_response();
+            &ctx
+        ).into_response();
     }
     drop(handle); //last Sender gone
 
@@ -875,20 +856,18 @@ pub async fn delete_database_handler(
         Ok(Err(e)) => {
             error!(log, "database delete failed"; "name" => %db_name, "error" => %e);
             HttpError::from_corelamo(
-                CorelamoError::Internal(format!(
-                    "removed from memory but failed to delete '{db_name}' from disk: {e}"
-                )),
-                &ctx,
-            )
-            .into_response()
+                CorelamoError::Internal(
+                    format!("removed from memory but failed to delete '{db_name}' from disk: {e}")
+                ),
+                &ctx
+            ).into_response()
         }
         Err(e) => {
             error!(log, "database delete panicked"; "name" => %db_name, "error" => %e);
             HttpError::from_corelamo(
                 CorelamoError::Internal(format!("delete task panicked: {e}")),
-                &ctx,
-            )
-            .into_response()
+                &ctx
+            ).into_response()
         }
     }
 }
@@ -955,7 +934,7 @@ pub async fn delete_database_handler(
 pub async fn reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
@@ -969,11 +948,11 @@ pub async fn reindex_handler(
     };
 
     match handle.reindex().await {
-        Ok(()) => HttpOk::new(
-            format!("reindex started for '{db_name}', poll /status for progress"),
-            &ctx,
-        )
-        .into_response(),
+        Ok(()) =>
+            HttpOk::new(
+                format!("reindex started for '{db_name}', poll /status for progress"),
+                &ctx
+            ).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -983,7 +962,7 @@ pub async fn reindex_handler(
 pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
@@ -1014,7 +993,7 @@ pub async fn set_policy_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     // Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
     //    return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1049,7 +1028,7 @@ pub async fn set_policy_handler(
 pub async fn get_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
@@ -1080,7 +1059,7 @@ pub async fn set_config_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
     //   return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1123,7 +1102,7 @@ pub async fn set_config_handler(
 pub async fn restart_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::RestartDB) {
@@ -1146,7 +1125,7 @@ pub async fn restart_database_handler(
 
 pub async fn list_databases_handler(
     State(state): State<AppState>,
-    Extension(ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>
     //Extension(principal): Extension<Principal>,
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::ListDatabase) {
@@ -1158,9 +1137,8 @@ pub async fn list_databases_handler(
             Err(_) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         };
         dbs.iter()
@@ -1179,9 +1157,8 @@ pub async fn list_databases_handler(
     HttpOk::with_data(
         format!("{count} database(s)"),
         json!({ "databases": entries }),
-        &ctx,
-    )
-    .into_response()
+        &ctx
+    ).into_response()
 }
 // pub async fn create_user_handler(
 //     State(state): State<AppState>,
