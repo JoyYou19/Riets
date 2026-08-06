@@ -123,61 +123,68 @@ fn require_body(body: &str) -> Result<&str, CorelamoError> {
 // }
 //
 // //TODO: total_hits: xxx kkadu
-// pub async fn search_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     //Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let command: SearchCommand = match SearchCommand::parse(&body, ctx.format) {
-//         Ok(cmd) => cmd,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let query = command.query.clone();
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let hits = match handle.search(command).await {
-//         Ok(hits) => hits,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let hit_count = hits.len();
-//     let projected: Vec<(String, BTreeMap<String, String>)> = hits
-//         .into_iter()
-//         .map(|hit| (hit.external_id, hit.fields))
-//         .collect();
-//
-//     let resp = match SearchResponse::from_hits(projected) {
-//         Ok(r) => r,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
-// }
+pub async fn search_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    //Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let command: SearchCommand = match SearchCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let query = command.query.clone();
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+    let manager =Arc::clone(&handle);
+    let hits = match tokio::task::spawn_blocking(move || manager.search(&command)).await {
+        Ok(Ok(hits)) => hits,
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("search task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let hit_count = hits.len();
+    let projected: Vec<(String, BTreeMap<String, String>)> = hits
+        .into_iter()
+        .map(|hit| (hit.external_id, hit.fields))
+        .collect();
+
+    let resp = match SearchResponse::from_hits(projected) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
+}
 //
 // //TODO: cant really see the id if auto-increment :(
 // pub async fn retrieve_handler(

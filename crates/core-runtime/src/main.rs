@@ -193,10 +193,10 @@ async fn main() -> io::Result<()> {
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
-        // .route(
-        //     "/api/databases/{db_name}/search",
-        //     post(handlers::search_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/search",
+            post(handlers::search_handler),
+        )
         .route(
             "/api/databases/{db_name}/insert",
             post(handlers::insert_handler),
