@@ -10,6 +10,7 @@ use core_storage::{
 use rayon::prelude::*;
 use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
+use uuid::Uuid;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -62,12 +63,7 @@ fn extract_external_id(
 }
 
 fn generate_routing_id(fields: &BTreeMap<String, String>) -> String {
-    let mut hasher = DefaultHasher::new();
-    for (key, value) in fields {
-        key.hash(&mut hasher);
-        value.hash(&mut hasher);
-    }
-    format!("__auto_{:016x}", hasher.finish())
+    Uuid::new_v4().simple().to_string()
 }
 
 impl<'a> DocumentConversion for Json<'a> {

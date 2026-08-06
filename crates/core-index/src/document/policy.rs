@@ -98,7 +98,7 @@ impl IndexPolicy {
                 name: "id".to_string(),
                 xpath: 1,
                 weight: WeightInterval { min: 100, max: 100 },
-                index: IndexKind::Id,
+                index: IndexKind::IdAutoIncrement,
                 list: true,
                 stemming: None,
             },

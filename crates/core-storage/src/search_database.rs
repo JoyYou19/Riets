@@ -741,28 +741,18 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
         let internal_id = self.db.allocate_internal_id()?;
 
-        let is_auto_increment = input.external_id.starts_with("__auto_");
-        let external_id = if is_auto_increment {
-            //make a pretty auto id if that was bad
-            self.allocate_generated_external_id(internal_id)?
-        } else {
-            let external_id = input.external_id;
+        let external_id = input.external_id;
 
-            if self.external_id_exists(&external_id)? {
-                self.failures.push(DocFailure::with_id(
-                    input_index,
-                    external_id,
-                    FailReason::DuplicatePrimaryId,
-                ));
+        if self.external_id_exists(&external_id)? {
+            self.failures.push(DocFailure::with_id(
+                input_index,
+                external_id,
+                FailReason::DuplicatePrimaryId,
+            ));
+            return Ok(());
+        }
 
-                return Ok(());
-            }
-
-            self.seen.insert(external_id.clone());
-
-            external_id
-        };
-
+        self.seen.insert(external_id.clone());
         let stored = StoredDocument {
             external_id,
             internal_id,
