@@ -191,8 +191,6 @@ fn json_value_to_document_input(
 
     let external_id = extract_external_id(&fields, policy)?;
 
-    println!("external id from hash: {:?}", external_id);
-
     Ok(DocumentInput {
         external_id,
         fields,
