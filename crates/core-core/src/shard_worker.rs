@@ -15,7 +15,9 @@ use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_query::Query; // QueryPlan prom
-use core_storage::search_database::{DocumentInput, InsertReport, SearchDocumentHit};
+use core_storage::search_database::{
+    DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit,
+};
 
 pub enum ShardCmd {
     Insert {
@@ -57,6 +59,19 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
 
+    // Upsert {
+    //     inputs: Vec<DocumentInput>,
+    //     resp: Sender<Result<InsertReport, CorelamoError>>,
+    // },
+    // Replace {
+    //     inputs: Vec<DocumentInput>,
+    //     resp: Sender<Result<ReplaceReport, CorelamoError>>,
+    // },
+    // Delete {
+    //     ids: Vec<String>,
+    //     resp: Sender<Result<DeleteReport, CorelamoError>>,
+    // },
+    //
     Start {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -121,6 +136,16 @@ impl ShardHandle {
     pub fn flush(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Flush { resp })?
     }
+
+    // pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+    //     self.call(|resp| ShardCmd::Upsert { inputs, resp })?
+    // }
+    // pub fn replace(&self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
+    //     self.call(|resp| ShardCmd::Replace { inputs, resp })?
+    // }
+    // pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+    //     self.call(|resp| ShardCmd::Delete { ids, resp })?
+    // }
 
     pub fn is_running(&self) -> Result<bool, CorelamoError> {
         self.call(|resp| ShardCmd::IsRunning { resp })
@@ -233,6 +258,15 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                     let _ = resp.send(shard.document_count());
                 }
 
+                // ShardCmd::Upsert { inputs, resp } => {
+                //     let _ = resp.send(shard.upsert(inputs));
+                // }
+                // ShardCmd::Replace { inputs, resp } => {
+                //     let _ = resp.send(shard.replace(inputs));
+                // }
+                // ShardCmd::Delete { ids, resp } => {
+                //     let _ = resp.send(shard.delete(ids));
+                // }
                 ShardCmd::IsRunning { resp } => {
                     let _ = resp.send(shard.is_running());
                 }

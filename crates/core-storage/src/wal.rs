@@ -1,11 +1,11 @@
 //sis ir logging kas saglabajas pec crash WAL -Write ahead logging
 use crate::search_database::DocumentInput;
-use std::fs::{ File, OpenOptions };
-use std::io::{ self, Read, Seek, SeekFrom, Write };
-use std::path::{ Path, PathBuf };
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use serde::{ Serialize, Deserialize };
-use bincode::{ Encode, Decode };
 const MAX_ENTRY_SIZE: u32 = 64 * 1024 * 1024; //japarbauda
 const HEADER_SIZE: u64 = 8;
 const MIN_RECORD_SIZE: u64 = HEADER_SIZE + 1;
@@ -20,13 +20,13 @@ fn record_crc(offset: u64, len: u32, payload: &[u8]) -> u32 {
 #[derive(Clone, Copy, PartialEq)]
 pub enum SyncMode {
     SyncEach, // fsync before every acknowledgment (default, safe)
-    Manual, // caller must invoke flush(); appends are not durable until then
+    Manual,   // caller must invoke flush(); appends are not durable until then
 }
 struct Inner {
     file: File,
     durable_offset: u64, // end of last fsynced record; readers may not pass this
     written_offset: u64, // end of last written (possibly not yet durable) record
-    poisoned: bool, // set on fsync failure; all further writes refused
+    poisoned: bool,      // set on fsync failure; all further writes refused
 }
 
 #[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone, PartialEq)]
@@ -52,7 +52,10 @@ pub struct Wal {
 impl Wal {
     pub fn open(path: impl AsRef<Path>, mode: SyncMode) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::create(&mut OpenOptions::new(), true).read(true).write(true).open(&path)?;
+        let file = OpenOptions::create(&mut OpenOptions::new(), true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
         let mut inner = Inner {
             file,
             durable_offset: 0,
@@ -78,7 +81,10 @@ impl Wal {
     /// durable when this returns Ok. In Manual mode it is NOT durable until flush().
     pub fn append(&self, payload: &[u8]) -> io::Result<u64> {
         if (payload.len() as u64) > (MAX_ENTRY_SIZE as u64) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "entry too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "entry too large",
+            ));
         }
         let mut g = self.inner.lock().unwrap();
         if g.poisoned {
@@ -125,7 +131,10 @@ impl Wal {
     pub fn read_at(&self, offset: u64) -> io::Result<Vec<u8>> {
         let mut g = self.inner.lock().unwrap();
         if offset >= g.durable_offset {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "offset beyond durable data"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "offset beyond durable data",
+            ));
         }
         g.file.seek(SeekFrom::Start(offset))?;
         let mut header = [0u8; 8];
@@ -133,7 +142,10 @@ impl Wal {
         let len = u32::from_le_bytes(header[0..4].try_into().unwrap());
         let stored_crc = u32::from_le_bytes(header[4..8].try_into().unwrap());
         if len == 0 || len > MAX_ENTRY_SIZE {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "impossible length"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "impossible length",
+            ));
         }
 
         let mut payload = vec![0u8; len as usize];
@@ -200,16 +212,14 @@ impl Wal {
             let mut probe = pos + 1;
             while probe + MIN_RECORD_SIZE <= file_len {
                 if Self::read_record_at(file, probe, file_len)?.is_some() {
-                    return Err(
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "wal corruption at offset {pos}: valid record found at \
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "wal corruption at offset {pos}: valid record found at \
                              {probe}, refusing to truncate {} bytes",
-                                file_len - pos
-                            )
-                        )
-                    );
+                            file_len - pos
+                        ),
+                    ));
                 }
                 probe += 1;
             }
@@ -287,11 +297,17 @@ impl Wal {
             let start = pos + (HEADER_SIZE as usize);
             let stop = start + (len as usize);
             if len == 0 || len > MAX_ENTRY_SIZE || stop > raw.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated replay"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated replay",
+                ));
             }
             let payload = &raw[start..stop];
             if record_crc(abs, len, payload) != crc {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "crc mismatch in replay"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "crc mismatch in replay",
+                ));
             }
             out.push((abs + HEADER_SIZE + (len as u64), payload.to_vec()));
             pos = stop;

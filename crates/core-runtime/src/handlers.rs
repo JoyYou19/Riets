@@ -19,8 +19,8 @@ use crate::{
 };
 use core_protocol::{
     command_reponse_definitions::{
-        Command, LookupCommand, LookupResponse, RetrieveCommand, RetrieveResponse, SearchCommand,
-        SearchResponse,
+        Command, DeleteCommand, LookupCommand, LookupResponse, RetrieveCommand, RetrieveResponse,
+        SearchCommand, SearchResponse,
     },
     errors::{CorelamoError, DocFailure, FailReason},
 };
@@ -132,6 +132,21 @@ pub async fn search_handler(
     // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
     //     return HttpError::from_corelamo(e, &ctx).into_response();
     // }
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    if !handle.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -148,12 +163,6 @@ pub async fn search_handler(
 
     let query = command.query.clone();
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
     let manager = Arc::clone(&handle);
     let hits = match tokio::task::spawn_blocking(move || manager.search(&command)).await {
         Ok(Ok(hits)) => hits,
@@ -192,13 +201,20 @@ pub async fn lookup_handler(
     //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    let command = match LookupCommand::parse(&body, ctx.format) {
-        Ok(cmd) => cmd,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
     let manager = match state.lookup(&db_name) {
         Ok(m) => m,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    if !manager.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let command = match LookupCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
@@ -244,7 +260,7 @@ pub async fn insert_handler(
         }
     };
 
-    if !handle.all_alive() {
+    if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
             &ctx,
@@ -313,6 +329,7 @@ pub async fn retrieve_handler(
     // if let Err(e) = check_permission(&state, &principal, Permission::Retrieve) {
     //     return HttpError::from_corelamo(e, &ctx).into_response();
     // }
+
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -333,6 +350,15 @@ pub async fn retrieve_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
+
+    if !handle.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
     let manager = Arc::clone(&handle);
     let ids = command.ids;
     let results = match tokio::task::spawn_blocking(move || manager.retrieve(ids)).await {
@@ -457,7 +483,6 @@ pub async fn clear_database_handler(
         }
     };
 
-    //FIX: this should stop reindex!!!!
     match manager.clear_all() {
         Ok(_) => {}
         Err(e) => {
@@ -587,6 +612,7 @@ pub async fn clear_database_handler(
 //         .into_response()
 // }
 //
+//
 // pub async fn replace_document_handler(
 //     State(state): State<AppState>,
 //     Path(db_name): Path<String>,
@@ -666,6 +692,7 @@ pub async fn clear_database_handler(
 //         .into_response()
 // }
 //
+
 // pub async fn upsert_document_handler(
 //     State(state): State<AppState>,
 //     Path(db_name): Path<String>,
@@ -682,13 +709,13 @@ pub async fn clear_database_handler(
 //             return HttpError::from_corelamo(e, &ctx).into_response();
 //         }
 //     };
-//     let handle = match state.lookup(&db_name) {
+//     let manager = match state.lookup(&db_name) {
 //         Ok(h) => h,
 //         Err(e) => {
 //             return HttpError::from_corelamo(e, &ctx).into_response();
 //         }
 //     };
-//     let policy = match handle.get_policy().await {
+//     let policy = match manager.get_policy().await {
 //         Ok(p) => p,
 //         Err(e) => {
 //             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -717,14 +744,13 @@ pub async fn clear_database_handler(
 //     let doc_indices = parse_outcome.indices;
 //     let parse_failures = parse_outcome.failures;
 //
-//     let results = match handle.upsert(parse_outcome.docs).await {
+//     let results = match manager.upsert(parse_outcome.docs) {
 //         Ok(r) => r,
 //         Err(e) => {
 //             return HttpError::from_corelamo(e, &ctx).into_response();
 //         }
 //     };
 //
-//     //                                         Ralfam nepatika "500" \/
 //     let mut outcome = BatchOutcome::new("upserted", StatusCode::CONFLICT);
 //     outcome.fail_many(parse_failures);
 //
@@ -749,7 +775,6 @@ pub async fn clear_database_handler(
 //         .into_ok(StatusCode::OK, title, &db_name, &ctx)
 //         .into_response()
 // }
-//
 
 //TODO: palasit
 pub async fn create_database_handler(

@@ -610,6 +610,11 @@ impl ShardDb {
     }
 
     pub fn clear(&mut self) -> Result<(), CorelamoError> {
+        if self.progress.phase().is_running() {
+            self.progress.request_cancel();
+            info!(self.log, "clear: cancelling in-flight reindex"; "shard_id" => self.shard_id);
+        }
+
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
             info!(self.log, "compaction worker stopped for clear"; "shard_id" => self.shard_id);
