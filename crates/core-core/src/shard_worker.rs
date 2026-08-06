@@ -38,6 +38,10 @@ pub enum ShardCmd {
         resp: Sender<Result<LookupResponse, CorelamoError>>,
     },
 
+    IsRunning {
+        resp: Sender<bool>,
+    },
+
     Flush {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -116,6 +120,10 @@ impl ShardHandle {
 
     pub fn flush(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Flush { resp })?
+    }
+
+    pub fn is_running(&self) -> Result<bool, CorelamoError> {
+        self.call(|resp| ShardCmd::IsRunning { resp })
     }
 
     pub fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
@@ -223,6 +231,10 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 }
                 ShardCmd::DocCount { resp } => {
                     let _ = resp.send(shard.document_count());
+                }
+
+                ShardCmd::IsRunning { resp } => {
+                    let _ = resp.send(shard.is_running());
                 }
 
                 ShardCmd::Start { resp } => {

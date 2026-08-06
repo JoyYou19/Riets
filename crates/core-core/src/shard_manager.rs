@@ -123,6 +123,10 @@ impl ShardManager {
         }
     }
 
+    pub fn all_running(&self) -> bool {
+        self.shards.iter().all(|h| h.is_running().unwrap_or(false))
+    }
+
     pub fn stop(&self) -> Result<(), CorelamoError> {
         let pending: Vec<_> = self
             .shards

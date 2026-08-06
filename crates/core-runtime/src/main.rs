@@ -201,10 +201,6 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/insert",
             post(handlers::insert_handler),
         )
-        // .route(
-        //     "/api/databases/{db_name}/retrieve",
-        //     post(handlers::retrieve_handler),
-        // )
         .route(
             "/api/databases/{db_name}/lookup",
             post(handlers::lookup_handler),
@@ -213,10 +209,6 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/retrieve",
             post(handlers::retrieve_handler),
         )
-        // // .route(
-        // //     "/api/databases/{db_name}/lookup",
-        // //     post(handlers::lookup_handler),
-        // // )
         // .route(
         //     "/api/databases/{db_name}/replace",
         //     put(handlers::replace_document_handler),
@@ -257,7 +249,7 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/stop-database",
             post(handlers::stop_database_handler),
         )
-        // .route("/api/list-databases", get(handlers::list_databases_handler))
+        .route("/api/list-databases", get(handlers::list_databases_handler))
         // .route(
         //     "/api/databases/{db_name}/status",
         //     get(handlers::stats_handler),

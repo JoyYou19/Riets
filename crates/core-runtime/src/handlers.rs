@@ -1122,44 +1122,58 @@ pub async fn set_config_handler(
     }
 }
 
-// pub async fn list_databases_handler(
-//     State(state): State<AppState>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::ListDatabase) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let handles: Vec<(String, DbHandle)> = {
-//         let dbs = match state.databases.read() {
-//             Ok(g) => g,
-//             Err(_) => {
-//                 return HttpError::from_corelamo(
-//                     CorelamoError::Internal("databases lock poisoned".into()),
-//                     &ctx,
-//                 )
-//                 .into_response();
-//             }
-//         };
-//         dbs.iter()
-//             .map(|(name, h)| (name.clone(), h.clone()))
-//             .collect()
-//     };
-//
-//     let count = handles.len();
-//
-//     let mut entries = Vec::with_capacity(count);
-//     for (name, handle) in handles {
-//         let running = handle.is_running().await.unwrap_or(false);
-//         entries.push(json!({ "name": name, "running": running }));
-//     }
-//
-//     HttpOk::with_data(
-//         format!("{count} database(s)"),
-//         json!({ "databases": entries }),
-//         &ctx,
-//     )
-//     .into_response()
-// }
+pub async fn list_databases_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let managers: Vec<(String, Arc<ShardManager>)> = {
+        let dbs = match state.databases.read() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        dbs.iter()
+            .map(|(name, m)| (name.clone(), Arc::clone(m)))
+            .collect()
+    };
+
+    let count = managers.len();
+
+    let entries = tokio::task::spawn_blocking(move || {
+        managers
+            .into_iter()
+            .map(|(name, manager)| {
+                let running = manager.all_running();
+                json!({ "name": name, "running": running })
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+
+    let entries = match entries {
+        Ok(e) => e,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("list task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    HttpOk::with_data(
+        format!("{count} database(s)"),
+        json!({ "databases": entries }),
+        &ctx,
+    )
+    .into_response()
+}
+
 // // pub async fn create_user_handler(
 // //     State(state): State<AppState>,
 // //     Extension(ctx): Extension<RequestContext>,
