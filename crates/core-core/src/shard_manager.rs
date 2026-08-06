@@ -40,6 +40,9 @@ impl ShardManager {
     fn policy_path(root: &Path) -> PathBuf {
         root.join(Self::POLICY_PATH_NAME)
     }
+    pub fn all_alive(&self) -> bool {
+    self.shards.iter().all(|h| h.is_alive())
+    }
 
     pub fn create(
         root: PathBuf,

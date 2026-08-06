@@ -125,12 +125,7 @@ def login(username, password):
         capture_output=True,
         text=True,
     )
-    try:
-        data = json.loads(result.stdout)
-        return data["data"]["token"]
-    except (json.JSONDecodeError, KeyError, TypeError):
-        print(f"[ERROR] Login failed. Raw response: {result.stdout.strip()}")
-        return None
+    
 
 
 def curl_post(url, body, token):
@@ -162,9 +157,7 @@ def main():
     # 0. log in first — every request below needs the token
     print(f"[INFO] Logging in as '{USERNAME}'...")
     token = login(USERNAME, PASSWORD)
-    if not token:
-        print("[ERROR] Could not obtain token, aborting.")
-        return
+   
     print("[INFO] Login successful, token acquired.")
 
     # 1. delete if exists

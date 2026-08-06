@@ -300,26 +300,15 @@ pub async fn insert_handler(
         }
     };
 
-    match handle.is_running().await {
-        Ok(true) => {}
-        Ok(false) => {
-            return HttpError::from_corelamo(
-                CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-                &ctx,
-            )
-            .into_response();
-        }
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    }
+    if !handle.all_alive() {
+    return HttpError::from_corelamo(
+        CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+        &ctx,
+    )
+    .into_response();
+}
 
-    let policy = match handle.get_policy().await {
-        Ok(p) => p,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
+    let policy = handle.policy.clone();
 
     let format = ctx.format;
     let parsed =
@@ -343,7 +332,7 @@ pub async fn insert_handler(
     let doc_indices = outcome.indices;
     let parse_failures = outcome.failures;
 
-    let report = match handle.insert(outcome.docs).await {
+    let report = match handle.insert(outcome.docs) {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -711,7 +700,7 @@ pub async fn create_database_handler(
     let db_path = state.databases_dir.join(&db_name);
 
     let created = tokio::task::spawn_blocking(move || {
-        ShardManager::create(db_path, 1, DatabaseOptions::default())
+        ShardManager::create(db_path, 2, DatabaseOptions::default())
     })
     .await;
 
