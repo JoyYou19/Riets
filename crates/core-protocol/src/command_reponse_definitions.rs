@@ -1,11 +1,14 @@
 //from abstract http text to our commands, useful for complex commands like search, retrieve....
-use core_protocol::{errors::CorelamoError, format::Format};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 
-use crate::command_response_helpers::{FieldNode, tree_to_json, unflatten};
+use crate::{
+    command_response_helpers::{FieldNode, tree_to_json, unflatten},
+    errors::CorelamoError,
+    format::Format,
+};
 
 //trait Command -> all XXXCommand should have these properties
 pub trait Command: Sized {
@@ -162,8 +165,8 @@ impl Command for LookupCommand {
 }
 
 pub struct LookupResponse {
-    docs: Vec<(String, FieldNode)>,
-    not_found: Vec<String>,
+    pub docs: Vec<(String, FieldNode)>,
+    pub not_found: Vec<String>,
 }
 
 impl LookupResponse {

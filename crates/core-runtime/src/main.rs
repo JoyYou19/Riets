@@ -205,10 +205,10 @@ async fn main() -> io::Result<()> {
         //     "/api/databases/{db_name}/retrieve",
         //     post(handlers::retrieve_handler),
         // )
-        // // .route(
-        // //     "/api/databases/{db_name}/lookup",
-        // //     post(handlers::lookup_handler),
-        // // )
+        .route(
+            "/api/databases/{db_name}/lookup",
+            post(handlers::lookup_handler),
+        )
         // .route(
         //     "/api/databases/{db_name}/replace",
         //     put(handlers::replace_document_handler),

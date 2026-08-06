@@ -1,7 +1,8 @@
-use core_protocol::errors::CorelamoError;
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+
+use crate::errors::CorelamoError;
 
 //FieldNode builds a nested structure from a flat BTreeMap<path, value>, rendered
 //to json/xml by the response layer. Built once, consumed once.

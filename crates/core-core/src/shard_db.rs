@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -26,7 +27,10 @@ use core_index::{
     },
     types::{DocId, ShardId},
 };
-use core_protocol::errors::CorelamoError;
+use core_protocol::{
+    command_reponse_definitions::{LookupCommand, LookupResponse},
+    errors::CorelamoError,
+};
 use core_query::{Query, query_string_parser::parse_and_analyze};
 
 use core_storage::{
@@ -363,16 +367,13 @@ impl ShardDb {
     //         .map_err(|e| CorelamoError::Internal(e.to_string()))
     // }
 
-    // pub fn lookup(
-    //     &self,
-    //     command: &LookupCommand,
-    // ) -> Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>), CorelamoError> {
-    //     let db = self
-    //         .db_ref()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //     db.lookup_documents(&command.ids, command.return_fields.as_ref())
-    //         .map_err(CorelamoError::from)
-    // }
+    pub fn lookup(&self, command: &LookupCommand) -> Result<LookupResponse, CorelamoError> {
+        let db = self
+            .db_ref()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        db.lookup_documents(&command.ids, command.return_fields.as_ref())
+            .map_err(CorelamoError::from)
+    }
 
     pub fn build_query(&self, input: &str) -> Result<Option<Query>, CorelamoError> {
         let db = self
@@ -611,4 +612,3 @@ const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<ShardDb>();
 };
-

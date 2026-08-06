@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use core_protocol::{
+    command_reponse_definitions::ResponseData,
     errors::{CorelamoError, DocFailure},
     format::Format,
 };
@@ -13,8 +14,6 @@ use slog::{error, o, warn};
 use std::time::Instant;
 
 use uuid::Uuid;
-
-use core_core::command_reponse_definitions::ResponseData;
 
 use crate::middleware::RequestContext;
 
@@ -117,9 +116,9 @@ impl HttpError {
 // HttpError for json and xml
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        let log= slog_scope::logger().new(o!("component"=>"middleware"));
+        let log = slog_scope::logger().new(o!("component"=>"middleware"));
         if self.status.is_server_error() {
-            //console logging 
+            //console logging
             error!( log,
                 "request failed";
                 "status" => %self.status.as_u16(),
@@ -127,7 +126,7 @@ impl IntoResponse for HttpError {
                 "detail" => %self.detail,
                 "instance" => %self.instance,
                " request_id" => %self.request_id,
-                
+
             );
         } else {
             warn!(log,
@@ -137,7 +136,7 @@ impl IntoResponse for HttpError {
                 "detail "=> %self.detail,
                 "instance" => %self.instance,
                 "request_id" => %self.request_id,
-                
+
             );
         }
         match self.format {

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
+use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse};
 use crossbeam_channel::{Receiver, Sender, bounded};
 
 use crate::shard_db::ShardDb;
@@ -23,6 +24,12 @@ pub enum ShardCmd {
         k: usize,
         resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
     },
+
+    Lookup {
+        command: LookupCommand,
+        resp: Sender<Result<LookupResponse, CorelamoError>>,
+    },
+
     Flush {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -147,6 +154,7 @@ pub fn spawn(
 
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
     const MAX_BATCH: usize = 32;
+
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
 
     while let Ok(first) = rx.recv() {
@@ -161,6 +169,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 ShardCmd::Search { query, k, resp } => {
                     let _ = resp.send(shard.search(&query, k));
                 }
+
+                ShardCmd::Lookup { command, resp } => {
+                    let _ = resp.send(shard.lookup(&command));
+                }
+
                 ShardCmd::Flush { resp } => {
                     let _ = resp.send(shard.flush());
                 }
@@ -181,4 +194,3 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
     // All senders dropped without an explicit Shutdown.
     let _ = shard.stop();
 }
-

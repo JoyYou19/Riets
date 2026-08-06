@@ -1,5 +1,7 @@
 use core_index::analyzer::Analyzer;
+use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use crossbeam_channel::bounded;
+use indexmap::IndexMap;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,7 +9,6 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crate::ShardDb;
-use crate::command_reponse_definitions::SearchCommand;
 use crate::shard_worker::{self, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use core_index::document::{self, IndexPolicy};
@@ -286,6 +287,41 @@ impl ShardManager {
             report.failures.extend(r.failures);
         }
         Ok(report)
+    }
+
+    pub fn lookup(&self, command: &LookupCommand) -> Result<LookupResponse, CorelamoError> {
+        let by_shard = self.group_by_shard(&command.ids);
+        let mut pending = Vec::with_capacity(by_shard.len());
+
+        for (idx, shard_ids) in by_shard {
+            let (rtx, rrx) = bounded(1);
+            let shard_command = LookupCommand {
+                ids: shard_ids.iter().map(|s| s.to_string()).collect(),
+                return_fields: command.return_fields.clone(),
+            };
+            self.shards[idx]
+                .send_raw(ShardCmd::Lookup {
+                    command: shard_command,
+                    resp: rtx,
+                })
+                .map_err(|(e, _)| e)?;
+            pending.push(rrx);
+        }
+
+        let mut all_docs = Vec::new();
+        let mut all_not_found = Vec::new();
+        for rx in pending {
+            let response = rx
+                .recv()
+                .map_err(|_| CorelamoError::Internal("shard died during lookup".into()))??;
+            all_docs.extend(response.docs);
+            all_not_found.extend(response.not_found);
+        }
+
+        Ok(LookupResponse {
+            docs: all_docs,
+            not_found: all_not_found,
+        })
     }
 
     pub fn search(&self, command: &SearchCommand) -> Result<Vec<SearchDocumentHit>, CorelamoError> {

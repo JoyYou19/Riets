@@ -9,14 +9,7 @@ use axum::{
 };
 //use core_auth::{Permission, Principal};
 //
-use core_core::{
-    DatabaseOptions, ShardDb,
-    command_reponse_definitions::{
-        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, LookupResponse,
-        RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
-    },
-    shard_manager::ShardManager,
-};
+use core_core::{DatabaseOptions, ShardDb, shard_manager::ShardManager};
 use slog::{error, info, o};
 
 use crate::{
@@ -24,7 +17,10 @@ use crate::{
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
-use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
+use core_protocol::{
+    command_reponse_definitions::{Command, LookupCommand, LookupResponse},
+    errors::{CorelamoError, DocFailure, FailReason},
+};
 use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
@@ -245,37 +241,41 @@ fn require_body(body: &str) -> Result<&str, CorelamoError> {
 //     HttpOk::with_response(title, resp, &ctx).into_response()
 // }
 //
-// // pub async fn lookup_handler(
-// //     State(state): State<AppState>,
-// //     Path(db_name): Path<String>,
-// //     Extension(ctx): Extension<RequestContext>,
-// //     //Extension(principal): Extension<Principal>,
-// //     body: String,
-// // ) -> Response {
-// //     // let command = match LookupCommand::parse(&body, ctx.format) {
-// //     //     Ok(cmd) => cmd,
-// //     //     Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     // };
-// //
-// //     let handle = match state.lookup(&db_name) {
-// //         Ok(h) => h,
-// //         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     };
-// //
-// //     let (found, not_found) = match handle.lookup(command).await {
-// //         Ok(r) => r,
-// //         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     };
-// //
-// //     let hit_count = found.len();
-// //     let resp = match LookupResponse::from_hits(found, not_found) {
-// //         Ok(r) => r,
-// //         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-// //     };
-// //
-// //     HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
-// // }
-//
+pub async fn lookup_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    //Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    let command = match LookupCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let manager = match state.lookup(&db_name) {
+        Ok(m) => m,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let result = tokio::task::spawn_blocking(move || manager.lookup(&command)).await;
+
+    let resp = match result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("lookup task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let hit_count = resp.docs.len();
+    HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
+}
+
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
