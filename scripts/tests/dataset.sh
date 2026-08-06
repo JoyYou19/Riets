@@ -5,6 +5,10 @@
 #
 # One document per non-empty subset of the vocabulary -> 2^8 - 1 = 255 docs.
 # Title = subset words joined by spaces (in vocabulary order).
+# Text
+# Subtext
+# Number
+# Date
 #
 # HOW TO USE:
 #   1. Start the server first:  cargo run -p core-runtime -- --root-path /tmp
@@ -15,6 +19,7 @@ clear
 BASE_URL="http://localhost:6006"
 DB="docs"
 VOCAB=(alpha beta gamma delta epsilon zeta eta theta)
+VOCAB2=(first second third fourth fifth sixth seventh eighth)
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -57,7 +62,7 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   name = "id"
   xpath = 0
   index = "IdAutoIncrement"
-  list = false
+  list = true
   [fields.weight]
   min = 100
   max = 100
@@ -66,7 +71,25 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   name = "title"
   xpath = 1
   index = "Text"
-  list = false
+  list = true
+  [fields.weight]
+  min = 100
+  max = 100
+
+  [[fields]]
+  name = "text"
+  xpath = 2
+  index = "Text"
+  list = true
+  [fields.weight]
+  min = 100
+  max = 100
+
+  [[fields]]
+  name = "number"
+  xpath = 3
+  index = "Number"
+  list = true
   [fields.weight]
   min = 100
   max = 100
@@ -107,6 +130,8 @@ echo "Inserting $TOTAL documents..."
  
 for (( mask=1; mask<=TOTAL; mask++ )); do
     title=""
+    bit_count=0
+    single_bit=-1
     for (( bit=0; bit<N; bit++ )); do
         if (( (mask >> bit) & 1 )); then
             if [ -z "$title" ]; then
@@ -114,11 +139,23 @@ for (( mask=1; mask<=TOTAL; mask++ )); do
             else
                 title="$title ${VOCAB[$bit]}"
             fi
+            bit_count=$((bit_count + 1))
+            single_bit=$bit
         fi
     done
  
+    # Single-word titles (subsets of size 1) also get a "text" field,
+    # value taken from VOCAB2 at the same index as the matching VOCAB word.
+    if [ "$bit_count" -eq 1 ]; then
+        text="${VOCAB2[$single_bit]}"
+        number=$((single_bit + 1))
+        payload="{\"title\":\"$title\",\"text\":\"$text\",\"number\":$number}"
+    else
+        payload="{\"title\":\"$title\"}"
+    fi
+ 
     check "insert doc (mask=$mask)" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-        -d "{\"title\":\"$title\"}"
+        -d "$payload"
 done
  
 check "reindex" 200 -X POST "$BASE_URL/api/databases/$DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"

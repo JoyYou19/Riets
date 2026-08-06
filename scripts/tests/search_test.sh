@@ -14,6 +14,7 @@ clear
 BASE_URL="http://localhost:6006"
 PASS_COUNT=0
 FAIL_COUNT=0
+DOCUMENTS=256
 
 section() {
     echo
@@ -91,6 +92,7 @@ echo "=========================================="
 # ------------------------------------------------------------------
 
 DB="docs"
+check "start database" 200 -X POST "$BASE_URL/api/databases/$DB/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 # ------------------------------------------------------------------
 # Search query tests
@@ -112,13 +114,13 @@ section "Single search term"
 
 check "non existing search term" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"notreal"}'
     check_json_bool "data should be 0" '(.data | length) == 0'
-check "existing search term" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha","docs":256}'
+check "existing search term" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
-check "query case insensitivity" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"AlPhA","docs":256}'
+check "query case insensitivity" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"AlPhA","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
 check "indexing case insensitivity" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"example"}'
     check_json_bool "data should be 1" '(.data | length) == 1'
-check "existing search term + regular symbol" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha.","docs":256}'
+check "existing search term + regular symbol" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha.","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
 check "existing search term divided by regular symbol" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"al.pha."}'
     check_json_bool "data should be 0" '(.data | length) == 0'
@@ -138,13 +140,13 @@ check "OR existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search
 check "OR existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"existing alpha beta"}'
     check_json_bool "data should be 0" '(.data | length) == 0'
 
-check "existing 2 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha beta","docs":256}'
+check "existing 2 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha beta","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 64" '(.data | length) == 64'
-check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha gamma beta","docs":256}'
+check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha gamma beta","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 32" '(.data | length) == 32'
-check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"beta theta gamma","docs":256}'
+check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"beta theta gamma","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 32" '(.data | length) == 32'
-check "two of the same" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha alpha","docs":256}'
+check "two of the same" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha alpha","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
 
 section "Phrase"
@@ -160,15 +162,15 @@ check "two of the same" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-C
 check "wrong order" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"beta alpha\""}'
     check_json_bool "data should be 0" '(.data | length) == 0'
 
-check "existing 2 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"alpha beta\"","docs":256}'
+check "existing 2 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"alpha beta\"","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 64" '(.data | length) == 64'
-check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"alpha beta gamma\"","docs":256}'
+check "existing 3 search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"alpha beta gamma\"","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 32" '(.data | length) == 32'
-check "existing search terms + symbols" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\".alpha&*(#&beta.gamma\"","docs":256}'
+check "existing search terms + symbols" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\".alpha&*(#&beta.gamma\"","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 32" '(.data | length) == 32'
-check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"the alpha beta\"","docs":256}'
+check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"the alpha beta\"","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 64" '(.data | length) == 64'
-check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"alpha the beta\"","docs":256}'
+check "existing search term + stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"\"alpha the beta\"","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 64" '(.data | length) == 64'
 
 section "OR"
@@ -180,13 +182,13 @@ check "nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-
 check "non existing or nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{notreal}"}'
     check_json_bool "data should be 0" '(.data | length) == 0'
 
-check "existing or nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha}","docs":256}'
+check "existing or nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha}","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
-check "existing or stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha a}","docs":256}'
+check "existing or stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha a}","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
-check "existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha theta}","docs":256}'
+check "existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha theta}","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 192" '(.data | length) == 192'
-check "existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{theta alpha}","docs":256}'
+check "existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{theta alpha}","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 192" '(.data | length) == 192'
 
 #section "NOT"
@@ -194,55 +196,57 @@ check "existing search terms" 200 -X POST "$BASE_URL/api/databases/$DB/search" -
 
 #check "nothing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~"}'
 #    check_json_bool "data should be 0" '(.data | length) == 0'
-#check "not non existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~notreal","docs":256}'
-#    check_json_bool "data should be 256" '(.data | length) == 256'
+#check "not non existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~notreal","docs":'"$DOCUMENTS"'}'
+#    check_json_bool "data should be $DOCUMENTS" '(.data | length) == '$DOCUMENTS''
 #check "not stopword" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~a"}'
 #    check_json_bool "data should be 0" '(.data | length) == 0'
 
-#check "not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~real","docs":256}'
+#check "not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~real","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be 127" '(.data | length) == 127'
-#check "not two existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~alpha ~beta","docs":256}'
+#check "not two existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~alpha ~beta","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be 64" '(.data | length) == 64'
-#check "existing not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha ~beta","docs":256}'
+#check "existing not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha ~beta","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be 64" '(.data | length) == 64'
-#check "existing or not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha ~beta}","docs":256}'
+#check "existing or not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{alpha ~beta}","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be 193" '(.data | length) == 193'
 
 #hujz
-#check "not not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~~alpha","docs":256}'
+#check "not not existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~~alpha","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be 128" '(.data | length) == 128'
 #check "not not non existing" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"~~notreal"}'
 #    check_json_bool "data should be 0" '(.data | length) == 0'
 
 section "Boolean expressions"
 
-check "bool" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{gamma (alpha beta)}","docs":256}'
+check "gamma or alpha and beta" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"{gamma (alpha beta)}","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 160" '(.data | length) == 160'
 
 section "Wildcard patterns"
 
-check "*" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*","docs":256}'
-    check_json_bool "data should be 256" '(.data | length) == 256'
+check "*" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*","docs":'"$DOCUMENTS"'}'
+    check_json_bool "data should be $DOCUMENTS" '(.data | length) == '$DOCUMENTS''
 
-#check "4?" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"????","docs":256}'
+#check "4?" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"????","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be hjz" '(.data | length) == hjz'
 
-check "alpha or theta" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"[at][lh][pe][ht][a]","docs":256}'
+check "alpha or theta" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"[at][lh][pe][ht][a]","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 192" '(.data | length) == 192'
-check "Eta or epsilon or exists" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"e*","docs":256}'
+check "Eta or epsilon or example" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"e*","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 193" '(.data | length) == 193'
-check "everything that has an a" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*a*","docs":256}'
+check "everything that has an a" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*a*","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 255" '(.data | length) == 255'
+check "everything that starts with an a(stopword so mby 0)" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"a*","docs":'"$DOCUMENTS"'}'
+    check_json_bool "data should be '$DOCUMENTS'" '(.data | length) == '$DOCUMENTS''
 
-check "alpha" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alph?","docs":256}'
+check "alpha" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alph?","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
 
-check "shortened version check" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"exampl?","docs":256}'
+check "shortened version check" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"exampl?","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 1" '(.data | length) == 1'
 
-check "Beta, delta zeta era theta" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*[el]ta","docs":256}'
+check "Beta, delta zeta era theta" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*[el]ta","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 248" '(.data | length) == 248'
-#check "combo2" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"ch[au]*","docs":256}'
+#check "combo2" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"ch[au]*","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be 1" '(.data | length) == 1'
 
 
