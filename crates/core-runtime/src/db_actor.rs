@@ -1,603 +1,168 @@
 use core_core::{
-    DatabaseOptions, ShardDb,
-    command_reponse_definitions::{LookupCommand, SearchCommand},
-    shard_manager::ShardManager,
+    DatabaseOptions, command_reponse_definitions::SearchCommand, shard_manager::ShardManager,
 };
-use core_index::{document::IndexPolicy, lsm::index_worker::ReindexGuard};
-use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
-use core_storage::{
-    document_store::StoredDocument,
-    search_database::{
-        DatabasePowerButtonOutcome, DeleteReport, DocumentInput, InsertReport, ReplaceReport,
-        SearchDocumentHit,
-    },
-};
-use crossbeam_channel as xchan;
-use slog::{error, info, warn};
-use slog_scope::logger;
-use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::{mpsc, oneshot};
-
-//creates a chanel for a single message (command)
-type Reply<T> = oneshot::Sender<Result<T, CorelamoError>>;
-
-//type ShardDb = document::search_database::ShardDatabase; //TODO
-
-//INFO: how many listeners for search/lookup/retrieve
-//TODO: make configurable
-const READER_THREADS: usize = 4;
-
-//Commands
-pub enum DbCommand {
-    Search {
-        cmd: SearchCommand,
-        reply: Reply<Vec<SearchDocumentHit>>,
-    },
-    Lookup {
-        cmd: LookupCommand,
-        //                 id             fields                not found
-        reply: Reply<(Vec<(String, BTreeMap<String, String>)>, Vec<String>)>,
-    },
-    GetPolicy {
-        reply: Reply<IndexPolicy>,
-    },
-    Shutdown {
-        reply: Reply<()>,
-    },
-    Clear {
-        reply: Reply<()>,
-    },
-    GetLogs {
-        date: Option<String>,
-        reply: Reply<String>,
-    },
-    ClearLogs {
-        reply: Reply<()>,
-    },
-    Retrieve {
-        ids: Vec<String>,
-        reply: Reply<Vec<(String, Option<StoredDocument>)>>,
-    },
-    // Status {
-    //     reply: Reply<DatabaseStats>,
-    // },
-    GetOptions {
-        reply: Reply<DatabaseOptions>,
-    },
-    StartDatabase {
-        reply: Reply<DatabasePowerButtonOutcome>,
-    },
-    StopDatabase {
-        reply: Reply<DatabasePowerButtonOutcome>,
-    },
-    Restart {
-        reply: Reply<()>,
-    },
-    SetPolicy {
-        policy: IndexPolicy,
-        reply: Reply<()>,
-    },
-    IsRunning {
-        reply: Reply<bool>,
-    },
-    Upsert {
-        docs: Vec<DocumentInput>,
-        reply: Reply<Vec<(usize, String, Result<(), CorelamoError>)>>,
-    },
-    Replace {
-        docs: Vec<DocumentInput>,
-        reply: Reply<ReplaceReport>,
-    },
-    Insert {
-        docs: Vec<DocumentInput>,
-        reply: Reply<InsertReport>,
-    },
-    Delete {
-        ids: Vec<String>,
-        reply: Reply<DeleteReport>,
-    },
-    Reindex {
-        reply: Reply<()>,
-    },
-    SetOptions {
-        options: DatabaseOptions,
-        //this bool is for detecting wether to tell the user to restart the database or not
-        reply: Reply<bool>,
-    },
-}
-
-enum Class {
-    Read,
-    Write,
-    Shutdown,
-}
-
-fn classify(cmd: &DbCommand) -> Class {
-    use DbCommand::*;
-    match cmd {
-        Search { .. }
-        | Lookup { .. }
-        | Retrieve { .. }
-       // | Status { .. }
-        | GetOptions { .. }
-        | GetPolicy { .. }
-        | IsRunning { .. }
-        | GetLogs { .. } => Class::Read,
-
-        // terminal
-        Shutdown { .. } => Class::Shutdown,
-
-        //Insert, Upsert, Delete, Replace, Clear,
-        _ => Class::Write,
-    }
-}
-
-//Each database has a handler
+// use core_index::document::IndexPolicy;
+// use core_protocol::errors::CorelamoError;
+// use core_storage::search_database::{DocumentInput, InsertReport, SearchDocumentHit};
+use std::sync::Arc;
+//
+// // ===== not yet ported to sharding =====
+// // use core_core::command_reponse_definitions::LookupCommand;
+// // use core_storage::document_store::StoredDocument;
+// // use core_storage::search_database::{DatabasePowerButtonOutcome, DeleteReport, ReplaceReport};
+// // use std::collections::BTreeMap;
+//
+// /// One database. Wraps ShardManager so handlers keep an async API and
+// /// blocking shard calls stay off the tokio worker threads.
 #[derive(Clone)]
 pub struct DbHandle {
-    tx: mpsc::Sender<DbCommand>,
-}
-
-impl DbHandle {
-    //for now im considering this to be dark magic
-    async fn call<T>(&self, make: impl FnOnce(Reply<T>) -> DbCommand) -> Result<T, CorelamoError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(make(reply_tx))
-            .await
-            .map_err(|_| CorelamoError::Internal("database actor is gone".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| CorelamoError::Internal("database actor dropped the reply".into()))?
-    }
-
-    //helpers
-    pub async fn search(
-        &self,
-        cmd: SearchCommand,
-    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
-        self.call(|reply| DbCommand::Search { cmd, reply }).await
-    }
-
-    pub async fn insert(&self, docs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-        self.call(|reply| DbCommand::Insert { docs, reply }).await
-    }
-
-    pub async fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
-        self.call(|reply| DbCommand::Delete { ids, reply }).await
-    }
-
-    pub async fn reindex(&self) -> Result<(), CorelamoError> {
-        self.call(|reply| DbCommand::Reindex { reply }).await
-    }
-
-    pub async fn clear(&self) -> Result<(), CorelamoError> {
-        self.call(|reply| DbCommand::Clear { reply }).await
-    }
-
-    pub async fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
-        self.call(|reply| DbCommand::GetLogs { date, reply }).await
-    }
-
-    pub async fn clear_logs(&self) -> Result<(), CorelamoError> {
-        self.call(|reply| DbCommand::ClearLogs { reply }).await
-    }
-
-    pub async fn upsert(
-        &self,
-        docs: Vec<DocumentInput>,
-    ) -> Result<Vec<(usize, String, Result<(), CorelamoError>)>, CorelamoError> {
-        self.call(|reply| DbCommand::Upsert { docs, reply }).await
-    }
-
-    pub async fn replace(&self, docs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
-        self.call(|reply| DbCommand::Replace { docs, reply }).await
-    }
-
-    pub async fn get_policy(&self) -> Result<IndexPolicy, CorelamoError> {
-        self.call(|reply| DbCommand::GetPolicy { reply }).await
-    }
-
-    pub async fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
-        self.call(|reply| DbCommand::SetPolicy { policy, reply })
-            .await
-    }
-
-    pub async fn shutdown(&self) -> Result<(), CorelamoError> {
-        self.call(|reply| DbCommand::Shutdown { reply }).await
-    }
-
-    pub async fn lookup(
-        &self,
-        cmd: LookupCommand,
-    ) -> Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>), CorelamoError> {
-        self.call(|reply| DbCommand::Lookup { cmd, reply }).await
-    }
-
-    // pub async fn stats(&self) -> Result<DatabaseStats, CorelamoError> {
-    //     self.call(|reply| DbCommand::Status { reply }).await
-    //   }
-
-    pub async fn options(&self) -> Result<DatabaseOptions, CorelamoError> {
-        self.call(|reply| DbCommand::GetOptions { reply }).await
-    }
-
-    pub async fn retrieve(
-        &self,
-        ids: Vec<String>,
-    ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
-        self.call(|reply| DbCommand::Retrieve { ids, reply }).await
-    }
-
-    pub async fn start(&self) -> Result<DatabasePowerButtonOutcome, CorelamoError> {
-        self.call(|reply| DbCommand::StartDatabase { reply }).await
-    }
-
-    pub async fn stop(&self) -> Result<DatabasePowerButtonOutcome, CorelamoError> {
-        self.call(|reply| DbCommand::StopDatabase { reply }).await
-    }
-
-    pub async fn restart(&self) -> Result<(), CorelamoError> {
-        self.call(|reply| DbCommand::Restart { reply }).await
-    }
-
-    pub async fn is_running(&self) -> Result<bool, CorelamoError> {
-        self.call(|reply| DbCommand::IsRunning { reply }).await
-    }
-
-    pub async fn set_options(&self, options: DatabaseOptions) -> Result<bool, CorelamoError> {
-        self.call(|reply| DbCommand::SetOptions { options, reply })
-            .await
-    }
-}
-
-pub fn spawn_db_actor(
-    manager: ShardManager,
+    manager: Arc<ShardManager>,
     name: String,
-) -> (DbHandle, std::thread::JoinHandle<()>) {
-    let manager = Arc::new(manager);
-    let (tx, mut rx) = mpsc::channel::<DbCommand>(64);
-    let log = slog_scope::logger();
-
-    let manager_for_dispatcher = manager.clone();
-    let join = std::thread::Builder::new()
-        .name(format!("db-actor-{name}"))
-        .spawn(move || {
-            dispatcher_loop(manager_for_dispatcher, &mut rx, &name);
-            info!(log, "exiting"; "db_actor" => %name);
-        })
-        .expect("failed to spawn db actor thread");
-
-    (DbHandle { tx }, join)
 }
-
-//this doesnt really do anything heavy just routes to Read Write Shutdown
-fn dispatcher_loop(manager: Arc<ShardManager>, rx: &mut mpsc::Receiver<DbCommand>, name: &str) {
-    let log = slog_scope::logger();
-
-    let (read_tx, read_rx) = xchan::unbounded::<DbCommand>();
-    let (write_tx, write_rx) = xchan::unbounded::<DbCommand>();
-
-    // N threads for reads
-    let mut reader_joins = Vec::with_capacity(READER_THREADS);
-    for i in 0..READER_THREADS {
-        let manager = manager.clone();
-        let read_rx = read_rx.clone();
-        let name = name.to_string();
-
-        reader_joins.push(
-            std::thread::Builder::new()
-                .name(format!("db-reader-{name}-{i}"))
-                .spawn(move || reader_loop(manager, &read_rx, &name))
-                .expect("failed to spawn reader thread"),
-        );
-    }
-    drop(read_rx);
-
-    // Writer - one thread
-    let writer_join = {
-        let manager = manager.clone();
-        let name = name.to_string();
-
-        std::thread::Builder::new()
-            .name(format!("db-writer-{name}"))
-            .spawn(move || writer_loop(manager, &write_rx, &name))
-            .expect("failed to spawn writer thread")
-    };
-
-    drop(manager);
-
-    // Route commands
-    let mut shutdown_reply = None;
-    while let Some(cmd) = rx.blocking_recv() {
-        match classify(&cmd) {
-            Class::Read => {
-                let _ = read_tx.send(cmd);
-            }
-            Class::Write => {
-                let _ = write_tx.send(cmd);
-            }
-            Class::Shutdown => {
-                if let DbCommand::Shutdown { reply } = cmd {
-                    shutdown_reply = Some(reply);
-                }
-                break;
-            }
-        }
-    }
-
-    drop(read_tx);
-    drop(write_tx);
-    for j in reader_joins {
-        let _ = j.join();
-    }
-    let _ = writer_join.join();
-
-    if let Some(reply) = shutdown_reply {
-        let _ = reply.send(Ok(()));
-    }
-
-    info!(log, "dispatcher stopped"; "db_actor" => %name);
-}
-
-fn reader_loop(manager: Arc<ShardManager>, rx: &xchan::Receiver<DbCommand>, name: &str) {
-    let log = slog_scope::logger();
-
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            // DbCommand::Search { cmd, reply } => {
-            //     db.search(&cmd)
-            //         .map_err(|e| CorelamoError::Internal(format!("search failed: {e}")));
-            //     let _ = reply.send(result);
-            // }
-            //
-            // DbCommand::Lookup { cmd, reply } => {
-            //     db.lookup(&cmd);
-            //     let _ = reply.send(result);
-            // }
-            //
-            // DbCommand::Retrieve { ids, reply } => {
-            //     let mut out = Vec::with_capacity(ids.len());
-            //     for id in ids {
-            //         let doc = db.get_document(&id).map_err(|e| {
-            //             CorelamoError::Internal(format!("failed to get document '{id}': {e}"))
-            //         })?;
-            //         out.push((id, doc));
-            //     }
-            //     let _ = reply.send(Ok(out));
-            // }
-            //
-            // DbCommand::GetOptions { reply } => {
-            //     db.options().clone();
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::GetPolicy { reply } => {
-            //     db.policy().clone();
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::IsRunning { reply } => {
-            //     db.is_running();
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::GetLogs { date, reply } => {
-            //     db.get_logs(date);
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::Status { reply } => {
-            //     let snapshot = progress.snapshot();
-            //     let result = match db.is_running() {
-            //         Some(_) => Err(CorelamoError::DatabaseNotRunning(format!(
-            //             "database {name} is not running"
-            //         ))),
-            //         None if progress.phase().is_running() => {
-            //             // a reindex really holds the lock: report progress, don't wait
-            //             Ok(ShardDb::stats_swapping(snapshot, Default::default()))
-            //         }
-            //         None => {
-            //             // a normal write holds the lock: block briefly for a real reading
-            //
-            //             if db.is_running() {
-            //                 db.stats()
-            //                     .map_err(|e| CorelamoError::Internal(format!("stats failed: {e}")))
-            //             } else {
-            //                 Err(CorelamoError::DatabaseNotRunning(format!(
-            //                     "database {name} is not running"
-            //                 )))
-            //             }
-            //         }
-            //     };
-            //     let _ = reply.send(result);
-            // }
-            other => {
-                // dispatcher misrouted a non-read command
-                drop(other);
-            }
-        }
-    }
-}
-
-fn writer_loop(manager: Arc<ShardManager>, rx: &xchan::Receiver<DbCommand>, name: &str) {
-    let log = slog_scope::logger();
-
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            // DbCommand::Insert { docs, reply } => {
-            //     let result = db.put_documents_parallel(docs).map_err(|e| {
-            //         error!(log, "Insert failed"; "error" => %e);
-            //         CorelamoError::Internal(format!("insert failed: {e}"))
-            //     });
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::Replace { docs, reply } => {
-            //     let result = replace_docs(&mut db, docs);
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::Delete { ids, reply } => {
-            //     let result = delete_docs(&mut db, ids);
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::Upsert { docs, reply } => {
-            //     let mut out = Vec::with_capacity(docs.len());
-            //     for (index, doc) in docs.into_iter().enumerate() {
-            //         let id = doc.external_id.clone();
-            //         let r = db
-            //             .upsert_document(doc)
-            //             .map_err(|e| CorelamoError::Internal(e.to_string()));
-            //         out.push((index, id, r));
-            //     }
-            //     let _ = reply.send(Ok(out));
-            // }
-            // DbCommand::Clear { reply } => {
-            //     let result = guard.clear().map_err(|e| {
-            //         error!(logger(), "Database Clear failed"; "error" => %e);
-            //         CorelamoError::Internal(format!("failed to clear database {name}: {e}"))
-            //     });
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::ClearLogs { reply } => {
-            //     let result = guard.clear_logs().map_err(|e| {
-            //         error!(logger(), "Database ClearLogs failed"; "error" => %e);
-            //         CorelamoError::Internal(format!("failed to clear logs for {name}: {e}"))
-            //     });
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::SetPolicy { policy, reply } => {
-            //     db.set_policy(policy).map_err(|e| {
-            //         CorelamoError::Internal(format!("set policy failed on '{name}': {e}"))
-            //     });
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::SetOptions { options, reply } => {
-            //     db.set_options(options)?;
-            //     db.is_running();
-            // }
-            // DbCommand::StartDatabase { reply } => {
-            //     let result = if db.is_running() {
-            //         Ok(DatabasePowerButtonOutcome::Nochange)
-            //     } else {
-            //         db.start().map(|()| DatabasePowerButtonOutcome::Changed)
-            //     };
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::StopDatabase { reply } => {
-            //     let result = if !db.is_running() {
-            //         Ok(DatabasePowerButtonOutcome::Nochange)
-            //     } else {
-            //         db.stop().map(|()| DatabasePowerButtonOutcome::Changed)
-            //     };
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::Restart { reply } => {
-            //     db.restart();
-            //     let _ = reply.send(result);
-            // }
-            // DbCommand::Reindex { reply } => handle_reindex(db, name, progress, reply, &log),
-            other => {
-                debug_assert!(false, "non-write command reached writer");
-                drop(other);
-            }
-        }
-    }
-}
-
-// fn handle_reindex(
-//     db: ShardDb,
-//     name: &str,
-//     progress: &Arc<core_index::lsm::index_worker::ReindexProgress>,
-//     reply: Reply<()>,
-//     log: &slog::Logger,
-// ) {
-//     let params = {
-//         let total = ShardDb.document_count_hint();
-//         if !progress.try_begin(total) {
-//             let _ = reply.send(Err(CorelamoError::Busy(format!(
-//                 "database '{name}' is already reindexing"
-//             ))));
-//             return;
-//         }
-//         if let Err(e) = ShardDb.pause_compaction() {
-//             warn!(log, "could not pause compaction"; "error" => %e);
-//         }
-//         ShardDb.reindex_params()
-//     };
 //
-//     let db_handle = db.clone();
-//     let thread_log = log.clone();
-//     let guard = ReindexGuard::new(progress.clone());
-//     std::thread::spawn(move || {
-//         match ShardDb::build_staging_index(&params) {
-//             Ok(watermark) => match db.reindex_swap(watermark) {
-//                 Ok(()) => guard.succeed(),
-//                 Err(_) => guard.fail(),
-//             },
-//             Err(e) => {
-//                 error!(thread_log, "reindex staging failed"; "error" => %e);
-//                 // staging failed with the database still intact; just restart
-//                 // the compaction we paused.
-//                 if let Err(e) = db.start() {
-//                     error!(thread_log, "resume failed"; "error" => %e);
-//                 }
-//                 guard.fail();
-//             }
-//         }
-//     });
-//     let _ = reply.send(Ok(()));
-// }
-//
-// //helper funcion so that the call looks more readable
-// fn replace_docs(
-//     db: &mut ShardDb,
-//     docs: Vec<DocumentInput>,
-// ) -> Result<ReplaceReport, CorelamoError> {
-//     let mut replaced = 0;
-//     let mut failures = Vec::new();
-//     let log = slog_scope::logger();
-//     for (index, doc) in docs.into_iter().enumerate() {
-//         let exists = db
-//             .get_document(&doc.external_id)
-//             .map_err(|e| {
-//                 error!(log, "existence check failed"; "error" => %e);
-//                 CorelamoError::Internal(format!("existence check failed: {e}"))
-//             })?
-//             .is_some();
-//         if exists {
-//             db.upsert_document(doc).map_err(|e| {
-//                 error!(log, "Replace failed"; "error" => %e);
-//                 CorelamoError::Internal(format!("replace failed: {e}"))
-//             })?;
-//             replaced += 1;
-//         } else {
-//             failures.push(DocFailure::with_id(
-//                 index,
-//                 doc.external_id,
-//                 FailReason::NotFound,
-//             ));
-//         }
+// impl DbHandle {
+//     pub fn new(manager: ShardManager, name: String) -> Self {
+//         Self { manager: Arc::new(manager), name }
 //     }
-//     Ok(ReplaceReport { replaced, failures })
-// }
 //
-// fn delete_docs(db: &mut ShardDb, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
-//     let mut deleted = 0;
-//     let mut failures = Vec::new();
-//     let log = slog_scope::logger();
-//     for (index, id) in ids.into_iter().enumerate() {
-//         let exists = db
-//             .get_document(&id)
-//             .map_err(|e| {
-//                 error!(log, "Failed lookup"; "error" => %e, "id" => %id);
-//                 CorelamoError::Internal(format!("failed to lookup '{id}': {e}"))
-//             })?
-//             .is_some();
-//         if exists {
-//             db.delete_document(&id).map_err(|e| {
-//                 error!(log, "failed to delete"; "error" => %e, "id" => %id);
-//                 CorelamoError::Internal(format!("failed to delete '{id}': {e}"))
-//             })?;
-//             deleted += 1;
-//         } else {
-//             failures.push(DocFailure::with_id(index, id, FailReason::NotFound));
-//         }
+//     pub fn name(&self) -> &str {
+//         &self.name
 //     }
-//     Ok(DeleteReport { deleted, failures })
+//
+//     /// Runs a blocking ShardManager call on the blocking pool.
+//     async fn blocking<T, F>(&self, f: F) -> Result<T, CorelamoError>
+//     where
+//         F: FnOnce(&ShardManager) -> Result<T, CorelamoError> + Send + 'static,
+//         T: Send + 'static,
+//     {
+//         let m = Arc::clone(&self.manager);
+//         tokio::task::spawn_blocking(move || f(&m))
+//             .await
+//             .map_err(|e| CorelamoError::Internal(format!("db task panicked: {e}")))?
+//     }
+//
+//     // ===== working =====
+//
+//     pub async fn search(
+//         &self,
+//         cmd: SearchCommand,
+//     ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+//         self.blocking(move |m| m.search(&cmd)).await
+//     }
+//
+//     pub async fn insert(&self, docs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+//         self.blocking(move |m| m.insert(docs)).await
+//     }
+//
+//     pub async fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
+//         self.blocking(move |m| m.set_policy_all(policy)).await
+//     }
+//
+//     pub async fn set_options(&self, options: DatabaseOptions) -> Result<bool, CorelamoError> {
+//         self.blocking(move |m| m.set_options_all(options).map(|_| true)).await
+//     }
+//
+//     pub async fn shutdown(&self) -> Result<(), CorelamoError> {
+//         self.blocking(|m| m.shutdown()).await
+//     }
+//
+//     // no channel round-trip needed, these just read a field
+//     pub async fn get_policy(&self) -> Result<IndexPolicy, CorelamoError> {
+//         Ok(self.manager.policy())
+//     }
+//
+//     pub async fn options(&self) -> Result<DatabaseOptions, CorelamoError> {
+//         Ok(self.manager.options())
+//     }
+//
+//     pub async fn is_running(&self) -> Result<bool, CorelamoError> {
+//         Ok(self.manager.all_alive())
+//     }
+//
+//     // ===== needed by handlers, no ShardManager implementation yet =====
+//     // Each of these needs a matching method on ShardManager first.
+//     // They return an error instead of hanging so the endpoint fails loudly.
+//
+//     fn unimplemented<T>(what: &str) -> Result<T, CorelamoError> {
+//         Err(CorelamoError::Internal(format!(
+//             "{what} is not implemented for sharded databases yet"
+//         )))
+//     }
+//
+//     pub async fn retrieve(
+//         &self,
+//         _ids: Vec<String>,
+//     ) -> Result<Vec<(String, Option<core_storage::document_store::StoredDocument>)>, CorelamoError>
+//     {
+//         // needs ShardManager::get_document -> route by shard_index_for, then DocumentReader
+//         Self::unimplemented("retrieve")
+//     }
+//
+//     pub async fn delete(
+//         &self,
+//         _ids: Vec<String>,
+//     ) -> Result<core_storage::search_database::DeleteReport, CorelamoError> {
+//         // needs ShardCmd::Delete + ShardManager::delete with group_by_shard
+//         Self::unimplemented("delete")
+//     }
+//
+//     pub async fn replace(
+//         &self,
+//         _docs: Vec<DocumentInput>,
+//     ) -> Result<core_storage::search_database::ReplaceReport, CorelamoError> {
+//         Self::unimplemented("replace")
+//     }
+//
+//     pub async fn upsert(
+//         &self,
+//         _docs: Vec<DocumentInput>,
+//     ) -> Result<Vec<(usize, String, Result<(), CorelamoError>)>, CorelamoError> {
+//         Self::unimplemented("upsert")
+//     }
+//
+//     pub async fn clear(&self) -> Result<(), CorelamoError> {
+//         Self::unimplemented("clear")
+//     }
+//
+//     pub async fn get_logs(&self, _date: Option<String>) -> Result<String, CorelamoError> {
+//         // shards each have their own logger; needs a merge strategy
+//         Self::unimplemented("get_logs")
+//     }
+//
+//     pub async fn clear_logs(&self) -> Result<(), CorelamoError> {
+//         Self::unimplemented("clear_logs")
+//     }
+//
+//     pub async fn reindex(&self) -> Result<(), CorelamoError> {
+//         Self::unimplemented("reindex")
+//     }
+//
+//     pub async fn start(
+//         &self,
+//     ) -> Result<core_storage::search_database::DatabasePowerButtonOutcome, CorelamoError> {
+//         // shards start on spawn; restarting means respawning the threads
+//         Self::unimplemented("start")
+//     }
+//
+//     pub async fn stop(
+//         &self,
+//     ) -> Result<core_storage::search_database::DatabasePowerButtonOutcome, CorelamoError> {
+//         Self::unimplemented("stop")
+//     }
+//
+//     pub async fn restart(&self) -> Result<(), CorelamoError> {
+//         Self::unimplemented("restart")
+//     }
+//
+//     // pub async fn lookup(
+//     //     &self,
+//     //     cmd: LookupCommand,
+//     // ) -> Result<(Vec<(String, BTreeMap<String, String>)>, Vec<String>), CorelamoError> {
+//     //     // lookup_handler is commented out in handlers.rs too
+//     // }
+//
+//     // pub async fn stats(&self) -> Result<DatabaseStats, CorelamoError> {
+//     //     // needs per-shard stats aggregation
+//     // }
 // }
+

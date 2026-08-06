@@ -1,9 +1,11 @@
 use std::{collections::HashMap, io, path::Path};
 
 use core_core::shard_manager::ShardManager;
-use slog::{error, info};
+use slog::error;
 
-pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, ShardManager>> {
+pub fn load_saved_shard_managers(
+    databases_dir: &Path,
+) -> io::Result<HashMap<String, ShardManager>> {
     let mut databases = HashMap::new();
     let log = slog_scope::logger();
 
@@ -21,25 +23,13 @@ pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, 
         let name = entry.file_name().to_string_lossy().to_string();
 
         //FIX: this is the place where just one shard for now
-        let mut manager = match ShardManager::load(path, 1) {
+        let manager = match ShardManager::load(path, 1) {
             Ok(mgr) => mgr,
             Err(e) => {
                 error!(log,"database failed to load";"name"=>%name,"error"=>%e);
                 continue;
             }
         };
-
-        // Start shards if bootable
-        if manager.options().bootable {
-            match manager.start_all() {
-                Ok(()) => info!(log,"started database";"name"=>%name),
-                Err(e) => {
-                    error!(log,"database loaded but failed to start:";"name"=>%name, "error"=>%e)
-                }
-            }
-        } else {
-            info!(log,"loaded database";"name"=>%name);
-        }
 
         databases.insert(name, manager);
     }

@@ -10,7 +10,7 @@ pub struct DatabaseStats {
     pub document_count: usize,
     pub segment_count: usize,
     pub background_compaction_enabled: bool,
-    pub metrics: DatabaseMetrics,
+    //pub metrics: DatabaseMetrics,
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
     pub reindexing_total: u64,
@@ -31,13 +31,15 @@ use core_query::{Query, query_string_parser::parse_and_analyze};
 
 use core_storage::{
     binary_store::BinaryDocumentStore,
-    search_database::{IndexMode, PendingOp, SearchDatabase},
+    search_database::{
+        DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase, SearchDocumentHit,
+    },
     wal::{Wal, WalRecord},
 };
 
 use crate::{metrics::DatabaseMetrics, options::DatabaseOptions};
 use core_logs::logger;
-use slog::{Logger, info, warn};
+use slog::{Logger, error, info, warn};
 
 pub struct ReindexParams {
     pub root: PathBuf,
@@ -345,14 +347,14 @@ impl ShardDb {
 
     // ====== Read Operations ======
 
-    // pub fn search(&self, query: &Query, k: usize) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
-    //     let db = self
-    //         .db_ref()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //     db.search_document_hits_all_fields_top_k(query, k)
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))
-    // }
-    //
+    pub fn search(&self, query: &Query, k: usize) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+        let db = self
+            .db_ref()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        db.search_document_hits_all_fields_top_k(query, k)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))
+    }
+
     // pub fn get_document(&self, external_id: &str) -> Result<Option<StoredDocument>, CorelamoError> {
     //     let db = self
     //         .db_ref()
@@ -360,7 +362,7 @@ impl ShardDb {
     //     db.get_document(external_id)
     //         .map_err(|e| CorelamoError::Internal(e.to_string()))
     // }
-    //
+
     // pub fn lookup(
     //     &self,
     //     command: &LookupCommand,
@@ -410,39 +412,92 @@ impl ShardDb {
 
     // ====== Write Operations ======
 
-    // pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-    //     let record = WalRecord::Create(inputs.clone());
-    //     let encoded = bincode::encode_to_vec(&record, bincode::config::standard())
-    //         .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
-    //     let offset = self
-    //         .wal
-    //         .append(&encoded)
-    //         .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
-    //
-    //     let db = self
-    //         .db_mut()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //     let report = db
-    //         .put_documents_parallel(
-    //             inputs.clone(),
-    //             self.options.runtime.indexing_batch_size,
-    //             self.options.runtime.indexing_window_size,
-    //         )
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //
-    //     db.flush().ok();
-    //     self.wal.write_checkpoint(offset).ok();
-    //
-    //     info!(
-    //         self.log,
-    //         "inserted";
-    //         "shard_id" => self.shard_id,
-    //         "count" => report.inserted,
-    //         "failures" => report.failures.len(),
-    //     );
-    //
-    //     Ok(report)
-    // }
+    pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+        //stats
+        let started = std::time::Instant::now();
+        let count = inputs.len();
+        let batch_size = self.options.runtime.indexing_batch_size;
+        let window_size = self.options.runtime.indexing_window_size;
+
+        let ids: Vec<String> = if self.progress.phase().is_running() {
+            inputs.iter().map(|i| i.external_id.clone()).collect()
+        } else {
+            Vec::new()
+        };
+
+        let result = (|| -> Result<InsertReport, CorelamoError> {
+            //WALis
+            let record = WalRecord::Create(inputs.clone());
+            let encoded = bincode::encode_to_vec(&record, bincode::config::standard())
+                .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
+            let offset = self
+                .wal
+                .append(&encoded)
+                .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
+
+            info!(self.log, "WAL append";
+                "operation" => "create",
+                "shard_id" => %self.shard_id,
+                "documents" => inputs.len(),
+                "offset" => offset,
+                "durable_offset" => self.wal.durable_offset(),
+            );
+
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let report = db
+                .put_documents_parallel(inputs, batch_size, window_size)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            // NOTE: this flush is why segment count tracked HTTP request count
+            // exactly. Durability is already guaranteed by stop/shutdown; drop
+            // this call if you would rather let the memtable threshold govern.
+            db.flush()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            if let Err(e) = self.wal.write_checkpoint(offset) {
+                warn!(self.log, "checkpoint write failed"; "error" => %e);
+            }
+            Ok(report)
+        })();
+        // Queue for replay against the new index, outside the closure so the
+        // mutable borrow of `self` has ended.
+        if result.is_ok() {
+            for id in ids {
+                let doc = match self.db_mut() {
+                    Ok(db) => db
+                        .get_document(&id)
+                        .ok()
+                        .flatten()
+                        .map(|d| db.to_indexed(&d)),
+                    Err(_) => None,
+                };
+                if let Some(doc) = doc {
+                    self.queue_op(PendingOp::Index { doc });
+                }
+            }
+        }
+
+        let elapsed = started.elapsed();
+
+        match &result {
+            Ok(_) => info!(self.log, "indexed batch";
+                "shard_id" => %self.shard_id,
+                "documents" => count,
+                "batch_size" => batch_size,
+                "elapsed_ms" => elapsed.as_millis(),
+            ),
+            Err(e) => error!(self.log, "indexing failed";
+                "shard_id" => %self.shard_id,
+                "documents" => count,
+                "batch_size" => batch_size,
+                "elapsed_ms" => elapsed.as_millis(),
+                "error" => %e,
+            ),
+        }
+
+        result
+    }
+
     //
     // pub fn delete(&mut self, external_id: &str) -> Result<(), CorelamoError> {
     //     let record = WalRecord::Delete {
@@ -552,3 +607,8 @@ impl ShardDb {
         self.pending_ops.push(op);
     }
 }
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<ShardDb>();
+};
+

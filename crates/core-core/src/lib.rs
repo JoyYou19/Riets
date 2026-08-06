@@ -4,6 +4,7 @@ pub mod metrics;
 mod options;
 mod shard_db;
 pub mod shard_manager;
+pub mod shard_worker;
 
 pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;

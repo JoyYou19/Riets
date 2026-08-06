@@ -1,21 +1,37 @@
+use core_index::analyzer::Analyzer;
+use crossbeam_channel::bounded;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 
-use crate::DatabaseOptions;
 use crate::ShardDb;
-use core_index::document::IndexPolicy;
+use crate::command_reponse_definitions::SearchCommand;
+use crate::shard_worker::{self, ShardCmd, ShardHandle};
+use crate::{DatabaseOptions, shard_for};
+use core_index::document::{self, IndexPolicy};
+use core_index::lsm::index_worker::IndexingStats;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
+use core_query::planner::QueryPlanner;
+use core_query::query_string_parser::parse_and_analyze;
+use core_storage::search_database::InsertReport;
+use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 
 pub struct ShardManager {
-    pub shards: Vec<ShardDb>,
+    shards: Vec<ShardHandle>,
+    joins: Vec<JoinHandle<()>>, //JoinHandle atgriez ka thread uztaisits
     root: PathBuf,
     pub policy: IndexPolicy,
     pub options: DatabaseOptions,
+    analyzer: Analyzer,
 }
 
 impl ShardManager {
     const CONFIG_PATH_NAME: &'static str = "config.toml";
     const POLICY_PATH_NAME: &'static str = "policy.toml";
+    const DEFAULT_QUEUE_DEPTH: usize = 256;
 
     fn config_path(root: &Path) -> PathBuf {
         root.join(Self::CONFIG_PATH_NAME)
@@ -23,6 +39,9 @@ impl ShardManager {
 
     fn policy_path(root: &Path) -> PathBuf {
         root.join(Self::POLICY_PATH_NAME)
+    }
+    pub fn all_alive(&self) -> bool {
+    self.shards.iter().all(|h| h.is_alive())
     }
 
     pub fn create(
@@ -45,24 +64,27 @@ impl ShardManager {
         options.save_to_file(&Self::config_path(&root))?;
 
         let mut shards = Vec::new();
+        let mut joins = Vec::new();
         for shard_id in 0..num_shards {
             let shard_root = shards_dir.join(format!("shard-{}", shard_id));
-
-            //create shard 3000
             let db = ShardDb::create_shard(
                 &shard_root,
                 ShardId::from(shard_id),
                 options.clone(),
                 policy.clone(),
             )?;
-            shards.push(db);
+            let (handle, join) = shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH)?;
+            shards.push(handle);
+            joins.push(join);
         }
 
         Ok(Self {
             shards,
+            joins,
             root,
             policy,
             options,
+            analyzer: Analyzer::new(),
         })
     }
 
@@ -71,11 +93,7 @@ impl ShardManager {
         num_shards: u16,
         options: DatabaseOptions,
     ) -> Result<Self, CorelamoError> {
-        let mut manager = Self::create(root, num_shards, options)?;
-        if manager.options().bootable {
-            manager.start_all()?;
-        }
-        Ok(manager)
+        Self::create(root, num_shards, options)
     }
 
     pub fn load(root: PathBuf, expected_num_shards: u16) -> Result<Self, CorelamoError> {
@@ -98,7 +116,7 @@ impl ShardManager {
         shard_paths.sort();
 
         //INFO: safety check in case this might not be entirely necessary
-        if shard_paths.len() != expected_num_shards as usize {
+        if shard_paths.len() != (expected_num_shards as usize) {
             return Err(CorelamoError::InvalidData(format!(
                 "expected {} shards but found {} on disk",
                 expected_num_shards,
@@ -121,35 +139,55 @@ impl ShardManager {
         let options = DatabaseOptions::load_or_default(&config_path);
 
         let mut shards = Vec::new();
+        let mut joins = Vec::new();
         for shard_path in shard_paths {
             let db = ShardDb::load(&shard_path, &policy, &options)?;
-            shards.push(db);
+            let (handle, join) = shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH)?;
+            shards.push(handle);
+            joins.push(join);
         }
 
         Ok(Self {
             shards,
+            joins,
             root,
             policy,
             options,
+            analyzer: Analyzer::new(),
         })
-    }
-
-    pub fn start_all(&mut self) -> Result<(), CorelamoError> {
-        for shard in &mut self.shards {
-            shard.start()?;
-        }
-        Ok(())
-    }
-
-    pub fn stop_all(&mut self) -> Result<(), CorelamoError> {
-        for shard in &mut self.shards {
-            shard.stop()?;
-        }
-        Ok(())
     }
 
     pub fn shard_count(&self) -> usize {
         self.shards.len()
+    }
+
+    pub fn shutdown(self) -> Result<(), CorelamoError> {
+        let pending: Vec<_> = self
+            .shards
+            .iter()
+            .map(|h| {
+                let (rtx, rrx) = bounded(1);
+                let _ = h.send_raw(ShardCmd::Shutdown { resp: rtx });
+                rrx
+            })
+            .collect();
+
+        let mut first_err = None;
+        for rx in pending {
+            match rx.recv() {
+                Ok(Err(e)) if first_err.is_none() => {
+                    first_err = Some(e);
+                }
+                _ => {}
+            }
+        }
+        for j in self.joins {
+            let _ = j.join();
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     pub fn policy(&self) -> &IndexPolicy {
@@ -163,13 +201,25 @@ impl ShardManager {
     pub fn set_policy_all(&mut self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         policy.validate()?;
 
-        for shard in &mut self.shards {
-            shard.set_policy(policy.clone())?;
+        let pending: Vec<_> = self
+            .shards
+            .iter()
+            .map(|h| {
+                let (rtx, rrx) = bounded(1);
+                let _ = h.send_raw(ShardCmd::SetPolicy {
+                    policy: policy.clone(),
+                    resp: rtx,
+                });
+                rrx
+            })
+            .collect();
+        for rx in pending {
+            rx.recv()
+                .map_err(|_| CorelamoError::Internal("shard died".into()))??;
         }
 
         self.policy = policy;
         self.policy.save(&Self::policy_path(&self.root))?;
-
         Ok(())
     }
 
@@ -178,57 +228,98 @@ impl ShardManager {
         self.options = options;
         Ok(())
     }
+    //write operations
 
-    // pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-    //     // Group by shard
-    //     let mut by_shard: HashMap<u16, Vec<DocumentInput>> = HashMap::new();
-    //     for input in inputs {
-    //         let shard_id = shard_for(&input.external_id, self.shards.len() as u16);
-    //         by_shard
-    //             .entry(shard_id)
-    //             .or_insert_with(Vec::new)
-    //             .push(input);
-    //     }
-    //
-    //     // Insert each shard's batch (each shard locks itself)
-    //     let mut total_inserted = 0;
-    //     let mut total_failures = Vec::new();
-    //
-    //     for (shard_id, shard_inputs) in by_shard {
-    //         let report = self.shards[shard_id as usize].insert(shard_inputs)?;
-    //         total_inserted += report.inserted;
-    //         total_failures.extend(report.failures);
-    //     }
-    //
-    //     Ok(InsertReport {
-    //         inserted: total_inserted,
-    //         failures: total_failures,
-    //     })
-    // }
+    //paligfunkcija no viber
+    fn shard_index_for(&self, external_id: &str) -> usize {
+        shard_for(external_id, self.shards.len() as u16) as usize
+    }
 
-    // pub fn search(
-    //     &self,
-    //     query: &core_query::Query,
-    //     xpath: u32,
-    //     k: usize,
-    // ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
-    //     let mut all_hits = Vec::new();
-    //
-    //     for shard in &self.shards {
-    //         let hits = shard.search(query, xpath, k)?;
-    //         all_hits.extend(hits);
-    //     }
-    //
-    //     all_hits.sort_by(|a, b| {
-    //         b.score
-    //             .partial_cmp(&a.score)
-    //             .unwrap_or(Ordering::Equal)
-    //             .then_with(|| a.internal_id.cmp(&b.internal_id))
-    //     });
-    //     all_hits.truncate(k);
-    //
-    //     Ok(all_hits)
-    // }
+    fn group_by_shard<'a>(&self, ids: &'a [String]) -> HashMap<usize, Vec<&'a String>> {
+        let mut by_shard: HashMap<usize, Vec<&'a String>> = HashMap::new();
+        for id in ids {
+            by_shard
+                .entry(self.shard_index_for(id))
+                .or_default()
+                .push(id);
+        }
+        by_shard
+    }
+
+    pub fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+        let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
+        for input in inputs {
+            by_shard
+                .entry(self.shard_index_for(&input.external_id))
+                .or_default()
+                .push(input);
+        }
+
+        let mut pending = Vec::with_capacity(by_shard.len());
+        for (idx, batch) in by_shard {
+            let (rtx, rrx) = bounded(1);
+            self.shards[idx]
+                .send_raw(ShardCmd::Insert {
+                    inputs: batch,
+                    resp: rtx,
+                })
+                .map_err(|(e, _)| e)?;
+            pending.push(rrx);
+        }
+
+        let mut report = InsertReport {
+            inserted: 0,
+            failures: Vec::new(),
+        };
+        for rx in pending {
+            let r = rx
+                .recv()
+                .map_err(|_| CorelamoError::Internal("shard died during insert".into()))??;
+            report.inserted += r.inserted;
+            report.failures.extend(r.failures);
+        }
+        Ok(report)
+    }
+
+    pub fn search(&self, command: &SearchCommand) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+        let limit = command.docs.unwrap_or(10);
+        let offset = command.offset.unwrap_or(0);
+        let fetch = offset.saturating_add(limit);
+
+        let Some(query) = parse_and_analyze(&command.query, &self.analyzer)? else {
+            return Ok(Vec::new());
+        };
+        let query = Arc::new(query);
+
+        let mut pending = Vec::with_capacity(self.shards.len());
+        for h in &self.shards {
+            let (rtx, rrx) = bounded(1);
+            if h.send_raw(ShardCmd::Search {
+                query: query.clone(),
+                k: fetch,
+                resp: rtx,
+            })
+            .is_ok()
+            {
+                pending.push(rrx);
+            }
+        }
+
+        let mut all_hits: Vec<SearchDocumentHit> = Vec::new();
+        for rx in pending {
+            if let Ok(Ok(hits)) = rx.recv() {
+                all_hits.extend(hits);
+            }
+        }
+
+        all_hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.internal_id.cmp(&b.internal_id))
+        });
+        Ok(all_hits.into_iter().skip(offset).take(limit).collect())
+    }
 
     // TODO: delete, upsert, lookup, etc.
 }

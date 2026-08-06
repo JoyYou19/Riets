@@ -27,7 +27,7 @@ slog-envlogger="2"
 slog-scope="4"
 thiserror = "2"
 toml = "1.1.2"
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["macros"] }
 reqwest = "0.13.4"
 indexmap = { version = "2.14.0", features = ["serde"] }
 rayon = "1.12.0"
