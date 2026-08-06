@@ -36,19 +36,22 @@ mod middleware;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub databases: Arc<tokio::sync::RwLock<HashMap<String, Arc<ShardManager>>>>,
+    pub databases: Arc<RwLock<HashMap<String, Arc<ShardManager>>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
     //    pub auth: Arc<RwLock<AuthService>>,
 }
 
 impl AppState {
-    // pub fn lookup(&self, db_name: &str) -> Result<Arc<ShardManager>, CorelamoError> {
-    //     let dbs = self.databases.read().awaitu;
-    //     dbs.get(db_name)
-    //         .cloned()
-    //         .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
-    // }
+    pub fn lookup(&self, db_name: &str) -> Result<Arc<ShardManager>, CorelamoError> {
+        let dbs = self
+            .databases
+            .read()
+            .map_err(|_| CorelamoError::Internal("databases lock poisoned".into()))?;
+        dbs.get(db_name)
+            .cloned()
+            .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
+    }
 }
 
 //TODO: maybe check if there are more possible signals
@@ -176,7 +179,7 @@ async fn main() -> io::Result<()> {
     //let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
 
     let state = AppState {
-        databases,
+        databases: Arc::new(RwLock::new(handles)),
         databases_dir,
         default_format,
         // auth,
@@ -194,10 +197,10 @@ async fn main() -> io::Result<()> {
         //     "/api/databases/{db_name}/search",
         //     post(handlers::search_handler),
         // )
-        // .route(
-        //     "/api/databases/{db_name}/insert",
-        //     post(handlers::insert_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/insert",
+            post(handlers::insert_handler),
+        )
         // .route(
         //     "/api/databases/{db_name}/retrieve",
         //     post(handlers::retrieve_handler),
@@ -324,7 +327,10 @@ async fn main() -> io::Result<()> {
 
     //something or someone killed our beloved programm
     info!(log, "Server stopped, shutting down databases..");
-
+    let handles = {
+        let mut guard = state_for_shutdown.databases.write().unwrap();
+        std::mem::take(&mut *guard)
+    };
     for (db_name, manager) in handles {
         info!(log,"shutting down database ...";"database"=>%db_name);
         match Arc::try_unwrap(manager) {

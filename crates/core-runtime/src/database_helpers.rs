@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io, path::Path};
 
 use core_core::shard_manager::ShardManager;
-use slog::{error, info};
+use slog::error;
 
 pub fn load_saved_shard_managers(
     databases_dir: &Path,
@@ -23,7 +23,7 @@ pub fn load_saved_shard_managers(
         let name = entry.file_name().to_string_lossy().to_string();
 
         //FIX: this is the place where just one shard for now
-        let mut manager = match ShardManager::load(path, 1) {
+        let manager = match ShardManager::load(path, 1) {
             Ok(mgr) => mgr,
             Err(e) => {
                 error!(log,"database failed to load";"name"=>%name,"error"=>%e);

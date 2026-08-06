@@ -276,100 +276,101 @@ fn require_body(body: &str) -> Result<&str, CorelamoError> {
 // //     HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
 // // }
 //
-// pub async fn insert_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     //Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
-//     //    return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
+pub async fn insert_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    //Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    //if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match handle.is_running().await {
+        Ok(true) => {}
+        Ok(false) => {
+            return HttpError::from_corelamo(
+                CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+                &ctx,
+            )
+            .into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    }
+
+    let policy = match handle.get_policy().await {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let format = ctx.format;
+    let parsed =
+        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
+            .await;
+
+    let outcome = match parsed {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("parse task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let doc_indices = outcome.indices;
+    let parse_failures = outcome.failures;
+
+    let report = match handle.insert(outcome.docs).await {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
+    outcome.succeed_many(report.inserted);
+    outcome.fail_many(parse_failures);
+
+    // storage indexes into the parsed vec; map back to the client's input array
+    for mut failure in report.failures {
+        failure.index = failure.index.and_then(|i| doc_indices.get(i).copied());
+        outcome.fail_doc(failure);
+    }
+
+    let title = format!(
+        "inserted {} into '{db_name}', {} failed",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
 //
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.is_running().await {
-//         Ok(true) => {}
-//         Ok(false) => {
-//             return HttpError::from_corelamo(
-//                 CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-//                 &ctx,
-//             )
-//             .into_response();
-//         }
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     }
-//
-//     let policy = match handle.get_policy().await {
-//         Ok(p) => p,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let format = ctx.format;
-//     let parsed =
-//         tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
-//             .await;
-//
-//     let outcome = match parsed {
-//         Ok(Ok(o)) => o,
-//         Ok(Err(e)) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//         Err(e) => {
-//             return HttpError::from_corelamo(
-//                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-//                 &ctx,
-//             )
-//             .into_response();
-//         }
-//     };
-//
-//     let doc_indices = outcome.indices;
-//     let parse_failures = outcome.failures;
-//
-//     let report = match handle.insert(outcome.docs).await {
-//         Ok(r) => r,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
-//     outcome.succeed_many(report.inserted);
-//     outcome.fail_many(parse_failures);
-//
-//     // storage indexes into the parsed vec; map back to the client's input array
-//     for mut failure in report.failures {
-//         failure.index = failure.index.and_then(|i| doc_indices.get(i).copied());
-//         outcome.fail_doc(failure);
-//     }
-//
-//     let title = format!(
-//         "inserted {} into '{db_name}', {} failed",
-//         outcome.succeeded_count(),
-//         outcome.failed_count()
-//     );
-//     outcome
-//         .into_ok(StatusCode::OK, title, &db_name, &ctx)
-//         .into_response()
-// }
-// //
 // pub async fn clear_database_handler(
 //     State(state): State<AppState>,
 //     Path(db_name): Path<String>,
@@ -680,7 +681,6 @@ fn require_body(body: &str) -> Result<&str, CorelamoError> {
 //
 
 //TODO: palasit
-#[axum::debug_handler]
 pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -708,15 +708,15 @@ pub async fn create_database_handler(
             .into_response();
         }
     }
-
     let db_path = state.databases_dir.join(&db_name);
+
     let created = tokio::task::spawn_blocking(move || {
         ShardManager::create(db_path, 1, DatabaseOptions::default())
     })
     .await;
 
     let manager = match created {
-        Ok(Ok(mgr)) => Arc::new(mgr),
+        Ok(Ok(mgr)) => mgr,
         Ok(Err(e)) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -740,20 +740,10 @@ pub async fn create_database_handler(
             }
         };
 
+        //safety check if someone somehow created a database between the two checks
         if dbs.contains_key(&db_name) {
-            drop(dbs);
-            match Arc::try_unwrap(manager) {
-                Ok(mgr) => {
-                    let _ = tokio::task::spawn_blocking(move || mgr.shutdown()).await;
-                }
-                Err(_) => {
-                    error!(
-                        slog_scope::logger(),
-                        "lost the only expected reference to a just-created database, \
-                         shard threads may leak";
-                        "db" => %db_name,
-                    );
-                }
+            if let Err(e) = manager.shutdown() {
+                error!(slog_scope::logger(), "failed to shut down redundant manager"; "db" => %db_name, "error" => %e);
             }
             return HttpError::from_corelamo(
                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
@@ -761,7 +751,7 @@ pub async fn create_database_handler(
             )
             .into_response();
         }
-        dbs.insert(db_name.clone(), manager);
+        dbs.insert(db_name.clone(), Arc::new(manager));
     }
 
     HttpOk::with_status(
