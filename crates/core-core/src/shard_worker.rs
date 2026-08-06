@@ -49,6 +49,10 @@ pub enum ShardCmd {
         options: DatabaseOptions,
         resp: Sender<Result<(), CorelamoError>>,
     },
+    Clear {
+        resp: Sender<Result<(), CorelamoError>>,
+    },
+
     DocCount {
         resp: Sender<usize>,
     },
@@ -77,6 +81,10 @@ impl ShardHandle {
     }
     pub fn queued(&self) -> usize {
         self.tx.len()
+    }
+
+    pub fn clear(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Clear { resp })?
     }
 
     /// Fire-and-forget send for manager fan-out; caller keeps the response rx.
@@ -201,6 +209,10 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 }
                 ShardCmd::DocCount { resp } => {
                     let _ = resp.send(shard.document_count());
+                }
+
+                ShardCmd::Clear { resp } => {
+                    let _ = resp.send(shard.clear());
                 }
                 ShardCmd::Shutdown { resp } => {
                     let _ = resp.send(shard.stop());

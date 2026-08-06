@@ -376,37 +376,36 @@ pub async fn retrieve_handler(
     HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
-//
-// pub async fn clear_database_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     //   if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
-//     //    return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.clear().await {
-//         Ok(_) => {}
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     }
-//
-//     HttpOk::new(
-//         format!("database: {db_name}, is cleared of data and index"),
-//         &ctx,
-//     )
-//     .into_response()
-// }
-//
+pub async fn clear_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
+) -> Response {
+    //   if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match manager.clear_all() {
+        Ok(_) => {}
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    }
+
+    HttpOk::new(
+        format!("database: {db_name}, is cleared of data and index"),
+        &ctx,
+    )
+    .into_response()
+}
+
 // pub async fn get_logs_handler(
 //     State(state): State<AppState>,
 //     Path(db_name): Path<String>,

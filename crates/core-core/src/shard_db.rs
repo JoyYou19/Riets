@@ -605,6 +605,63 @@ impl ShardDb {
         &self.root
     }
 
+    pub fn clear(&mut self) -> Result<(), CorelamoError> {
+        if let Some(worker) = self.compaction_worker.take() {
+            worker.stop()?;
+            info!(self.log, "compaction worker stopped for clear"; "shard_id" => self.shard_id);
+        }
+
+        if let Some(db) = self.db.take() {
+            if let Err(e) = db.shutdown() {
+                warn!(self.log, "clear: shutdown of old database failed"; "shard_id" => self.shard_id, "error" => %e);
+            }
+        }
+
+        let index_root = self.root.join("index");
+        let store_path = self.root.join("documents.bin");
+
+        std::fs::remove_dir_all(&index_root).ok();
+        std::fs::remove_dir_all(self.root.join("index.new")).ok();
+        std::fs::remove_dir_all(self.root.join("index.old")).ok();
+        std::fs::remove_file(&store_path).ok();
+
+        // outright WAL reset
+        self.wal
+            .reset()
+            .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+        self.wal
+            .write_checkpoint(0)
+            .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
+
+        self.pending_ops.clear();
+
+        //restart
+        let analyzer = self.analyzer();
+        let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
+        let store = BinaryDocumentStore::open(&store_path)?;
+        let db = SearchDatabase::with_shard_policy(
+            store,
+            index,
+            analyzer,
+            self.policy.clone(),
+            self.shard_id,
+        )?;
+
+        self.compaction_worker = if self.options.enable_background_compaction {
+            Some(CompactionWorker::start(
+                db.index_sender(),
+                self.options.runtime.compaction,
+                self.options.compaction_interval,
+            ))
+        } else {
+            None
+        };
+
+        self.db = Some(db);
+        info!(self.log, "shard cleared"; "shard_id" => self.shard_id);
+        Ok(())
+    }
+
     fn queue_op(&mut self, op: PendingOp) {
         if !self.progress.phase().is_running() {
             return;
