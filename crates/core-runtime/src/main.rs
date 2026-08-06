@@ -36,22 +36,19 @@ mod middleware;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub databases: Arc<RwLock<HashMap<String, Arc<ShardManager>>>>,
+    pub databases: Arc<tokio::sync::RwLock<HashMap<String, Arc<ShardManager>>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
     //    pub auth: Arc<RwLock<AuthService>>,
 }
 
 impl AppState {
-    pub fn lookup(&self, db_name: &str) -> Result<Arc<ShardManager>, CorelamoError> {
-        let dbs = self
-            .databases
-            .read()
-            .map_err(|_| CorelamoError::Internal("databases lock poisoned".into()))?;
-        dbs.get(db_name)
-            .cloned()
-            .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
-    }
+    // pub fn lookup(&self, db_name: &str) -> Result<Arc<ShardManager>, CorelamoError> {
+    //     let dbs = self.databases.read().awaitu;
+    //     dbs.get(db_name)
+    //         .cloned()
+    //         .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
+    // }
 }
 
 //TODO: maybe check if there are more possible signals
@@ -179,7 +176,7 @@ async fn main() -> io::Result<()> {
     //let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
 
     let state = AppState {
-        databases: Arc::new(RwLock::new(handles)),
+        databases,
         databases_dir,
         default_format,
         // auth,

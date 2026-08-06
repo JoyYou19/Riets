@@ -708,6 +708,7 @@ pub async fn create_database_handler(
             .into_response();
         }
     }
+
     let db_path = state.databases_dir.join(&db_name);
     let created = tokio::task::spawn_blocking(move || {
         ShardManager::create(db_path, 1, DatabaseOptions::default())
