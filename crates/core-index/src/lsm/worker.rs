@@ -1,9 +1,9 @@
 use std::{
     io,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
-        Arc,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -103,9 +103,9 @@ impl CompactionWorker {
         self.stop.store(true, Ordering::Relaxed);
 
         if let Some(handle) = self.handle.take() {
-            handle.join().map_err(|_| {
-                io::Error::other( "compaction worker panicked")
-            })??;
+            handle
+                .join()
+                .map_err(|_| io::Error::other("compaction worker panicked"))??;
         }
 
         Ok(())

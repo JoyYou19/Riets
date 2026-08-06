@@ -301,12 +301,12 @@ pub async fn insert_handler(
     };
 
     if !handle.all_alive() {
-    return HttpError::from_corelamo(
-        CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-        &ctx,
-    )
-    .into_response();
-}
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
 
     let policy = handle.policy.clone();
 

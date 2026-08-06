@@ -11,6 +11,9 @@ use rayon::prelude::*;
 use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 pub trait DocumentConversion {
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError>;
 }
@@ -49,11 +52,22 @@ fn extract_external_id(
     };
     match fields.get(&id_field.name) {
         Some(v) if !v.is_empty() => Ok(v.clone()),
-        _ if id_field.index == IndexKind::IdAutoIncrement => Ok(String::new()),
+        //INFO: we generate a random auto id for shard rounting if its auto shard_manager detects it
+        //and inside the shard_db it gets a correct id
+        _ if id_field.index == IndexKind::IdAutoIncrement => Ok(generate_routing_id(fields)),
         _ => Err(FailReason::MissingId {
             field: id_field.name.clone(),
         }),
     }
+}
+
+fn generate_routing_id(fields: &BTreeMap<String, String>) -> String {
+    let mut hasher = DefaultHasher::new();
+    for (key, value) in fields {
+        key.hash(&mut hasher);
+        value.hash(&mut hasher);
+    }
+    format!("__auto_{:016x}", hasher.finish())
 }
 
 impl<'a> DocumentConversion for Json<'a> {
@@ -176,6 +190,8 @@ fn json_value_to_document_input(
     traverse_json(&value, "", &mut fields);
 
     let external_id = extract_external_id(&fields, policy)?;
+
+    println!("external id from hash: {:?}", external_id);
 
     Ok(DocumentInput {
         external_id,
