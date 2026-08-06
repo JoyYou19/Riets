@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse};
+use core_protocol::command_reponse_definitions::{
+    LookupCommand, LookupResponse, RetrieveCommand, RetrieveResponse,
+};
+use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
 
 use crate::shard_db::ShardDb;
@@ -11,7 +14,6 @@ use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_query::Query; // QueryPlan prom
-use core_query::planner::QueryPlan;
 use core_storage::search_database::{DocumentInput, InsertReport, SearchDocumentHit};
 
 pub enum ShardCmd {
@@ -23,6 +25,11 @@ pub enum ShardCmd {
         query: Arc<Query>,
         k: usize,
         resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
+    },
+
+    Retrieve {
+        ids: Vec<String>,
+        resp: Sender<Result<Vec<(String, Option<StoredDocument>)>, CorelamoError>>,
     },
 
     Lookup {
@@ -43,7 +50,6 @@ pub enum ShardCmd {
     Shutdown {
         resp: Sender<Result<(), CorelamoError>>,
     },
-
 }
 
 #[derive(Clone)]
@@ -188,7 +194,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                     let _ = resp.send(shard.stop());
                     return;
                 }
-                ShardCmd::Retrieve { ids, resp } =>{
+                ShardCmd::Retrieve { ids, resp } => {
                     let _ = resp.send(shard.get_document(&ids));
                 }
             }
