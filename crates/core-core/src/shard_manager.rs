@@ -42,7 +42,7 @@ impl ShardManager {
         root.join(Self::POLICY_PATH_NAME)
     }
     pub fn all_alive(&self) -> bool {
-    self.shards.iter().all(|h| h.is_alive())
+        self.shards.iter().all(|h| h.is_alive())
     }
 
     pub fn create(
@@ -233,7 +233,14 @@ impl ShardManager {
 
     //paligfunkcija no viber
     fn shard_index_for(&self, external_id: &str) -> usize {
-        shard_for(external_id, self.shards.len() as u16) as usize
+        if external_id.starts_with("__auto_") {
+            //we reuse the generated hash to orute to the correct shard
+            let hash_str = external_id.trim_start_matches("__auto_");
+            let hash_val = u64::from_str_radix(hash_str, 16).unwrap_or(0);
+            (hash_val % self.shards.len() as u64) as usize
+        } else {
+            shard_for(external_id, self.shards.len() as u16) as usize
+        }
     }
 
     fn group_by_shard<'a>(&self, ids: &'a [String]) -> HashMap<usize, Vec<&'a String>> {

@@ -740,7 +740,9 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
         let internal_id = self.db.allocate_internal_id()?;
 
-        let external_id = if input.external_id.is_empty() {
+        let is_auto_increment = input.external_id.starts_with("__auto_");
+        let external_id = if is_auto_increment {
+            //make a pretty auto id if that was bad
             self.allocate_generated_external_id(internal_id)?
         } else {
             let external_id = input.external_id;

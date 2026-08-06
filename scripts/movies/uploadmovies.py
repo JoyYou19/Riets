@@ -125,7 +125,6 @@ def login(username, password):
         capture_output=True,
         text=True,
     )
-    
 
 
 def curl_post(url, body, token):
@@ -157,7 +156,7 @@ def main():
     # 0. log in first — every request below needs the token
     print(f"[INFO] Logging in as '{USERNAME}'...")
     token = login(USERNAME, PASSWORD)
-   
+
     print("[INFO] Login successful, token acquired.")
 
     # 1. delete if exists

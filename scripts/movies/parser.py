@@ -5,7 +5,7 @@ import math
 
 INPUT_FILE = "movies.json"
 OUTPUT_DIR = "./movie_chunks"
-CHUNK_SIZE = 1000  # 100 movies per file
+CHUNK_SIZE = 1000  # 1000 movies per file
 
 
 def flatten_value(value):
@@ -33,6 +33,8 @@ def main():
 
     docs = []
     for i, movie in enumerate(movies, start=1):
+        # Insert the incrementing ID as the first key
+        # doc = {"id": i}
         doc = {}
         for key, value in movie.items():
             doc[key] = flatten_value(value)
