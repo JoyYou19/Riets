@@ -193,10 +193,10 @@ async fn main() -> io::Result<()> {
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
-        // .route(
-        //     "/api/databases/{db_name}/search",
-        //     post(handlers::search_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/search",
+            post(handlers::search_handler),
+        )
         .route(
             "/api/databases/{db_name}/insert",
             post(handlers::insert_handler),
@@ -209,6 +209,14 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/lookup",
             post(handlers::lookup_handler),
         )
+        .route(
+            "/api/databases/{db_name}/retrieve",
+            post(handlers::retrieve_handler),
+        )
+        // // .route(
+        // //     "/api/databases/{db_name}/lookup",
+        // //     post(handlers::lookup_handler),
+        // // )
         // .route(
         //     "/api/databases/{db_name}/replace",
         //     put(handlers::replace_document_handler),

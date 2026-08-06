@@ -43,6 +43,7 @@ pub enum ShardCmd {
     Shutdown {
         resp: Sender<Result<(), CorelamoError>>,
     },
+
 }
 
 #[derive(Clone)]
@@ -186,6 +187,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 ShardCmd::Shutdown { resp } => {
                     let _ = resp.send(shard.stop());
                     return;
+                }
+                ShardCmd::Retrieve { ids, resp } =>{
+                    let _ = resp.send(shard.get_document(&ids));
                 }
             }
         }
