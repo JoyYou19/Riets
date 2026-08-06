@@ -9,6 +9,7 @@ use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
 
 use crate::shard_db::ShardDb;
+use crate::{DatabaseOptions, options};
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
@@ -42,6 +43,10 @@ pub enum ShardCmd {
     },
     SetPolicy {
         policy: IndexPolicy,
+        resp: Sender<Result<(), CorelamoError>>,
+    },
+    SetConfig {
+        options: DatabaseOptions,
         resp: Sender<Result<(), CorelamoError>>,
     },
     DocCount {
@@ -100,6 +105,10 @@ impl ShardHandle {
 
     pub fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetPolicy { policy, resp })?
+    }
+
+    pub fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::SetConfig { options, resp })?
     }
 
     pub fn document_count(&self) -> Result<usize, CorelamoError> {
@@ -183,6 +192,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
 
                 ShardCmd::Flush { resp } => {
                     let _ = resp.send(shard.flush());
+                }
+                ShardCmd::SetConfig { options, resp } => {
+                    let _ = resp.send(shard.set_options(options));
                 }
                 ShardCmd::SetPolicy { policy, resp } => {
                     let _ = resp.send(shard.set_policy(policy));

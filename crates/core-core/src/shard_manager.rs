@@ -2,7 +2,7 @@ use core_index::analyzer::Analyzer;
 use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::bounded;
-use indexmap::IndexMap;
+use parking_lot::RwLock;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,11 +12,9 @@ use std::thread::JoinHandle;
 use crate::ShardDb;
 use crate::shard_worker::{self, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
-use core_index::document::{self, IndexPolicy, IndexedDocument};
-use core_index::lsm::index_worker::IndexingStats;
+use core_index::document::IndexPolicy;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
-use core_query::planner::QueryPlanner;
 use core_query::query_string_parser::parse_and_analyze;
 use core_storage::search_database::InsertReport;
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -25,8 +23,8 @@ pub struct ShardManager {
     shards: Vec<ShardHandle>,
     joins: Vec<JoinHandle<()>>, //JoinHandle atgriez ka thread uztaisits
     root: PathBuf,
-    pub policy: IndexPolicy,
-    pub options: DatabaseOptions,
+    policy: RwLock<IndexPolicy>,
+    options: RwLock<DatabaseOptions>,
     analyzer: Analyzer,
 }
 
@@ -84,8 +82,8 @@ impl ShardManager {
             shards,
             joins,
             root,
-            policy,
-            options,
+            policy: RwLock::new(policy),
+            options: RwLock::new(options),
             analyzer: Analyzer::new(),
         })
     }
@@ -153,8 +151,8 @@ impl ShardManager {
             shards,
             joins,
             root,
-            policy,
-            options,
+            policy: RwLock::new(policy),
+            options: RwLock::new(options),
             analyzer: Analyzer::new(),
         })
     }
@@ -192,15 +190,15 @@ impl ShardManager {
         }
     }
 
-    pub fn policy(&self) -> &IndexPolicy {
-        &self.policy
+    pub fn policy(&self) -> IndexPolicy {
+        self.policy.read().clone()
     }
 
-    pub fn options(&self) -> &DatabaseOptions {
-        &self.options
+    pub fn options(&self) -> DatabaseOptions {
+        self.options.read().clone()
     }
 
-    pub fn set_policy_all(&mut self, policy: IndexPolicy) -> Result<(), CorelamoError> {
+    pub fn set_policy_all(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         policy.validate()?;
 
         let pending: Vec<_> = self
@@ -220,14 +218,32 @@ impl ShardManager {
                 .map_err(|_| CorelamoError::Internal("shard died".into()))??;
         }
 
-        self.policy = policy;
-        self.policy.save(&Self::policy_path(&self.root))?;
+        let mut guard = self.policy.write();
+        guard.save(&Self::policy_path(&self.root))?;
+        *guard = policy;
         Ok(())
     }
 
-    pub fn set_options_all(&mut self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+    pub fn set_options_all(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+        let pending: Vec<_> = self
+            .shards
+            .iter()
+            .map(|h| {
+                let (rtx, rrx) = bounded(1);
+                let _ = h.send_raw(ShardCmd::SetConfig {
+                    options: options.clone(),
+                    resp: rtx,
+                });
+                rrx
+            })
+            .collect();
+        for rx in pending {
+            rx.recv()
+                .map_err(|_| CorelamoError::Internal("shard died".into()))??;
+        }
+
         options.save_to_file(&Self::config_path(&self.root))?;
-        self.options = options;
+        *self.options.write() = options;
         Ok(())
     }
     //write operations

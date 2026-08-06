@@ -240,61 +240,61 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/create-database",
             post(handlers::create_database_handler),
+        )
+        // .route(
+        //     "/api/databases/{db_name}/clear-database",
+        //     delete(handlers::clear_database_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/delete-database",
+        //     delete(handlers::delete_database_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/start-database",
+        //     post(handlers::start_database_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/stop-database",
+        //     post(handlers::stop_database_handler),
+        // )
+        // .route("/api/list-databases", get(handlers::list_databases_handler))
+        // .route(
+        //     "/api/databases/{db_name}/status",
+        //     get(handlers::stats_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/reindex",
+        //     post(handlers::reindex_handler),
+        // )
+        .route(
+            "/api/databases/{db_name}/get-policy",
+            get(handlers::get_policy_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/set-policy",
+            put(handlers::set_policy_handler),
+        )
+        // .route("/api/users", post(handlers::create_user_handler))
+        // .route(
+        //     "/api/users/{username}",
+        //     delete(handlers::delete_user_handler),
+        // )
+        // .route(
+        //     "/api/users/{username}/password",
+        //     post(handlers::update_user_password_handler),
+        // )
+        // .route(
+        //     "/api/users/{username}/roles",
+        //     post(handlers::update_user_roles_handler),
+        // // )
+        .route(
+            "/api/databases/{db_name}/get-config",
+            get(handlers::get_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/set-config",
+            put(handlers::set_config_handler),
         );
-    // .route(
-    //     "/api/databases/{db_name}/clear-database",
-    //     delete(handlers::clear_database_handler),
-    // )
-    // .route(
-    //     "/api/databases/{db_name}/delete-database",
-    //     delete(handlers::delete_database_handler),
-    // )
-    // .route(
-    //     "/api/databases/{db_name}/start-database",
-    //     post(handlers::start_database_handler),
-    // )
-    // .route(
-    //     "/api/databases/{db_name}/stop-database",
-    //     post(handlers::stop_database_handler),
-    // )
-    // .route("/api/list-databases", get(handlers::list_databases_handler))
-    // .route(
-    //     "/api/databases/{db_name}/status",
-    //     get(handlers::stats_handler),
-    // )
-    // .route(
-    //     "/api/databases/{db_name}/reindex",
-    //     post(handlers::reindex_handler),
-    // )
-    // .route(
-    //     "/api/databases/{db_name}/get-policy",
-    //     get(handlers::get_policy_handler),
-    // )
-    // .route(
-    //     "/api/databases/{db_name}/set-policy",
-    //     post(handlers::set_policy_handler),
-    // )
-    // .route("/api/users", post(handlers::create_user_handler))
-    // .route(
-    //     "/api/users/{username}",
-    //     delete(handlers::delete_user_handler),
-    // )
-    // .route(
-    //     "/api/users/{username}/password",
-    //     post(handlers::update_user_password_handler),
-    // )
-    // .route(
-    //     "/api/users/{username}/roles",
-    //     post(handlers::update_user_roles_handler),
-    // // )
-    // .route(
-    //     "/api/databases/{db_name}/get-config",
-    //     get(handlers::get_config_handler),
-    // )
-    // .route(
-    //     "/api/databases/{db_name}/set-config",
-    //     put(handlers::set_config_handler),
-    // )
     // .route(
     //     "/api/databases/{db_name}/restart-database",
     //     post(handlers::restart_database_handler),

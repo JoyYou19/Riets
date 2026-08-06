@@ -252,7 +252,7 @@ pub async fn insert_handler(
         .into_response();
     }
 
-    let policy = handle.policy.clone();
+    let policy = handle.policy();
 
     let format = ctx.format;
     let parsed =
@@ -976,143 +976,131 @@ pub async fn create_database_handler(
 //
 // // policy is always TOML
 // // sending raw since it shouldnt be encoded in json/xml
-// pub async fn get_policy_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let policy = match handle.get_policy().await {
-//         Ok(p) => p,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match doctypes::serialize_policy(&policy) {
-//         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
-//
-// pub async fn set_policy_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     // Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
-//     //    return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let policy = match doctypes::parse_policy(&body) {
-//         Ok(p) => p,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.set_policy(policy).await {
-//         Ok(()) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
-//
-// pub async fn get_config_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
-//     //    return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let options = match handle.options().await {
-//         Ok(opts) => opts,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match toml::to_string_pretty(&options) {
-//         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
-//         Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
-//     }
-// }
-//
-// pub async fn set_config_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     //Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
-//     //   return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     //parse first - TOML parsing needs no database
-//     let options: DatabaseOptions = match toml::from_str(&body) {
-//         Ok(o) => o,
-//         Err(e) => {
-//             return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response();
-//         }
-//     };
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.set_options(options).await {
-//         Ok(was_running) => {
-//             let note = if was_running {
-//                 " (restart required for start-time settings to take effect)"
-//             } else {
-//                 ""
-//             };
-//             HttpOk::new(format!("config updated for '{db_name}'{note}"), &ctx).into_response()
-//         }
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
+pub async fn get_policy_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
+) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let policy = handle.policy();
+
+    match doctypes::serialize_policy(&policy) {
+        Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn set_policy_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    // Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    //if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let policy = match doctypes::parse_policy(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match handle.set_policy_all(policy) {
+        Ok(()) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn get_config_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
+) -> Response {
+    //if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let options = manager.options();
+
+    match toml::to_string_pretty(&options) {
+        Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
+        Err(e) => HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    }
+}
+
+pub async fn set_config_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    //Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    //if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
+    //   return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    //parse first - TOML parsing needs no database
+    let options: DatabaseOptions = match toml::from_str(&body) {
+        Ok(o) => o,
+        Err(e) => {
+            return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response();
+        }
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match handle.set_options_all(options) {
+        Ok(_) => HttpOk::new(format!("config updated for '{db_name}'"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("failed to update config for '{db_name}': {e}")),
+            &ctx,
+        )
+        .into_response(),
+    }
+}
 //
 // pub async fn restart_database_handler(
 //     State(state): State<AppState>,
