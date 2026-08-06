@@ -96,6 +96,65 @@ impl ShardManager {
         Self::create(root, num_shards, options)
     }
 
+    pub fn start(&self) -> Result<(), CorelamoError> {
+        let pending: Vec<_> = self
+            .shards
+            .iter()
+            .map(|h| {
+                let (rtx, rrx) = bounded(1);
+                let _ = h.send_raw(ShardCmd::Start { resp: rtx });
+                rrx
+            })
+            .collect();
+
+        let mut first_err = None;
+        for rx in pending {
+            match rx.recv() {
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Err(_) if first_err.is_none() => {
+                    first_err = Some(CorelamoError::Internal("shard died during start".into()))
+                }
+                _ => {}
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    pub fn stop(&self) -> Result<(), CorelamoError> {
+        let pending: Vec<_> = self
+            .shards
+            .iter()
+            .map(|h| {
+                let (rtx, rrx) = bounded(1);
+                let _ = h.send_raw(ShardCmd::Stop { resp: rtx });
+                rrx
+            })
+            .collect();
+
+        let mut first_err = None;
+        for rx in pending {
+            match rx.recv() {
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Err(_) if first_err.is_none() => {
+                    first_err = Some(CorelamoError::Internal("shard died during stop".into()))
+                }
+                _ => {}
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    pub fn restart(&self) -> Result<(), CorelamoError> {
+        self.stop()?;
+        self.start()
+    }
+
     pub fn clear_all(&self) -> Result<(), CorelamoError> {
         let pending: Vec<_> = self
             .shards

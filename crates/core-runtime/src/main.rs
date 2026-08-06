@@ -245,18 +245,18 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/clear-database",
             delete(handlers::clear_database_handler),
         )
-        // .route(
-        //     "/api/databases/{db_name}/delete-database",
-        //     delete(handlers::delete_database_handler),
-        // )
-        // .route(
-        //     "/api/databases/{db_name}/start-database",
-        //     post(handlers::start_database_handler),
-        // )
-        // .route(
-        //     "/api/databases/{db_name}/stop-database",
-        //     post(handlers::stop_database_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/delete-database",
+            delete(handlers::delete_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/start-database",
+            post(handlers::start_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/stop-database",
+            post(handlers::stop_database_handler),
+        )
         // .route("/api/list-databases", get(handlers::list_databases_handler))
         // .route(
         //     "/api/databases/{db_name}/status",
@@ -294,11 +294,11 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/set-config",
             put(handlers::set_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/restart-database",
+            post(handlers::restart_database_handler),
         );
-    // .route(
-    //     "/api/databases/{db_name}/restart-database",
-    //     post(handlers::restart_database_handler),
-    // );
     //
     // let protected_routes = if enable_auth {
     //     //  protected_routes.layer(from_fn_with_state(

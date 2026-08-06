@@ -270,6 +270,10 @@ impl ShardDb {
     }
 
     pub fn stop(&mut self) -> Result<(), CorelamoError> {
+        if self.db.is_none() {
+            return Ok(());
+        }
+
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
             info!(self.log, "compaction worker stopped"; "shard_id" => self.shard_id);

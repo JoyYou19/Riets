@@ -376,6 +376,71 @@ pub async fn retrieve_handler(
     HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
+pub async fn start_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match tokio::task::spawn_blocking(move || manager.start()).await {
+        Ok(Ok(())) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("start task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
+    }
+}
+
+pub async fn stop_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match tokio::task::spawn_blocking(move || manager.stop()).await {
+        Ok(Ok(())) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("stop task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
+    }
+}
+
+pub async fn restart_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match tokio::task::spawn_blocking(move || manager.restart()).await {
+        Ok(Ok(())) => {
+            HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
+        }
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("restart task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
+    }
+}
+
 pub async fn clear_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -392,6 +457,7 @@ pub async fn clear_database_handler(
         }
     };
 
+    //FIX: this should stop reindex!!!!
     match manager.clear_all() {
         Ok(_) => {}
         Err(e) => {
@@ -767,128 +833,83 @@ pub async fn create_database_handler(
     .into_response()
 }
 
-// pub async fn start_database_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::StartDB) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.start().await {
-//         Ok(DatabasePowerButtonOutcome::Changed) => {
-//             HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response()
-//         }
-//         Ok(DatabasePowerButtonOutcome::Nochange) => {
-//             HttpOk::new(format!("database '{db_name}' is already running"), &ctx).into_response()
-//         }
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
-//
-// pub async fn stop_database_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::StopDB) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.stop().await {
-//         Ok(DatabasePowerButtonOutcome::Changed) => {
-//             HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response()
-//         }
-//         Ok(DatabasePowerButtonOutcome::Nochange) => {
-//             HttpOk::new(format!("database '{db_name}' is already stopped"), &ctx).into_response()
-//         }
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
-//
-// pub async fn delete_database_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     let log = slog_scope::logger().new(o!("components"=> "handlers"));
-//     // if let Err(e) = check_permission(&state, &principal, Permission::DeleteDatabase) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let handle = {
-//         let mut dbs = match state.databases.write() {
-//             Ok(g) => g,
-//             Err(_) => {
-//                 return HttpError::from_corelamo(
-//                     CorelamoError::Internal("databases lock poisoned".into()),
-//                     &ctx,
-//                 )
-//                 .into_response();
-//             }
-//         };
-//         match dbs.remove(&db_name) {
-//             Some(h) => h,
-//             None => {
-//                 return HttpError::from_corelamo(
-//                     CorelamoError::NotFound(format!("database '{db_name}' not found")),
-//                     &ctx,
-//                 )
-//                 .into_response();
-//             }
-//         }
-//     }; //guard dropped
-//
-//     if let Err(e) = handle.shutdown().await {
-//         return HttpError::from_corelamo(
-//             CorelamoError::Internal(format!("failed to shutdown database '{db_name}': {e}")),
-//             &ctx,
-//         )
-//         .into_response();
-//     }
-//     drop(handle); //last Sender gone
-//
-//     let db_path = state.databases_dir.join(&db_name);
-//     let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
-//
-//     match removed {
-//         Ok(Ok(())) => {
-//             info!(log, "database deleted"; "name" => %db_name);
-//             HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response()
-//         }
-//         Ok(Err(e)) => {
-//             error!(log, "database delete failed"; "name" => %db_name, "error" => %e);
-//             HttpError::from_corelamo(
-//                 CorelamoError::Internal(format!(
-//                     "removed from memory but failed to delete '{db_name}' from disk: {e}"
-//                 )),
-//                 &ctx,
-//             )
-//             .into_response()
-//         }
-//         Err(e) => {
-//             error!(log, "database delete panicked"; "name" => %db_name, "error" => %e);
-//             HttpError::from_corelamo(
-//                 CorelamoError::Internal(format!("delete task panicked: {e}")),
-//                 &ctx,
-//             )
-//             .into_response()
-//         }
-//     }
-// }
-//
+pub async fn delete_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let log = slog_scope::logger().new(o!("components" => "handlers"));
+
+    let manager = {
+        let mut dbs = match state.databases.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        match dbs.remove(&db_name) {
+            Some(h) => h,
+            None => {
+                return HttpError::from_corelamo(
+                    CorelamoError::NotFound(format!("database '{db_name}' not found")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    }; // write guard dropped
+
+    let manager = match Arc::try_unwrap(manager) {
+        Ok(mgr) => mgr,
+        Err(still_shared) => {
+            // put it back so the database stays reachable/usable
+            if let Ok(mut dbs) = state.databases.write() {
+                dbs.insert(db_name.clone(), still_shared);
+            }
+            return HttpError::from_corelamo(
+                CorelamoError::Conflict(format!("database '{db_name}' is in use, try again")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    if let Err(e) = tokio::task::spawn_blocking(move || manager.shutdown()).await {
+        error!(log, "delete: shutdown task panicked"; "db" => %db_name, "error" => %e);
+    }
+
+    let db_path = state.databases_dir.join(&db_name);
+    let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
+
+    match removed {
+        Ok(Ok(())) => {
+            info!(log, "database deleted"; "name" => %db_name);
+            HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response()
+        }
+        Ok(Err(e)) => {
+            error!(log, "database delete failed"; "name" => %db_name, "error" => %e);
+            HttpError::from_corelamo(
+                CorelamoError::Internal(format!(
+                    "removed from memory but failed to delete '{db_name}' from disk: {e}"
+                )),
+                &ctx,
+            )
+            .into_response()
+        }
+        Err(e) => {
+            error!(log, "database delete panicked"; "name" => %db_name, "error" => %e);
+            HttpError::from_corelamo(
+                CorelamoError::Internal(format!("delete task panicked: {e}")),
+                &ctx,
+            )
+            .into_response()
+        }
+    }
+}
 // // pub async fn stats_handler(
 // //     State(state): State<AppState>,
 // //     Path(db_name): Path<String>,
@@ -1100,30 +1121,7 @@ pub async fn set_config_handler(
         .into_response(),
     }
 }
-//
-// pub async fn restart_database_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::RestartDB) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.restart().await {
-//         Ok(()) => {
-//             HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
-//         }
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
-//
+
 // pub async fn list_databases_handler(
 //     State(state): State<AppState>,
 //     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,

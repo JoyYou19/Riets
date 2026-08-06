@@ -53,6 +53,13 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
 
+    Start {
+        resp: Sender<Result<(), CorelamoError>>,
+    },
+    Stop {
+        resp: Sender<Result<(), CorelamoError>>,
+    },
+
     DocCount {
         resp: Sender<usize>,
     },
@@ -113,6 +120,13 @@ impl ShardHandle {
 
     pub fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetPolicy { policy, resp })?
+    }
+
+    pub fn start(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Start { resp })?
+    }
+    pub fn stop(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Stop { resp })?
     }
 
     pub fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
@@ -209,6 +223,13 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 }
                 ShardCmd::DocCount { resp } => {
                     let _ = resp.send(shard.document_count());
+                }
+
+                ShardCmd::Start { resp } => {
+                    let _ = resp.send(shard.start());
+                }
+                ShardCmd::Stop { resp } => {
+                    let _ = resp.send(shard.stop());
                 }
 
                 ShardCmd::Clear { resp } => {
