@@ -30,7 +30,11 @@ use core_protocol::errors::CorelamoError;
 use core_query::{Query, query_string_parser::parse_and_analyze};
 
 use core_storage::{
-    binary_store::BinaryDocumentStore, search_database::{DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase, SearchDocumentHit}, wal::{Wal, WalRecord},
+    binary_store::BinaryDocumentStore,
+    search_database::{
+        DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase, SearchDocumentHit,
+    },
+    wal::{Wal, WalRecord},
 };
 
 use crate::{metrics::DatabaseMetrics, options::DatabaseOptions};
@@ -350,7 +354,7 @@ impl ShardDb {
         db.search_document_hits_all_fields_top_k(query, k)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
-    
+
     // pub fn get_document(&self, external_id: &str) -> Result<Option<StoredDocument>, CorelamoError> {
     //     let db = self
     //         .db_ref()
@@ -358,7 +362,7 @@ impl ShardDb {
     //     db.get_document(external_id)
     //         .map_err(|e| CorelamoError::Internal(e.to_string()))
     // }
-    
+
     // pub fn lookup(
     //     &self,
     //     command: &LookupCommand,
@@ -415,13 +419,11 @@ impl ShardDb {
         let batch_size = self.options.runtime.indexing_batch_size;
         let window_size = self.options.runtime.indexing_window_size;
 
-        let ids: Vec<String> = if self.progress.phase().is_running(){
+        let ids: Vec<String> = if self.progress.phase().is_running() {
             inputs.iter().map(|i| i.external_id.clone()).collect()
-        }else{
+        } else {
             Vec::new()
         };
-        
-
 
         let result = (|| -> Result<InsertReport, CorelamoError> {
             //WALis
@@ -476,7 +478,7 @@ impl ShardDb {
         }
 
         let elapsed = started.elapsed();
-        
+
         match &result {
             Ok(_) => info!(self.log, "indexed batch";
                 "shard_id" => %self.shard_id,
@@ -495,7 +497,7 @@ impl ShardDb {
 
         result
     }
-    
+
     //
     // pub fn delete(&mut self, external_id: &str) -> Result<(), CorelamoError> {
     //     let record = WalRecord::Delete {
@@ -609,3 +611,4 @@ const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<ShardDb>();
 };
+

@@ -3,7 +3,9 @@ use std::{collections::HashMap, io, path::Path};
 use core_core::shard_manager::ShardManager;
 use slog::{error, info};
 
-pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, ShardManager>> {
+pub fn load_saved_shard_managers(
+    databases_dir: &Path,
+) -> io::Result<HashMap<String, ShardManager>> {
     let mut databases = HashMap::new();
     let log = slog_scope::logger();
 
@@ -28,8 +30,6 @@ pub fn load_saved_databases(databases_dir: &Path) -> io::Result<HashMap<String, 
                 continue;
             }
         };
-
-        
 
         databases.insert(name, manager);
     }

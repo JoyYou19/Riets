@@ -1,25 +1,41 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded};
 
+use crate::shard_db::ShardDb;
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
+use core_query::Query; // QueryPlan prom
 use core_query::planner::QueryPlan;
 use core_storage::search_database::{DocumentInput, InsertReport, SearchDocumentHit};
-use core_query::Query;          // QueryPlan prom
-use crate::shard_db::ShardDb;
 
 pub enum ShardCmd {
-    Insert    { inputs: Vec<DocumentInput>, resp: Sender<Result<InsertReport, CorelamoError>> },
-    Search    { query: Arc<Query>, k: usize, resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>> },
-    Flush     { resp: Sender<Result<(), CorelamoError>> },
-    SetPolicy { policy: IndexPolicy, resp: Sender<Result<(), CorelamoError>> },
-    DocCount  { resp: Sender<usize> },
-    Shutdown  { resp: Sender<Result<(), CorelamoError>> },
+    Insert {
+        inputs: Vec<DocumentInput>,
+        resp: Sender<Result<InsertReport, CorelamoError>>,
+    },
+    Search {
+        query: Arc<Query>,
+        k: usize,
+        resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
+    },
+    Flush {
+        resp: Sender<Result<(), CorelamoError>>,
+    },
+    SetPolicy {
+        policy: IndexPolicy,
+        resp: Sender<Result<(), CorelamoError>>,
+    },
+    DocCount {
+        resp: Sender<usize>,
+    },
+    Shutdown {
+        resp: Sender<Result<(), CorelamoError>>,
+    },
 }
 
 #[derive(Clone)]
@@ -31,10 +47,18 @@ pub struct ShardHandle {
 }
 
 impl ShardHandle {
-    pub fn id(&self) -> ShardId { self.id }
-    pub fn progress(&self) -> &Arc<ReindexProgress> { &self.progress }
-    pub fn is_alive(&self) -> bool { self.alive.load(Ordering::Acquire) }
-    pub fn queued(&self) -> usize { self.tx.len() }
+    pub fn id(&self) -> ShardId {
+        self.id
+    }
+    pub fn progress(&self) -> &Arc<ReindexProgress> {
+        &self.progress
+    }
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+    pub fn queued(&self) -> usize {
+        self.tx.len()
+    }
 
     /// Fire-and-forget send for manager fan-out; caller keeps the response rx.
     /// On failure the command comes back so the caller can recover its payload.
@@ -76,7 +100,9 @@ impl ShardHandle {
 /// Flips `alive` to false on any exit path, including panic unwind.
 struct AliveGuard(Arc<AtomicBool>);
 impl Drop for AliveGuard {
-    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 pub fn spawn(
@@ -87,7 +113,6 @@ pub fn spawn(
     let progress = shard.progress();
     let alive = Arc::new(AtomicBool::new(true));
 
-    // bounded(0) in crossbeam is a rendezvous channel, so clamp to at least 1.
     let (tx, rx) = bounded(queue_depth.max(1));
     let (boot_tx, boot_rx) = bounded(1);
 
@@ -109,7 +134,15 @@ pub fn spawn(
         .recv()
         .map_err(|_| CorelamoError::Internal(format!("shard {id} thread died during start")))??;
 
-    Ok((ShardHandle { id, tx, alive, progress }, join))
+    Ok((
+        ShardHandle {
+            id,
+            tx,
+            alive,
+            progress,
+        },
+        join,
+    ))
 }
 
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
@@ -148,3 +181,4 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
     // All senders dropped without an explicit Shutdown.
     let _ = shard.stop();
 }
+

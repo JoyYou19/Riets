@@ -6,6 +6,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 
+use core_core::shard_manager::ShardManager;
 //use core_auth::{AuthService, UserDatabase};
 use core_index::{
     analyzer::analyzer::Analyzer,
@@ -26,11 +27,8 @@ use std::{
 
 use tokio::signal;
 
-use crate::db_actor::DbHandle;
-
 mod corelamo_settings;
 mod database_helpers;
-mod db_actor;
 mod doctypes;
 mod handlers;
 mod http_response;
@@ -38,14 +36,14 @@ mod middleware;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub databases: Arc<RwLock<HashMap<String, DbHandle>>>,
+    pub databases: Arc<RwLock<HashMap<String, Arc<ShardManager>>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
     //    pub auth: Arc<RwLock<AuthService>>,
 }
 
 impl AppState {
-    pub fn lookup(&self, db_name: &str) -> Result<DbHandle, CorelamoError> {
+    pub fn lookup(&self, db_name: &str) -> Result<Arc<ShardManager>, CorelamoError> {
         let dbs = self
             .databases
             .read()
@@ -152,7 +150,7 @@ async fn main() -> io::Result<()> {
     let databases_dir = root_path.join("databases");
     info!( log, "databases_dir:";"databases_dir" => %databases_dir.display());
 
-    let databases = match database_helpers::load_saved_databases(&databases_dir) {
+    let databases = match database_helpers::load_saved_shard_managers(&databases_dir) {
         Ok(dbs) => dbs,
         Err(e) => {
             error!(log,"error loading databases " ;"error"=>%e );
@@ -162,12 +160,10 @@ async fn main() -> io::Result<()> {
 
     info!(log,"found and loaded database(s) in total"; "databases"=>%databases.len());
 
-    let mut handles = HashMap::new();
-    let mut joins = Vec::new();
+    let mut handles: HashMap<String, Arc<ShardManager>> = HashMap::new();
 
-    // Setup databases and their handlers
     for (db_name, manager) in databases {
-    handles.insert(db_name, DbHandle::new(manager,db_name));
+        handles.insert(db_name, Arc::new(manager));
     }
 
     let users_dir = root_path.join("users");
@@ -197,105 +193,105 @@ async fn main() -> io::Result<()> {
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
-        .route(
-            "/api/databases/{db_name}/search",
-            post(handlers::search_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/insert",
-            post(handlers::insert_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/retrieve",
-            post(handlers::retrieve_handler),
-        )
         // .route(
-        //     "/api/databases/{db_name}/lookup",
-        //     post(handlers::lookup_handler),
+        //     "/api/databases/{db_name}/search",
+        //     post(handlers::search_handler),
         // )
-        .route(
-            "/api/databases/{db_name}/replace",
-            put(handlers::replace_document_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/upsert",
-            post(handlers::upsert_document_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/delete",
-            delete(handlers::delete_document_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/get-logs",
-            get(handlers::get_logs_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/clear-logs",
-            delete(handlers::clear_logs_handler),
-        )
+        // .route(
+        //     "/api/databases/{db_name}/insert",
+        //     post(handlers::insert_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/retrieve",
+        //     post(handlers::retrieve_handler),
+        // )
+        // // .route(
+        // //     "/api/databases/{db_name}/lookup",
+        // //     post(handlers::lookup_handler),
+        // // )
+        // .route(
+        //     "/api/databases/{db_name}/replace",
+        //     put(handlers::replace_document_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/upsert",
+        //     post(handlers::upsert_document_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/delete",
+        //     delete(handlers::delete_document_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/get-logs",
+        //     get(handlers::get_logs_handler),
+        // )
+        // .route(
+        //     "/api/databases/{db_name}/clear-logs",
+        //     delete(handlers::clear_logs_handler),
+        // )
         .route(
             "/api/databases/{db_name}/create-database",
             post(handlers::create_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/clear-database",
-            delete(handlers::clear_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/delete-database",
-            delete(handlers::delete_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/start-database",
-            post(handlers::start_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/stop-database",
-            post(handlers::stop_database_handler),
-        )
-        .route("/api/list-databases", get(handlers::list_databases_handler))
-        // .route(
-        //     "/api/databases/{db_name}/status",
-        //     get(handlers::stats_handler),
-        // )
-        .route(
-            "/api/databases/{db_name}/reindex",
-            post(handlers::reindex_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/get-policy",
-            get(handlers::get_policy_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/set-policy",
-            post(handlers::set_policy_handler),
-        )
-        // .route("/api/users", post(handlers::create_user_handler))
-        // .route(
-        //     "/api/users/{username}",
-        //     delete(handlers::delete_user_handler),
-        // )
-        // .route(
-        //     "/api/users/{username}/password",
-        //     post(handlers::update_user_password_handler),
-        // )
-        // .route(
-        //     "/api/users/{username}/roles",
-        //     post(handlers::update_user_roles_handler),
-        // )
-        .route(
-            "/api/databases/{db_name}/get-config",
-            get(handlers::get_config_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/set-config",
-            put(handlers::set_config_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/restart-database",
-            post(handlers::restart_database_handler),
         );
-
+    // .route(
+    //     "/api/databases/{db_name}/clear-database",
+    //     delete(handlers::clear_database_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/delete-database",
+    //     delete(handlers::delete_database_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/start-database",
+    //     post(handlers::start_database_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/stop-database",
+    //     post(handlers::stop_database_handler),
+    // )
+    // .route("/api/list-databases", get(handlers::list_databases_handler))
+    // .route(
+    //     "/api/databases/{db_name}/status",
+    //     get(handlers::stats_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/reindex",
+    //     post(handlers::reindex_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/get-policy",
+    //     get(handlers::get_policy_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/set-policy",
+    //     post(handlers::set_policy_handler),
+    // )
+    // .route("/api/users", post(handlers::create_user_handler))
+    // .route(
+    //     "/api/users/{username}",
+    //     delete(handlers::delete_user_handler),
+    // )
+    // .route(
+    //     "/api/users/{username}/password",
+    //     post(handlers::update_user_password_handler),
+    // )
+    // .route(
+    //     "/api/users/{username}/roles",
+    //     post(handlers::update_user_roles_handler),
+    // // )
+    // .route(
+    //     "/api/databases/{db_name}/get-config",
+    //     get(handlers::get_config_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/set-config",
+    //     put(handlers::set_config_handler),
+    // )
+    // .route(
+    //     "/api/databases/{db_name}/restart-database",
+    //     post(handlers::restart_database_handler),
+    // );
+    //
     // let protected_routes = if enable_auth {
     //     //  protected_routes.layer(from_fn_with_state(
     //     //    state.clone(),
@@ -330,22 +326,25 @@ async fn main() -> io::Result<()> {
         .await?;
 
     //something or someone killed our beloved programm
-
     info!(log, "Server stopped, shutting down databases..");
-    let handles = {
-        let mut guard = state_for_shutdown.databases.write().unwrap();
-        std::mem::take(&mut *guard)
-    };
 
-    for (db_name, handle) in handles {
+    for (db_name, manager) in handles {
         info!(log,"shutting down database ...";"database"=>%db_name);
-        if let Err(e) = handle.shutdown().await {
-            error!(log,"error shutting down database";"db" => %db_name, "error" => %e,);
+        match Arc::try_unwrap(manager) {
+            Ok(mgr) => {
+                if let Err(e) = mgr.shutdown() {
+                    error!(log,"error shutting down database";"db" => %db_name, "error" => %e,);
+                }
+            }
+            Err(_) => {
+                error!(
+                    log,
+                    "could not get exclusive access to database during shutdown, \
+                     shard threads may not be joined cleanly";
+                    "db" => %db_name,
+                );
+            }
         }
-    }
-
-    for join in joins {
-        let _ = join.join();
     }
 
     //TODO: we might have extra stuff to do here later, for now i cant think of anything else

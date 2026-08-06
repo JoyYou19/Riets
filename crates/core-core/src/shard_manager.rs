@@ -1,23 +1,24 @@
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::path::{ Path, PathBuf };
-use std::sync::Arc;
-use std::thread::JoinHandle;
 use core_index::analyzer::Analyzer;
 use crossbeam_channel::bounded;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 
-use crate::command_reponse_definitions::SearchCommand;
-use crate::{ DatabaseOptions, shard_for };
 use crate::ShardDb;
-use core_index::document::{ self, IndexPolicy };
+use crate::command_reponse_definitions::SearchCommand;
+use crate::shard_worker::{self, ShardCmd, ShardHandle};
+use crate::{DatabaseOptions, shard_for};
+use core_index::document::{self, IndexPolicy};
 use core_index::lsm::index_worker::IndexingStats;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_query::planner::QueryPlanner;
-use core_storage::search_database::{ DocumentInput, SearchDocumentHit };
-use core_storage::search_database::InsertReport;
 use core_query::query_string_parser::parse_and_analyze;
-use crate::shard_worker::{self, ShardCmd, ShardHandle};
+use core_storage::search_database::InsertReport;
+use core_storage::search_database::{DocumentInput, SearchDocumentHit};
+
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
     joins: Vec<JoinHandle<()>>, //JoinHandle atgriez ka thread uztaisits
@@ -30,7 +31,7 @@ pub struct ShardManager {
 impl ShardManager {
     const CONFIG_PATH_NAME: &'static str = "config.toml";
     const POLICY_PATH_NAME: &'static str = "policy.toml";
-    const DEFAULT_QUEUE_DEPTH: usize = 256; //jaizveido?
+    const DEFAULT_QUEUE_DEPTH: usize = 256;
 
     fn config_path(root: &Path) -> PathBuf {
         root.join(Self::CONFIG_PATH_NAME)
@@ -43,10 +44,12 @@ impl ShardManager {
     pub fn create(
         root: PathBuf,
         num_shards: u16,
-        options: DatabaseOptions
+        options: DatabaseOptions,
     ) -> Result<Self, CorelamoError> {
         if num_shards == 0 {
-            return Err(CorelamoError::InvalidData("num_shards must be > 0".to_string()));
+            return Err(CorelamoError::InvalidData(
+                "num_shards must be > 0".to_string(),
+            ));
         }
 
         let shards_dir = root.join("shards");
@@ -65,7 +68,7 @@ impl ShardManager {
                 &shard_root,
                 ShardId::from(shard_id),
                 options.clone(),
-                policy.clone()
+                policy.clone(),
             )?;
             let (handle, join) = shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH)?;
             shards.push(handle);
@@ -85,7 +88,7 @@ impl ShardManager {
     pub fn create_and_start(
         root: PathBuf,
         num_shards: u16,
-        options: DatabaseOptions
+        options: DatabaseOptions,
     ) -> Result<Self, CorelamoError> {
         Self::create(root, num_shards, options)
     }
@@ -94,11 +97,10 @@ impl ShardManager {
         let shards_dir = root.join("shards");
 
         if !shards_dir.exists() {
-            return Err(
-                CorelamoError::NotFound(
-                    format!("shards directory not found at {}", shards_dir.display())
-                )
-            );
+            return Err(CorelamoError::NotFound(format!(
+                "shards directory not found at {}",
+                shards_dir.display()
+            )));
         }
 
         let mut shard_paths = Vec::new();
@@ -112,24 +114,21 @@ impl ShardManager {
 
         //INFO: safety check in case this might not be entirely necessary
         if shard_paths.len() != (expected_num_shards as usize) {
-            return Err(
-                CorelamoError::InvalidData(
-                    format!(
-                        "expected {} shards but found {} on disk",
-                        expected_num_shards,
-                        shard_paths.len()
-                    )
-                )
-            );
+            return Err(CorelamoError::InvalidData(format!(
+                "expected {} shards but found {} on disk",
+                expected_num_shards,
+                shard_paths.len()
+            )));
         }
 
         let policy_path = Self::policy_path(&root);
         let config_path = Self::config_path(&root);
 
         if !policy_path.exists() {
-            return Err(
-                CorelamoError::NotFound(format!("policy not found at {}", policy_path.display()))
-            );
+            return Err(CorelamoError::NotFound(format!(
+                "policy not found at {}",
+                policy_path.display()
+            )));
         }
 
         //FIX: we probably need a load_or_default for policy too
@@ -160,7 +159,8 @@ impl ShardManager {
     }
 
     pub fn shutdown(self) -> Result<(), CorelamoError> {
-        let pending: Vec<_> = self.shards
+        let pending: Vec<_> = self
+            .shards
             .iter()
             .map(|h| {
                 let (rtx, rrx) = bounded(1);
@@ -198,16 +198,21 @@ impl ShardManager {
     pub fn set_policy_all(&mut self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         policy.validate()?;
 
-        let pending: Vec<_> = self.shards
+        let pending: Vec<_> = self
+            .shards
             .iter()
             .map(|h| {
                 let (rtx, rrx) = bounded(1);
-                let _ = h.send_raw(ShardCmd::SetPolicy { policy: policy.clone(), resp: rtx });
+                let _ = h.send_raw(ShardCmd::SetPolicy {
+                    policy: policy.clone(),
+                    resp: rtx,
+                });
                 rrx
             })
             .collect();
         for rx in pending {
-            rx.recv().map_err(|_| CorelamoError::Internal("shard died".into()))??;
+            rx.recv()
+                .map_err(|_| CorelamoError::Internal("shard died".into()))??;
         }
 
         self.policy = policy;
@@ -226,12 +231,14 @@ impl ShardManager {
     fn shard_index_for(&self, external_id: &str) -> usize {
         shard_for(external_id, self.shards.len() as u16) as usize
     }
-    /// Groups ids by owning shard so each shard is visited once. Never
-    /// broadcast an id-keyed operation: only one shard can own a given id.
+
     fn group_by_shard<'a>(&self, ids: &'a [String]) -> HashMap<usize, Vec<&'a String>> {
         let mut by_shard: HashMap<usize, Vec<&'a String>> = HashMap::new();
         for id in ids {
-            by_shard.entry(self.shard_index_for(id)).or_default().push(id);
+            by_shard
+                .entry(self.shard_index_for(id))
+                .or_default()
+                .push(id);
         }
         by_shard
     }
@@ -239,19 +246,28 @@ impl ShardManager {
     pub fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
         for input in inputs {
-            by_shard.entry(self.shard_index_for(&input.external_id)).or_default().push(input);
+            by_shard
+                .entry(self.shard_index_for(&input.external_id))
+                .or_default()
+                .push(input);
         }
 
         let mut pending = Vec::with_capacity(by_shard.len());
         for (idx, batch) in by_shard {
             let (rtx, rrx) = bounded(1);
             self.shards[idx]
-                .send_raw(ShardCmd::Insert { inputs: batch, resp: rtx })
+                .send_raw(ShardCmd::Insert {
+                    inputs: batch,
+                    resp: rtx,
+                })
                 .map_err(|(e, _)| e)?;
             pending.push(rrx);
         }
 
-        let mut report = InsertReport { inserted: 0, failures: Vec::new() };
+        let mut report = InsertReport {
+            inserted: 0,
+            failures: Vec::new(),
+        };
         for rx in pending {
             let r = rx
                 .recv()
@@ -275,7 +291,13 @@ impl ShardManager {
         let mut pending = Vec::with_capacity(self.shards.len());
         for h in &self.shards {
             let (rtx, rrx) = bounded(1);
-            if h.send_raw(ShardCmd::Search { query: query.clone(), k: fetch, resp: rtx }).is_ok() {
+            if h.send_raw(ShardCmd::Search {
+                query: query.clone(),
+                k: fetch,
+                resp: rtx,
+            })
+            .is_ok()
+            {
                 pending.push(rrx);
             }
         }
