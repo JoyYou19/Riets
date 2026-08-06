@@ -1,4 +1,5 @@
 use core_index::analyzer::Analyzer;
+use core_storage::document_store::StoredDocument;
 use crossbeam_channel::bounded;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -10,7 +11,7 @@ use crate::ShardDb;
 use crate::command_reponse_definitions::SearchCommand;
 use crate::shard_worker::{self, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
-use core_index::document::{self, IndexPolicy};
+use core_index::document::{self, IndexPolicy, IndexedDocument};
 use core_index::lsm::index_worker::IndexingStats;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
@@ -320,6 +321,43 @@ impl ShardManager {
         });
         Ok(all_hits.into_iter().skip(offset).take(limit).collect())
     }
+    pub fn retrieve(&self, ids: Vec<String>) -> Result<Vec<(String,Option<StoredDocument>)>, CorelamoError>{
+        if ids.is_empty(){
+            return Ok(Vec::new());
+        }
+        // remember where each id was asked for; the fan-out returns them shard-grouped
+    let mut position: HashMap<String, usize> = HashMap::new();
+    for (i, id) in ids.iter().enumerate() {
+        position.entry(id.clone()).or_insert(i);    //catins teica noder
+    }
 
+    let mut by_shard: HashMap<usize, Vec<String>> = HashMap::new();
+    for id in ids {
+        by_shard
+            .entry(self.shard_index_for(&id))
+            .or_default()
+            .push(id);
+    }
+    let mut pending = Vec::with_capacity(by_shard.len());
+    for (idx, batch) in by_shard {
+        let (rtx, rrx) = bounded(1);
+        self.shards[idx]
+            .send_raw(ShardCmd::Retrieve { ids: batch, resp: rtx })
+            .map_err(|(e, _)| e)?;
+        pending.push(rrx);
+    }
+
+    let mut out: Vec<(String, Option<StoredDocument>)> = Vec::with_capacity(position.len());
+    for rx in pending {
+        let batch = rx
+            .recv()
+            .map_err(|_| CorelamoError::Internal("shard died during retrieve".into()))??;
+        out.extend(batch);
+    }
+
+    out.sort_by_key(|(id, _)| position.get(id).copied().unwrap_or(usize::MAX));
+    Ok(out)
+
+    }
     // TODO: delete, upsert, lookup, etc.
 }

@@ -3,31 +3,41 @@
 
 use axum::{
     Extension,
-    extract::{Path, State},
+    extract::{ Path, State },
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{ IntoResponse, Response },
 };
 //use core_auth::{Permission, Principal};
 //
 use core_core::{
-    DatabaseOptions, ShardDb,
+    DatabaseOptions,
+    ShardDb,
     command_reponse_definitions::{
-        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, LookupResponse,
-        RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        Command,
+        DeleteCommand,
+        GetLogsRequest,
+        LoginResponse,
+        LookupCommand,
+        LookupResponse,
+        RetrieveCommand,
+        RetrieveResponse,
+        SearchCommand,
+        SearchResponse,
     },
     shard_manager::ShardManager,
 };
-use slog::{error, info, o};
+use slog::{ error, info, o };
 
 use crate::{
-    AppState, doctypes,
-    http_response::{BatchOutcome, HttpError, HttpOk},
+    AppState,
+    doctypes,
+    http_response::{ BatchOutcome, HttpError, HttpOk },
     middleware::RequestContext,
 };
-use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
+use core_protocol::errors::{ CorelamoError, DocFailure, FailReason };
 use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{ collections::BTreeMap, sync::Arc };
 
 //authorizations
 use serde::Deserialize;
@@ -57,9 +67,7 @@ struct UpdateRolesRequest {
 fn require_body(body: &str) -> Result<&str, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        Err(CorelamoError::InvalidData(
-            "request body is empty".to_string(),
-        ))
+        Err(CorelamoError::InvalidData("request body is empty".to_string()))
     } else {
         Ok(trimmed)
     }
@@ -128,7 +136,7 @@ pub async fn search_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
     //     return HttpError::from_corelamo(e, &ctx).into_response();
@@ -155,7 +163,7 @@ pub async fn search_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-    let manager =Arc::clone(&handle);
+    let manager = Arc::clone(&handle);
     let hits = match tokio::task::spawn_blocking(move || manager.search(&command)).await {
         Ok(Ok(hits)) => hits,
         Ok(Err(e)) => {
@@ -164,9 +172,8 @@ pub async fn search_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("search task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     };
 
@@ -185,73 +192,9 @@ pub async fn search_handler(
 
     HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
 }
-//
-// //TODO: cant really see the id if auto-increment :(
-// pub async fn retrieve_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     // Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::Retrieve) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let command = match RetrieveCommand::parse(&body, ctx.format) {
-//         Ok(cmd) => cmd,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let results = match handle.retrieve(command.ids).await {
-//         Ok(r) => r,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let mut docs = Vec::new();
-//     let mut not_found_ids: Vec<String> = Vec::new();
-//
-//     for (id, doc) in results {
-//         match doc {
-//             Some(d) => docs.push(d),
-//             None => not_found_ids.push(id),
-//         }
-//     }
-//
-//     let (documents, skipped_ids) = doctypes::convert_from_storage(&docs, ctx.format);
-//
-//     let title = if skipped_ids.is_empty() {
-//         format!("retrieved {} document(s)", documents.len())
-//     } else {
-//         format!(
-//             "retrieved {} document(s); {} skipped due to format mismatch",
-//             documents.len(),
-//             skipped_ids.len()
-//         )
-//     };
-//
-//     let resp = RetrieveResponse::new(documents, not_found_ids, skipped_ids);
-//
-//     HttpOk::with_response(title, resp, &ctx).into_response()
-// }
-//
+
+//TODO: cant really see the id if auto-increment :(
+
 // // pub async fn lookup_handler(
 // //     State(state): State<AppState>,
 // //     Path(db_name): Path<String>,
@@ -288,7 +231,7 @@ pub async fn insert_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     //Extension(principal): Extension<Principal>,
-    body: String,
+    body: String
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
     //    return HttpError::from_corelamo(e, &ctx).into_response();
@@ -308,19 +251,18 @@ pub async fn insert_handler(
     };
 
     if !handle.all_alive() {
-    return HttpError::from_corelamo(
-        CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-        &ctx,
-    )
-    .into_response();
-}
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx
+        ).into_response();
+    }
 
     let policy = handle.policy.clone();
 
     let format = ctx.format;
-    let parsed =
-        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
-            .await;
+    let parsed = tokio::task::spawn_blocking(move ||
+        doctypes::parse_documents(&body, format, &policy)
+    ).await;
 
     let outcome = match parsed {
         Ok(Ok(o)) => o,
@@ -330,9 +272,8 @@ pub async fn insert_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     };
 
@@ -361,9 +302,79 @@ pub async fn insert_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome
-        .into_ok(StatusCode::OK, title, &db_name, &ctx)
-        .into_response()
+    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
+}
+
+pub async fn retrieve_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    // Extension(principal): Extension<Principal>,
+    body: String
+) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Retrieve) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let command = match RetrieveCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+    let manager = Arc::clone(&handle);
+    let ids = command.ids;
+    let results = match tokio::task::spawn_blocking(move || manager.retrieve(ids)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("retrieve task panicked: {e}")),
+                &ctx
+            ).into_response();
+        }
+    };
+
+    let mut docs = Vec::new();
+    let mut not_found_ids: Vec<String> = Vec::new();
+
+    for (id, doc) in results {
+        match doc {
+            Some(d) => docs.push(d),
+            None => not_found_ids.push(id),
+        }
+    }
+
+    let (documents, skipped_ids) = doctypes::convert_from_storage(&docs, ctx.format);
+
+    let title = if skipped_ids.is_empty() {
+        format!("retrieved {} document(s)", documents.len())
+    } else {
+        format!(
+            "retrieved {} document(s); {} skipped due to format mismatch",
+            documents.len(),
+            skipped_ids.len()
+        )
+    };
+
+    let resp = RetrieveResponse::new(documents, not_found_ids, skipped_ids);
+
+    HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
 //
@@ -680,7 +691,7 @@ pub async fn insert_handler(
 pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
+    Extension(ctx): Extension<RequestContext> //Extension(principal): Extension<Principal>,
 ) -> Response {
     //if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
     //    return HttpError::from_corelamo(e, &ctx).into_response();
@@ -691,25 +702,22 @@ pub async fn create_database_handler(
             Err(_) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         };
         if dbs.contains_key(&db_name) {
             return HttpError::from_corelamo(
                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     }
     let db_path = state.databases_dir.join(&db_name);
 
     let created = tokio::task::spawn_blocking(move || {
         ShardManager::create(db_path, 2, DatabaseOptions::default())
-    })
-    .await;
+    }).await;
 
     let manager = match created {
         Ok(Ok(mgr)) => mgr,
@@ -719,9 +727,8 @@ pub async fn create_database_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("create task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
     };
     {
@@ -730,9 +737,8 @@ pub async fn create_database_handler(
             Err(_) => {
                 return HttpError::from_corelamo(
                     CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
+                    &ctx
+                ).into_response();
             }
         };
 
@@ -743,9 +749,8 @@ pub async fn create_database_handler(
             }
             return HttpError::from_corelamo(
                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
+                &ctx
+            ).into_response();
         }
         dbs.insert(db_name.clone(), Arc::new(manager));
     }
@@ -753,9 +758,8 @@ pub async fn create_database_handler(
     HttpOk::with_status(
         StatusCode::CREATED,
         format!("database '{db_name}' created"),
-        &ctx,
-    )
-    .into_response()
+        &ctx
+    ).into_response()
 }
 
 // pub async fn start_database_handler(

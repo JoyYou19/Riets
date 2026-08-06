@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
+use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
 
 use crate::shard_db::ShardDb;
@@ -23,6 +24,10 @@ pub enum ShardCmd {
         k: usize,
         resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
     },
+    Retrieve {
+        ids: Vec<String>,
+        resp: Sender<Result<Vec<(String, Option<StoredDocument>)>,CorelamoError>>
+    },
     Flush {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -36,6 +41,7 @@ pub enum ShardCmd {
     Shutdown {
         resp: Sender<Result<(), CorelamoError>>,
     },
+
 }
 
 #[derive(Clone)]
@@ -173,6 +179,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 ShardCmd::Shutdown { resp } => {
                     let _ = resp.send(shard.stop());
                     return;
+                }
+                ShardCmd::Retrieve { ids, resp } =>{
+                    let _ = resp.send(shard.get_document(&ids));
                 }
             }
         }
