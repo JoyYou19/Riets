@@ -193,7 +193,6 @@ pub async fn search_handler(
     HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
 }
 
-//TODO: cant really see the id if auto-increment :(
 pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

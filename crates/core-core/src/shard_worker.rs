@@ -66,12 +66,12 @@ pub enum ShardCmd {
     // Replace {
     //     inputs: Vec<DocumentInput>,
     //     resp: Sender<Result<ReplaceReport, CorelamoError>>,
-    // },
-    // Delete {
-    //     ids: Vec<String>,
-    //     resp: Sender<Result<DeleteReport, CorelamoError>>,
-    // },
-    //
+    //},
+    Delete {
+        ids: Vec<String>,
+        resp: Sender<Result<DeleteReport, CorelamoError>>,
+    },
+
     Start {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -143,9 +143,9 @@ impl ShardHandle {
     // pub fn replace(&self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
     //     self.call(|resp| ShardCmd::Replace { inputs, resp })?
     // }
-    // pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
-    //     self.call(|resp| ShardCmd::Delete { ids, resp })?
-    // }
+    pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+        self.call(|resp| ShardCmd::Delete { ids, resp })?
+    }
 
     pub fn is_running(&self) -> Result<bool, CorelamoError> {
         self.call(|resp| ShardCmd::IsRunning { resp })
@@ -264,9 +264,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 // ShardCmd::Replace { inputs, resp } => {
                 //     let _ = resp.send(shard.replace(inputs));
                 // }
-                // ShardCmd::Delete { ids, resp } => {
-                //     let _ = resp.send(shard.delete(ids));
-                // }
+                ShardCmd::Delete { ids, resp } => {
+                    let _ = resp.send(shard.delete(ids));
+                }
                 ShardCmd::IsRunning { resp } => {
                     let _ = resp.send(shard.is_running());
                 }

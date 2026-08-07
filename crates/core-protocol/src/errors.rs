@@ -57,7 +57,6 @@ impl CorelamoError {
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
             CorelamoError::Busy(_) => "Reindex is busy",
-            
         }
     }
 
@@ -91,7 +90,7 @@ impl CorelamoError {
             | CorelamoError::DatabaseNotRunning(msg)
             | CorelamoError::DatabaseAlreadyRunning(msg)
             | CorelamoError::UnknownRole(msg) => msg.clone(),
-            | CorelamoError::Busy(msg)=> msg.clone(),
+            CorelamoError::Busy(msg) => msg.clone(),
         }
     }
 }

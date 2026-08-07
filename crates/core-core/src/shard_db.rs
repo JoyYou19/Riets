@@ -29,7 +29,7 @@ use core_index::{
 };
 use core_protocol::{
     command_reponse_definitions::{LookupCommand, LookupResponse},
-    errors::CorelamoError,
+    errors::{CorelamoError, DocFailure, FailReason},
 };
 use core_query::{Query, query_string_parser::parse_and_analyze};
 
@@ -37,7 +37,8 @@ use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
     search_database::{
-        DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase, SearchDocumentHit,
+        DeleteReport, DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase,
+        SearchDocumentHit,
     },
     wal::{Wal, WalRecord},
 };
@@ -513,36 +514,78 @@ impl ShardDb {
         result
     }
 
-    //
-    // pub fn delete(&mut self, external_id: &str) -> Result<(), CorelamoError> {
-    //     let record = WalRecord::Delete {
-    //         external_id: external_id.to_string(),
-    //     };
-    //     let encoded = bincode::encode_to_vec(&record, bincode::config::standard())
-    //         .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
-    //     self.wal
-    //         .append(&encoded)
-    //         .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
-    //
-    //     let old = self
-    //         .db_mut()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?
-    //         .get_document(external_id)
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?
-    //         .map(|d| d.internal_id);
-    //
-    //     self.db_mut()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?
-    //         .delete_document(external_id)
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //
-    //     if let Some(internal_id) = old {
-    //         self.queue_op(PendingOp::Tombstone { internal_id });
-    //     }
-    //
-    //     Ok(())
-    // }
-    //
+    pub fn delete(&mut self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+        let started = std::time::Instant::now();
+        let count = ids.len();
+
+        //FIX: WAL VAJAG SEIT KRISTIAN
+
+        let mut deleted: u32 = 0;
+        let mut failures: Vec<DocFailure> = Vec::new();
+        let mut to_tombstone = Vec::new();
+
+        {
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            for id in ids {
+                let existing = match db.get_document(&id) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(id.clone()),
+                            FailReason::Internal(e.to_string()),
+                        ));
+                        continue;
+                    }
+                };
+
+                let Some(existing) = existing else {
+                    failures.push(DocFailure::new(
+                        None,
+                        Some(id.clone()),
+                        FailReason::NotFound,
+                    ));
+                    continue;
+                };
+
+                match db.delete_document(&id) {
+                    Ok(()) => {
+                        deleted += 1;
+                        to_tombstone.push(existing.internal_id);
+                    }
+                    Err(e) => {
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(id.clone()),
+                            FailReason::Internal(e.to_string()),
+                        ));
+                    }
+                }
+            }
+
+            db.flush()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        }
+
+        for internal_id in to_tombstone {
+            self.queue_op(PendingOp::Tombstone { internal_id });
+        }
+
+        let elapsed = started.elapsed();
+        info!(self.log, "delete batch";
+            "shard_id" => %self.shard_id,
+            "requested" => count,
+            "deleted" => deleted,
+            "failed" => failures.len(),
+            "elapsed_ms" => elapsed.as_millis(),
+        );
+
+        Ok(DeleteReport { deleted, failures })
+    }
+
     // pub fn upsert(&mut self, input: DocumentInput) -> Result<(), CorelamoError> {
     //     let record = WalRecord::Upsert(input.clone());
     //     let encoded = bincode::encode_to_vec(&record, bincode::config::standard())

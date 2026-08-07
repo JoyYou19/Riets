@@ -217,10 +217,10 @@ async fn main() -> io::Result<()> {
         //     "/api/databases/{db_name}/upsert",
         //     post(handlers::upsert_document_handler),
         // )
-        // .route(
-        //     "/api/databases/{db_name}/delete",
-        //     delete(handlers::delete_document_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/delete",
+            delete(handlers::delete_document_handler),
+        )
         // .route(
         //     "/api/databases/{db_name}/get-logs",
         //     get(handlers::get_logs_handler),

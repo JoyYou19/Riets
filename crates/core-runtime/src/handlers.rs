@@ -9,7 +9,7 @@ use axum::{
 };
 //use core_auth::{Permission, Principal};
 //
-use core_core::{DatabaseOptions, ShardDb, shard_manager::ShardManager};
+use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use slog::{error, info, o};
 
 use crate::{
@@ -19,12 +19,11 @@ use crate::{
 };
 use core_protocol::{
     command_reponse_definitions::{
-        Command, DeleteCommand, LookupCommand, LookupResponse, RetrieveCommand, RetrieveResponse,
-        SearchCommand, SearchResponse,
+        Command, DeleteCommand, LookupCommand, RetrieveCommand, RetrieveResponse, SearchCommand,
+        SearchResponse,
     },
     errors::{CorelamoError, DocFailure, FailReason},
 };
-use core_storage::search_database::DatabasePowerButtonOutcome;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -559,58 +558,64 @@ pub async fn clear_database_handler(
 //     }
 // }
 //
-// pub async fn delete_document_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     //    Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
-//     //    return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let command = match DeleteCommand::parse(&body, ctx.format) {
-//         Ok(cmd) => cmd,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let report = match handle.delete(command.ids).await {
-//         Ok(r) => r,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
-//     outcome.succeed_many(report.deleted);
-//     outcome.fail_many(report.failures);
-//
-//     let title = format!(
-//         "deleted {} document(s) from '{db_name}', {} not found",
-//         outcome.succeeded_count(),
-//         outcome.failed_count()
-//     );
-//
-//     outcome
-//         .into_ok(StatusCode::OK, title, &db_name, &ctx)
-//         .into_response()
-// }
+pub async fn delete_document_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    //    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    //if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let command = match DeleteCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    if !handle.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let report = match handle.delete(command.ids) {
+        Ok(r) => r,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
+    outcome.succeed_many(report.deleted);
+    outcome.fail_many(report.failures);
+
+    let title = format!(
+        "deleted {} document(s) from '{db_name}', {} not found",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
 //
 //
 // pub async fn replace_document_handler(

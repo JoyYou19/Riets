@@ -16,7 +16,7 @@ use core_index::document::IndexPolicy;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
-use core_storage::search_database::InsertReport;
+use core_storage::search_database::{DeleteReport, InsertReport};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 
 pub struct ShardManager {
@@ -496,6 +496,7 @@ impl ShardManager {
         });
         Ok(all_hits.into_iter().skip(offset).take(limit).collect())
     }
+
     pub fn retrieve(
         &self,
         ids: Vec<String>,
@@ -503,10 +504,11 @@ impl ShardManager {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
+
         // remember where each id was asked for; the fan-out returns them shard-grouped
         let mut position: HashMap<String, usize> = HashMap::new();
         for (i, id) in ids.iter().enumerate() {
-            position.entry(id.clone()).or_insert(i); //catins teica noder
+            position.entry(id.clone()).or_insert(i);
         }
 
         let mut by_shard: HashMap<usize, Vec<String>> = HashMap::new();
@@ -539,5 +541,60 @@ impl ShardManager {
         out.sort_by_key(|(id, _)| position.get(id).copied().unwrap_or(usize::MAX));
         Ok(out)
     }
-    // TODO: delete, upsert, lookup, etc.
+
+    pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+        if ids.is_empty() {
+            return Ok(DeleteReport {
+                deleted: 0,
+                failures: Vec::new(),
+            });
+        }
+
+        let mut position: HashMap<String, usize> = HashMap::new();
+        for (i, id) in ids.iter().enumerate() {
+            position.entry(id.clone()).or_insert(i);
+        }
+
+        let mut by_shard: HashMap<usize, Vec<String>> = HashMap::new();
+        for id in ids {
+            by_shard
+                .entry(self.shard_index_for(&id))
+                .or_default()
+                .push(id);
+        }
+
+        let mut pending = Vec::with_capacity(by_shard.len());
+        for (idx, batch) in by_shard {
+            let (rtx, rrx) = bounded(1);
+            self.shards[idx]
+                .send_raw(ShardCmd::Delete {
+                    ids: batch,
+                    resp: rtx,
+                })
+                .map_err(|(e, _)| e)?;
+            pending.push(rrx);
+        }
+
+        let mut report = DeleteReport {
+            deleted: 0,
+            failures: Vec::new(),
+        };
+        for rx in pending {
+            let r = rx
+                .recv()
+                .map_err(|_| CorelamoError::Internal("shard died during delete".into()))??;
+            report.deleted += r.deleted;
+            report.failures.extend(r.failures);
+        }
+
+        for failure in &mut report.failures {
+            if let Some(id) = &failure.id {
+                failure.index = position.get(id).copied();
+            }
+        }
+
+        Ok(report)
+    }
+
+    // TODO:  upsert, lookup, etc.
 }
