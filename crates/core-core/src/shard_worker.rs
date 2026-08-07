@@ -59,10 +59,10 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
 
-    // Upsert {
-    //     inputs: Vec<DocumentInput>,
-    //     resp: Sender<Result<InsertReport, CorelamoError>>,
-    // },
+    Upsert {
+        inputs: Vec<DocumentInput>,
+        resp: Sender<Result<InsertReport, CorelamoError>>,
+    },
     // Replace {
     //     inputs: Vec<DocumentInput>,
     //     resp: Sender<Result<ReplaceReport, CorelamoError>>,
@@ -137,9 +137,9 @@ impl ShardHandle {
         self.call(|resp| ShardCmd::Flush { resp })?
     }
 
-    // pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-    //     self.call(|resp| ShardCmd::Upsert { inputs, resp })?
-    // }
+    pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+        self.call(|resp| ShardCmd::Upsert { inputs, resp })?
+    }
     // pub fn replace(&self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
     //     self.call(|resp| ShardCmd::Replace { inputs, resp })?
     // }
@@ -258,9 +258,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                     let _ = resp.send(shard.document_count());
                 }
 
-                // ShardCmd::Upsert { inputs, resp } => {
-                //     let _ = resp.send(shard.upsert(inputs));
-                // }
+                ShardCmd::Upsert { inputs, resp } => {
+                    let _ = resp.send(shard.upsert(inputs));
+                }
                 // ShardCmd::Replace { inputs, resp } => {
                 //     let _ = resp.send(shard.replace(inputs));
                 // }

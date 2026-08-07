@@ -597,9 +597,18 @@ pub async fn delete_document_handler(
         .into_response();
     }
 
-    let report = match handle.delete(command.ids) {
-        Ok(r) => r,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    let manager = Arc::clone(&handle);
+    let ids = command.ids;
+    let report = match tokio::task::spawn_blocking(move || manager.delete(ids)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("delete task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
     };
 
     let mut outcome = BatchOutcome::new("deleted", StatusCode::NOT_FOUND);
@@ -698,90 +707,83 @@ pub async fn delete_document_handler(
 // }
 //
 
-// pub async fn upsert_document_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     //Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::Upsert) {
-//     //     return HttpError::from_corelamo(e, &ctx).into_response();
-//     // }
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//     let manager = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//     let policy = match manager.get_policy().await {
-//         Ok(p) => p,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let format = ctx.format;
-//     let parsed =
-//         tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
-//             .await;
-//
-//     let parse_outcome = match parsed {
-//         Ok(Ok(o)) => o,
-//         Ok(Err(e)) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//         Err(e) => {
-//             return HttpError::from_corelamo(
-//                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-//                 &ctx,
-//             )
-//             .into_response();
-//         }
-//     };
-//
-//     let doc_indices = parse_outcome.indices;
-//     let parse_failures = parse_outcome.failures;
-//
-//     let results = match manager.upsert(parse_outcome.docs) {
-//         Ok(r) => r,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let mut outcome = BatchOutcome::new("upserted", StatusCode::CONFLICT);
-//     outcome.fail_many(parse_failures);
-//
-//     // actor indexes into the parsed vec; map back to the client's input array
-//     for (index, id, result) in results {
-//         match result {
-//             Ok(()) => outcome.succeed(),
-//             Err(e) => outcome.fail_doc(DocFailure::new(
-//                 doc_indices.get(index).copied(),
-//                 Some(id),
-//                 FailReason::Internal(e.message()),
-//             )),
-//         }
-//     }
-//
-//     let title = format!(
-//         "upserted {} document(s) into '{db_name}', {} failed",
-//         outcome.succeeded_count(),
-//         outcome.failed_count()
-//     );
-//     outcome
-//         .into_ok(StatusCode::OK, title, &db_name, &ctx)
-//         .into_response()
-// }
+pub async fn upsert_document_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
 
-//TODO: palasit
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    if !handle.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let policy = handle.policy();
+    let format = ctx.format;
+    let parsed =
+        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
+            .await;
+
+    let outcome = match parsed {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("parse task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let doc_indices = outcome.indices;
+    let parse_failures = outcome.failures;
+
+    let manager = Arc::clone(&handle);
+    let report = match tokio::task::spawn_blocking(move || manager.upsert(outcome.docs)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("upsert task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let mut outcome = BatchOutcome::new("upserted", StatusCode::CONFLICT);
+    outcome.succeed_many(report.inserted);
+    outcome.fail_many(parse_failures);
+
+    for mut failure in report.failures {
+        failure.index = failure.index.and_then(|i| doc_indices.get(i).copied());
+        outcome.fail_doc(failure);
+    }
+
+    let title = format!(
+        "upserted {} document(s) into '{db_name}', {} failed",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
 pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

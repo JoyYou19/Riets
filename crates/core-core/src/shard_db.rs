@@ -519,6 +519,7 @@ impl ShardDb {
         let count = ids.len();
 
         //FIX: WAL VAJAG SEIT KRISTIAN
+        //TODO: batch support
 
         let mut deleted: u32 = 0;
         let mut failures: Vec<DocFailure> = Vec::new();
@@ -586,45 +587,91 @@ impl ShardDb {
         Ok(DeleteReport { deleted, failures })
     }
 
-    // pub fn upsert(&mut self, input: DocumentInput) -> Result<(), CorelamoError> {
-    //     let record = WalRecord::Upsert(input.clone());
-    //     let encoded = bincode::encode_to_vec(&record, bincode::config::standard())
-    //         .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
-    //     self.wal
-    //         .append(&encoded)
-    //         .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
-    //
-    //     let external = input.external_id.clone();
-    //     let old = self
-    //         .db_mut()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?
-    //         .get_document(&external)
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?
-    //         .map(|d| d.internal_id);
-    //
-    //     self.db_mut()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?
-    //         .upsert_document(input, IndexMode::StoreAndIndex)
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //
-    //     if let Some(internal_id) = old {
-    //         self.queue_op(PendingOp::Tombstone { internal_id });
-    //     }
-    //
-    //     let queued = {
-    //         let db = self
-    //             .db_mut()
-    //             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //         db.get_document(&external)
-    //             .map_err(|e| CorelamoError::Internal(e.to_string()))?
-    //             .map(|doc| db.to_indexed(&doc))
-    //     };
-    //     if let Some(doc) = queued {
-    //         self.queue_op(PendingOp::Index { doc });
-    //     }
-    //
-    //     Ok(())
-    // }
+    pub fn upsert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+        let started = std::time::Instant::now();
+        let count = inputs.len();
+
+        //TODO: batch support plzs
+        //FIX: WAL vajag KRISTIAN
+
+        let mut inserted: u32 = 0;
+        let mut failures: Vec<DocFailure> = Vec::new();
+        let mut old_internal_ids = Vec::new();
+        let mut written_ids = Vec::new();
+
+        {
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            for input in inputs {
+                let external_id = input.external_id.clone();
+
+                let old = match db.get_document(&external_id) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(external_id.clone()),
+                            FailReason::Internal(e.to_string()),
+                        ));
+                        continue;
+                    }
+                };
+
+                match db.upsert_document(input, IndexMode::StoreAndIndex) {
+                    Ok(()) => {
+                        inserted += 1;
+                        if let Some(old_doc) = old {
+                            old_internal_ids.push(old_doc.internal_id);
+                        }
+                        written_ids.push(external_id);
+                    }
+                    Err(e) => {
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(external_id),
+                            FailReason::Internal(e.to_string()),
+                        ));
+                    }
+                }
+            }
+
+            db.flush()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        }
+
+        for internal_id in old_internal_ids {
+            self.queue_op(PendingOp::Tombstone { internal_id });
+        }
+
+        if self.progress.phase().is_running() {
+            for id in written_ids {
+                let doc = match self.db_mut() {
+                    Ok(db) => db
+                        .get_document(&id)
+                        .ok()
+                        .flatten()
+                        .map(|d| db.to_indexed(&d)),
+                    Err(_) => None,
+                };
+                if let Some(doc) = doc {
+                    self.queue_op(PendingOp::Index { doc });
+                }
+            }
+        }
+
+        let elapsed = started.elapsed();
+        info!(self.log, "upsert batch";
+            "shard_id" => %self.shard_id,
+            "requested" => count,
+            "upserted" => inserted,
+            "failed" => failures.len(),
+            "elapsed_ms" => elapsed.as_millis(),
+        );
+
+        Ok(InsertReport { inserted, failures })
+    }
 
     pub fn flush(&mut self) -> Result<(), CorelamoError> {
         self.db_mut()

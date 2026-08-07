@@ -159,38 +159,38 @@ impl ShardManager {
         self.start()
     }
 
-    // pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-    //     let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
-    //     for input in inputs {
-    //         by_shard
-    //             .entry(self.shard_index_for(&input.external_id))
-    //             .or_default()
-    //             .push(input);
-    //     }
-    //     let mut pending = Vec::with_capacity(by_shard.len());
-    //     for (idx, batch) in by_shard {
-    //         let (rtx, rrx) = bounded(1);
-    //         self.shards[idx]
-    //             .send_raw(ShardCmd::Upsert {
-    //                 inputs: batch,
-    //                 resp: rtx,
-    //             })
-    //             .map_err(|(e, _)| e)?;
-    //         pending.push(rrx);
-    //     }
-    //     let mut report = InsertReport {
-    //         inserted: 0,
-    //         failures: Vec::new(),
-    //     };
-    //     for rx in pending {
-    //         let r = rx
-    //             .recv()
-    //             .map_err(|_| CorelamoError::Internal("shard died during upsert".into()))??;
-    //         report.inserted += r.inserted;
-    //         report.failures.extend(r.failures);
-    //     }
-    //     Ok(report)
-    // }
+    pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+        let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
+        for input in inputs {
+            by_shard
+                .entry(self.shard_index_for(&input.external_id))
+                .or_default()
+                .push(input);
+        }
+        let mut pending = Vec::with_capacity(by_shard.len());
+        for (idx, batch) in by_shard {
+            let (rtx, rrx) = bounded(1);
+            self.shards[idx]
+                .send_raw(ShardCmd::Upsert {
+                    inputs: batch,
+                    resp: rtx,
+                })
+                .map_err(|(e, _)| e)?;
+            pending.push(rrx);
+        }
+        let mut report = InsertReport {
+            inserted: 0,
+            failures: Vec::new(),
+        };
+        for rx in pending {
+            let r = rx
+                .recv()
+                .map_err(|_| CorelamoError::Internal("shard died during upsert".into()))??;
+            report.inserted += r.inserted;
+            report.failures.extend(r.failures);
+        }
+        Ok(report)
+    }
 
     pub fn clear_all(&self) -> Result<(), CorelamoError> {
         let pending: Vec<_> = self
