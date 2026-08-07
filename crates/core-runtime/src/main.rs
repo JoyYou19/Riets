@@ -209,10 +209,10 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/retrieve",
             post(handlers::retrieve_handler),
         )
-        // .route(
-        //     "/api/databases/{db_name}/replace",
-        //     put(handlers::replace_document_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/replace",
+            put(handlers::replace_document_handler),
+        )
         .route(
             "/api/databases/{db_name}/upsert",
             post(handlers::upsert_document_handler),

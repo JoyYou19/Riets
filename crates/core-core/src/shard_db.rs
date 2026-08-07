@@ -37,8 +37,8 @@ use core_storage::{
     binary_store::BinaryDocumentStore,
     document_store::StoredDocument,
     search_database::{
-        DeleteReport, DocumentInput, IndexMode, InsertReport, PendingOp, SearchDatabase,
-        SearchDocumentHit,
+        DeleteReport, DocumentInput, IndexMode, InsertReport, PendingOp, ReplaceReport,
+        SearchDatabase, SearchDocumentHit,
     },
     wal::{Wal, WalRecord},
 };
@@ -585,6 +585,99 @@ impl ShardDb {
         );
 
         Ok(DeleteReport { deleted, failures })
+    }
+
+    pub fn replace(&mut self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
+        let started = std::time::Instant::now();
+        let count = inputs.len();
+
+        //FIX: WAL vajag KRISTIAN
+        //TOOD: batch support
+
+        let mut replaced: u32 = 0;
+        let mut failures: Vec<DocFailure> = Vec::new();
+        let mut old_internal_ids = Vec::new();
+        let mut written_ids = Vec::new();
+
+        {
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            for input in inputs {
+                let external_id = input.external_id.clone();
+
+                let old = match db.get_document(&external_id) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(external_id.clone()),
+                            FailReason::Internal(e.to_string()),
+                        ));
+                        continue;
+                    }
+                };
+
+                let Some(old) = old else {
+                    failures.push(DocFailure::new(
+                        None,
+                        Some(external_id),
+                        FailReason::NotFound,
+                    ));
+                    continue;
+                };
+
+                match db.upsert_document(input, IndexMode::StoreAndIndex) {
+                    Ok(()) => {
+                        replaced += 1;
+                        old_internal_ids.push(old.internal_id);
+                        written_ids.push(external_id);
+                    }
+                    Err(e) => {
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(external_id),
+                            FailReason::Internal(e.to_string()),
+                        ));
+                    }
+                }
+            }
+
+            db.flush()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        }
+
+        for internal_id in old_internal_ids {
+            self.queue_op(PendingOp::Tombstone { internal_id });
+        }
+
+        if self.progress.phase().is_running() {
+            for id in written_ids {
+                let doc = match self.db_mut() {
+                    Ok(db) => db
+                        .get_document(&id)
+                        .ok()
+                        .flatten()
+                        .map(|d| db.to_indexed(&d)),
+                    Err(_) => None,
+                };
+                if let Some(doc) = doc {
+                    self.queue_op(PendingOp::Index { doc });
+                }
+            }
+        }
+
+        let elapsed = started.elapsed();
+        info!(self.log, "replace batch";
+            "shard_id" => %self.shard_id,
+            "requested" => count,
+            "replaced" => replaced,
+            "failed" => failures.len(),
+            "elapsed_ms" => elapsed.as_millis(),
+        );
+
+        Ok(ReplaceReport { replaced, failures })
     }
 
     pub fn upsert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {

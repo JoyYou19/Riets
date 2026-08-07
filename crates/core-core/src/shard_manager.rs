@@ -16,7 +16,7 @@ use core_index::document::IndexPolicy;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
-use core_storage::search_database::{DeleteReport, InsertReport};
+use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 
 pub struct ShardManager {
@@ -593,6 +593,41 @@ impl ShardManager {
             }
         }
 
+        Ok(report)
+    }
+
+    pub fn replace(&self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
+        let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
+        for input in inputs {
+            by_shard
+                .entry(self.shard_index_for(&input.external_id))
+                .or_default()
+                .push(input);
+        }
+
+        let mut pending = Vec::with_capacity(by_shard.len());
+        for (idx, batch) in by_shard {
+            let (rtx, rrx) = bounded(1);
+            self.shards[idx]
+                .send_raw(ShardCmd::Replace {
+                    inputs: batch,
+                    resp: rtx,
+                })
+                .map_err(|(e, _)| e)?;
+            pending.push(rrx);
+        }
+
+        let mut report = ReplaceReport {
+            replaced: 0,
+            failures: Vec::new(),
+        };
+        for rx in pending {
+            let r = rx
+                .recv()
+                .map_err(|_| CorelamoError::Internal("shard died during replace".into()))??;
+            report.replaced += r.replaced;
+            report.failures.extend(r.failures);
+        }
         Ok(report)
     }
 

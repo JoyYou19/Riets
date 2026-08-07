@@ -291,13 +291,20 @@ pub async fn insert_handler(
     let doc_indices = outcome.indices;
     let parse_failures = outcome.failures;
 
-    let report = match handle.insert(outcome.docs) {
-        Ok(r) => r,
-        Err(e) => {
+    let manager = Arc::clone(&handle);
+    let report = match tokio::task::spawn_blocking(move || manager.insert(outcome.docs)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("insert task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
     };
-
     let mut outcome = BatchOutcome::new("inserted", StatusCode::CONFLICT);
     outcome.succeed_many(report.inserted);
     outcome.fail_many(parse_failures);
@@ -625,87 +632,83 @@ pub async fn delete_document_handler(
         .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
 }
-//
-//
-// pub async fn replace_document_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     // Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
-//     //    return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//     let body = match require_body(&body) {
-//         Ok(b) => b.to_string(),
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let policy = match handle.get_policy().await {
-//         Ok(p) => p,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let format = ctx.format;
-//     let parsed =
-//         tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
-//             .await;
-//
-//     let parse_outcome = match parsed {
-//         Ok(Ok(o)) => o,
-//         Ok(Err(e)) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//         Err(e) => {
-//             return HttpError::from_corelamo(
-//                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-//                 &ctx,
-//             )
-//             .into_response();
-//         }
-//     };
-//
-//     let doc_indices = parse_outcome.indices;
-//     let parse_failures = parse_outcome.failures;
-//
-//     let report = match handle.replace(parse_outcome.docs).await {
-//         Ok(r) => r,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let mut outcome = BatchOutcome::new("replaced", StatusCode::NOT_FOUND);
-//     outcome.succeed_many(report.replaced);
-//     outcome.fail_many(parse_failures);
-//
-//     for mut failure in report.failures {
-//         failure.index = failure.index.and_then(|i| doc_indices.get(i).copied());
-//         outcome.fail_doc(failure);
-//     }
-//
-//     let title = format!(
-//         "replaced {} in '{db_name}', {} failed",
-//         outcome.succeeded_count(),
-//         outcome.failed_count()
-//     );
-//     outcome
-//         .into_ok(StatusCode::OK, title, &db_name, &ctx)
-//         .into_response()
-// }
-//
+
+pub async fn replace_document_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    body: String,
+) -> Response {
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    if !handle.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let policy = handle.policy();
+    let format = ctx.format;
+    let parsed =
+        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
+            .await;
+
+    let outcome = match parsed {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("parse task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let doc_indices = outcome.indices;
+    let parse_failures = outcome.failures;
+
+    let manager = Arc::clone(&handle);
+    let report = match tokio::task::spawn_blocking(move || manager.replace(outcome.docs)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("replace task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let mut outcome = BatchOutcome::new("replaced", StatusCode::NOT_FOUND);
+    outcome.succeed_many(report.replaced);
+    outcome.fail_many(parse_failures);
+
+    for mut failure in report.failures {
+        failure.index = failure.index.and_then(|i| doc_indices.get(i).copied());
+        outcome.fail_doc(failure);
+    }
+
+    let title = format!(
+        "replaced {} in '{db_name}', {} failed",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
 
 pub async fn upsert_document_handler(
     State(state): State<AppState>,
