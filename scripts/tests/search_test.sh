@@ -14,7 +14,6 @@ clear
 BASE_URL="http://localhost:6006"
 PASS_COUNT=0
 FAIL_COUNT=0
-DOCUMENTS=256
 
 section() {
     echo
@@ -93,6 +92,9 @@ echo "=========================================="
 
 DB="docs"
 check "start database" 200 -X POST "$BASE_URL/api/databases/$DB/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+DOCUMENTS=$(curl -s -X GET "$BASE_URL/api/databases/$DB/status" -H "X-Corelamo-Key: $ADMIN_TOKEN" | jq -r '.data.document_count')
+
 
 # ------------------------------------------------------------------
 # Search query tests
@@ -231,12 +233,12 @@ check "*" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $
 
 check "alpha or theta" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"[at][lh][pe][ht][a]","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 192" '(.data | length) == 192'
-check "Eta or epsilon or example" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"e*","docs":'"$DOCUMENTS"'}'
-    check_json_bool "data should be 193" '(.data | length) == 193'
+check "Eta or epsilon or example or eighth" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"e*","docs":'"$DOCUMENTS"'}'
+    check_json_bool "data should be 193" '(.data | length) == 194'
 check "everything that has an a" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*a*","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 255" '(.data | length) == 255'
-check "everything that starts with an a(stopword so mby 0)" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"a*","docs":'"$DOCUMENTS"'}'
-    check_json_bool "data should be '$DOCUMENTS'" '(.data | length) == '$DOCUMENTS''
+check "everything that starts with an a(stopword)" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"a*","docs":'"$DOCUMENTS"'}'
+    check_json_bool "data should be 0" '(.data | length) == 0'
 
 check "alpha" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alph?","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'

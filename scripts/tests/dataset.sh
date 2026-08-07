@@ -4,11 +4,13 @@
 # vocabulary: alpha beta gamma delta epsilon zeta eta theta (n=8)
 #
 # One document per non-empty subset of the vocabulary -> 2^8 - 1 = 255 docs.
+# Plus an extra document inserted first.
 # Title = subset words joined by spaces (in vocabulary order).
-# Text
-# Subtext
-# Number
-# Date
+# Text = single-word title gets a text field with value from VOCAB2 at the same index.
+# Number = single-word title gets a number field with value from 1 to 8.
+# todo:
+#   Subtext = single-word title gets a subtext field with ???
+#   Date = ???
 #
 # HOW TO USE:
 #   1. Start the server first:  cargo run -p core-runtime -- --root-path /tmp
