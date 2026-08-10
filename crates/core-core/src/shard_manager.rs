@@ -1,5 +1,7 @@
 use core_index::analyzer::Analyzer;
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
+use core_protocol::command_reponse_definitions::{
+    GetLogsRequest, LookupCommand, LookupResponse, SearchCommand,
+};
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::bounded;
 use parking_lot::RwLock;
@@ -385,6 +387,71 @@ impl ShardManager {
                 .push(id);
         }
         by_shard
+    }
+
+    pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
+        let pending: Vec<_> = self
+            .shards
+            .iter()
+            .map(|h| {
+                let (rtx, rrx) = bounded(1);
+                let _ = h.send_raw(ShardCmd::GetLogs {
+                    date: date.clone(),
+                    resp: rtx,
+                });
+                rrx
+            })
+            .collect();
+
+        let mut all_lines: Vec<String> = Vec::new();
+        for rx in pending {
+            let logs = rx
+                .recv()
+                .map_err(|_| CorelamoError::Internal("shard died during get_logs".into()))??;
+            for line in logs.lines() {
+                if !line.trim().is_empty() {
+                    all_lines.push(line.to_string());
+                }
+            }
+        }
+
+        all_lines.sort_by(|a, b| {
+            let a_ts = a.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+            let b_ts = b.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+            a_ts.cmp(&b_ts)
+        });
+
+        Ok(all_lines.join("\n") + if all_lines.is_empty() { "" } else { "\n" })
+    }
+
+    pub fn clear_logs(&self) -> Result<(), CorelamoError> {
+        let pending: Vec<_> = self
+            .shards
+            .iter()
+            .map(|h| {
+                let (rtx, rrx) = bounded(1);
+                let _ = h.send_raw(ShardCmd::ClearLogs { resp: rtx });
+                rrx
+            })
+            .collect();
+
+        for rx in pending {
+            rx.recv()
+                .map_err(|_| CorelamoError::Internal("shard died during clear_logs".into()))??;
+        }
+
+        let logs_dir = self.root.join("logs");
+        if logs_dir.exists() {
+            for entry in std::fs::read_dir(&logs_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+                    std::fs::remove_file(&path)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {

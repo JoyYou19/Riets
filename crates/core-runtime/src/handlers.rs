@@ -19,8 +19,8 @@ use crate::{
 };
 use core_protocol::{
     command_reponse_definitions::{
-        Command, DeleteCommand, LookupCommand, RetrieveCommand, RetrieveResponse, SearchCommand,
-        SearchResponse,
+        Command, DeleteCommand, GetLogsRequest, LookupCommand, RetrieveCommand, RetrieveResponse,
+        SearchCommand, SearchResponse,
     },
     errors::{CorelamoError, DocFailure, FailReason},
 };
@@ -503,68 +503,68 @@ pub async fn clear_database_handler(
     .into_response()
 }
 
-// pub async fn get_logs_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>,
-//     //Extension(principal): Extension<Principal>,
-//     body: String,
-// ) -> Response {
-//     //if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
-//     //return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     let date = if body.trim().is_empty() {
-//         None
-//     } else {
-//         //insane smukais porno lai dabutu date: "" aaraa
-//         match serde_json::from_str::<GetLogsRequest>(body.trim()) {
-//             Ok(req) => req.date,
-//             Err(e) => {
-//                 return HttpError::from_corelamo(
-//                     CorelamoError::InvalidData(format!("invalid get-logs request: {e}")),
-//                     &ctx,
-//                 )
-//                 .into_response();
-//             }
-//         }
-//     };
-//
-//     match handle.get_logs(date).await {
-//         Ok(msg) => HttpOk::raw(StatusCode::OK, "text/plain", msg, &ctx),
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
-//
-// pub async fn clear_logs_handler(
-//     State(state): State<AppState>,
-//     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
-// ) -> Response {
-//     //    if let Err(e) = check_permission(&state, &principal, Permission::ClearLogs) {
-//     //return HttpError::from_corelamo(e, &ctx).into_response();
-//     //}
-//
-//     let handle = match state.lookup(&db_name) {
-//         Ok(h) => h,
-//         Err(e) => {
-//             return HttpError::from_corelamo(e, &ctx).into_response();
-//         }
-//     };
-//
-//     match handle.clear_logs().await {
-//         Ok(_) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
-//     }
-// }
-//
+pub async fn get_logs_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    //Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    //if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
+    //return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let date = if body.trim().is_empty() {
+        None
+    } else {
+        //insane smukais porno lai dabutu date: "" aaraa
+        match serde_json::from_str::<GetLogsRequest>(body.trim()) {
+            Ok(req) => req.date,
+            Err(e) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::InvalidData(format!("invalid get-logs request: {e}")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    };
+
+    match handle.get_logs(date) {
+        Ok(msg) => HttpOk::raw(StatusCode::OK, "text/plain", msg, &ctx),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn clear_logs_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
+) -> Response {
+    //    if let Err(e) = check_permission(&state, &principal, Permission::ClearLogs) {
+    //return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    match handle.clear_logs() {
+        Ok(_) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
 pub async fn delete_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

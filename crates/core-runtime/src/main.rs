@@ -221,14 +221,14 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/delete",
             delete(handlers::delete_document_handler),
         )
-        // .route(
-        //     "/api/databases/{db_name}/get-logs",
-        //     get(handlers::get_logs_handler),
-        // )
-        // .route(
-        //     "/api/databases/{db_name}/clear-logs",
-        //     delete(handlers::clear_logs_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/get-logs",
+            get(handlers::get_logs_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/clear-logs",
+            delete(handlers::clear_logs_handler),
+        )
         .route(
             "/api/databases/{db_name}/create-database",
             post(handlers::create_database_handler),

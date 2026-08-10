@@ -514,6 +514,63 @@ impl ShardDb {
         result
     }
 
+    pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
+        let logs_dir = self.root.join("logs");
+        if !logs_dir.exists() {
+            return Ok(String::new());
+        }
+
+        let mut files: Vec<PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(&logs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+                if let Some(ref date_str) = date {
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map_or(false, |name| name.contains(date_str))
+                    {
+                        files.push(path);
+                    }
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+
+        files.sort();
+
+        let mut output = String::new();
+        for file_path in files {
+            let content = std::fs::read_to_string(&file_path)?;
+            output.push_str(&content);
+            if !content.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+
+        Ok(output)
+    }
+
+    pub fn clear_logs(&self) -> Result<(), CorelamoError> {
+        let logs_dir = self.root.join("logs");
+        if !logs_dir.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(&logs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+                std::fs::remove_file(&path)?;
+            }
+        }
+
+        info!(self.log, "logs cleared"; "shard_id" => self.shard_id);
+        Ok(())
+    }
+
     pub fn delete(&mut self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = ids.len();
