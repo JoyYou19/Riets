@@ -126,6 +126,11 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> io::Result<Self> {
         Self::with_policy(store, index, analyzer, IndexPolicy::default_document())
     }
+
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
     pub fn index_worker(&self) -> &IndexWorker {
         &self.index_worker
     }
@@ -152,7 +157,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Self::with_shard_policy(store, index, analyzer, policy, ShardId(0))
     }
 
-    /// Creates one shard local database instance.
     /* Each shard must receive a distinct shardId
     The shard allocates only local sequences and packs them into globally unique document IDs.*/
     pub fn with_shard_policy(
@@ -171,6 +175,29 @@ impl<S: DocumentStore> SearchDatabase<S> {
             store,
             index_worker,
             snapshot,
+            analyzer,
+            policy,
+            shard_id,
+            next_local_id,
+        })
+    }
+
+    pub fn with_shard_policy_and_snapshot(
+        store: S,
+        index: LsmIndex,
+        analyzer: Analyzer,
+        policy: IndexPolicy,
+        shard_id: ShardId,
+        shared_snapshot: SharedIndexSnapshot,
+    ) -> io::Result<Self> {
+        let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+
+        let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone());
+
+        Ok(Self {
+            store,
+            index_worker,
+            snapshot: shared_snapshot,
             analyzer,
             policy,
             shard_id,
@@ -351,7 +378,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn search(&self, query: &Query, xpath: u32) -> Vec<SearchHit> {
         let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
         executor.search(query, xpath)
     }
 
@@ -404,7 +431,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         k: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
         let hits = executor.search_top_k(query, xpath, k);
 
         self.resolve_document_hits(hits, None)
@@ -416,7 +443,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         k: usize,
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
         let hits = executor.search_all_xpaths_top_k(query, xpaths, k);
@@ -430,7 +457,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         k: usize,
     ) -> io::Result<SearchDocumentResults> {
         let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
         let all_hits = executor.search_all_xpaths(query, xpaths);
@@ -490,7 +517,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         })?;
 
         let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
 
@@ -523,7 +550,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.resolve_document_hits(hits, return_fields)
     }
 
-    fn resolve_document_hits(
+    pub fn resolve_document_hits(
         &self,
         hits: Vec<SearchHit>,
         return_fields: Option<&IndexMap<String, bool>>,
@@ -694,7 +721,7 @@ fn publish_window(
     Ok(())
 }
 
-fn visible_fields(
+pub fn visible_fields(
     fields: &BTreeMap<String, String>,
     policy: &IndexPolicy,
     resolved: Option<&IndexMap<String, bool>>,
