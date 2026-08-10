@@ -32,14 +32,9 @@ struct Inner {
 #[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone, PartialEq)]
 pub enum WalRecord {
     Create(Vec<DocumentInput>),
-    Upsert(DocumentInput),
-    Modify {
-        external_id: String,
-        payload: Vec<DocumentInput>,
-    },
-    Delete {
-        external_id: String,
-    },
+    Upsert(Vec<DocumentInput>),
+    Replace(Vec<DocumentInput>),
+    Delete (Vec<String>),
     Clear,
 }
 
@@ -160,7 +155,7 @@ impl Wal {
         self.inner.lock().unwrap().durable_offset
     }
 
-    /// Scan from byte 0, validate every record, truncate at first invalid one.
+    // Scan from byte 0, validate every record, truncate at first invalid one.
     // fn scan_and_truncate(file: &mut File) -> io::Result<u64> {
     //     let file_len = file.seek(SeekFrom::End(0))?;
     //     let mut pos = 0u64;
