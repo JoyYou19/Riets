@@ -63,10 +63,12 @@ pub enum ShardCmd {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<InsertReport, CorelamoError>>,
     },
+
     Replace {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<ReplaceReport, CorelamoError>>,
     },
+
     Delete {
         ids: Vec<String>,
         resp: Sender<Result<DeleteReport, CorelamoError>>,
@@ -76,6 +78,14 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
     Stop {
+        resp: Sender<Result<(), CorelamoError>>,
+    },
+
+    GetLogs {
+        date: Option<String>,
+        resp: Sender<Result<String, CorelamoError>>,
+    },
+    ClearLogs {
         resp: Sender<Result<(), CorelamoError>>,
     },
 
@@ -164,6 +174,14 @@ impl ShardHandle {
 
     pub fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetConfig { options, resp })?
+    }
+
+    pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
+        self.call(|resp| ShardCmd::GetLogs { date, resp })?
+    }
+
+    pub fn clear_logs(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::ClearLogs { resp })?
     }
 
     pub fn document_count(&self) -> Result<usize, CorelamoError> {
@@ -281,6 +299,15 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 ShardCmd::Clear { resp } => {
                     let _ = resp.send(shard.clear());
                 }
+
+                ShardCmd::GetLogs { date, resp } => {
+                    let _ = resp.send(shard.get_logs(date));
+                }
+
+                ShardCmd::ClearLogs { resp } => {
+                    let _ = resp.send(shard.clear_logs());
+                }
+
                 ShardCmd::Shutdown { resp } => {
                     let _ = resp.send(shard.stop());
                     return;
