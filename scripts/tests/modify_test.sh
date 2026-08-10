@@ -271,7 +271,6 @@ check "retrieve no doc" 400 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X
 check "retrieve bad doc" 400 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d 'nezkkas'
 
-#nevajadzetu 404?
 check "retrieve non existing" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '[""]'
 check "retrieve multiple non existing" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
