@@ -8,6 +8,7 @@ use core_protocol::command_reponse_definitions::{
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
 
+use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
 use crate::{DatabaseOptions, options};
 use core_index::document::IndexPolicy;
@@ -29,21 +30,17 @@ pub enum ShardCmd {
         k: usize,
         resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
     },
-
     Retrieve {
         ids: Vec<String>,
         resp: Sender<Result<Vec<(String, Option<StoredDocument>)>, CorelamoError>>,
     },
-
     Lookup {
         command: LookupCommand,
         resp: Sender<Result<LookupResponse, CorelamoError>>,
     },
-
     IsRunning {
         resp: Sender<bool>,
     },
-
     Flush {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -68,12 +65,18 @@ pub enum ShardCmd {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<ReplaceReport, CorelamoError>>,
     },
-
     Delete {
         ids: Vec<String>,
         resp: Sender<Result<DeleteReport, CorelamoError>>,
     },
-
+    PrepareReindex {
+        
+        resp:Sender<Result<ReindexParams,CorelamoError>>,
+    },
+    CommitReindex{
+        done:CompletedShardReindex,
+        resp: Sender<Result<(), CorelamoError>>
+    },
     Start {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -191,6 +194,10 @@ impl ShardHandle {
     pub fn shutdown(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Shutdown { resp })?
     }
+    //reindex
+    pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
+    self.tx.clone()
+    }
 }
 
 /// Flips `alive` to false on any exit path, including panic unwind.
@@ -211,7 +218,7 @@ pub fn spawn(
 
     let (tx, rx) = bounded(queue_depth.max(1));
     let (boot_tx, boot_rx) = bounded(1);
-
+    let job_tx= tx.clone();
     let alive_worker = alive.clone();
     let join = thread::Builder::new()
         .name(format!("shard-{}", id))
@@ -220,8 +227,9 @@ pub fn spawn(
             let started = shard.start();
             let ok = started.is_ok();
             let _ = boot_tx.send(started);
+            
             if ok {
-                run(shard, rx);
+                run(shard, rx, job_tx);
             }
         })
         .map_err(|e| CorelamoError::Internal(format!("failed to spawn shard {id}: {e}")))?;
@@ -241,7 +249,7 @@ pub fn spawn(
     ))
 }
 
-fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
+fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, tx: Sender<ShardCmd>) {
     const MAX_BATCH: usize = 32;
 
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
@@ -258,11 +266,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 ShardCmd::Search { query, k, resp } => {
                     let _ = resp.send(shard.search(&query, k));
                 }
-
                 ShardCmd::Lookup { command, resp } => {
                     let _ = resp.send(shard.lookup(&command));
                 }
-
                 ShardCmd::Flush { resp } => {
                     let _ = resp.send(shard.flush());
                 }
@@ -275,7 +281,6 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 ShardCmd::DocCount { resp } => {
                     let _ = resp.send(shard.document_count());
                 }
-
                 ShardCmd::Upsert { inputs, resp } => {
                     let _ = resp.send(shard.upsert(inputs));
                 }
@@ -285,10 +290,15 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>) {
                 ShardCmd::Delete { ids, resp } => {
                     let _ = resp.send(shard.delete(ids));
                 }
+                ShardCmd::PrepareReindex{ resp} =>{
+                    let _ = resp.send(shard.prepare_reindex());
+                }
+                ShardCmd::CommitReindex { done, resp } =>{
+                    let _ = resp.send(shard.commit_reindex(done));
+                }
                 ShardCmd::IsRunning { resp } => {
                     let _ = resp.send(shard.is_running());
                 }
-
                 ShardCmd::Start { resp } => {
                     let _ = resp.send(shard.start());
                 }

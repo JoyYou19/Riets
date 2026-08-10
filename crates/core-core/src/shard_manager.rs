@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crate::ShardDb;
+use crate::reindex::{CompletedShardReindex, ReindexJob, ReindexPool};
 use crate::shard_worker::{self, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use core_index::document::IndexPolicy;
@@ -28,6 +29,7 @@ pub struct ShardManager {
     policy: RwLock<IndexPolicy>,
     options: RwLock<DatabaseOptions>,
     analyzer: Analyzer,
+    reindex_pool:ReindexPool,
 }
 
 impl ShardManager {
@@ -87,6 +89,7 @@ impl ShardManager {
             policy: RwLock::new(policy),
             options: RwLock::new(options),
             analyzer: Analyzer::new(),
+            reindex_pool:ReindexPool::start(1),
         })
     }
 
@@ -279,6 +282,7 @@ impl ShardManager {
             policy: RwLock::new(policy),
             options: RwLock::new(options),
             analyzer: Analyzer::new(),
+            reindex_pool: ReindexPool::start(1),
         })
     }
 
@@ -372,7 +376,33 @@ impl ShardManager {
         Ok(())
     }
     //write operations
-
+    //izsuta visiem reindex
+    pub fn reindex(&self) -> Result<(), CorelamoError> {
+       let mut pending =Vec:: with_capacity(self.shards.len());
+       for h in &self.shards {
+        let (rtx, rrx) = bounded(1);
+        h.send_raw(ShardCmd::PrepareReindex { resp: rtx })
+            .map_err(|(e,_)|e)?;
+        pending.push((h,rrx));
+       }
+       //savac params
+        let mut tickets =Vec::with_capacity(pending.len());
+        for(h,rx) in pending{
+            let params =rx 
+            .recv()
+            .map_err(|_| CorelamoError::Internal("Shard died during reindex".into()))??;
+            tickets.push((h,params));
+        }
+        //nodod reindex pool 
+        for(h, params) in tickets{
+            self.reindex_pool.submit(ReindexJob{
+                params,
+                shard_tx: h.command_sender(),
+                progress: Arc::clone(h.progress()),
+            })?;
+        }
+        Ok(())
+    }
     //paligfunkcija no viber
     fn shard_index_for(&self, external_id: &str) -> usize {
         shard_for(external_id, self.shards.len() as u16) as usize

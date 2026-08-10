@@ -5,14 +5,9 @@ use std::{
 
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
-    analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
-    lsm::{
-        LsmIndex,
-        index_worker::{IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel},
-        snapshot::SharedIndexSnapshot,
-    },
-    types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
+    analyzer::analyzer::Analyzer, document::{IndexPolicy, IndexedDocument, policy::IndexKind}, lsm::{
+        LsmIndex, index_worker::{IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel}, snapshot::SharedIndexSnapshot,
+    }, types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
 use bincode::{Decode, Encode};

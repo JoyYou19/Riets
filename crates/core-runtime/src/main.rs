@@ -254,10 +254,10 @@ async fn main() -> io::Result<()> {
         //     "/api/databases/{db_name}/status",
         //     get(handlers::stats_handler),
         // )
-        // .route(
-        //     "/api/databases/{db_name}/reindex",
-        //     post(handlers::reindex_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/reindex",
+            post(handlers::reindex_handler),
+        )
         .route(
             "/api/databases/{db_name}/get-policy",
             get(handlers::get_policy_handler),
