@@ -697,6 +697,6 @@ impl ShardManager {
         }
         Ok(report)
     }
-
+    
     // TODO:  upsert, lookup, etc.
 }
