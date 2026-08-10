@@ -3,7 +3,7 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     middleware::from_fn_with_state,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
 };
 
 use core_core::shard_manager::ShardManager;
@@ -211,7 +211,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/replace",
-            put(handlers::replace_document_handler),
+            post(handlers::replace_document_handler),
         )
         .route(
             "/api/databases/{db_name}/upsert",
@@ -264,7 +264,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/set-policy",
-            put(handlers::set_policy_handler),
+            post(handlers::set_policy_handler),
         )
         // .route("/api/users", post(handlers::create_user_handler))
         // .route(
@@ -285,7 +285,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/set-config",
-            put(handlers::set_config_handler),
+            post(handlers::set_config_handler),
         )
         .route(
             "/api/databases/{db_name}/restart-database",
