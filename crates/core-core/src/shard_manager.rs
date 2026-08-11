@@ -149,12 +149,28 @@ impl ShardManager {
     }
 
     pub async fn start(&self) -> Result<(), CorelamoError> {
-        let mut first_err = None;
+        let mut set = JoinSet::new();
         for h in &self.shards {
-            if let Err(e) = h.start().await {
-                if first_err.is_none() {
-                    first_err = Some(e);
+            let handle = h.clone();
+            set.spawn(async move { handle.start().await });
+        }
+
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
+                Err(je) => {
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard task panicked: {je}"
+                        )));
+                    }
+                }
+                Ok(Ok(())) => {}
             }
         }
         match first_err {
@@ -172,12 +188,28 @@ impl ShardManager {
     }
 
     pub async fn stop(&self) -> Result<(), CorelamoError> {
-        let mut first_err = None;
+        let mut set = JoinSet::new();
         for h in &self.shards {
-            if let Err(e) = h.stop().await {
-                if first_err.is_none() {
-                    first_err = Some(e);
+            let handle = h.clone();
+            set.spawn(async move { handle.stop().await });
+        }
+
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
+                Err(je) => {
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard task panicked: {je}"
+                        )));
+                    }
+                }
+                Ok(Ok(())) => {}
             }
         }
         match first_err {
@@ -349,12 +381,28 @@ impl ShardManager {
     }
 
     pub async fn clear_all(&self) -> Result<(), CorelamoError> {
-        let mut first_err = None;
+        let mut set = JoinSet::new();
         for h in &self.shards {
-            if let Err(e) = h.clear().await {
-                if first_err.is_none() {
-                    first_err = Some(e);
+            let handle = h.clone();
+            set.spawn(async move { handle.clear().await });
+        }
+
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
+                Err(je) => {
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard task panicked: {je}"
+                        )));
+                    }
+                }
+                Ok(Ok(())) => {}
             }
         }
         match first_err {
@@ -470,34 +518,71 @@ impl ShardManager {
 
     pub async fn set_policy_all(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         policy.validate()?;
-        let mut first_err = None;
+
+        let mut set = JoinSet::new();
         for h in &self.shards {
-            if let Err(e) = h.set_policy(policy.clone()).await {
-                if first_err.is_none() {
-                    first_err = Some(e);
+            let handle = h.clone();
+            let p = policy.clone();
+            set.spawn(async move { handle.set_policy(p).await });
+        }
+
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
+                Err(je) => {
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard task panicked: {je}"
+                        )));
+                    }
+                }
+                Ok(Ok(())) => {}
             }
         }
         if let Some(e) = first_err {
             return Err(e);
         }
+
         policy.save(&Self::policy_path(&self.root))?;
         *self.policy.write() = policy;
         Ok(())
     }
 
     pub async fn set_options_all(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
-        let mut first_err = None;
+        let mut set = JoinSet::new();
         for h in &self.shards {
-            if let Err(e) = h.set_config(options.clone()).await {
-                if first_err.is_none() {
-                    first_err = Some(e);
+            let handle = h.clone();
+            let o = options.clone();
+            set.spawn(async move { handle.set_config(o).await });
+        }
+
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
+                Err(je) => {
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard task panicked: {je}"
+                        )));
+                    }
+                }
+                Ok(Ok(())) => {}
             }
         }
         if let Some(e) = first_err {
             return Err(e);
         }
+
         options.save_to_file(&Self::config_path(&self.root))?;
         *self.options.write() = options;
         Ok(())
