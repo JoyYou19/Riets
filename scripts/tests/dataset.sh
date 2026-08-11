@@ -55,6 +55,7 @@ echo "=========================================="
 # ------------------------------------------------------------------
 # Database setup
 # ------------------------------------------------------------------
+
 curl -s -X DELETE $BASE_URL/api/databases/$DB/delete-database -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "create database" 201 -X POST "$BASE_URL/api/databases/$DB/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "start database" 200 -X POST "$BASE_URL/api/databases/$DB/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
@@ -160,13 +161,37 @@ for (( mask=1; mask<=TOTAL; mask++ )); do
         -d "$payload"
 done
 
-#check "insert 1" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"id":"0","title":"this id is a number"}'
-#check "insert two" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"id":"two","title":"this id is text"}'
-#check "insert auto" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"title":"this id is automatically generated"}'
- 
+
+check "insert deletable1" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"del1"}'
+check "insert deletable2" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"del2"}'
+
+check "insert 1" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"0","title":"this id is a number"}'
+check "insert two" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"two","title":"this id is text"}'
+check "insert auto" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"this id is automatically generated"}'
+
+check "upsert auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title": "upsert without id"}'
+check "upsert insert" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id": "up", "title": "upsert with id"}'
+check "upsert update" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id": "up", "title": "upsert updated"}'
+
+#-------------------------------------------------
+
+#curl -X POST $BASE_URL/api/databases/$DB/retrieve -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#    -d '["1"]'
+#curl -X DELETE $BASE_URL/api/databases/$DB/delete -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#    -d '["del1","del2"]'
+#curl -X POST $BASE_URL/api/databases/$DB/lookup -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#    -d '{"ids": ["1", "2"]}'
+#curl -X POST $BASE_URL/api/databases/$DB/lookup -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#    -d '{"ids": ["1", "2"],"return_fields": {"title":true,"text":false}}'
+
 check "reindex" 200 -X POST "$BASE_URL/api/databases/$DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
  
 echo
