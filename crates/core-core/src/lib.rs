@@ -1,9 +1,10 @@
 pub mod metrics;
 mod options;
+pub mod reindex;
 mod shard_db;
 pub mod shard_manager;
 pub mod shard_worker;
-pub mod reindex;
+pub mod shared_state;
 pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;
 
