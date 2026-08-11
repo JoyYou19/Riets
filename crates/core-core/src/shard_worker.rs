@@ -14,6 +14,7 @@ use indexmap::IndexMap;
 use crate::DatabaseOptions;
 use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
+use crate::DatabaseOptions;
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId};
@@ -58,12 +59,10 @@ pub enum ShardCmd {
     Clear {
         resp: Sender<Result<(), CorelamoError>>,
     },
-
     Upsert {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<InsertReport, CorelamoError>>,
     },
-
     Replace {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<ReplaceReport, CorelamoError>>,
@@ -73,7 +72,7 @@ pub enum ShardCmd {
         resp: Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
-        resp: Sender<Result<ReindexParams, CorelamoError>>,
+        resp:Sender<Result<ReindexParams,CorelamoError>>,
     },
     CommitReindex {
         done: CompletedShardReindex,
@@ -85,7 +84,6 @@ pub enum ShardCmd {
     Stop {
         resp: Sender<Result<(), CorelamoError>>,
     },
-
     GetLogs {
         date: Option<String>,
         resp: Sender<Result<String, CorelamoError>>,
@@ -93,7 +91,6 @@ pub enum ShardCmd {
     ClearLogs {
         resp: Sender<Result<(), CorelamoError>>,
     },
-
     DocCount {
         resp: Sender<usize>,
     },
@@ -259,19 +256,15 @@ impl ShardHandle {
         self.tx.send(make(rtx)).map_err(|_| self.dead())?;
         rrx.recv().map_err(|_| self.dead())
     }
-
     fn dead(&self) -> CorelamoError {
         CorelamoError::Internal(format!("shard {} is not running", self.id))
     }
-
     pub fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         self.call(|resp| ShardCmd::Insert { inputs, resp })?
     }
-
     pub fn flush(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Flush { resp })?
     }
-
     pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         self.call(|resp| ShardCmd::Upsert { inputs, resp })?
     }
@@ -281,37 +274,34 @@ impl ShardHandle {
     pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
         self.call(|resp| ShardCmd::Delete { ids, resp })?
     }
-
+    pub fn is_running(&self) -> Result<bool, CorelamoError> {
+        self.call(|resp| ShardCmd::IsRunning { resp })
+    }
     pub fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetPolicy { policy, resp })?
     }
-
     pub fn start(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Start { resp })?
     }
     pub fn stop(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Stop { resp })?
     }
-
     pub fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetConfig { options, resp })?
     }
-
     pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
         self.call(|resp| ShardCmd::GetLogs { date, resp })?
     }
-
     pub fn clear_logs(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::ClearLogs { resp })?
     }
-
     pub fn document_count(&self) -> Result<usize, CorelamoError> {
         self.call(|resp| ShardCmd::DocCount { resp })
     }
-
     pub fn shutdown(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Shutdown { resp })?
     }
+    
     //reindex
     pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
         self.tx.clone()
@@ -436,18 +426,15 @@ fn run(
                 ShardCmd::ResolveHits { hits, resp } => {
                     let _ = resp.send(shard.resolve_hits(hits));
                 }
-
                 ShardCmd::Clear { resp } => {
                     is_clearing.store(true, Ordering::Release);
                     let result = shard.clear();
                     is_clearing.store(false, Ordering::Release);
                     let _ = resp.send(result);
                 }
-
                 ShardCmd::GetLogs { date, resp } => {
                     let _ = resp.send(shard.get_logs(date));
                 }
-
                 ShardCmd::ClearLogs { resp } => {
                     let _ = resp.send(shard.clear_logs());
                 }

@@ -250,10 +250,10 @@ async fn main() -> io::Result<()> {
             post(handlers::stop_database_handler),
         )
         .route("/api/list-databases", get(handlers::list_databases_handler))
-        // .route(
-        //     "/api/databases/{db_name}/status",
-        //     get(handlers::stats_handler),
-        // )
+        .route(
+            "/api/databases/{db_name}/status",
+            get(handlers::stats_handler),
+        )
         .route(
             "/api/databases/{db_name}/reindex",
             post(handlers::reindex_handler),
