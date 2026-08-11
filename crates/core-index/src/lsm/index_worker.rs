@@ -565,6 +565,8 @@ impl Phase {
     }
 }
 
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ProgressSnapshot {
     pub phase: Phase,

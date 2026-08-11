@@ -589,6 +589,9 @@ impl ShardManager {
     }
 
     pub fn reindex(&self) -> Result<(), CorelamoError> {
+        if !self.db_stats.begin_reindex(self.shards.len()) {
+        return Err(CorelamoError::Busy("reindex already in progress".into()));
+        }
         let mut pending = Vec::with_capacity(self.shards.len());
         for h in &self.shards {
             let (rtx, rrx) = bounded(1);
@@ -606,6 +609,7 @@ impl ShardManager {
         }
         //nodod reindex pool
         for (h, params) in tickets {
+            self.db_stats.add_reindex_total(params.doc_count as u64);
             self.reindex_pool.submit(ReindexJob {
                 params,
                 shard_tx: h.command_sender(),
