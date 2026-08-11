@@ -106,25 +106,27 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     //logging izmantojot slog lib
-    let (log, _guard) = logger::program_logger();
-    let _slog_guard = slog_scope::set_global_logger(log.clone());
-    info!(log, "Program started");
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(overrides) => overrides,
-        Err(e) => {
-            error!(log, "error parsing cli arguments:"; "error"=> %e);
+        Err(_) => {
+            
             process::exit(1);
         }
     };
     let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
         Ok(s) => s,
-        Err(e) => {
-            error!(log,"error loading settings:";"error"=> %e);
+        Err(_) => {
             process::exit(1);
         }
     };
-
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));
+    let (log, _guard) = logger::program_logger(&root_path);
+    let _slog_guard = slog_scope::set_global_logger(log.clone());
+    info!(log, "Program started");
+    
+    
+
+    
 
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
