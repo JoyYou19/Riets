@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 use crate::DatabaseOptions;
 use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
-use crate::DatabaseOptions;
+
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId};
@@ -273,9 +273,6 @@ impl ShardHandle {
     }
     pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
         self.call(|resp| ShardCmd::Delete { ids, resp })?
-    }
-    pub fn is_running(&self) -> Result<bool, CorelamoError> {
-        self.call(|resp| ShardCmd::IsRunning { resp })
     }
     pub fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetPolicy { policy, resp })?

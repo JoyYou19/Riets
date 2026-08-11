@@ -206,11 +206,7 @@ impl ShardDb {
             stats,
             log,
             wal,
-            metrics: Mutex::new(DatabaseMetrics::default()),
-            progress: ReindexProgress::new(),
             is_clearing: Arc::new(AtomicBool::new(false)),
-            log,
-            wal,
             pending_ops: Vec::new(),
             shared_snapshot: SharedIndexSnapshot::empty(),
             generation:0,
@@ -506,11 +502,11 @@ impl ShardDb {
         let batch_size = self.options.runtime.indexing_batch_size;
         let window_size = self.options.runtime.indexing_window_size;
 
-        let ids: Vec<String> = if self.progress.phase().is_running() {
-            inputs.iter().map(|i| i.external_id.clone()).collect()
-        } else {
-            Vec::new()
-        };
+        // let ids: Vec<String> = if self.progress.phase().is_running() {
+        //     inputs.iter().map(|i| i.external_id.clone()).collect()
+        // } else {
+        //     Vec::new()
+        // };
 
         let result = (|| -> Result<InsertReport, CorelamoError> {
             //WALis
@@ -547,42 +543,44 @@ impl ShardDb {
             Ok(report)
         })();
         // Queue for replay against the new index, outside the closure so the
-        // mutable borrow of `self` has ended.
-        if result.is_ok() {
-            for id in ids {
-                let doc = match self.db_mut() {
-                    Ok(db) => db
-                        .get_document(&id)
-                        .ok()
-                        .flatten()
-                        .map(|d| db.to_indexed(&d)),
-                    Err(_) => None,
-                };
-                if let Some(doc) = doc {
-                    self.queue_op(PendingOp::Index { doc });
-                }
-            }
-        }
+        // // mutable borrow of `self` has ended.
+        // if result.is_ok() {
+        //     for id in ids {
+        //         let doc = match self.db_mut() {
+        //             Ok(db) => db
+        //                 .get_document(&id)
+        //                 .ok()
+        //                 .flatten()
+        //                 .map(|d| db.to_indexed(&d)),
+        //             Err(_) => None,
+        //         };
+        //         if let Some(doc) = doc {
+        //             self.queue_op(PendingOp::Index { doc });
+        //         }
+        //     }
+        // }
 
         let elapsed = started.elapsed();
 
-        match &result {
-            Ok(_) =>{
+        match result {
+            Ok(_) => {
                 self.publish_stats();
                 info!(self.log, "indexed batch";
-                "shard_id" => %self.shard_id,
-                "documents" => count,
-                "batch_size" => batch_size,
-                "elapsed_ms" => elapsed.as_millis(),
-
-            ),
-            Err(e) => error!(self.log, "indexing failed";
-                "shard_id" => %self.shard_id,
-                "documents" => count,
-                "batch_size" => batch_size,
-                "elapsed_ms" => elapsed.as_millis(),
-                "error" => %e,
-            ),
+                    "shard_id" => %self.shard_id,
+                    "documents" => count,
+                    "batch_size" => batch_size,
+                    "elapsed_ms" => elapsed.as_millis(),
+                );
+            }
+            Err(ref e) => {
+                error!(self.log, "indexing failed";
+                    "shard_id" => %self.shard_id,
+                    "documents" => count,
+                    "batch_size" => batch_size,
+                    "elapsed_ms" => elapsed.as_millis(),
+                    "error" => %e,
+                );
+            }
         }
 
         result
@@ -855,25 +853,25 @@ impl ShardDb {
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         }
 
-        for internal_id in old_internal_ids {
-            self.queue_op(PendingOp::Tombstone { internal_id });
-        }
+        // for internal_id in old_internal_ids {
+        //     self.queue_op(PendingOp::Tombstone { internal_id });
+        // }
 
-        if self.progress.phase().is_running() {
-            for id in written_ids {
-                let doc = match self.db_mut() {
-                    Ok(db) => db
-                        .get_document(&id)
-                        .ok()
-                        .flatten()
-                        .map(|d| db.to_indexed(&d)),
-                    Err(_) => None,
-                };
-                if let Some(doc) = doc {
-                    self.queue_op(PendingOp::Index { doc });
-                }
-            }
-        }
+        // if self.progress.phase().is_running() {
+        //     for id in written_ids {
+        //         let doc = match self.db_mut() {
+        //             Ok(db) => db
+        //                 .get_document(&id)
+        //                 .ok()
+        //                 .flatten()
+        //                 .map(|d| db.to_indexed(&d)),
+        //             Err(_) => None,
+        //         };
+        //         if let Some(doc) = doc {
+        //             self.queue_op(PendingOp::Index { doc });
+        //         }
+        //     }
+        // }
 
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
@@ -945,25 +943,25 @@ impl ShardDb {
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         }
 
-        for internal_id in old_internal_ids {
-            self.queue_op(PendingOp::Tombstone { internal_id });
-        }
+        // for internal_id in old_internal_ids {
+        //     self.queue_op(PendingOp::Tombstone { internal_id });
+        // }
 
-        if self.progress.phase().is_running() {
-            for id in written_ids {
-                let doc = match self.db_mut() {
-                    Ok(db) => db
-                        .get_document(&id)
-                        .ok()
-                        .flatten()
-                        .map(|d| db.to_indexed(&d)),
-                    Err(_) => None,
-                };
-                if let Some(doc) = doc {
-                    self.queue_op(PendingOp::Index { doc });
-                }
-            }
-        }
+        // if self.progress.phase().is_running() {
+        //     for id in written_ids {
+        //         let doc = match self.db_mut() {
+        //             Ok(db) => db
+        //                 .get_document(&id)
+        //                 .ok()
+        //                 .flatten()
+        //                 .map(|d| db.to_indexed(&d)),
+        //             Err(_) => None,
+        //         };
+        //         if let Some(doc) = doc {
+        //             self.queue_op(PendingOp::Index { doc });
+        //         }
+        //     }
+        // }
 
         let elapsed = started.elapsed();
         info!(self.log, "upsert batch";

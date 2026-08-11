@@ -9,7 +9,7 @@ use axum::{
 };
 //use core_auth::{Permission, Principal};
 //
-use core_core::{ DatabaseOptions, shard_manager::ShardManager };
+use core_core::{ DatabaseOptions, shard_manager::ShardManager,metrics::DbStats };
 use slog::{ error, info, o };
 
 use crate::{
@@ -165,21 +165,23 @@ pub async fn search_handler(
     };
 
     let query = command.query.clone();
-
+    let start =std::time::Instant::now();
     let manager = Arc::clone(&handle);
     let hits = match tokio::task::spawn_blocking(move || manager.search(&command)).await {
         Ok(Ok(hits)) => hits,
         Ok(Err(e)) => {
+            handle.record_search(true,start.elapsed());
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
         Err(e) => {
+            handle.record_search(true,start.elapsed());
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("search task panicked: {e}")),
                 &ctx
             ).into_response();
         }
     };
-
+    handle.record_search(false,start.elapsed());
     let hit_count = hits.len();
     let projected: Vec<(String, BTreeMap<String, String>)> = hits
         .into_iter()
@@ -968,7 +970,7 @@ pub async fn stats_handler(
             "indexing_requests": metrics.indexing_requests,
             "indexing_errors": metrics.indexing_errors,
             "average_indexing_ms": metrics.average_indexing_time()
-                .map(|d| d.as_micros() as u64),
+                .map(|d| d.as_millis() as u64),
             "reindex_requests": metrics.reindex_requests,
             "reindex_errors": metrics.reindex_errors,
         },

@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::lsm::LsmIndex;
-use core_index::lsm::index_worker::{Phase, ReindexProgress};
+use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::BinaryDocumentStore;

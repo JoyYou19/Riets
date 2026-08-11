@@ -45,10 +45,7 @@ struct Counters {
     reindex_requests: AtomicU64,
     reindex_errors: AtomicU64,
     reindex_nanos: AtomicU64,
-    documents_indexed: AtomicU64,
-    documents_deleted: AtomicU64,
-    segments_written: AtomicU64,
-    compactions_completed: AtomicU64,
+    
     
 }
 
@@ -60,6 +57,11 @@ struct ShardGauges {
     segments: AtomicUsize,
     memtable_terms: AtomicUsize,
     compaction_enabled: AtomicBool,
+    // Add cumulative counters that the shard thread updates
+    documents_indexed: AtomicU64,
+    documents_deleted: AtomicU64,
+    segments_written: AtomicU64,
+    compactions_completed: AtomicU64,
 }
 
 use core_index::lsm::index_worker::{ IndexingStats, Phase, ReindexProgress };
@@ -197,7 +199,8 @@ impl DbStats {
             segments += g.segments.load(Relaxed);
             terms += g.memtable_terms.load(Relaxed);
             compaction |= g.compaction_enabled.load(Relaxed);
-            
+            indexed +=g.documents_indexed.load(Relaxed);
+            deleted += g.documents_deleted.load(Relaxed)
         }
 
         DatabaseStats {
@@ -212,6 +215,7 @@ impl DbStats {
                 compactions_completed: compactions,
                 memtable_term_count: terms,
                 segment_count: segments,
+                
             },
             reindexing: self.reindex.snapshot().into(),
         }
@@ -238,12 +242,12 @@ impl ShardStatsHandle {
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
     }
-    pub fn add_indexed(&self, n: u64) {
-        self.stats.counters.documents_indexed.fetch_add(n, Relaxed);
-    }
-    pub fn add_deleted(&self, n: u64) {
-        self.stats.counters.documents_deleted.fetch_add(n, Relaxed);
-    }
+    // pub fn add_indexed(&self, n: u64) {
+    //     self.stats.counters.documents_indexed.fetch_add(n, Relaxed);
+    // }
+    // pub fn add_deleted(&self, n: u64) {
+    //     self.stats.counters.documents_deleted.fetch_add(n, Relaxed);
+    // }
     
 
     pub fn set_compaction_enabled(&self, on: bool) {

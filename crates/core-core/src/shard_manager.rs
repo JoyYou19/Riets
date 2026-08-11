@@ -729,6 +729,8 @@ impl ShardManager {
         }
         Ok(report)
     }
-
+    pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
+    self.db_stats.record_search(failed, elapsed);
+    }
     // TODO:  upsert, lookup, etc.
 }
