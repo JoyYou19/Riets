@@ -23,7 +23,6 @@ min = 90
 max = 95
 
 
-
 [[fields]]
 name = "title"
 xpath = 0
@@ -139,6 +138,18 @@ def curl_post(url, body, token):
     return result.stdout.strip(), result.returncode
 
 
+def curl_put(url, body, token):
+    result = subprocess.run(
+        ["curl", "-s", "-X", "PUT", url,
+         "-H", "Accept: application/json",
+         "-H", f"X-Corelamo-Key: {token}",
+         "-d", body],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip(), result.returncode
+
+
 def curl_delete(url, token):
     result = subprocess.run(
         ["curl", "-s", "-X", "DELETE", url,
@@ -177,7 +188,7 @@ def main():
     print(f"[INFO] {out}")
     # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
-    out, _ = curl_post(
+    out, _ = curl_put(
         f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
     print(f"[INFO] {out}")
 

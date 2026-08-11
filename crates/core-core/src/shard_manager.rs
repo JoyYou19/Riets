@@ -2,6 +2,7 @@ use core_index::analyzer::Analyzer;
 use core_protocol::command_reponse_definitions::{
     GetLogsRequest, LookupCommand, LookupResponse, SearchCommand,
 };
+use core_query::SearchHit;
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::bounded;
 use parking_lot::RwLock;
@@ -16,7 +17,7 @@ use crate::reindex::{CompletedShardReindex, ReindexJob, ReindexPool};
 use crate::shard_worker::{self, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use core_index::document::IndexPolicy;
-use core_index::types::ShardId;
+use core_index::types::{ShardId, shard_of};
 use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
@@ -128,8 +129,12 @@ impl ShardManager {
         }
     }
 
+    pub fn all_readable(&self) -> bool {
+        self.shards.iter().all(|h| h.is_readable())
+    }
+
     pub fn all_running(&self) -> bool {
-        self.shards.iter().all(|h| h.is_running().unwrap_or(false))
+        self.shards.iter().all(|h| h.is_running())
     }
 
     pub fn stop(&self) -> Result<(), CorelamoError> {
@@ -521,37 +526,48 @@ impl ShardManager {
 
     pub fn lookup(&self, command: &LookupCommand) -> Result<LookupResponse, CorelamoError> {
         let by_shard = self.group_by_shard(&command.ids);
-        let mut pending = Vec::with_capacity(by_shard.len());
-
-        for (idx, shard_ids) in by_shard {
-            let (rtx, rrx) = bounded(1);
-            let shard_command = LookupCommand {
-                ids: shard_ids.iter().map(|s| s.to_string()).collect(),
-                return_fields: command.return_fields.clone(),
-            };
-            self.shards[idx]
-                .send_raw(ShardCmd::Lookup {
-                    command: shard_command,
-                    resp: rtx,
-                })
-                .map_err(|(e, _)| e)?;
-            pending.push(rrx);
-        }
+        let policy = self.policy.read().clone();
 
         let mut all_docs = Vec::new();
         let mut all_not_found = Vec::new();
-        for rx in pending {
-            let response = rx
-                .recv()
-                .map_err(|_| CorelamoError::Internal("shard died during lookup".into()))??;
+        for (idx, shard_ids) in by_shard {
+            let ids: Vec<String> = shard_ids.iter().map(|s| s.to_string()).collect();
+            let response =
+                self.shards[idx].lookup_direct(&ids, command.return_fields.as_ref(), &policy)?;
             all_docs.extend(response.docs);
             all_not_found.extend(response.not_found);
         }
-
         Ok(LookupResponse {
             docs: all_docs,
             not_found: all_not_found,
         })
+    }
+
+    pub fn retrieve(
+        &self,
+        ids: Vec<String>,
+    ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut position: HashMap<String, usize> = HashMap::new();
+        for (i, id) in ids.iter().enumerate() {
+            position.entry(id.clone()).or_insert(i);
+        }
+        let mut by_shard: HashMap<usize, Vec<String>> = HashMap::new();
+        for id in ids {
+            by_shard
+                .entry(self.shard_index_for(&id))
+                .or_default()
+                .push(id);
+        }
+
+        let mut out = Vec::with_capacity(position.len());
+        for (idx, batch) in by_shard {
+            out.extend(self.shards[idx].get_document_direct(&batch)?);
+        }
+        out.sort_by_key(|(id, _)| position.get(id).copied().unwrap_or(usize::MAX));
+        Ok(out)
     }
 
     pub fn search(&self, command: &SearchCommand) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
@@ -562,81 +578,42 @@ impl ShardManager {
         let Some(query) = parse_and_analyze(&command.query, &self.analyzer)? else {
             return Ok(Vec::new());
         };
-        let query = Arc::new(query);
+        let policy = self.policy.read().clone();
 
-        let mut pending = Vec::with_capacity(self.shards.len());
+        let mut all_hits: Vec<SearchHit> = Vec::new();
         for h in &self.shards {
-            let (rtx, rrx) = bounded(1);
-            if h.send_raw(ShardCmd::Search {
-                query: query.clone(),
-                k: fetch,
-                resp: rtx,
-            })
-            .is_ok()
-            {
-                pending.push(rrx);
-            }
+            all_hits.extend(h.rank_top_k(&query, fetch, &self.analyzer, &policy));
         }
-
-        let mut all_hits: Vec<SearchDocumentHit> = Vec::new();
-        for rx in pending {
-            if let Ok(Ok(hits)) = rx.recv() {
-                all_hits.extend(hits);
-            }
-        }
-
         all_hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.doc_id.cmp(&b.doc_id))
+        });
+        let page: Vec<SearchHit> = all_hits.into_iter().skip(offset).take(limit).collect();
+
+        let mut by_shard: HashMap<usize, Vec<SearchHit>> = HashMap::new();
+        for hit in page {
+            by_shard
+                .entry(shard_of(hit.doc_id).0 as usize)
+                .or_default()
+                .push(hit);
+        }
+
+        let mut resolved: Vec<SearchDocumentHit> = Vec::new();
+        for (idx, hits) in by_shard {
+            resolved.extend(self.shards[idx].resolve_hits_direct(hits, &policy)?);
+        }
+
+        // score survives resolve unchanged — re-sorting restores page order, no position tracking needed
+        resolved.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| a.internal_id.cmp(&b.internal_id))
         });
-        Ok(all_hits.into_iter().skip(offset).take(limit).collect())
-    }
 
-    pub fn retrieve(
-        &self,
-        ids: Vec<String>,
-    ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // remember where each id was asked for; the fan-out returns them shard-grouped
-        let mut position: HashMap<String, usize> = HashMap::new();
-        for (i, id) in ids.iter().enumerate() {
-            position.entry(id.clone()).or_insert(i);
-        }
-
-        let mut by_shard: HashMap<usize, Vec<String>> = HashMap::new();
-        for id in ids {
-            by_shard
-                .entry(self.shard_index_for(&id))
-                .or_default()
-                .push(id);
-        }
-        let mut pending = Vec::with_capacity(by_shard.len());
-        for (idx, batch) in by_shard {
-            let (rtx, rrx) = bounded(1);
-            self.shards[idx]
-                .send_raw(ShardCmd::Retrieve {
-                    ids: batch,
-                    resp: rtx,
-                })
-                .map_err(|(e, _)| e)?;
-            pending.push(rrx);
-        }
-
-        let mut out: Vec<(String, Option<StoredDocument>)> = Vec::with_capacity(position.len());
-        for rx in pending {
-            let batch = rx
-                .recv()
-                .map_err(|_| CorelamoError::Internal("shard died during retrieve".into()))??;
-            out.extend(batch);
-        }
-
-        out.sort_by_key(|(id, _)| position.get(id).copied().unwrap_or(usize::MAX));
-        Ok(out)
+        Ok(resolved)
     }
 
     pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
@@ -727,6 +704,6 @@ impl ShardManager {
         }
         Ok(report)
     }
-    
+
     // TODO:  upsert, lookup, etc.
 }

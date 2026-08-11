@@ -89,9 +89,9 @@ impl LsmIndex {
                 && let Some(id) = stem
                     .strip_prefix("segment-")
                     .and_then(|value| value.parse::<u64>().ok())
-                {
-                    next_segment_id = next_segment_id.max(id + 1);
-                }
+            {
+                next_segment_id = next_segment_id.max(id + 1);
+            }
 
             segment_handles.push(SegmentHandle::Disk(path));
             // Non primitive cast alaallala
@@ -178,7 +178,6 @@ impl LsmIndex {
                     .push(segment as Arc<dyn SearchReader + Send + Sync>);
             }
         }
-        
 
         Ok(())
     }
@@ -480,7 +479,7 @@ impl LsmIndex {
 
         Ok(())
     }
-    pub fn memtable_term_count(&self) -> usize{
-            self.mem.term_count()
-        }
+    pub fn memtable_term_count(&self) -> usize {
+        self.mem.term_count()
+    }
 }

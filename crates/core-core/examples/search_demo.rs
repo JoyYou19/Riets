@@ -41,7 +41,7 @@ fn main() -> io::Result<()> {
                 .map(|doc| DocumentInput {
                     external_id: doc.id,
                     source: Vec::new(),
-                    format:XML,
+                    format: XML,
                     fields: BTreeMap::from([
                         ("title".to_string(), doc.title),
                         ("body".to_string(), doc.body),

@@ -21,6 +21,7 @@ toml = "1.1.2"
 indexmap = "2.14.0"
 tokio = { workspace = true }
 parking_lot = "0.12.5"
+dashmap = "6.2.1"
 [[example]]
 name = "search_demo"
 path = "examples/search_demo.rs"

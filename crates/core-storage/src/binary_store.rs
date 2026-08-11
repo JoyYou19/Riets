@@ -3,10 +3,12 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use core_index::types::DocId;
 use core_protocol::format::Format;
+use dashmap::DashMap;
 
 use crate::document_store::{DocumentStore, StoredDocument};
 
@@ -18,8 +20,8 @@ const OP_DELETE: u8 = 2;
 #[derive(Debug)]
 pub struct BinaryDocumentStore {
     path: PathBuf,
-    docs: BTreeMap<String, StoredDocument>,
-    internal_to_external: BTreeMap<DocId, String>,
+    docs: Arc<DashMap<String, StoredDocument>>,
+    internal_to_external: Arc<DashMap<DocId, String>>,
 }
 
 impl BinaryDocumentStore {
@@ -37,12 +39,39 @@ impl BinaryDocumentStore {
 
         let mut store = Self {
             path,
-            docs: BTreeMap::new(),
-            internal_to_external: BTreeMap::new(),
+            docs: Arc::new(DashMap::new()),
+            internal_to_external: Arc::new(DashMap::new()),
         };
 
         store.load()?;
 
+        Ok(store)
+    }
+
+    pub fn open_with_maps(
+        path: impl AsRef<Path>,
+        docs: Arc<DashMap<String, StoredDocument>>,
+        internal_to_external: Arc<DashMap<DocId, String>>,
+    ) -> io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if !path.exists() {
+            let mut file = File::create(&path)?;
+            file.write_all(MAGIC)?;
+        }
+
+        docs.clear();
+        internal_to_external.clear();
+
+        let mut store = Self {
+            path,
+            docs,
+            internal_to_external,
+        };
+        store.load()?;
         Ok(store)
     }
 
@@ -73,7 +102,7 @@ impl BinaryDocumentStore {
                 Ok(OP_DELETE) => {
                     let external_id = read_string(&mut reader)?;
 
-                    if let Some(doc) = self.docs.remove(&external_id) {
+                    if let Some((_, doc)) = self.docs.remove(&external_id) {
                         self.internal_to_external.remove(&doc.internal_id);
                     }
                 }
@@ -150,33 +179,33 @@ impl DocumentStore for BinaryDocumentStore {
     }
 
     fn get(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
-        Ok(self.docs.get(external_id).cloned())
+        Ok(self.docs.get(external_id).map(|r| r.value().clone()))
     }
 
     fn delete(&mut self, external_id: &str) -> io::Result<()> {
         self.append_delete(external_id)?;
-
-        if let Some(doc) = self.docs.remove(external_id) {
+        if let Some((_, doc)) = self.docs.remove(external_id) {
             self.internal_to_external.remove(&doc.internal_id);
         }
-
         Ok(())
     }
-
     fn max_internal_id(&self) -> DocId {
         self.docs
-            .values()
-            .map(|doc| doc.internal_id)
+            .iter()
+            .map(|entry| entry.value().internal_id)
             .max()
             .unwrap_or(0)
     }
 
     fn get_by_internal_id(&self, internal_id: DocId) -> io::Result<Option<StoredDocument>> {
-        let Some(external_id) = self.internal_to_external.get(&internal_id) else {
+        let Some(external_id) = self
+            .internal_to_external
+            .get(&internal_id)
+            .map(|r| r.value().clone())
+        else {
             return Ok(None);
         };
-
-        Ok(self.docs.get(external_id).cloned())
+        Ok(self.docs.get(&external_id).map(|r| r.value().clone()))
     }
 
     fn document_count(&self) -> usize {
@@ -187,10 +216,9 @@ impl DocumentStore for BinaryDocumentStore {
         &self,
         f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
     ) -> io::Result<()> {
-        for doc in self.docs.values() {
-            f(doc)?;
+        for entry in self.docs.iter() {
+            f(entry.value())?;
         }
-
         Ok(())
     }
 

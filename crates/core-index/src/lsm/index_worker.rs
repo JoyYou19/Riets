@@ -1,8 +1,13 @@
 use rayon::prelude::*;
 use std::{
-    io, sync::{
-        Arc, Mutex, atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering}, mpsc::{self, Receiver, Sender},
-    }, thread::{self, JoinHandle}, time::Instant,
+    io,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -240,6 +245,9 @@ impl IndexWorker {
     }
 }
 
+const PUBLISH_DOC_THRESHOLD: u64 = 100;
+const PUBLISH_INTERVAL: Duration = Duration::from_millis(20);
+
 fn run_index_worker(
     mut index: LsmIndex,
     analyzer: Analyzer,
@@ -247,40 +255,87 @@ fn run_index_worker(
     receiver: Receiver<IndexCommand>,
 ) -> io::Result<LsmIndex> {
     let mut stats = IndexingStats::default();
-    while let Ok(command) = receiver.recv() {
+    let mut docs_since_publish: u64 = 0;
+    let mut last_publish = Instant::now();
+    loop {
+        let timeout = PUBLISH_INTERVAL.saturating_sub(last_publish.elapsed());
+
+        let command = match receiver.recv_timeout(timeout) {
+            Ok(command) => command,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if docs_since_publish > 0 {
+                    shared.publish(index.snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
         match command {
             IndexCommand::AddIndexedDocument { document, ack } => {
-                let result = index.add_indexed_document(&analyzer, &document).map(|_| {
-                    shared.publish(index.snapshot());
+                let outcome = index.add_indexed_document(&analyzer, &document);
+                let ok = outcome.is_ok();
+                if ok {
                     stats.total_documents_indexed += 1;
-                });
-
-                send_acknowledgement(ack, result)?
+                }
+                send_acknowledgement(ack, outcome)?;
+                if ok {
+                    docs_since_publish += 1;
+                    maybe_publish_on_threshold(
+                        &shared,
+                        &index,
+                        &mut docs_since_publish,
+                        &mut last_publish,
+                    );
+                }
             }
             IndexCommand::DeleteDocument { doc_id, ack } => {
-                let result = index.delete_document(doc_id).map(|_| {
-                    shared.publish(index.snapshot());
+                let outcome = index.delete_document(doc_id);
+                let ok = outcome.is_ok();
+                if ok {
                     stats.total_documents_deleted += 1;
-                });
-                send_acknowledgement(ack, result)?
+                }
+                send_acknowledgement(ack, outcome)?;
+                if ok {
+                    shared.publish(index.snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
             }
             IndexCommand::AddSegment {
                 segment,
-                ack,
                 doc_count,
+                ack,
             } => {
-                let result = index.add_immutable_segment(segment).map(|_| {
-                    shared.publish(index.snapshot());
+                let outcome = index.add_immutable_segment(segment);
+                let ok = outcome.is_ok();
+                if ok {
                     stats.segments_written += 1;
                     stats.total_documents_indexed += doc_count;
-                });
-                send_acknowledgement(ack, result)?
+                }
+                send_acknowledgement(ack, outcome)?;
+                if ok {
+                    docs_since_publish += doc_count;
+                    maybe_publish_on_threshold(
+                        &shared,
+                        &index,
+                        &mut docs_since_publish,
+                        &mut last_publish,
+                    );
+                }
             }
             IndexCommand::MaybeCompact { config, ack } => {
-                let result = index.maybe_compact(config).map(|_| {
+                let outcome = index.maybe_compact(config);
+                let compacted = matches!(&outcome, Ok(true));
+                let result = outcome.map(|_| ());
+                send_acknowledgement(ack, result)?;
+                if compacted {
                     shared.publish(index.snapshot());
-                });
-                send_acknowledgement(ack, result)?
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
             }
             IndexCommand::PlanCompaction { config, reply } => {
                 let result = index.plan_compaction(config);
@@ -294,14 +349,16 @@ fn run_index_worker(
             }
 
             IndexCommand::InstallCompaction { completed, ack } => {
-                let result = index.install_compaction(completed).map(|installed| {
-                    if installed {
-                        shared.publish(index.snapshot());
-                        stats.compactions_completed += 1;
-                    }
-                });
-
-                send_acknowledgement(ack, result)?
+                let outcome = index.install_compaction(completed);
+                let installed = matches!(&outcome, Ok(true));
+                let result = outcome.map(|_| ());
+                send_acknowledgement(ack, result)?;
+                if installed {
+                    shared.publish(index.snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                    stats.compactions_completed += 1;
+                }
             }
             IndexCommand::SegmentCount { reply } => {
                 reply.send(Ok(index.segment_count())).map_err(|_| {
@@ -309,10 +366,14 @@ fn run_index_worker(
                 })?;
             }
             IndexCommand::Flush { ack } => {
-                let result = index.flush().map(|_| {
+                let outcome = index.flush();
+                let ok = outcome.is_ok();
+                send_acknowledgement(ack, outcome)?;
+                if ok {
                     shared.publish(index.snapshot());
-                });
-                send_acknowledgement(ack, result)?
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
             }
             IndexCommand::Shutdown => {
                 index.flush()?;
@@ -334,6 +395,19 @@ fn run_index_worker(
 
     index.flush()?;
     Ok(index)
+}
+
+fn maybe_publish_on_threshold(
+    shared: &SharedIndexSnapshot,
+    index: &LsmIndex,
+    docs_since_publish: &mut u64,
+    last_publish: &mut Instant,
+) {
+    if *docs_since_publish >= PUBLISH_DOC_THRESHOLD {
+        shared.publish(index.snapshot());
+        *docs_since_publish = 0;
+        *last_publish = Instant::now();
+    }
 }
 
 fn wait_for_acknowledgement(rx: Receiver<io::Result<()>>) -> io::Result<()> {
@@ -525,7 +599,7 @@ pub struct ReindexProgress {
     done: AtomicU64,
     started: Mutex<Option<Instant>>,
     cancel: AtomicBool,
-    first_add:Mutex<Option<Instant>>
+    first_add: Mutex<Option<Instant>>,
 }
 
 impl ReindexProgress {
@@ -536,7 +610,7 @@ impl ReindexProgress {
             done: AtomicU64::new(0),
             started: Mutex::new(None),
             first_add: Mutex::new(None),
-            cancel: AtomicBool::new(false)
+            cancel: AtomicBool::new(false),
         })
     }
 

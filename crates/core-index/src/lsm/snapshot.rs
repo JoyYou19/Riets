@@ -1,8 +1,10 @@
 use std::sync::{Arc, RwLock};
 
+use arc_swap::ArcSwap;
+
 use crate::{
     mem::MemIndex,
-    posting::{ops::union_many, DeleteSet, PostingList},
+    posting::{DeleteSet, PostingList, ops::union_many},
     search::{SearchIndex, SearchReader, SearchStats},
     types::XPathId,
     wildcard::WildcardPattern,
@@ -125,13 +127,13 @@ impl IndexSnapshot {
 
 #[derive(Clone)]
 pub struct SharedIndexSnapshot {
-    inner: Arc<RwLock<IndexSnapshot>>,
+    inner: Arc<ArcSwap<IndexSnapshot>>,
 }
 
 impl SharedIndexSnapshot {
     pub fn new(snapshot: IndexSnapshot) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(snapshot)),
+            inner: Arc::new(ArcSwap::new(Arc::new(snapshot))),
         }
     }
 
@@ -140,14 +142,10 @@ impl SharedIndexSnapshot {
     }
 
     pub fn publish(&self, snapshot: IndexSnapshot) {
-        let mut guard = self.inner.write().expect("shared snapshot lock poisoned");
-        *guard = snapshot;
+        self.inner.store(Arc::new(snapshot));
     }
 
-    pub fn get(&self) -> IndexSnapshot {
-        self.inner
-            .read()
-            .expect("shared snapshot lock poisoned")
-            .clone()
+    pub fn get(&self) -> Arc<IndexSnapshot> {
+        self.inner.load_full()
     }
 }
