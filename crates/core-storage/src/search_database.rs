@@ -6,14 +6,14 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer, document::{IndexPolicy, IndexedDocument, policy::IndexKind}, lsm::{
-        LsmIndex, index_worker::{IndexCommand, IndexWorker, ReindexProgress, build_segments_parallel}, snapshot::SharedIndexSnapshot,
+        LsmIndex, index_worker::{IndexCommand, IndexWorker, IndexingStats, ReindexProgress, build_segments_parallel}, snapshot::SharedIndexSnapshot,
     }, types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
 use bincode::{Decode, Encode};
 use core_protocol::{
-    command_reponse_definitions::{LookupCommand, LookupResponse},
-    errors::{CorelamoError, DocFailure, FailReason},
+    command_reponse_definitions::LookupResponse,
+    errors::{DocFailure, FailReason},
     format::Format,
 };
 use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
@@ -675,6 +675,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
             }
         }
         Ok(())
+    }
+    pub fn index_stats(&self) -> io::Result<IndexingStats> {
+    self.index_worker.get_stats()
     }
 }
 

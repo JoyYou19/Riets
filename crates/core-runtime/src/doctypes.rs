@@ -12,8 +12,6 @@ use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 pub trait DocumentConversion {
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError>;
@@ -62,7 +60,7 @@ fn extract_external_id(
     }
 }
 
-fn generate_routing_id(fields: &BTreeMap<String, String>) -> String {
+fn generate_routing_id(_fields: &BTreeMap<String, String>) -> String {
     Uuid::new_v4().simple().to_string()
 }
 

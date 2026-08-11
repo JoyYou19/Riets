@@ -15,6 +15,7 @@ use crate::DatabaseOptions;
 use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
 use crate::shared_state::SharedShardState;
+
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
@@ -57,7 +58,7 @@ pub enum ShardCmd {
         resp: oneshot::Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
-        resp: Sender<Result<ReindexParams, CorelamoError>>,
+        resp:Sender<Result<ReindexParams,CorelamoError>>,
     },
     CommitReindex {
         done: CompletedShardReindex,

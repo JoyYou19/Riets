@@ -1,18 +1,20 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::lsm::LsmIndex;
-use core_index::lsm::index_worker::{Phase, ReindexProgress};
+use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::BinaryDocumentStore;
 use core_storage::search_database::SearchDatabase;
 
+use crate::metrics::DbStats;
 use crate::{DatabaseOptions, shard_worker::ShardCmd};
 
 pub struct ReindexParams {
@@ -36,6 +38,7 @@ pub struct ReindexJob {
     pub params: ReindexParams,
     pub shard_tx: Sender<ShardCmd>,
     pub progress: Arc<ReindexProgress>,
+    pub stats:Arc<DbStats>
 }
 
 /// One worker by default: a rebuild saturates disk and CPU, so running several
@@ -79,25 +82,24 @@ impl ReindexPool {
 
 fn worker_loop(rx: Receiver<ReindexJob>) {
     while let Ok(job) = rx.recv() {
+        let started = Instant::now();
+
         let done = match build_staging_index(&job.params, &job.progress) {
             Ok(done) => done,
             Err(_) => {
-                job.progress.set_phase(Phase::Failed);
+                job.stats.finish_shard_reindex(false, started.elapsed());
                 continue;
             }
         };
 
         // hand the finished build back to the thread that owns the shard state
-        job.progress.set_phase(Phase::Swapping);
         let (rtx, rrx) = bounded(1);
         if job.shard_tx.send(ShardCmd::CommitReindex { done, resp: rtx }).is_err() {
-            job.progress.set_phase(Phase::Failed);
+            job.stats.finish_shard_reindex(false, started.elapsed());
             continue;
         }
-        match rrx.recv() {
-            Ok(Ok(())) => job.progress.set_phase(Phase::Complete),
-            _ => job.progress.set_phase(Phase::Failed),
-        }
+        let ok = matches!(rrx.recv(), Ok(Ok(())));
+        job.stats.finish_shard_reindex(ok, started.elapsed());
     }
 }
 
@@ -113,7 +115,7 @@ fn build_staging_index(
     }
     std::fs::create_dir_all(&staging_root)?;
 
-    let store = BinaryDocumentStore::open(&params.shard_root.join("documents.bin"))?;
+    let store = BinaryDocumentStore::open(params.shard_root.join("documents.bin"))?;
     let index = LsmIndex::persistent(&staging_root, params.options.runtime.flush_threshold)?;
     let mut staging = SearchDatabase::with_shard_policy(
         store,
