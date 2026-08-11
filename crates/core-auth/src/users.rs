@@ -19,7 +19,7 @@ pub struct UserDatabase<S: DocumentStore> {
 impl<S: DocumentStore> UserDatabase<S> {
     pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> Self {
         Self {
-            db: SearchDatabase::new(store, index, analyzer),
+            db: SearchDatabase::new(store, index, analyzer).expect("Failed to create UserDatabase"),
    
         }
     }

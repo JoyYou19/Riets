@@ -7,7 +7,7 @@ use axum::{
 };
 
 use core_core::shard_manager::ShardManager;
-//use core_auth::{AuthService, UserDatabase};
+use core_auth::{AuthService, UserDatabase};
 use core_index::{
     analyzer::analyzer::Analyzer,
     lsm::{LsmIndex, config::IndexRuntimeConfig},
@@ -39,7 +39,7 @@ pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, Arc<ShardManager>>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
-    //    pub auth: Arc<RwLock<AuthService>>,
+    pub auth: Arc<RwLock<AuthService>>,
 }
 
 impl AppState {
@@ -175,14 +175,14 @@ async fn main() -> io::Result<()> {
     let index = LsmIndex::new(index_cfg.flush_threshold); // match the movies construction exactly
     let analyzer = Analyzer::default(); // or however movies builds it
 
-    //let user_db = UserDatabase::new(store, index, analyzer);
-    //let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
+    let user_db = UserDatabase::new(store, index, analyzer);
+    let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
 
     let state = AppState {
         databases: Arc::new(RwLock::new(handles)),
         databases_dir,
         default_format,
-        // auth,
+        auth,
     };
 
     //this clone is ok since it just += 1 for Arc
@@ -266,19 +266,19 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/set-policy",
             post(handlers::set_policy_handler),
         )
-        // .route("/api/users", post(handlers::create_user_handler))
-        // .route(
-        //     "/api/users/{username}",
-        //     delete(handlers::delete_user_handler),
-        // )
-        // .route(
-        //     "/api/users/{username}/password",
-        //     post(handlers::update_user_password_handler),
-        // )
-        // .route(
-        //     "/api/users/{username}/roles",
-        //     post(handlers::update_user_roles_handler),
-        // // )
+        .route("/api/users", post(handlers::create_user_handler))
+        .route(
+            "/api/users/{username}",
+            delete(handlers::delete_user_handler),
+        )
+        .route(
+            "/api/users/{username}/password",
+            post(handlers::update_user_password_handler),
+        )
+        .route(
+            "/api/users/{username}/roles",
+            post(handlers::update_user_roles_handler),
+        )
         .route(
             "/api/databases/{db_name}/get-config",
             get(handlers::get_config_handler),
@@ -291,19 +291,19 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/restart-database",
             post(handlers::restart_database_handler),
         );
-    //
-    // let protected_routes = if enable_auth {
-    //     //  protected_routes.layer(from_fn_with_state(
-    //     //    state.clone(),
-    //     //       middleware::auth_middleware,
-    //     // ))
-    // } else {
-    //     warn!(log, "AUTH DISABLED — You're on your own!");
-    //
-    //     //protected_routes.layer(axum::middleware::from_fn(
-    //     //   middleware::disabled_auth_middleware,
-    //     // ))
-    // };
+    
+    let protected_routes = if enable_auth {
+         protected_routes.layer(from_fn_with_state(
+           state.clone(),
+              middleware::auth_middleware,
+        ))
+    } else {
+        warn!(log, "AUTH DISABLED — You're on your own!");
+    
+        protected_routes.layer(axum::middleware::from_fn(
+          middleware::disabled_auth_middleware,
+        ))
+    };
 
     let app = Router::new()
         //.merge(public_routes)
