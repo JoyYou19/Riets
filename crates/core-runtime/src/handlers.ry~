@@ -28,7 +28,7 @@ use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 
 //authorizations
-use serde::Deserialize;
+use serde::{Deserialize, ser::Error};
 #[derive(Deserialize)]
 struct LoginRequest {
     username: String,
@@ -125,12 +125,12 @@ pub async fn search_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Search) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::Search) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -195,7 +195,7 @@ pub async fn lookup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
     let manager = match state.lookup(&db_name) {
@@ -779,12 +779,11 @@ pub async fn upsert_document_handler(
 pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     {
         let dbs = match state.databases.read() {
             Ok(g) => g,
@@ -1014,18 +1013,16 @@ pub async fn reindex_handler(
         .into_response(),
     }
 }
-
-// policy is always TOML
-// sending raw since it shouldnt be encoded in json/xml
+// // policy is always TOML
+// // sending raw since it shouldnt be encoded in json/xml
 pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -1045,12 +1042,12 @@ pub async fn set_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    // Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -1081,12 +1078,11 @@ pub async fn set_policy_handler(
 pub async fn get_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
+    //    return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
 
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
@@ -1107,12 +1103,12 @@ pub async fn set_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    //Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    //if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
+    //   return HttpError::from_corelamo(e, &ctx).into_response();
+    //}
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -1201,11 +1197,12 @@ pub async fn create_user_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
+
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::CreateUser) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
+    // if let Err(e) = check_permission(&state, &principal, Permission::CreateUser) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
     let body = match require_body(&body) {
         Ok(b) => b,
         Err(e) => {
