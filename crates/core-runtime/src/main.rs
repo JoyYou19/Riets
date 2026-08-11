@@ -189,7 +189,7 @@ async fn main() -> io::Result<()> {
     let state_for_shutdown = state.clone();
 
     //login
-    //let public_routes = Router::new().route("/api/login", post(handlers::login_handler));
+    let public_routes = Router::new().route("/api/login", post(handlers::login_handler));
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
@@ -306,7 +306,7 @@ async fn main() -> io::Result<()> {
     };
 
     let app = Router::new()
-        //.merge(public_routes)
+        .merge(public_routes)
         .merge(protected_routes)
         //TODO: Make configurable
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB

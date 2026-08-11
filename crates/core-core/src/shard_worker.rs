@@ -58,7 +58,7 @@ pub enum ShardCmd {
         resp: oneshot::Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
-        resp:Sender<Result<ReindexParams,CorelamoError>>,
+        resp: Sender<Result<ReindexParams, CorelamoError>>,
     },
     CommitReindex {
         done: CompletedShardReindex,
@@ -327,14 +327,14 @@ pub fn spawn(
     let id = shard.shard_id();
     let progress = shard.progress();
     let alive = Arc::new(AtomicBool::new(true));
-    let shared = shard.shared_state(); // one call instead of shared_snapshot() + shared_store_maps()
+    let shared = shard.shared_state();
     let analyzer = Analyzer::new();
 
     let (tx, rx) = bounded(queue_depth.max(1));
     let (boot_tx, boot_rx) = bounded(1);
 
     let alive_worker = alive.clone();
-    let shared_worker = shared.clone(); // one clone instead of is_running + is_clearing clones
+    let shared_worker = shared.clone();
     let join = thread::Builder::new()
         .name(format!("shard-{}", id))
         .spawn(move || {
@@ -418,7 +418,6 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let result = shard.stop();
                     shared.is_running.store(false, Ordering::Release);
                     let _ = resp.send(result);
-                    return;
                 }
                 ShardCmd::Clear { resp } => {
                     shared.is_clearing.store(true, Ordering::Release);
