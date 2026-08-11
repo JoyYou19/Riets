@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{ AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed };
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::Duration;
 
 /// Read-only snapshot. Built fresh on every read, never stored.
@@ -45,8 +45,6 @@ struct Counters {
     reindex_requests: AtomicU64,
     reindex_errors: AtomicU64,
     reindex_nanos: AtomicU64,
-    
-    
 }
 
 /// One slot per shard. Levels, not counters: the owning shard overwrites its
@@ -64,7 +62,7 @@ struct ShardGauges {
     compactions_completed: AtomicU64,
 }
 
-use core_index::lsm::index_worker::{ IndexingStats, Phase, ReindexProgress };
+use core_index::lsm::index_worker::{IndexingStats, Phase, ReindexProgress};
 
 use crate::shard_db::DatabaseStats;
 
@@ -91,7 +89,10 @@ impl DbStats {
     }
 
     pub fn handle(self: &Arc<Self>, shard_index: usize) -> ShardStatsHandle {
-        ShardStatsHandle { stats: Arc::clone(self), index: shard_index }
+        ShardStatsHandle {
+            stats: Arc::clone(self),
+            index: shard_index,
+        }
     }
 
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
@@ -115,7 +116,8 @@ impl DbStats {
     pub fn record_indexing(&self, failed: bool, elapsed: Duration) {
         let c = &self.counters;
         c.indexing_requests.fetch_add(1, Relaxed);
-        c.indexing_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.indexing_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Relaxed);
         if failed {
             c.indexing_errors.fetch_add(1, Relaxed);
         }
@@ -146,19 +148,19 @@ impl DbStats {
     /// The last shard to finish settles the phase for the database.
     pub fn finish_shard_reindex(&self, ok: bool, elapsed: Duration) {
         let c = &self.counters;
-        c.reindex_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.reindex_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Relaxed);
         if !ok {
             c.reindex_errors.fetch_add(1, Relaxed);
             self.reindex_failed.store(true, Relaxed);
         }
         if self.reindex_outstanding.fetch_sub(1, Relaxed) == 1 {
-            self.reindex.set_phase(
-                if self.reindex_failed.load(Relaxed) {
+            self.reindex
+                .set_phase(if self.reindex_failed.load(Relaxed) {
                     Phase::Failed
                 } else {
                     Phase::Complete
-                }
-            );
+                });
         }
     }
 
@@ -199,7 +201,7 @@ impl DbStats {
             segments += g.segments.load(Relaxed);
             terms += g.memtable_terms.load(Relaxed);
             compaction |= g.compaction_enabled.load(Relaxed);
-            indexed +=g.documents_indexed.load(Relaxed);
+            indexed += g.documents_indexed.load(Relaxed);
             deleted += g.documents_deleted.load(Relaxed)
         }
 
@@ -215,7 +217,6 @@ impl DbStats {
                 compactions_completed: compactions,
                 memtable_term_count: terms,
                 segment_count: segments,
-                
             },
             reindexing: self.reindex.snapshot().into(),
         }
@@ -248,9 +249,10 @@ impl ShardStatsHandle {
     // pub fn add_deleted(&self, n: u64) {
     //     self.stats.counters.documents_deleted.fetch_add(n, Relaxed);
     // }
-    
 
     pub fn set_compaction_enabled(&self, on: bool) {
-        self.stats.shards[self.index].compaction_enabled.store(on, Relaxed);
+        self.stats.shards[self.index]
+            .compaction_enabled
+            .store(on, Relaxed);
     }
 }

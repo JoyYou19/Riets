@@ -23,10 +23,9 @@ use core_index::{
     lsm::{
         LsmIndex,
         index_worker::{IndexingStats, ReindexProgress, ReindexingStats},
-        snapshot::SharedIndexSnapshot,
         worker::CompactionWorker,
     },
-    types::{DocId, ShardId},
+    types::ShardId,
 };
 use core_protocol::{
     command_reponse_definitions::{LookupCommand, LookupResponse},
@@ -43,15 +42,13 @@ use core_storage::{
     },
     wal::{Wal, WalRecord},
 };
-use dashmap::DashMap;
 
 use crate::{
     metrics::DatabaseMetrics,
+    metrics::ShardStatsHandle,
     options::DatabaseOptions,
     reindex::{CompletedShardReindex, ReindexParams},
-    shard_manager::ShardManager,
     shared_state::SharedShardState,
-    metrics::{DatabaseMetrics, ShardStatsHandle}, options::DatabaseOptions, reindex::{ CompletedShardReindex, ReindexParams }, shard_manager::ShardManager,
 };
 use core_logs::logger;
 use slog::{Logger, error, info, warn};
@@ -81,7 +78,7 @@ pub struct ShardDb {
     //each shard kip holds this yeye
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     compaction_worker: Option<CompactionWorker>,
-    stats:ShardStatsHandle,
+    stats: ShardStatsHandle,
     log: Logger,
     wal: Wal,
     pending_ops: Vec<PendingOp>,
@@ -102,7 +99,7 @@ impl ShardDb {
         shard_id: ShardId,
         options: DatabaseOptions,
         policy: IndexPolicy,
-        stats:ShardStatsHandle,
+        stats: ShardStatsHandle,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = format!("shard-{}", shard_id);
@@ -134,6 +131,7 @@ impl ShardDb {
             wal,
             pending_ops: Vec::new(),
             generation: 0,
+            stats,
             root,
         })
     }
@@ -142,7 +140,7 @@ impl ShardDb {
         root: impl AsRef<Path>,
         policy: &IndexPolicy,
         options: &DatabaseOptions,
-        stats:ShardStatsHandle,
+        stats: ShardStatsHandle,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = root
@@ -177,11 +175,9 @@ impl ShardDb {
             options: options.clone(),
             db: None,
             compaction_worker: None,
-            metrics: Mutex::new(DatabaseMetrics::default()),
-            progress: ReindexProgress::new(),
+            stats,
             log,
             wal,
-            is_clearing: Arc::new(AtomicBool::new(false)),
             pending_ops: Vec::new(),
             generation: 0,
         })
@@ -291,7 +287,8 @@ impl ShardDb {
         };
 
         self.db = Some(db);
-        self.stats.set_compaction_enabled(self.compaction_worker.is_some());
+        self.stats
+            .set_compaction_enabled(self.compaction_worker.is_some());
         self.publish_stats();
         info!(self.log, "shard started"; "shard_id" => self.shard_id);
         Ok(())
@@ -676,12 +673,6 @@ impl ShardDb {
                 self.shard_id
             )));
         }
-        if !self.progress.try_begin(self.document_count() as u64) {
-            return Err(CorelamoError::Conflict(format!(
-                "shard {} is already reindexing",
-                self.shard_id
-            )));
-        }
 
         // the staging build reads documents.bin, so it must be consistent first
         self.flush()?;
@@ -738,6 +729,7 @@ impl ShardDb {
         );
         Ok(())
     }
+
     pub fn replace(&mut self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
@@ -936,9 +928,8 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
     pub fn progress(&self) -> Arc<ReindexProgress> {
-    Arc::clone(self.stats.reindex_progress())
+        Arc::clone(self.stats.reindex_progress())
     }
-  
 
     pub fn document_count(&self) -> usize {
         self.db.as_ref().map(|d| d.document_count()).unwrap_or(0)
@@ -960,7 +951,8 @@ impl ShardDb {
         let encoded = bincode::encode_to_vec(&report, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
 
-        let offset = self.wal
+        let offset = self
+            .wal
             .append(&encoded)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
@@ -1044,9 +1036,9 @@ impl ShardDb {
     //     self.pending_ops.push(op);
     // }
     fn publish_stats(&self) {
-    let Ok(db) = self.db_ref() else { return };
-    let Ok(stats) = db.index_stats() else { return };
-    self.stats.publish(db.document_count(), &stats);
+        let Ok(db) = self.db_ref() else { return };
+        let Ok(stats) = db.index_stats() else { return };
+        self.stats.publish(db.document_count(), &stats);
     }
 }
 const _: fn() = || {
