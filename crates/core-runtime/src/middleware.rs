@@ -7,6 +7,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use core_auth::{Principal, Token};
 //use core_auth::{Principal, Token};
 use core_protocol::{
     errors::CorelamoError::{self},
@@ -97,51 +98,51 @@ pub async fn request_context_middleware(
 }
 
 //TODO: auth/https before request (check permissions....)
-// pub async fn auth_middleware(
-//     State(state): State<AppState>,
-//     mut request: Request,
-//     next: Next,
-// ) -> Response {
-//     let log = slog_scope::logger().new(o!("component"=> "middleware"));
-//     let token: Option<String> = request
-//         .headers()
-//         .get("X-Corelamo-Key")
-//         .and_then(|v| v.to_str().ok())
-//         .map(|s| s.to_string());
-//
-//     let Some(token) = token else {
-//         warn!(log,"rejected request: missing auth token";
-//         "method" => %request.method(),
-//         "uri" => %request.uri(),);
-//         return (StatusCode::UNAUTHORIZED, "missing token").into_response();
-//     };
-//
-//     let principal = {
-//         let Ok(mut auth) = state.auth.write() else {
-//             warn!( log,"rejected request: auth service unavailable";
-//               "method"=>%request.method(),
-//               "uri"=>%request.uri());
-//             return (StatusCode::UNAUTHORIZED, "auth service unavailable").into_response();
-//         };
-//         auth.authenticate(&Token(token))
-//     }; // <- auth (the lock guard) is dropped here, before any .await
-//
-//     match principal {
-//         Some(principal) => {
-//             request.extensions_mut().insert(principal);
-//             next.run(request).await
-//         }
-//         None => {
-//             warn!(log,"rejected request: invalid or exipired token";"request"=>?request);
-//             (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()
-//         }
-//     }
-// }
-//
-// pub async fn disabled_auth_middleware(mut request: Request, next: Next) -> Response {
-//     let principal = Principal::new("anonymous").with_role("admin");
-//
-//     request.extensions_mut().insert(principal);
-//
-//     next.run(request).await
-// }
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let log = slog_scope::logger().new(o!("component"=> "middleware"));
+    let token: Option<String> = request
+        .headers()
+        .get("X-Corelamo-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let Some(token) = token else {
+        warn!(log,"rejected request: missing auth token";
+        "method" => %request.method(),
+        "uri" => %request.uri(),);
+        return (StatusCode::UNAUTHORIZED, "missing token").into_response();
+    };
+
+    let principal = {
+        let Ok(mut auth) = state.auth.write() else {
+            warn!( log,"rejected request: auth service unavailable";
+              "method"=>%request.method(),
+              "uri"=>%request.uri());
+            return (StatusCode::UNAUTHORIZED, "auth service unavailable").into_response();
+        };
+        auth.authenticate(&Token(token))
+    }; // <- auth (the lock guard) is dropped here, before any .await
+
+    match principal {
+        Some(principal) => {
+            request.extensions_mut().insert(principal);
+            next.run(request).await
+        }
+        None => {
+            warn!(log,"rejected request: invalid or exipired token";"request"=>?request);
+            (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()
+        }
+    }
+}
+
+pub async fn disabled_auth_middleware(mut request: Request, next: Next) -> Response {
+    let principal = Principal::new("anonymous").with_role("admin");
+
+    request.extensions_mut().insert(principal);
+
+    next.run(request).await
+}
