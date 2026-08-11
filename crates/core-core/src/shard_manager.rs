@@ -552,6 +552,7 @@ impl ShardManager {
             inserted: 0,
             failures: Vec::new(),
         };
+
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
