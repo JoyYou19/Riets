@@ -55,7 +55,7 @@ impl Write for DailyLog {
 fn timestamp(w: &mut dyn io::Write) -> io::Result<()> {
     write!(w, "{}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f%:z"))
 }
-pub fn db_logger(root: &Path, name: &str) -> Logger {
+pub fn shard_logger(root: &Path, name: &str) -> Logger {
     let file = DailyLog::new(root.join("logs"), name)
         .unwrap_or_else(|e| panic!("Failed to open log file:{e}"));
     let drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
@@ -65,9 +65,9 @@ pub fn db_logger(root: &Path, name: &str) -> Logger {
     Logger::root(drain, o!())
 }
 
-pub fn program_logger() -> (Logger, slog_async::AsyncGuard) {
+pub fn program_logger(root: &Path) -> (Logger, slog_async::AsyncGuard) {
     let file =
-        DailyLog::new("logs", "program").unwrap_or_else(|e| panic!("Failed to open log file: {e}"));
+        DailyLog::new(root.join("logs"), "program").unwrap_or_else(|e| panic!("Failed to open log file: {e}"));
     let file_drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
         .use_custom_timestamp(timestamp)
         .build()

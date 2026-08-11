@@ -113,7 +113,7 @@ impl ShardDb {
 
         std::fs::create_dir_all(&root)?;
 
-        let log = logger::db_logger(&root, &name);
+        let log = logger::shard_logger(&root, &name);
         let wal = Wal::open(root.join("wal.log"), core_storage::wal::SyncMode::SyncEach)
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
 
@@ -163,7 +163,7 @@ impl ShardDb {
                 CorelamoError::InvalidData(format!("invalid shard directory name: {}", name))
             })?;
 
-        let log = logger::db_logger(&root, &name);
+        let log = logger::shard_logger(&root, &name);
         let wal = Wal::open(root.join("wal.log"), core_storage::wal::SyncMode::SyncEach)
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
 
