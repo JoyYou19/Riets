@@ -318,7 +318,6 @@ impl ShardHandle {
     }
 }
 
-/// Flips `alive` to false on any exit path, including panic unwind.
 struct AliveGuard(Arc<AtomicBool>);
 impl Drop for AliveGuard {
     fn drop(&mut self) {
@@ -326,7 +325,6 @@ impl Drop for AliveGuard {
     }
 }
 
-// spawn() — create it alongside is_running, pass into run(), include in the literal
 pub fn spawn(
     mut shard: ShardDb,
     queue_depth: usize,
@@ -337,7 +335,7 @@ pub fn spawn(
     let is_running = Arc::new(AtomicBool::new(false));
     let is_clearing = Arc::new(AtomicBool::new(false));
     let shared_snapshot = shard.shared_snapshot();
-    let (shared_docs, shared_internal_to_external) = shard.shared_store_maps(); // NEW
+    let (shared_docs, shared_internal_to_external) = shard.shared_store_maps();
 
     let (tx, rx) = bounded(queue_depth.max(1));
     let (boot_tx, boot_rx) = bounded(1);
