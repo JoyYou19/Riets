@@ -3,14 +3,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use core_protocol::command_reponse_definitions::{
-    LookupCommand, LookupResponse, RetrieveCommand, RetrieveResponse,
+    LookupCommand, LookupResponse,
 };
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
 
 use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
-use crate::{DatabaseOptions, options};
+use crate::DatabaseOptions;
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
@@ -55,12 +55,10 @@ pub enum ShardCmd {
     Clear {
         resp: Sender<Result<(), CorelamoError>>,
     },
-
     Upsert {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<InsertReport, CorelamoError>>,
     },
-
     Replace {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<ReplaceReport, CorelamoError>>,
@@ -70,7 +68,6 @@ pub enum ShardCmd {
         resp: Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
-        
         resp:Sender<Result<ReindexParams,CorelamoError>>,
     },
     CommitReindex{
@@ -83,7 +80,6 @@ pub enum ShardCmd {
     Stop {
         resp: Sender<Result<(), CorelamoError>>,
     },
-
     GetLogs {
         date: Option<String>,
         resp: Sender<Result<String, CorelamoError>>,
@@ -91,7 +87,6 @@ pub enum ShardCmd {
     ClearLogs {
         resp: Sender<Result<(), CorelamoError>>,
     },
-
     DocCount {
         resp: Sender<usize>,
     },
@@ -137,19 +132,15 @@ impl ShardHandle {
         self.tx.send(make(rtx)).map_err(|_| self.dead())?;
         rrx.recv().map_err(|_| self.dead())
     }
-
     fn dead(&self) -> CorelamoError {
         CorelamoError::Internal(format!("shard {} is not running", self.id))
     }
-
     pub fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         self.call(|resp| ShardCmd::Insert { inputs, resp })?
     }
-
     pub fn flush(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Flush { resp })?
     }
-
     pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         self.call(|resp| ShardCmd::Upsert { inputs, resp })?
     }
@@ -159,41 +150,34 @@ impl ShardHandle {
     pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
         self.call(|resp| ShardCmd::Delete { ids, resp })?
     }
-
     pub fn is_running(&self) -> Result<bool, CorelamoError> {
         self.call(|resp| ShardCmd::IsRunning { resp })
     }
-
     pub fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetPolicy { policy, resp })?
     }
-
     pub fn start(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Start { resp })?
     }
     pub fn stop(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Stop { resp })?
     }
-
     pub fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetConfig { options, resp })?
     }
-
     pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
         self.call(|resp| ShardCmd::GetLogs { date, resp })?
     }
-
     pub fn clear_logs(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::ClearLogs { resp })?
     }
-
     pub fn document_count(&self) -> Result<usize, CorelamoError> {
         self.call(|resp| ShardCmd::DocCount { resp })
     }
-
     pub fn shutdown(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Shutdown { resp })?
     }
+    
     //reindex
     pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
     self.tx.clone()
@@ -249,7 +233,7 @@ pub fn spawn(
     ))
 }
 
-fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, tx: Sender<ShardCmd>) {
+fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, _tx: Sender<ShardCmd>) {
     const MAX_BATCH: usize = 32;
 
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
@@ -305,19 +289,15 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, tx: Sender<ShardCmd>) {
                 ShardCmd::Stop { resp } => {
                     let _ = resp.send(shard.stop());
                 }
-
                 ShardCmd::Clear { resp } => {
                     let _ = resp.send(shard.clear());
                 }
-
                 ShardCmd::GetLogs { date, resp } => {
                     let _ = resp.send(shard.get_logs(date));
                 }
-
                 ShardCmd::ClearLogs { resp } => {
                     let _ = resp.send(shard.clear_logs());
                 }
-
                 ShardCmd::Shutdown { resp } => {
                     let _ = resp.send(shard.stop());
                     return;

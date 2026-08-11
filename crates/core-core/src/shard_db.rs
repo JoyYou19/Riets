@@ -1,15 +1,13 @@
-use std::{ io, path::{ Path, PathBuf }, sync::{ Arc, Mutex } };
+use std::{ io, path::{ Path, PathBuf }, sync:: Arc  };
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatabaseStats {
-    pub database_state: DatabaseState,
     pub document_count: usize,
     pub segment_count: usize,
     pub background_compaction_enabled: bool,
-    //pub metrics: DatabaseMetrics,
+    pub metrics: DatabaseMetrics,
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
-    pub reindexing_total: u64,
 }
 
 use core_index::{
@@ -45,10 +43,7 @@ use core_storage::{
 };
 
 use crate::{
-    metrics::DatabaseMetrics,
-    options::DatabaseOptions,
-    reindex::{ CompletedShardReindex, ReindexParams },
-    shard_manager::ShardManager,
+    metrics::{DatabaseMetrics, ShardStatsHandle}, options::DatabaseOptions, reindex::{ CompletedShardReindex, ReindexParams }, shard_manager::ShardManager,
 };
 use core_logs::logger;
 use slog::{ Logger, error, info, warn };
@@ -73,30 +68,27 @@ impl DatabaseState {
 pub struct ShardDb {
     shard_id: ShardId,
     root: PathBuf,
-
     policy: IndexPolicy,
     options: DatabaseOptions,
-
     //each shard kip holds this yeye
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     compaction_worker: Option<CompactionWorker>,
-    metrics: Mutex<DatabaseMetrics>,
-    progress: Arc<ReindexProgress>,
+    stats:ShardStatsHandle,
     log: Logger,
     wal: Wal,
-    pending_ops: Vec<PendingOp>,
     generation:u64,
 }
 
 impl ShardDb {
     //TODO: make configurable
-    const MAX_PENDING_OPS: usize = 500_000;
+    //const MAX_PENDING_OPS: usize = 500_000;
 
     pub fn create_shard(
         root: impl AsRef<Path>,
         shard_id: ShardId,
         options: DatabaseOptions,
-        policy: IndexPolicy
+        policy: IndexPolicy,
+        stats:ShardStatsHandle,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = format!("shard-{}", shard_id);
@@ -123,12 +115,10 @@ impl ShardDb {
             policy,
             options,
             db: None,
-            metrics: Mutex::new(DatabaseMetrics::default()),
             compaction_worker: None,
-            progress: ReindexProgress::new(),
             log,
             wal,
-            pending_ops: Vec::new(),
+            stats,
             generation:0,
         })
     }
@@ -136,7 +126,8 @@ impl ShardDb {
     pub fn load(
         root: impl AsRef<Path>,
         policy: &IndexPolicy,
-        options: &DatabaseOptions
+        options: &DatabaseOptions,
+        stats:ShardStatsHandle,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = root
@@ -168,11 +159,9 @@ impl ShardDb {
             options: options.clone(),
             db: None,
             compaction_worker: None,
-            metrics: Mutex::new(DatabaseMetrics::default()),
-            progress: ReindexProgress::new(),
+            stats,
             log,
             wal,
-            pending_ops: Vec::new(),
             generation:0,
         })
     }
@@ -279,6 +268,8 @@ impl ShardDb {
         };
 
         self.db = Some(db);
+        self.stats.set_compaction_enabled(self.compaction_worker.is_some());
+        self.publish_stats();
         info!(self.log, "shard started"; "shard_id" => self.shard_id);
         Ok(())
     }
@@ -304,6 +295,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
 
         info!(self.log, "WAL reset on clean shutdown"; "shard_id" => self.shard_id);
+        self.stats.set_compaction_enabled(false);
         Ok(())
     }
 
@@ -434,14 +426,7 @@ impl ShardDb {
         let batch_size = self.options.runtime.indexing_batch_size;
         let window_size = self.options.runtime.indexing_window_size;
 
-        let ids: Vec<String> = if self.progress.phase().is_running() {
-            inputs
-                .iter()
-                .map(|i| i.external_id.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
+       
 
         let result = (|| -> Result<InsertReport, CorelamoError> {
             //WALis
@@ -476,34 +461,35 @@ impl ShardDb {
         })();
         // Queue for replay against the new index, outside the closure so the
         // mutable borrow of `self` has ended.
-        if result.is_ok() {
-            for id in ids {
-                let doc = match self.db_mut() {
-                    Ok(db) =>
-                        db
-                            .get_document(&id)
-                            .ok()
-                            .flatten()
-                            .map(|d| db.to_indexed(&d)),
-                    Err(_) => None,
-                };
-                if let Some(doc) = doc {
-                    self.queue_op(PendingOp::Index { doc });
-                }
-            }
-        }
+        // if result.is_ok() {
+        //     for id in ids {
+        //         let doc = match self.db_mut() {
+        //             Ok(db) =>
+        //                 db
+        //                     .get_document(&id)
+        //                     .ok()
+        //                     .flatten()
+        //                     .map(|d| db.to_indexed(&d)),
+        //             Err(_) => None,
+        //         };
+        //         if let Some(doc) = doc {
+        //             self.queue_op(PendingOp::Index { doc });
+        //         }
+        //     }
+        // }
 
         let elapsed = started.elapsed();
 
         match &result {
-            Ok(_) =>
+            Ok(_) =>{
+                self.publish_stats();
                 info!(self.log, "indexed batch";
                 "shard_id" => %self.shard_id,
                 "documents" => count,
                 "batch_size" => batch_size,
                 "elapsed_ms" => elapsed.as_millis(),
 
-            ),
+            )},
             Err(e) =>
                 error!(self.log, "indexing failed";
                 "shard_id" => %self.shard_id,
@@ -639,10 +625,10 @@ impl ShardDb {
             }
         }
 
-        for internal_id in to_tombstone {
-            self.queue_op(PendingOp::Tombstone { internal_id }); //TODO
-        }
-
+        // for internal_id in to_tombstone {
+        //     self.queue_op(PendingOp::Tombstone { internal_id }); //TODO
+        // }
+        self.publish_stats();
         let elapsed = started.elapsed();
         info!(self.log, "delete batch";
             "shard_id" => %self.shard_id,
@@ -661,11 +647,7 @@ impl ShardDb {
                 CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
             );
         }
-        if !self.progress.try_begin(self.document_count() as u64) {
-            return Err(
-                CorelamoError::Conflict(format!("shard {} is already reindexing", self.shard_id))
-            );
-        }
+       
 
         // the staging build reads documents.bin, so it must be consistent first
         self.flush()?;
@@ -711,7 +693,7 @@ impl ShardDb {
         // reopen against the new index
         self.start()?;
         std::fs::remove_dir_all(&old_root).ok();
-
+        self.publish_stats();
         info!(self.log, "reindex committed";
         "shard_id" => %self.shard_id,
         "generation" => self.generation,
@@ -783,27 +765,27 @@ impl ShardDb {
             db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
         }
 
-        for internal_id in old_internal_ids {
-            self.queue_op(PendingOp::Tombstone { internal_id });
-        }
+        // for internal_id in old_internal_ids {
+        //     self.queue_op(PendingOp::Tombstone { internal_id });
+        // }
 
-        if self.progress.phase().is_running() {
-            for id in written_ids {
-                let doc = match self.db_mut() {
-                    Ok(db) =>
-                        db
-                            .get_document(&id)
-                            .ok()
-                            .flatten()
-                            .map(|d| db.to_indexed(&d)),
-                    Err(_) => None,
-                };
-                if let Some(doc) = doc {
-                    self.queue_op(PendingOp::Index { doc });
-                }
-            }
-        }
-
+        // if self.progress.phase().is_running() {
+        //     for id in written_ids {
+        //         let doc = match self.db_mut() {
+        //             Ok(db) =>
+        //                 db
+        //                     .get_document(&id)
+        //                     .ok()
+        //                     .flatten()
+        //                     .map(|d| db.to_indexed(&d)),
+        //             Err(_) => None,
+        //         };
+        //         if let Some(doc) = doc {
+        //             self.queue_op(PendingOp::Index { doc });
+        //         }
+        //     }
+        // }
+        self.publish_stats();
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
             "shard_id" => %self.shard_id,
@@ -815,7 +797,6 @@ impl ShardDb {
 
         Ok(ReplaceReport { replaced, failures })
     }
-
     pub fn upsert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
@@ -878,26 +859,26 @@ impl ShardDb {
             db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
         }
 
-        for internal_id in old_internal_ids {
-            self.queue_op(PendingOp::Tombstone { internal_id });
-        }
+        // for internal_id in old_internal_ids {
+        //     self.queue_op(PendingOp::Tombstone { internal_id });
+        // }
 
-        if self.progress.phase().is_running() {
-            for id in written_ids {
-                let doc = match self.db_mut() {
-                    Ok(db) =>
-                        db
-                            .get_document(&id)
-                            .ok()
-                            .flatten()
-                            .map(|d| db.to_indexed(&d)),
-                    Err(_) => None,
-                };
-                if let Some(doc) = doc {
-                    self.queue_op(PendingOp::Index { doc });
-                }
-            }
-        }
+        // if self.progress.phase().is_running() {
+        //     for id in written_ids {
+        //         let doc = match self.db_mut() {
+        //             Ok(db) =>
+        //                 db
+        //                     .get_document(&id)
+        //                     .ok()
+        //                     .flatten()
+        //                     .map(|d| db.to_indexed(&d)),
+        //             Err(_) => None,
+        //         };
+        //         if let Some(doc) = doc {
+        //             self.queue_op(PendingOp::Index { doc });
+        //         }
+        //     }
+        // }
 
         let elapsed = started.elapsed();
         info!(self.log, "upsert batch";
@@ -917,10 +898,10 @@ impl ShardDb {
             .flush()
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
-
     pub fn progress(&self) -> Arc<ReindexProgress> {
-        Arc::clone(&self.progress)
+    Arc::clone(self.stats.reindex_progress())
     }
+  
 
     pub fn document_count(&self) -> usize {
         self.db
@@ -950,10 +931,10 @@ impl ShardDb {
             .append(&encoded)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
-        if self.progress.phase().is_running() {
-            self.progress.request_cancel();
-            info!(self.log, "clear: cancelling in-flight reindex"; "shard_id" => self.shard_id);
-        }
+        // if self.progress.phase().is_running() {
+        //     self.progress.request_cancel();
+        //     info!(self.log, "clear: cancelling in-flight reindex"; "shard_id" => self.shard_id);
+        // }
 
         if let Some(worker) = self.compaction_worker.take() {
             worker.stop()?;
@@ -980,7 +961,7 @@ impl ShardDb {
             .write_checkpoint(0)
             .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
 
-        self.pending_ops.clear();
+        // self.pending_ops.clear();
 
         //restart
         let analyzer = self.analyzer();
@@ -1007,21 +988,27 @@ impl ShardDb {
         };
 
         self.db = Some(db);
+        self.publish_stats();
         info!(self.log, "shard cleared"; "shard_id" => self.shard_id);
         Ok(())
     }
 
-    fn queue_op(&mut self, op: PendingOp) {
-        if !self.progress.phase().is_running() {
-            return;
-        }
-        if self.pending_ops.len() >= Self::MAX_PENDING_OPS {
-            warn!(self.log, "pending mutation queue full, cancelling reindex"; "shard_id" => self.shard_id);
-            self.progress.request_cancel();
-            self.pending_ops.clear();
-            return;
-        }
-        self.pending_ops.push(op);
+    // fn queue_op(&mut self, op: PendingOp) {
+    //     if !self.progress.phase().is_running() {
+    //         return;
+    //     }
+    //     if self.pending_ops.len() >= Self::MAX_PENDING_OPS {
+    //         warn!(self.log, "pending mutation queue full, cancelling reindex"; "shard_id" => self.shard_id);
+    //         self.progress.request_cancel();
+    //         self.pending_ops.clear();
+    //         return;
+    //     }
+    //     self.pending_ops.push(op);
+    // }
+    fn publish_stats(&self) {
+    let Ok(db) = self.db_ref() else { return };
+    let Ok(stats) = db.index_stats() else { return };
+    self.stats.publish(db.document_count(), &stats);
     }
 }
 const _: fn() = || {
