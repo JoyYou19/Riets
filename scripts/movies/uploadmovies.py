@@ -23,7 +23,6 @@ min = 90
 max = 95
 
 
-
 [[fields]]
 name = "title"
 xpath = 0
@@ -130,6 +129,18 @@ def login(username, password):
 def curl_post(url, body, token):
     result = subprocess.run(
         ["curl", "-s", "-X", "POST", url,
+         "-H", "Accept: application/json",
+         "-H", f"X-Corelamo-Key: {token}",
+         "-d", body],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip(), result.returncode
+
+
+def curl_put(url, body, token):
+    result = subprocess.run(
+        ["curl", "-s", "-X", "PUT", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
          "-d", body],
