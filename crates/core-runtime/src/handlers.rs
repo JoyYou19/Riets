@@ -396,16 +396,12 @@ pub async fn start_database_handler(
 ) -> Response {
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match manager.start().await {
-        Ok(_) => {
-            return HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response();
-        }
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -416,16 +412,12 @@ pub async fn stop_database_handler(
 ) -> Response {
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match manager.stop().await {
-        Ok(_) => {
-            return HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response();
-        }
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -436,16 +428,14 @@ pub async fn restart_database_handler(
 ) -> Response {
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match manager.restart().await {
-        Ok(_) => {
-            return HttpOk::new(format!("database '{db_name}' restarted"), &ctx).into_response();
+        Ok(()) => {
+            HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
         }
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -886,7 +876,7 @@ pub async fn delete_database_handler(
                 .into_response();
             }
         }
-    }; // write guard dropped
+    };
 
     let manager = match Arc::try_unwrap(manager) {
         Ok(mgr) => mgr,

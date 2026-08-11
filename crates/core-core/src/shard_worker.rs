@@ -418,6 +418,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let result = shard.stop();
                     shared.is_running.store(false, Ordering::Release);
                     let _ = resp.send(result);
+                    return;
                 }
                 ShardCmd::Clear { resp } => {
                     shared.is_clearing.store(true, Ordering::Release);
