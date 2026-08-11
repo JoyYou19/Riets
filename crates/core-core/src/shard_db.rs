@@ -47,17 +47,14 @@ use core_storage::{
 };
 use dashmap::DashMap;
 
-use crate::{metrics::DatabaseMetrics, options::DatabaseOptions};
+use crate::{
+    metrics::DatabaseMetrics,
+    options::DatabaseOptions,
+    reindex::{ CompletedShardReindex, ReindexParams },
+    shard_manager::ShardManager,
+};
 use core_logs::logger;
 use slog::{Logger, error, info, warn};
-
-pub struct ReindexParams {
-    pub root: PathBuf,
-    pub policy: IndexPolicy,
-    pub options: DatabaseOptions,
-    pub analyzer: Analyzer,
-    pub progress: Arc<ReindexProgress>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatabaseState {
@@ -98,6 +95,7 @@ pub struct ShardDb {
 
     shared_docs: Arc<DashMap<String, StoredDocument>>,
     shared_internal_to_external: Arc<DashMap<DocId, String>>,
+    generation:u64,
 }
 
 impl ShardDb {
@@ -169,6 +167,7 @@ impl ShardDb {
             is_clearing: Arc::new(AtomicBool::new(false)),
             pending_ops: Vec::new(),
             shared_snapshot: SharedIndexSnapshot::empty(),
+            generation:0,
         })
     }
 
@@ -218,6 +217,7 @@ impl ShardDb {
             wal,
             pending_ops: Vec::new(),
             shared_snapshot: SharedIndexSnapshot::empty(),
+            generation:0,
         })
     }
 
@@ -599,10 +599,11 @@ impl ShardDb {
             let path = entry.path();
             if path.is_file() && path.extension().map_or(false, |e| e == "log") {
                 if let Some(ref date_str) = date {
-                    if path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map_or(false, |name| name.contains(date_str))
+                    if
+                        path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map_or(false, |name| name.contains(date_str))
                     {
                         files.push(path);
                     }
@@ -657,8 +658,7 @@ impl ShardDb {
         let encoded = bincode::encode_to_vec(&report, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
 
-        let offset = self
-            .wal
+        let offset = self.wal
             .append(&encoded)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
@@ -727,6 +727,70 @@ impl ShardDb {
         Ok(DeleteReport { deleted, failures })
     }
 
+    pub fn prepare_reindex(&mut self) -> Result<ReindexParams, CorelamoError> {
+        if !self.is_running() {
+            return Err(
+                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
+            );
+        }
+        if !self.progress.try_begin(self.document_count() as u64) {
+            return Err(
+                CorelamoError::Conflict(format!("shard {} is already reindexing", self.shard_id))
+            );
+        }
+
+        // the staging build reads documents.bin, so it must be consistent first
+        self.flush()?;
+
+        // the old index is about to be discarded; do not spend disk on compacting it
+        if let Some(worker) = self.compaction_worker.take() {
+            let _ = worker.stop();
+        }
+
+        self.generation += 1;
+
+        Ok(ReindexParams {
+            shard_id: self.shard_id,
+            shard_root: self.root.clone(),
+            policy: self.policy.clone(),
+            options: self.options.clone(),
+            wal_watermark: self.wal.durable_offset(),
+            doc_count: self.document_count(),
+            generation: self.generation,
+        })
+    }
+
+    pub fn commit_reindex(&mut self, done: CompletedShardReindex) -> Result<(), CorelamoError> {
+        if done.generation != self.generation {
+            let _ = std::fs::remove_dir_all(&done.staging_root);
+            return Err(CorelamoError::Conflict("reindex result is from a superseded run".into()));
+        }
+
+        let index_root = self.root.join("index");
+        let old_root = self.root.join("index.old");
+
+        // close the live index before touching its directory
+        if let Some(db) = self.db.take() {
+            db.shutdown().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        }
+
+        if old_root.exists() {
+            std::fs::remove_dir_all(&old_root)?;
+        }
+        std::fs::rename(&index_root, &old_root)?;
+        std::fs::rename(&done.staging_root, &index_root)?;
+
+        // reopen against the new index
+        self.start()?;
+        std::fs::remove_dir_all(&old_root).ok();
+
+        info!(self.log, "reindex committed";
+        "shard_id" => %self.shard_id,
+        "generation" => self.generation,
+        "built_through" => done.built_through,
+    );
+        Ok(())
+    }
     pub fn replace(&mut self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
@@ -846,9 +910,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
         {
-            let db = self
-                .db_mut()
-                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
             for input in inputs {
                 let external_id = input.external_id.clone();
@@ -950,8 +1012,7 @@ impl ShardDb {
         let encoded = bincode::encode_to_vec(&report, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
 
-        let offset = self
-            .wal
+        let offset = self.wal
             .append(&encoded)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 

@@ -10,6 +10,7 @@ use axum::{
 //use core_auth::{Permission, Principal};
 //
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
+use core_index::lsm::manager;
 use slog::{error, info, o};
 
 use crate::{
@@ -945,71 +946,13 @@ pub async fn delete_database_handler(
         }
     }
 }
-// // pub async fn stats_handler(
-// //     State(state): State<AppState>,
-// //     Path(db_name): Path<String>,
-// //     Extension(ctx): Extension<RequestContext>,
-// //     //Extension(principal): Extension<Principal>,
-// // ) -> Response {
-// //     // if let Err(e) = check_permission(&state, &principal, Permission::Status) {
-// //     //     return HttpError::from_corelamo(e, &ctx).into_response();
-// //     // }
-// //     let handle = match state.lookup(&db_name) {
-// //         Ok(h) => h,
-// //         Err(e) => {
-// //             return HttpError::from_corelamo(e, &ctx).into_response();
-// //         }
-// //     };
-// //     let stats = handle.stats().await;
-// //     match stats {
-// //         Ok(stats) => {
-// //             let indexing = &stats.indexing;
-// //             let reindexing = &stats.reindexing;
-// //             HttpOk::with_data(
-// //                 format!("stats for '{db_name}'"),
-// //                 json!({
-// //                     "document_count": stats.document_count,
-// //                     "segment_count": stats.segment_count,
-// //                     "background_compaction_enabled": stats.background_compaction_enabled,
-// //                     "metrics": {
-// //                           "search_requests": stats.metrics.search_requests,
-// //                           "search_errors": stats.metrics.search_errors,
-// //                           "indexing_requests": stats.metrics.indexing_requests,
-// //                           "indexing_errors": stats.metrics.indexing_errors,
-// //                          },
-// //                     "indexed": {
-// //                         "total_documents_indexed": indexing.total_documents_indexed,
-// //                         "total_documents_deleted": indexing.total_documents_deleted,
-// //                         "segments_written": indexing.segments_written,
-// //                         "compactions_completed": indexing.compactions_completed,
-// //                         "memtable_term_count": indexing.memtable_term_count,
-// //                         "segment_count": indexing.segment_count,
-// //                     },
-// //                     "reindexing": {
-// //                         "status": reindexing.status,
-// //                         "progress": reindexing.progress,
-// //                         "eta_seconds": reindexing.eta_seconds
-// //                     }
-// //                 }),
-// //                 &ctx,
-// //             )
-// //             .into_response()
-// //         }
-// //         //TODO: upate once stats gets updated with errors
-// //         Err(e) => HttpError::from_corelamo(
-// //             CorelamoError::Conflict(format!("failed to get stats: {e}")),
-// //             &ctx,
-// //         )
-// //         .into_response(),
-// //     }
-// // }
-//
-// pub async fn reindex_handler(
+// pub async fn stats_handler(
 //     State(state): State<AppState>,
 //     Path(db_name): Path<String>,
-//     Extension(ctx): Extension<RequestContext>, //Extension(principal): Extension<Principal>,
+//     Extension(ctx): Extension<RequestContext>,
+//     //Extension(principal): Extension<Principal>,
 // ) -> Response {
-//     // if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
+//     // if let Err(e) = check_permission(&state, &principal, Permission::Status) {
 //     //     return HttpError::from_corelamo(e, &ctx).into_response();
 //     // }
 //     let handle = match state.lookup(&db_name) {
@@ -1018,17 +961,78 @@ pub async fn delete_database_handler(
 //             return HttpError::from_corelamo(e, &ctx).into_response();
 //         }
 //     };
-//
-//     match handle.reindex().await {
-//         Ok(()) => HttpOk::new(
-//             format!("reindex started for '{db_name}', poll /status for progress"),
+//     let stats = handle.stats().await;
+//     match stats {
+//         Ok(stats) => {
+//             let indexing = &stats.indexing;
+//             let reindexing = &stats.reindexing;
+//             HttpOk::with_data(
+//                 format!("stats for '{db_name}'"),
+//                 json!({
+//                     "document_count": stats.document_count,
+//                     "segment_count": stats.segment_count,
+//                     "background_compaction_enabled": stats.background_compaction_enabled,
+//                     "metrics": {
+//                           "search_requests": stats.metrics.search_requests,
+//                           "search_errors": stats.metrics.search_errors,
+//                           "indexing_requests": stats.metrics.indexing_requests,
+//                           "indexing_errors": stats.metrics.indexing_errors,
+//                          },
+//                     "indexed": {
+//                         "total_documents_indexed": indexing.total_documents_indexed,
+//                         "total_documents_deleted": indexing.total_documents_deleted,
+//                         "segments_written": indexing.segments_written,
+//                         "compactions_completed": indexing.compactions_completed,
+//                         "memtable_term_count": indexing.memtable_term_count,
+//                         "segment_count": indexing.segment_count,
+//                     },
+//                     "reindexing": {
+//                         "status": reindexing.status,
+//                         "progress": reindexing.progress,
+//                         "eta_seconds": reindexing.eta_seconds
+//                     }
+//                 }),
+//                 &ctx,
+//             )
+//             .into_response()
+//         }
+//         //TODO: upate once stats gets updated with errors
+//         Err(e) => HttpError::from_corelamo(
+//             CorelamoError::Conflict(format!("failed to get stats: {e}")),
 //             &ctx,
 //         )
 //         .into_response(),
-//         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
 //     }
 // }
-//
+
+pub async fn reindex_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Response {
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    // prepare flushes each shard, so keep it off the tokio workers
+    let m = Arc::clone(&manager);
+    match tokio::task::spawn_blocking(move || m.reindex()).await {
+        Ok(Ok(())) => HttpOk::new(
+            format!("reindex started for '{db_name}', poll /status for progress"),
+            &ctx,
+        )
+        .into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("reindex task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
+    }
+}
 // // policy is always TOML
 // // sending raw since it shouldnt be encoded in json/xml
 pub async fn get_policy_handler(

@@ -13,6 +13,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use dashmap::DashMap;
 use indexmap::IndexMap;
 
+use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
 use crate::{DatabaseOptions, options};
 use core_index::document::IndexPolicy;
@@ -34,21 +35,17 @@ pub enum ShardCmd {
         k: usize,
         resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
     },
-
     Retrieve {
         ids: Vec<String>,
         resp: Sender<Result<Vec<(String, Option<StoredDocument>)>, CorelamoError>>,
     },
-
     Lookup {
         command: LookupCommand,
         resp: Sender<Result<LookupResponse, CorelamoError>>,
     },
-
     IsRunning {
         resp: Sender<bool>,
     },
-
     Flush {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -73,12 +70,18 @@ pub enum ShardCmd {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<ReplaceReport, CorelamoError>>,
     },
-
     Delete {
         ids: Vec<String>,
         resp: Sender<Result<DeleteReport, CorelamoError>>,
     },
-
+    PrepareReindex {
+        
+        resp:Sender<Result<ReindexParams,CorelamoError>>,
+    },
+    CommitReindex{
+        done:CompletedShardReindex,
+        resp: Sender<Result<(), CorelamoError>>
+    },
     Start {
         resp: Sender<Result<(), CorelamoError>>,
     },
@@ -312,6 +315,10 @@ impl ShardHandle {
     pub fn shutdown(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Shutdown { resp })?
     }
+    //reindex
+    pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
+    self.tx.clone()
+    }
 }
 
 /// Flips `alive` to false on any exit path, including panic unwind.
@@ -337,7 +344,7 @@ pub fn spawn(
 
     let (tx, rx) = bounded(queue_depth.max(1));
     let (boot_tx, boot_rx) = bounded(1);
-
+    let job_tx= tx.clone();
     let alive_worker = alive.clone();
     let is_running_worker = is_running.clone();
     let is_clearing_worker = is_clearing.clone();
@@ -349,6 +356,7 @@ pub fn spawn(
             let ok = started.is_ok();
             is_running_worker.store(ok, Ordering::Release);
             let _ = boot_tx.send(started);
+            
             if ok {
                 run(shard, rx, is_running_worker, is_clearing_worker);
             }
@@ -395,11 +403,9 @@ fn run(
                 ShardCmd::Search { query, k, resp } => {
                     let _ = resp.send(shard.search(&query, k));
                 }
-
                 ShardCmd::Lookup { command, resp } => {
                     let _ = resp.send(shard.lookup(&command));
                 }
-
                 ShardCmd::Flush { resp } => {
                     let _ = resp.send(shard.flush());
                 }
@@ -412,7 +418,6 @@ fn run(
                 ShardCmd::DocCount { resp } => {
                     let _ = resp.send(shard.document_count());
                 }
-
                 ShardCmd::Upsert { inputs, resp } => {
                     let _ = resp.send(shard.upsert(inputs));
                 }
@@ -422,12 +427,23 @@ fn run(
                 ShardCmd::Delete { ids, resp } => {
                     let _ = resp.send(shard.delete(ids));
                 }
+                ShardCmd::PrepareReindex{ resp} =>{
+                    let _ = resp.send(shard.prepare_reindex());
+                }
+                ShardCmd::CommitReindex { done, resp } =>{
+                    let _ = resp.send(shard.commit_reindex(done));
+                }
                 ShardCmd::IsRunning { resp } => {
                     let _ = resp.send(shard.is_running());
                 }
 
                 ShardCmd::ResolveHits { hits, resp } => {
                     let _ = resp.send(shard.resolve_hits(hits));
+                ShardCmd::Start { resp } => {
+                    let _ = resp.send(shard.start());
+                }
+                ShardCmd::Stop { resp } => {
+                    let _ = resp.send(shard.stop());
                 }
 
                 ShardCmd::Clear { resp } => {
