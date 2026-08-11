@@ -144,6 +144,9 @@ impl DbStats {
     pub fn add_reindex_total(&self, documents: u64) {
         self.reindex.grow_total(documents);
     }
+    // pub fn update_reindex_progress(&self, documents_indexed: u64) {
+    //     self.reindex.add_indexed(documents_indexed);
+    // }
 
     /// The last shard to finish settles the phase for the database.
     pub fn finish_shard_reindex(&self, ok: bool, elapsed: Duration) {
@@ -193,8 +196,8 @@ impl DbStats {
         let mut compaction = false;
         let mut indexed = 0u64;
         let mut deleted = 0u64;
-        let mut written = 0u64;
-        let mut compactions = 0u64;
+        let  written = 0u64;
+        let  compactions = 0u64;
 
         for g in &self.shards {
             documents += g.documents.load(Relaxed);

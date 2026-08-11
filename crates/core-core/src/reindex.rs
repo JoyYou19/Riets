@@ -48,6 +48,7 @@ pub struct ReindexPool {
     joins: Vec<JoinHandle<()>>,
 }
 
+
 impl ReindexPool {
     pub fn start(workers: usize) -> Self {
         let workers = workers.max(1);
@@ -84,7 +85,7 @@ fn worker_loop(rx: Receiver<ReindexJob>) {
     while let Ok(job) = rx.recv() {
         let started = Instant::now();
 
-        let done = match build_staging_index(&job.params, &job.progress) {
+        let done = match build_staging_index(&job.params, &job.progress, &job.stats) {
             Ok(done) => done,
             Err(_) => {
                 job.stats.finish_shard_reindex(false, started.elapsed());
@@ -108,6 +109,7 @@ fn worker_loop(rx: Receiver<ReindexJob>) {
 fn build_staging_index(
     params: &ReindexParams,
     progress: &ReindexProgress,
+    stats:&DbStats
 ) -> Result<CompletedShardReindex, CorelamoError> {
     let staging_root = params.shard_root.join("index.new");
     if staging_root.exists() {
@@ -125,7 +127,7 @@ fn build_staging_index(
         params.shard_id,
     )
     .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
+    
     staging
         .reindex_existing_documents(
             params.options.runtime.indexing_batch_size,
