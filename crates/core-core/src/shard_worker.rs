@@ -5,7 +5,7 @@ use std::thread::{self, JoinHandle};
 
 use core_index::analyzer::Analyzer;
 use core_index::lsm::snapshot::SharedIndexSnapshot;
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse};
+use core_protocol::command_reponse_definitions::LookupResponse;
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use dashmap::DashMap;
@@ -14,11 +14,12 @@ use indexmap::IndexMap;
 use crate::DatabaseOptions;
 use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
+use crate::shared_state::SharedShardState;
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId};
 use core_protocol::errors::CorelamoError;
-use core_query::{Query, QueryExecutor, SearchHit}; // QueryPlan prom
+use core_query::{Query, QueryExecutor, SearchHit};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, visible_fields,
 };
@@ -27,19 +28,6 @@ pub enum ShardCmd {
     Insert {
         inputs: Vec<DocumentInput>,
         resp: Sender<Result<InsertReport, CorelamoError>>,
-    },
-    Search {
-        query: Arc<Query>,
-        k: usize,
-        resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
-    },
-    Retrieve {
-        ids: Vec<String>,
-        resp: Sender<Result<Vec<(String, Option<StoredDocument>)>, CorelamoError>>,
-    },
-    Lookup {
-        command: LookupCommand,
-        resp: Sender<Result<LookupResponse, CorelamoError>>,
     },
     IsRunning {
         resp: Sender<bool>,
@@ -113,12 +101,8 @@ pub struct ShardHandle {
     tx: Sender<ShardCmd>,
     alive: Arc<AtomicBool>,
     progress: Arc<ReindexProgress>,
-    is_running: Arc<AtomicBool>,
-    is_clearing: Arc<AtomicBool>,
-    shared_snapshot: SharedIndexSnapshot,
-
-    shared_docs: Arc<DashMap<String, StoredDocument>>,
-    shared_internal_to_external: Arc<DashMap<DocId, String>>,
+    analyzer: Analyzer,
+    shared: Arc<SharedShardState>,
 }
 
 impl ShardHandle {
@@ -138,73 +122,6 @@ impl ShardHandle {
         Ok(())
     }
 
-    pub fn get_document_direct(
-        &self,
-        ids: &[String],
-    ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
-        self.ensure_readable()?;
-        let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
-            let doc = self.shared_docs.get(id).map(|r| r.value().clone());
-            out.push((id.clone(), doc));
-        }
-        Ok(out)
-    }
-
-    pub fn lookup_direct(
-        &self,
-        ids: &[String],
-        return_fields: Option<&IndexMap<String, bool>>,
-        policy: &IndexPolicy,
-    ) -> Result<LookupResponse, CorelamoError> {
-        self.ensure_readable()?;
-        let mut found = Vec::new();
-        let mut not_found = Vec::new();
-        for id in ids {
-            match self.shared_docs.get(id) {
-                Some(entry) => found.push((
-                    entry.value().external_id.clone(),
-                    visible_fields(&entry.value().fields, policy, return_fields),
-                )),
-                None => not_found.push(id.clone()),
-            }
-        }
-        LookupResponse::from_hits(found, not_found)
-            .map_err(io::Error::other)
-            .map_err(CorelamoError::from)
-    }
-
-    /// Turns already-ranked SearchHits into full SearchDocumentHits, reading
-    /// the store directly. Replaces the old ShardCmd::ResolveHits round trip —
-    /// this closes the phase-1 gap.
-    pub fn resolve_hits_direct(
-        &self,
-        hits: Vec<SearchHit>,
-        policy: &IndexPolicy,
-    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
-        self.ensure_readable()?;
-        let mut results = Vec::with_capacity(hits.len());
-        for hit in hits {
-            let Some(external_id) = self
-                .shared_internal_to_external
-                .get(&hit.doc_id)
-                .map(|r| r.value().clone())
-            else {
-                continue;
-            };
-            let Some(doc) = self.shared_docs.get(&external_id) else {
-                continue;
-            };
-            results.push(SearchDocumentHit {
-                external_id: doc.external_id.clone(),
-                internal_id: doc.internal_id,
-                score: hit.score,
-                fields: visible_fields(&doc.fields, policy, None),
-            });
-        }
-        Ok(results)
-    }
-
     pub fn id(&self) -> ShardId {
         self.id
     }
@@ -220,32 +137,84 @@ impl ShardHandle {
         self.tx.len()
     }
 
+    pub fn is_running(&self) -> bool {
+        self.shared.is_running.load(Ordering::Acquire)
+    }
+
     pub fn is_clearing(&self) -> bool {
-        self.is_clearing.load(Ordering::Acquire)
-    }
-    pub fn is_readable(&self) -> bool {
-        self.is_running() && !self.is_clearing()
+        self.shared.is_clearing.load(Ordering::Acquire)
     }
 
-    pub fn clear(&self) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Clear { resp })?
-    }
-
-    pub fn rank_top_k(
-        &self,
-        query: &Query,
-        k: usize,
-        analyzer: &Analyzer,
-        policy: &IndexPolicy,
-    ) -> Vec<SearchHit> {
-        let snapshot = self.shared_snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, analyzer);
+    pub fn rank_top_k(&self, query: &Query, k: usize, policy: &IndexPolicy) -> Vec<SearchHit> {
+        let snapshot = self.shared.snapshot.get();
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
         let xpaths: Vec<_> = policy.searchable_xpaths().collect();
         executor.search_all_xpaths_top_k(query, xpaths, k)
     }
 
-    pub fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Acquire)
+    pub fn get_document_direct(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
+        self.ensure_readable()?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let doc = self.shared.docs.get(id).map(|r| r.value().clone());
+            out.push((id.clone(), doc));
+        }
+        Ok(out)
+    }
+
+    pub fn lookup_direct(
+        &self,
+        ids: &[String],
+        return_fields: Option<&IndexMap<String, bool>>,
+        policy: &IndexPolicy,
+    ) -> Result<LookupResponse, CorelamoError> {
+        self.ensure_readable()?;
+        let mut found = Vec::new();
+        let mut not_found = Vec::new();
+        for id in ids {
+            match self.shared.docs.get(id) {
+                Some(entry) => found.push((
+                    entry.value().external_id.clone(),
+                    visible_fields(&entry.value().fields, policy, return_fields),
+                )),
+                None => not_found.push(id.clone()),
+            }
+        }
+        LookupResponse::from_hits(found, not_found)
+            .map_err(io::Error::other)
+            .map_err(CorelamoError::from)
+    }
+
+    pub fn resolve_hits_direct(
+        &self,
+        hits: Vec<SearchHit>,
+        policy: &IndexPolicy,
+    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+        self.ensure_readable()?;
+        let mut results = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let Some(external_id) = self
+                .shared
+                .internal_to_external
+                .get(&hit.doc_id)
+                .map(|r| r.value().clone())
+            else {
+                continue;
+            };
+            let Some(doc) = self.shared.docs.get(&external_id) else {
+                continue;
+            };
+            results.push(SearchDocumentHit {
+                external_id: doc.external_id.clone(),
+                internal_id: doc.internal_id,
+                score: hit.score,
+                fields: visible_fields(&doc.fields, policy, None),
+            });
+        }
+        Ok(results)
     }
 
     /// Fire-and-forget send for manager fan-out; caller keeps the response rx.
@@ -332,27 +301,24 @@ pub fn spawn(
     let id = shard.shard_id();
     let progress = shard.progress();
     let alive = Arc::new(AtomicBool::new(true));
-    let is_running = Arc::new(AtomicBool::new(false));
-    let is_clearing = Arc::new(AtomicBool::new(false));
-    let shared_snapshot = shard.shared_snapshot();
-    let (shared_docs, shared_internal_to_external) = shard.shared_store_maps();
+    let shared = shard.shared_state(); // one call instead of shared_snapshot() + shared_store_maps()
+    let analyzer = Analyzer::new();
 
     let (tx, rx) = bounded(queue_depth.max(1));
     let (boot_tx, boot_rx) = bounded(1);
+
     let alive_worker = alive.clone();
-    let is_running_worker = is_running.clone();
-    let is_clearing_worker = is_clearing.clone();
+    let shared_worker = shared.clone(); // one clone instead of is_running + is_clearing clones
     let join = thread::Builder::new()
         .name(format!("shard-{}", id))
         .spawn(move || {
             let _guard = AliveGuard(alive_worker);
             let started = shard.start();
             let ok = started.is_ok();
-            is_running_worker.store(ok, Ordering::Release);
+            shared_worker.is_running.store(ok, Ordering::Release);
             let _ = boot_tx.send(started);
-
             if ok {
-                run(shard, rx, is_running_worker, is_clearing_worker);
+                run(shard, rx, shared_worker);
             }
         })
         .map_err(|e| CorelamoError::Internal(format!("failed to spawn shard {id}: {e}")))?;
@@ -367,21 +333,14 @@ pub fn spawn(
             tx,
             alive,
             progress,
-            is_running,
-            is_clearing,
-            shared_snapshot,
-            shared_docs,                 // NEW
-            shared_internal_to_external, // NEW
+            analyzer,
+            shared,
         },
         join,
     ))
 }
-fn run(
-    mut shard: ShardDb,
-    rx: Receiver<ShardCmd>,
-    is_running: Arc<AtomicBool>,
-    is_clearing: Arc<AtomicBool>,
-) {
+
+fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
     const MAX_BATCH: usize = 32;
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
 
@@ -393,12 +352,6 @@ fn run(
             match cmd {
                 ShardCmd::Insert { inputs, resp } => {
                     let _ = resp.send(shard.insert(inputs));
-                }
-                ShardCmd::Search { query, k, resp } => {
-                    let _ = resp.send(shard.search(&query, k));
-                }
-                ShardCmd::Lookup { command, resp } => {
-                    let _ = resp.send(shard.lookup(&command));
                 }
                 ShardCmd::Flush { resp } => {
                     let _ = resp.send(shard.flush());
@@ -436,9 +389,9 @@ fn run(
                 }
 
                 ShardCmd::Clear { resp } => {
-                    is_clearing.store(true, Ordering::Release);
+                    shared.is_clearing.store(true, Ordering::Release);
                     let result = shard.clear();
-                    is_clearing.store(false, Ordering::Release);
+                    shared.is_clearing.store(false, Ordering::Release);
                     let _ = resp.send(result);
                 }
 
@@ -452,28 +405,28 @@ fn run(
 
                 ShardCmd::Start { resp } => {
                     let result = shard.start();
-                    is_running.store(result.is_ok(), Ordering::Release);
+                    shared.is_running.store(result.is_ok(), Ordering::Release);
                     let _ = resp.send(result);
                 }
                 ShardCmd::Stop { resp } => {
                     let result = shard.stop();
-                    is_running.store(false, Ordering::Release);
+                    shared.is_running.store(false, Ordering::Release);
                     let _ = resp.send(result);
                 }
-
                 ShardCmd::Shutdown { resp } => {
                     let result = shard.stop();
-                    is_running.store(false, Ordering::Release);
+                    shared.is_running.store(false, Ordering::Release);
                     let _ = resp.send(result);
                     return;
                 }
-                ShardCmd::Retrieve { ids, resp } => {
-                    let _ = resp.send(shard.get_document(&ids));
+                ShardCmd::Clear { resp } => {
+                    shared.is_clearing.store(true, Ordering::Release);
+                    let result = shard.clear();
+                    shared.is_clearing.store(false, Ordering::Release);
+                    let _ = resp.send(result);
                 }
             }
         }
     }
-
-    // All senders dropped without an explicit Shutdown.
     let _ = shard.stop();
 }

@@ -128,7 +128,7 @@ impl ShardManager {
     }
 
     pub fn all_readable(&self) -> bool {
-        self.shards.iter().all(|h| h.is_readable())
+        self.shards.iter().all(|h| h.is_running())
     }
 
     pub fn all_running(&self) -> bool {
@@ -350,7 +350,7 @@ impl ShardManager {
                 .map_err(|_| CorelamoError::Internal("shard died".into()))??;
         }
 
-        policy.save(&Self::policy_path(&self.root))?; // save the NEW policy directly
+        policy.save(&Self::policy_path(&self.root))?;
         *self.policy.write() = policy;
         Ok(())
     }
@@ -579,7 +579,7 @@ impl ShardManager {
 
         let mut all_hits: Vec<SearchHit> = Vec::new();
         for h in &self.shards {
-            all_hits.extend(h.rank_top_k(&query, fetch, &self.analyzer, &policy));
+            all_hits.extend(h.rank_top_k(&query, fetch, &policy));
         }
         all_hits.sort_by(|a, b| {
             b.score

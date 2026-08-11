@@ -50,8 +50,9 @@ use dashmap::DashMap;
 use crate::{
     metrics::DatabaseMetrics,
     options::DatabaseOptions,
-    reindex::{ CompletedShardReindex, ReindexParams },
+    reindex::{CompletedShardReindex, ReindexParams},
     shard_manager::ShardManager,
+    shared_state::SharedShardState,
 };
 use core_logs::logger;
 use slog::{Logger, error, info, warn};
@@ -88,42 +89,16 @@ pub struct ShardDb {
     log: Logger,
     wal: Wal,
     pending_ops: Vec<PendingOp>,
-
-    is_clearing: Arc<AtomicBool>,
-
-    shared_snapshot: SharedIndexSnapshot,
-
-    shared_docs: Arc<DashMap<String, StoredDocument>>,
-    shared_internal_to_external: Arc<DashMap<DocId, String>>,
-    generation:u64,
+    generation: u64,
+    shared: Arc<SharedShardState>,
 }
 
 impl ShardDb {
     //TODO: make configurable
     const MAX_PENDING_OPS: usize = 500_000;
 
-    pub fn shared_snapshot(&self) -> SharedIndexSnapshot {
-        self.shared_snapshot.clone()
-    }
-
-    pub fn shared_store_maps(
-        &self,
-    ) -> (
-        Arc<DashMap<String, StoredDocument>>,
-        Arc<DashMap<DocId, String>>,
-    ) {
-        (
-            self.shared_docs.clone(),
-            self.shared_internal_to_external.clone(),
-        )
-    }
-
-    pub fn is_clearing(&self) -> bool {
-        self.is_clearing.load(Ordering::Acquire)
-    }
-
-    pub fn is_readable(&self) -> bool {
-        self.is_running() && !self.is_clearing()
+    pub fn shared_state(&self) -> Arc<SharedShardState> {
+        self.shared.clone()
     }
 
     pub fn create_shard(
@@ -153,7 +128,7 @@ impl ShardDb {
 
         Ok(Self {
             shard_id,
-            root,
+            shared: Arc::new(SharedShardState::new(root.clone())),
             policy,
             options,
             db: None,
@@ -161,13 +136,10 @@ impl ShardDb {
             compaction_worker: None,
             progress: ReindexProgress::new(),
             log,
-            shared_docs: Arc::new(DashMap::new()),
-            shared_internal_to_external: Arc::new(DashMap::new()),
             wal,
-            is_clearing: Arc::new(AtomicBool::new(false)),
             pending_ops: Vec::new(),
-            shared_snapshot: SharedIndexSnapshot::empty(),
-            generation:0,
+            generation: 0,
+            root,
         })
     }
 
@@ -203,21 +175,18 @@ impl ShardDb {
 
         Ok(Self {
             shard_id: ShardId::from(shard_id),
+            shared: Arc::new(SharedShardState::new(root.clone())),
             root,
             policy: policy.clone(),
             options: options.clone(),
             db: None,
-            shared_docs: Arc::new(DashMap::new()),
-            shared_internal_to_external: Arc::new(DashMap::new()),
             compaction_worker: None,
             metrics: Mutex::new(DatabaseMetrics::default()),
             progress: ReindexProgress::new(),
-            is_clearing: Arc::new(AtomicBool::new(false)),
             log,
             wal,
             pending_ops: Vec::new(),
-            shared_snapshot: SharedIndexSnapshot::empty(),
-            generation:0,
+            generation: 0,
         })
     }
 
@@ -233,8 +202,8 @@ impl ShardDb {
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let store = BinaryDocumentStore::open_with_maps(
             &store_path,
-            self.shared_docs.clone(),
-            self.shared_internal_to_external.clone(),
+            self.shared.docs.clone(),
+            self.shared.internal_to_external.clone(),
         )?;
         let mut db = SearchDatabase::with_shard_policy_and_snapshot(
             store,
@@ -242,7 +211,7 @@ impl ShardDb {
             analyzer,
             self.policy.clone(),
             self.shard_id,
-            self.shared_snapshot.clone(),
+            self.shared.snapshot.clone(),
         )?;
 
         let checkpoint = self
@@ -469,37 +438,6 @@ impl ShardDb {
         parse_and_analyze(input, db.get_analyzer())
     }
 
-    // pub fn search_command(
-    //     &self,
-    //     command: &SearchCommand,
-    // ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
-    //     let limit = command.docs.unwrap_or(10);
-    //     let offset = command.offset.unwrap_or(0);
-    //
-    //     let Some(query) = self.build_query(&command.query)? else {
-    //         return Ok(Vec::new());
-    //     };
-    //
-    //     let plan = QueryPlanner::plan(query);
-    //     self.search_plan(&plan, command.return_fields.as_ref(), offset, limit)
-    // }
-    //
-    // pub fn search_plan(
-    //     &self,
-    //     plan: &QueryPlan,
-    //     return_fields: Option<&IndexMap<String, bool>>,
-    //     offset: usize,
-    //     limit: usize,
-    // ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
-    //     let db = self
-    //         .db_ref()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    //     db.search_document_hits_plan(plan, return_fields, offset, limit)
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))
-    // }
-
-    // ====== Write Operations ======
-
     pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         //stats
         let started = std::time::Instant::now();
@@ -599,11 +537,10 @@ impl ShardDb {
             let path = entry.path();
             if path.is_file() && path.extension().map_or(false, |e| e == "log") {
                 if let Some(ref date_str) = date {
-                    if
-                        path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map_or(false, |name| name.contains(date_str))
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map_or(false, |name| name.contains(date_str))
                     {
                         files.push(path);
                     }
@@ -658,7 +595,8 @@ impl ShardDb {
         let encoded = bincode::encode_to_vec(&report, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
 
-        let offset = self.wal
+        let offset = self
+            .wal
             .append(&encoded)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
@@ -729,14 +667,16 @@ impl ShardDb {
 
     pub fn prepare_reindex(&mut self) -> Result<ReindexParams, CorelamoError> {
         if !self.is_running() {
-            return Err(
-                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
-            );
+            return Err(CorelamoError::DatabaseNotRunning(format!(
+                "shard {} is not running",
+                self.shard_id
+            )));
         }
         if !self.progress.try_begin(self.document_count() as u64) {
-            return Err(
-                CorelamoError::Conflict(format!("shard {} is already reindexing", self.shard_id))
-            );
+            return Err(CorelamoError::Conflict(format!(
+                "shard {} is already reindexing",
+                self.shard_id
+            )));
         }
 
         // the staging build reads documents.bin, so it must be consistent first
@@ -763,7 +703,9 @@ impl ShardDb {
     pub fn commit_reindex(&mut self, done: CompletedShardReindex) -> Result<(), CorelamoError> {
         if done.generation != self.generation {
             let _ = std::fs::remove_dir_all(&done.staging_root);
-            return Err(CorelamoError::Conflict("reindex result is from a superseded run".into()));
+            return Err(CorelamoError::Conflict(
+                "reindex result is from a superseded run".into(),
+            ));
         }
 
         let index_root = self.root.join("index");
@@ -771,7 +713,8 @@ impl ShardDb {
 
         // close the live index before touching its directory
         if let Some(db) = self.db.take() {
-            db.shutdown().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            db.shutdown()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         }
 
         if old_root.exists() {
@@ -785,10 +728,10 @@ impl ShardDb {
         std::fs::remove_dir_all(&old_root).ok();
 
         info!(self.log, "reindex committed";
-        "shard_id" => %self.shard_id,
-        "generation" => self.generation,
-        "built_through" => done.built_through,
-    );
+            "shard_id" => %self.shard_id,
+            "generation" => self.generation,
+            "built_through" => done.built_through,
+        );
         Ok(())
     }
     pub fn replace(&mut self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
@@ -910,7 +853,9 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
         {
-            let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
             for input in inputs {
                 let external_id = input.external_id.clone();
@@ -1008,14 +953,6 @@ impl ShardDb {
     }
 
     pub fn clear(&mut self) -> Result<(), CorelamoError> {
-        let report = WalRecord::Clear;
-        let encoded = bincode::encode_to_vec(&report, bincode::config::standard())
-            .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
-
-        let offset = self.wal
-            .append(&encoded)
-            .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
-
         if self.progress.phase().is_running() {
             self.progress.request_cancel();
             info!(self.log, "clear: cancelling in-flight reindex"; "shard_id" => self.shard_id);
@@ -1053,14 +990,18 @@ impl ShardDb {
         //restart
         let analyzer = self.analyzer();
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
-        let store = BinaryDocumentStore::open(&store_path)?;
+        let store = BinaryDocumentStore::open_with_maps(
+            &store_path,
+            self.shared.docs.clone(),
+            self.shared.internal_to_external.clone(),
+        )?;
         let db = SearchDatabase::with_shard_policy_and_snapshot(
             store,
             index,
             analyzer,
             self.policy.clone(),
             self.shard_id,
-            SharedIndexSnapshot::empty(),
+            self.shared.snapshot.clone(),
         )?;
 
         self.compaction_worker = if self.options.enable_background_compaction {
