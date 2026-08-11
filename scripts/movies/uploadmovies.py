@@ -188,7 +188,7 @@ def main():
     print(f"[INFO] {out}")
     # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
-    out, _ = curl_put(
+    out, _ = curl_post(
         f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
     print(f"[INFO] {out}")
 

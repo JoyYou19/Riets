@@ -5,17 +5,15 @@ use std::thread::{self, JoinHandle};
 
 use core_index::analyzer::Analyzer;
 use core_index::lsm::snapshot::SharedIndexSnapshot;
-use core_protocol::command_reponse_definitions::{
-    LookupCommand, LookupResponse, RetrieveCommand, RetrieveResponse,
-};
+use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse};
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use dashmap::DashMap;
 use indexmap::IndexMap;
 
+use crate::DatabaseOptions;
 use crate::reindex::{CompletedShardReindex, ReindexParams};
 use crate::shard_db::ShardDb;
-use crate::{DatabaseOptions, options};
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId};
@@ -75,12 +73,11 @@ pub enum ShardCmd {
         resp: Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
-        
-        resp:Sender<Result<ReindexParams,CorelamoError>>,
+        resp: Sender<Result<ReindexParams, CorelamoError>>,
     },
-    CommitReindex{
-        done:CompletedShardReindex,
-        resp: Sender<Result<(), CorelamoError>>
+    CommitReindex {
+        done: CompletedShardReindex,
+        resp: Sender<Result<(), CorelamoError>>,
     },
     Start {
         resp: Sender<Result<(), CorelamoError>>,
@@ -317,7 +314,7 @@ impl ShardHandle {
     }
     //reindex
     pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
-    self.tx.clone()
+        self.tx.clone()
     }
 }
 
@@ -344,7 +341,6 @@ pub fn spawn(
 
     let (tx, rx) = bounded(queue_depth.max(1));
     let (boot_tx, boot_rx) = bounded(1);
-    let job_tx= tx.clone();
     let alive_worker = alive.clone();
     let is_running_worker = is_running.clone();
     let is_clearing_worker = is_clearing.clone();
@@ -356,7 +352,7 @@ pub fn spawn(
             let ok = started.is_ok();
             is_running_worker.store(ok, Ordering::Release);
             let _ = boot_tx.send(started);
-            
+
             if ok {
                 run(shard, rx, is_running_worker, is_clearing_worker);
             }
@@ -427,10 +423,10 @@ fn run(
                 ShardCmd::Delete { ids, resp } => {
                     let _ = resp.send(shard.delete(ids));
                 }
-                ShardCmd::PrepareReindex{ resp} =>{
+                ShardCmd::PrepareReindex { resp } => {
                     let _ = resp.send(shard.prepare_reindex());
                 }
-                ShardCmd::CommitReindex { done, resp } =>{
+                ShardCmd::CommitReindex { done, resp } => {
                     let _ = resp.send(shard.commit_reindex(done));
                 }
                 ShardCmd::IsRunning { resp } => {
@@ -439,11 +435,6 @@ fn run(
 
                 ShardCmd::ResolveHits { hits, resp } => {
                     let _ = resp.send(shard.resolve_hits(hits));
-                ShardCmd::Start { resp } => {
-                    let _ = resp.send(shard.start());
-                }
-                ShardCmd::Stop { resp } => {
-                    let _ = resp.send(shard.stop());
                 }
 
                 ShardCmd::Clear { resp } => {
