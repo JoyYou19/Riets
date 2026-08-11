@@ -1,15 +1,15 @@
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use core_index::analyzer::Analyzer;
-use core_index::lsm::snapshot::SharedIndexSnapshot;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::{Receiver, Sender, bounded};
-use dashmap::DashMap;
 use indexmap::IndexMap;
+use tokio::sync::oneshot;
 
 use crate::DatabaseOptions;
 use crate::reindex::{CompletedShardReindex, ReindexParams};
@@ -17,48 +17,44 @@ use crate::shard_db::ShardDb;
 use crate::shared_state::SharedShardState;
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
-use core_index::types::{DocId, ShardId};
+use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_query::{Query, QueryExecutor, SearchHit};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, visible_fields,
 };
 
+//insane portno kur dazaam komandam ir crossbeam_channel dazam ir oneshot
 pub enum ShardCmd {
     Insert {
         inputs: Vec<DocumentInput>,
-        resp: Sender<Result<InsertReport, CorelamoError>>,
-    },
-    IsRunning {
-        resp: Sender<bool>,
+        resp: oneshot::Sender<Result<InsertReport, CorelamoError>>,
     },
     Flush {
-        resp: Sender<Result<(), CorelamoError>>,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     SetPolicy {
         policy: IndexPolicy,
-        resp: Sender<Result<(), CorelamoError>>,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     SetConfig {
         options: DatabaseOptions,
-        resp: Sender<Result<(), CorelamoError>>,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     Clear {
-        resp: Sender<Result<(), CorelamoError>>,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
-
     Upsert {
         inputs: Vec<DocumentInput>,
-        resp: Sender<Result<InsertReport, CorelamoError>>,
+        resp: oneshot::Sender<Result<InsertReport, CorelamoError>>,
     },
-
     Replace {
         inputs: Vec<DocumentInput>,
-        resp: Sender<Result<ReplaceReport, CorelamoError>>,
+        resp: oneshot::Sender<Result<ReplaceReport, CorelamoError>>,
     },
     Delete {
         ids: Vec<String>,
-        resp: Sender<Result<DeleteReport, CorelamoError>>,
+        resp: oneshot::Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
         resp: Sender<Result<ReindexParams, CorelamoError>>,
@@ -68,33 +64,15 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
     Start {
-        resp: Sender<Result<(), CorelamoError>>,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     Stop {
-        resp: Sender<Result<(), CorelamoError>>,
-    },
-
-    GetLogs {
-        date: Option<String>,
-        resp: Sender<Result<String, CorelamoError>>,
-    },
-    ClearLogs {
-        resp: Sender<Result<(), CorelamoError>>,
-    },
-
-    DocCount {
-        resp: Sender<usize>,
-    },
-
-    ResolveHits {
-        hits: Vec<SearchHit>,
-        resp: Sender<Result<Vec<SearchDocumentHit>, CorelamoError>>,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     Shutdown {
         resp: Sender<Result<(), CorelamoError>>,
     },
 }
-
 #[derive(Clone)]
 pub struct ShardHandle {
     id: ShardId,
@@ -165,6 +143,62 @@ impl ShardHandle {
         Ok(out)
     }
 
+    pub fn document_count_direct(&self) -> usize {
+        self.shared.docs.len()
+    }
+
+    pub fn get_logs_direct(&self, date: Option<String>) -> Result<String, CorelamoError> {
+        let logs_dir = self.shared.root.join("logs");
+        if !logs_dir.exists() {
+            return Ok(String::new());
+        }
+
+        let mut files: Vec<PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(&logs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+                if let Some(ref date_str) = date {
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map_or(false, |name| name.contains(date_str))
+                    {
+                        files.push(path);
+                    }
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+
+        let mut output = String::new();
+        for file_path in files {
+            let content = std::fs::read_to_string(&file_path)?;
+            output.push_str(&content);
+            if !content.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+        Ok(output)
+    }
+
+    pub fn clear_logs_direct(&self) -> Result<(), CorelamoError> {
+        let logs_dir = self.shared.root.join("logs");
+        if !logs_dir.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(&logs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+                std::fs::remove_file(&path)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn lookup_direct(
         &self,
         ids: &[String],
@@ -223,64 +257,55 @@ impl ShardHandle {
         self.tx.send(cmd).map_err(|e| (self.dead(), e.0))
     }
 
-    fn call<T>(&self, make: impl FnOnce(Sender<T>) -> ShardCmd) -> Result<T, CorelamoError> {
-        let (rtx, rrx) = bounded(1);
-        self.tx.send(make(rtx)).map_err(|_| self.dead())?;
-        rrx.recv().map_err(|_| self.dead())
-    }
-
     fn dead(&self) -> CorelamoError {
         CorelamoError::Internal(format!("shard {} is not running", self.id))
     }
 
-    pub fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-        self.call(|resp| ShardCmd::Insert { inputs, resp })?
+    async fn call<T>(
+        &self,
+        make: impl FnOnce(oneshot::Sender<T>) -> ShardCmd,
+    ) -> Result<T, CorelamoError> {
+        let (rtx, rrx) = oneshot::channel();
+        self.tx.send(make(rtx)).map_err(|_| self.dead())?;
+        rrx.await.map_err(|_| self.dead())
     }
 
-    pub fn flush(&self) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Flush { resp })?
+    pub async fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+        self.call(|resp| ShardCmd::Insert { inputs, resp }).await?
+    }
+    pub async fn flush(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Flush { resp }).await?
+    }
+    pub async fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+        self.call(|resp| ShardCmd::Upsert { inputs, resp }).await?
+    }
+    pub async fn replace(
+        &self,
+        inputs: Vec<DocumentInput>,
+    ) -> Result<ReplaceReport, CorelamoError> {
+        self.call(|resp| ShardCmd::Replace { inputs, resp }).await?
+    }
+    pub async fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+        self.call(|resp| ShardCmd::Delete { ids, resp }).await?
+    }
+    pub async fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::SetPolicy { policy, resp })
+            .await?
+    }
+    pub async fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::SetConfig { options, resp })
+            .await?
+    }
+    pub async fn start(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Start { resp }).await?
+    }
+    pub async fn stop(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Stop { resp }).await?
+    }
+    pub async fn clear(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Clear { resp }).await?
     }
 
-    pub fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-        self.call(|resp| ShardCmd::Upsert { inputs, resp })?
-    }
-    pub fn replace(&self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
-        self.call(|resp| ShardCmd::Replace { inputs, resp })?
-    }
-    pub fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
-        self.call(|resp| ShardCmd::Delete { ids, resp })?
-    }
-
-    pub fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::SetPolicy { policy, resp })?
-    }
-
-    pub fn start(&self) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Start { resp })?
-    }
-    pub fn stop(&self) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Stop { resp })?
-    }
-
-    pub fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::SetConfig { options, resp })?
-    }
-
-    pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
-        self.call(|resp| ShardCmd::GetLogs { date, resp })?
-    }
-
-    pub fn clear_logs(&self) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::ClearLogs { resp })?
-    }
-
-    pub fn document_count(&self) -> Result<usize, CorelamoError> {
-        self.call(|resp| ShardCmd::DocCount { resp })
-    }
-
-    pub fn shutdown(&self) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Shutdown { resp })?
-    }
     //reindex
     pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
         self.tx.clone()
@@ -362,9 +387,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 ShardCmd::SetPolicy { policy, resp } => {
                     let _ = resp.send(shard.set_policy(policy));
                 }
-                ShardCmd::DocCount { resp } => {
-                    let _ = resp.send(shard.document_count());
-                }
+
                 ShardCmd::Upsert { inputs, resp } => {
                     let _ = resp.send(shard.upsert(inputs));
                 }
@@ -380,29 +403,6 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 ShardCmd::CommitReindex { done, resp } => {
                     let _ = resp.send(shard.commit_reindex(done));
                 }
-                ShardCmd::IsRunning { resp } => {
-                    let _ = resp.send(shard.is_running());
-                }
-
-                ShardCmd::ResolveHits { hits, resp } => {
-                    let _ = resp.send(shard.resolve_hits(hits));
-                }
-
-                ShardCmd::Clear { resp } => {
-                    shared.is_clearing.store(true, Ordering::Release);
-                    let result = shard.clear();
-                    shared.is_clearing.store(false, Ordering::Release);
-                    let _ = resp.send(result);
-                }
-
-                ShardCmd::GetLogs { date, resp } => {
-                    let _ = resp.send(shard.get_logs(date));
-                }
-
-                ShardCmd::ClearLogs { resp } => {
-                    let _ = resp.send(shard.clear_logs());
-                }
-
                 ShardCmd::Start { resp } => {
                     let result = shard.start();
                     shared.is_running.store(result.is_ok(), Ordering::Release);

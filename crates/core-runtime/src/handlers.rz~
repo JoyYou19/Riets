@@ -430,7 +430,7 @@ pub async fn stop_database_handler(
 
     match manager.stop().await {
         Ok(_) => {
-            return HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response();
+            return HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response();
         }
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -446,11 +446,16 @@ pub async fn restart_database_handler(
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    match manager.restart().await {
-        Ok(_) => {
-            return HttpOk::new(format!("database '{db_name}' restarted"), &ctx).into_response();
+    match tokio::task::spawn_blocking(move || manager.restart()).await {
+        Ok(Ok(())) => {
+            HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
         }
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("restart task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -470,19 +475,18 @@ pub async fn clear_database_handler(
         }
     };
 
-    match manager.clear_all().await {
-        Ok(_) => {
-            return HttpOk::new(
-                format!("database: {db_name}, is cleared of data and index"),
-                &ctx,
-            )
-            .into_response();
-        }
-
+    match manager.clear_all() {
+        Ok(_) => {}
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     }
+
+    HttpOk::new(
+        format!("database: {db_name}, is cleared of data and index"),
+        &ctx,
+    )
+    .into_response()
 }
 
 pub async fn get_logs_handler(
@@ -588,9 +592,9 @@ pub async fn delete_document_handler(
 
     let manager = Arc::clone(&handle);
     let ids = command.ids;
-
-    let report = match manager.delete(ids).await {
-        Ok(r) => r,
+    let report = match tokio::task::spawn_blocking(move || manager.delete(ids)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("delete task panicked: {e}")),
@@ -661,8 +665,9 @@ pub async fn replace_document_handler(
     let parse_failures = outcome.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.replace(outcome.docs).await {
-        Ok(r) => r,
+    let report = match tokio::task::spawn_blocking(move || manager.replace(outcome.docs)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("replace task panicked: {e}")),
@@ -737,8 +742,9 @@ pub async fn upsert_document_handler(
     let parse_failures = outcome.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.upsert(outcome.docs).await {
-        Ok(r) => r,
+    let report = match tokio::task::spawn_blocking(move || manager.upsert(outcome.docs)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("upsert task panicked: {e}")),
@@ -797,7 +803,7 @@ pub async fn create_database_handler(
     let db_path = state.databases_dir.join(&db_name);
 
     let created = tokio::task::spawn_blocking(move || {
-        ShardManager::create(db_path, 6, DatabaseOptions::default())
+        ShardManager::create(db_path, 2, DatabaseOptions::default())
     })
     .await;
 
@@ -1068,7 +1074,7 @@ pub async fn set_policy_handler(
         }
     };
 
-    match handle.set_policy_all(policy).await {
+    match handle.set_policy_all(policy) {
         Ok(()) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -1130,7 +1136,7 @@ pub async fn set_config_handler(
         }
     };
 
-    match handle.set_options_all(options).await {
+    match handle.set_options_all(options) {
         Ok(_) => HttpOk::new(format!("config updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(
             CorelamoError::Internal(format!("failed to update config for '{db_name}': {e}")),
