@@ -1,5 +1,5 @@
 use crate::{
-    Permission::{self, Lookup},
+    Permission::self,
     PolicyStore,
 };
 

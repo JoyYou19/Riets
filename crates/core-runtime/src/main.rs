@@ -1,4 +1,4 @@
-//HEELO WORLD
+
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -292,8 +292,9 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/restart-database",
             post(handlers::restart_database_handler),
-        );
-
+        )
+        .route( "/api/databases/{db_name}/backup",post(handlers::backup_handler))
+        .route("/api/databases/{db_name}/restore-backup",post(handlers::backup_restore_handler));
     let protected_routes = if enable_auth {
         protected_routes.layer(from_fn_with_state(
             state.clone(),

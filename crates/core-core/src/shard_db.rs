@@ -8,8 +8,10 @@ pub struct DatabaseStats {
     pub metrics: DatabaseMetrics,
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
+  
 }
 
+use core_backup::backup::{ BackupError, BackupManager, BackupManifest };
 use core_index::{
     analyzer::Analyzer,
     document::IndexPolicy,
@@ -34,7 +36,6 @@ use core_storage::{
         DocumentInput,
         IndexMode,
         InsertReport,
-        PendingOp,
         ReplaceReport,
         SearchDatabase,
         SearchDocumentHit,
@@ -50,6 +51,7 @@ use crate::{
 };
 use core_logs::logger;
 use slog::{ Logger, error, info, warn };
+
 pub struct ShardDb {
     shard_id: ShardId,
     root: PathBuf,
@@ -63,6 +65,7 @@ pub struct ShardDb {
     wal: Wal,
     generation: u64,
     shared: Arc<SharedShardState>,
+    backup: BackupManager,
 }
 
 impl ShardDb {
@@ -72,6 +75,7 @@ impl ShardDb {
 
     pub fn create_shard(
         root: impl AsRef<Path>,
+        db_root: impl AsRef<Path>,
         shard_id: ShardId,
         options: DatabaseOptions,
         policy: IndexPolicy,
@@ -92,10 +96,11 @@ impl ShardDb {
         let wal = Wal::open(root.join("wal.log"), core_storage::wal::SyncMode::SyncEach).map_err(|e|
             CorelamoError::Internal(format!("failed to open WAL: {e}"))
         )?;
-
         let store_path = root.join("documents.bin");
         BinaryDocumentStore::open(&store_path)?;
-
+        let backup_dir = db_root.as_ref().join("backups").join(&name);
+        std::fs::create_dir_all(&backup_dir)?;
+        let backup = BackupManager::new(backup_dir); // see note below
         Ok(Self {
             shard_id,
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -108,11 +113,13 @@ impl ShardDb {
             generation: 0,
             stats,
             root,
+            backup,
         })
     }
 
     pub fn load(
         root: impl AsRef<Path>,
+        db_root: impl AsRef<Path>,
         policy: &IndexPolicy,
         options: &DatabaseOptions,
         stats: ShardStatsHandle
@@ -139,7 +146,9 @@ impl ShardDb {
         let wal = Wal::open(root.join("wal.log"), core_storage::wal::SyncMode::SyncEach).map_err(|e|
             CorelamoError::Internal(format!("failed to open WAL: {e}"))
         )?;
-
+        let backup_dir = db_root.as_ref().join("backups").join(&name);
+        std::fs::create_dir_all(&backup_dir)?;
+        let backup = BackupManager::new(backup_dir);
         Ok(Self {
             shard_id: ShardId::from(shard_id),
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -152,6 +161,7 @@ impl ShardDb {
             log,
             wal,
             generation: 0,
+            backup,
         })
     }
 
@@ -398,13 +408,13 @@ impl ShardDb {
     }
 
     pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
-    let started = std::time::Instant::now();
-    let count = inputs.len();
-    let batch_size = self.options.runtime.indexing_batch_size;
-    let window_size = self.options.runtime.indexing_window_size;
-    let result = (|| -> Result<InsertReport, CorelamoError> {
-        let offset = self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
-        info!(self.log, "WAL append";
+        let started = std::time::Instant::now();
+        let count = inputs.len();
+        let batch_size = self.options.runtime.indexing_batch_size;
+        let window_size = self.options.runtime.indexing_window_size;
+        let result = (|| -> Result<InsertReport, CorelamoError> {
+            let offset = self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
+            info!(self.log, "WAL append";
             "operation" => "create",
             "shard_id" => %self.shard_id,
             "documents" => count,
@@ -412,42 +422,42 @@ impl ShardDb {
             "durable_offset" => self.wal.durable_offset(),
         );
 
-        let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        let report = db
-            .put_documents_parallel(inputs, batch_size, window_size)
-            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let report = db
+                .put_documents_parallel(inputs, batch_size, window_size)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
-        if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
-            warn!(self.log, "checkpoint write failed"; "error" => %e);
-        }
+            if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
+                warn!(self.log, "checkpoint write failed"; "error" => %e);
+            }
 
-        Ok(report)
-    })();
-    let elapsed = started.elapsed();
-    match &result {
-        Ok(report) => {
-            self.stats.add_indexed(report.inserted as u64);
-            self.publish_stats();
-            info!(self.log, "indexed batch";
+            Ok(report)
+        })();
+        let elapsed = started.elapsed();
+        match &result {
+            Ok(report) => {
+                self.stats.add_indexed(report.inserted as u64);
+                self.publish_stats();
+                info!(self.log, "indexed batch";
                 "shard_id" => %self.shard_id,
                 "documents" => count,
                 "batch_size" => batch_size,
                 "elapsed_ms" => elapsed.as_millis(),
             );
-        }
-        Err(e) => {
-            error!(self.log, "indexing failed";
+            }
+            Err(e) => {
+                error!(self.log, "indexing failed";
                 "shard_id" => %self.shard_id,
                 "documents" => count,
                 "batch_size" => batch_size,
                 "elapsed_ms" => elapsed.as_millis(),
                 "error" => %e,
             );
+            }
         }
+        result
     }
-    result
-}
 
     pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
         let logs_dir = self.root.join("logs");
@@ -513,8 +523,8 @@ impl ShardDb {
         let mut deleted: u32 = 0;
         let mut failures: Vec<DocFailure> = Vec::new();
 
-       
-        let offset = self.wal_append_record(&WalRecord::Delete(ids.clone()))
+        let _offset = self
+            .wal_append_record(&WalRecord::Delete(ids.clone()))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
         {
             let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
@@ -542,7 +552,7 @@ impl ShardDb {
                 match db.delete_document(&id) {
                     Ok(()) => {
                         deleted += 1;
-                    }   
+                    }
                     Err(e) => {
                         failures.push(
                             DocFailure::new(
@@ -633,7 +643,6 @@ impl ShardDb {
     }
 
     pub fn replace(&mut self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
-
         let started = std::time::Instant::now();
         let count = inputs.len();
         let mut replaced: u32 = 0;
@@ -641,11 +650,11 @@ impl ShardDb {
         let mut old_internal_ids = Vec::new();
         let mut written_ids = Vec::new();
 
-       
         //TOOD: batch support
-        let offset = self.wal_append_record(&WalRecord::Replace(inputs.clone()))
+        let _offset = self
+            .wal_append_record(&WalRecord::Replace(inputs.clone()))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
-            //vajag info log?
+        //vajag info log?
         {
             let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
@@ -712,7 +721,8 @@ impl ShardDb {
         let mut failures: Vec<DocFailure> = Vec::new();
         let mut old_internal_ids = Vec::new();
         let mut written_ids = Vec::new();
-        let _offset = self.wal_append_record(&WalRecord::Upsert(inputs.clone()))
+        let _offset = self
+            .wal_append_record(&WalRecord::Upsert(inputs.clone()))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
         //vajag info log?
         {
@@ -775,7 +785,7 @@ impl ShardDb {
             .flush()
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
-    
+
     pub fn progress(&self) -> Arc<ReindexProgress> {
         Arc::clone(self.stats.reindex_progress())
     }
@@ -799,7 +809,8 @@ impl ShardDb {
     }
 
     pub fn clear(&mut self) -> Result<(), CorelamoError> {
-        let _offset = self.wal_append_record(&WalRecord::Clear)
+        let _offset = self
+            .wal_append_record(&WalRecord::Clear)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
         //vajag info log?
         if let Some(worker) = self.compaction_worker.take() {
@@ -857,6 +868,35 @@ impl ShardDb {
         Ok(())
     }
 
+    pub fn backup_full(&mut self) -> Result<BackupManifest, CorelamoError> {
+        self.backup
+            .create_full_backup(&self.root, &self.wal)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))
+    }
+
+    pub fn backup_incremental(&mut self) -> Result<BackupManifest, CorelamoError> {
+        self.backup
+            .create_incremental_backup(&self.wal)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))
+    }
+    pub fn restore_backup(&mut self) -> Result<(), CorelamoError> {
+        let backup_id = self.backup
+            .latest_backup_id()
+            .ok_or_else(|| CorelamoError::NotFound("no backup exists for this shard".to_string()))?
+            .to_string();
+        let root = self.root.clone();
+        self.restore_from_backup(&backup_id, &root)
+    }
+    
+    pub fn restore_from_backup(
+        &self,
+        backup_id: &str,
+        target_dir: &Path
+    ) -> Result<(), CorelamoError> {
+        self.backup
+            .restore_chain(backup_id, target_dir)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))
+    }
     fn publish_stats(&self) {
         let Ok(db) = self.db_ref() else {
             return;

@@ -53,8 +53,7 @@ pub struct MemoryDocumentStore {
 }
 
 impl MemoryDocumentStore {
-    pub fn new(name: &str) -> Self {
-        //te bija self::Default()
+    pub fn new(_name: &str) -> Self {
         Self {
             docs: BTreeMap::default(),
             internal_to_external: BTreeMap::default(),

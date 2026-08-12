@@ -9,7 +9,7 @@ use axum::{
 };
 use core_auth::{Permission, Principal};
 
-use core_core::{DatabaseOptions, shard_manager::ShardManager};
+use core_core::{DatabaseOptions, shard_manager::ShardManager, shard_worker::ShardCmd::BackupFull};
 use slog::{error, info, o};
 
 use crate::{
@@ -25,7 +25,7 @@ use core_protocol::{
     errors::CorelamoError,
 };
 use serde_json::json;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::Component::RootDir, sync::Arc};
 
 //authorizations
 use serde::Deserialize;
@@ -195,7 +195,7 @@ pub async fn lookup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    Extension(_principal): Extension<Principal>,
     body: String,
 ) -> Response {
     let manager = match state.lookup(&db_name) {
@@ -458,15 +458,15 @@ pub async fn clear_database_handler(
 
     match manager.clear_all().await {
         Ok(_) => {
-            return HttpOk::new(
+            HttpOk::new(
                 format!("database: {db_name}, is cleared of data and index"),
                 &ctx,
             )
-            .into_response();
+            .into_response()
         }
 
         Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
+            HttpError::from_corelamo(e, &ctx).into_response()
         }
     }
 }
@@ -951,7 +951,7 @@ pub async fn stats_handler(
                 "search_requests": metrics.search_requests,
                 "search_errors": metrics.search_errors,
                 "average_search_us": metrics.average_search_time()
-                    .map(|d| d.as_micros() as u64),
+                    .map(|d| d.as_millis() as u64),
                 "indexing_requests": metrics.indexing_requests,
                 "indexing_errors": metrics.indexing_errors,
                 "average_indexing_ms": metrics.average_indexing_time()
@@ -1301,5 +1301,56 @@ pub async fn update_user_roles_handler(
     match auth.update_user_roles(&principal, &username, req.roles) {
         Ok(()) => HttpOk::new(format!("roles updated for '{}'", username), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn backup_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let name_for_log = db_name.clone();
+    tokio::spawn(async move {
+        match handle.backup_full().await {
+            Ok(_manifests) => slog::info!(slog::Logger::root(slog::Discard, o!()), "backup completed"; "db" => %name_for_log), //parmainit
+            Err(_e) => slog::error!(slog::Logger::root(slog::Discard, o!()), "backup failed"; "db" => %name_for_log),
+        }
+    });
+
+    HttpOk::new(format!("backup started for '{db_name}'"), &ctx).into_response()
+}
+
+ pub async fn backup_restore_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    match handle.restore_backup().await {
+        Ok(()) => HttpOk::new(format!("restored '{db_name}' from latest backup"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("restore failed for '{db_name}': {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }

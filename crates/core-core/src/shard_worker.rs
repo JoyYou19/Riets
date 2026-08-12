@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{ AtomicBool, Ordering };
 use std::thread::{ self, JoinHandle };
 
+use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_storage::document_store::StoredDocument;
@@ -77,6 +78,15 @@ pub enum ShardCmd {
     },
     Shutdown {
         resp: Sender<Result<(), CorelamoError>>,
+    },
+    BackupFull {
+        resp: oneshot::Sender<Result<BackupManifest, CorelamoError>>,
+    },
+    BackupIncremental {
+        resp: oneshot::Sender<Result<BackupManifest, CorelamoError>>,
+    },
+    Restore {
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
 }
 #[derive(Clone)]
@@ -304,7 +314,17 @@ impl ShardHandle {
     pub async fn clear(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Clear { resp }).await?
     }
+    pub async fn backup_full(&self) -> Result<BackupManifest, CorelamoError> {
+        self.call(|resp| ShardCmd::BackupFull { resp }).await?
+    }
 
+    pub async fn backup_incremental(&self) -> Result<BackupManifest, CorelamoError> {
+        self.call(|resp| ShardCmd::BackupIncremental { resp }).await?
+    }
+
+    pub async fn restore_backup(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Restore { resp }).await?
+    }
     //reindex
     pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
         self.tx.clone()
@@ -365,12 +385,10 @@ pub fn spawn(
     ))
 }
 
-
-
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
     const MAX_BATCH: usize = 32;
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
-   
+
     while let Ok(first) = rx.recv() {
         batch.push(first);
         batch.extend(rx.try_iter().take(MAX_BATCH - 1));
@@ -388,7 +406,6 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 ShardCmd::SetPolicy { policy, resp } => {
                     let _ = resp.send(shard.set_policy(policy));
                 }
-
                 ShardCmd::Upsert { inputs, resp } => {
                     let _ = resp.send(shard.upsert(inputs));
                 }
@@ -425,6 +442,34 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let result = shard.clear();
                     shared.is_clearing.store(false, Ordering::Release);
                     let _ = resp.send(result);
+                }
+                ShardCmd::BackupFull { resp } => {
+                    shared.is_backing_up.store(true, Ordering::Release);
+                    let result = shard.backup_full();
+                    shared.is_backing_up.store(false, Ordering::Release);
+                    if let Ok(manifest) = &result {
+                        *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) = Some(
+                            manifest.backup_id.clone()
+                        );
+                        shared.last_backup_at.store(manifest.created_at, Ordering::Release);
+                    }
+                    let _ = resp.send(result);
+                }
+                ShardCmd::BackupIncremental { resp } => {
+                    shared.is_backing_up.store(true, Ordering::Release);
+                    let result = shard.backup_incremental();
+                    shared.is_backing_up.store(false, Ordering::Release);
+                    if let Ok(manifest) = &result {
+                        *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) = Some(
+                            manifest.backup_id.clone()
+                        );
+                        shared.last_backup_at.store(manifest.created_at, Ordering::Release);
+                    }
+                    let _ = resp.send(result);
+                }
+
+                ShardCmd::Restore { resp } => {
+                    let _ = resp.send(shard.restore_backup());
                 }
             }
         }
