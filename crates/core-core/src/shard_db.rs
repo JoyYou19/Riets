@@ -34,7 +34,7 @@ use core_storage::{
         DocumentInput,
         IndexMode,
         InsertReport,
-        PendingOp,
+    
         ReplaceReport,
         SearchDatabase,
         SearchDocumentHit,
@@ -514,7 +514,7 @@ impl ShardDb {
         let mut failures: Vec<DocFailure> = Vec::new();
 
        
-        let offset = self.wal_append_record(&WalRecord::Delete(ids.clone()))
+        let _offset = self.wal_append_record(&WalRecord::Delete(ids.clone()))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
         {
             let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
@@ -643,7 +643,7 @@ impl ShardDb {
 
        
         //TOOD: batch support
-        let offset = self.wal_append_record(&WalRecord::Replace(inputs.clone()))
+        let _offset = self.wal_append_record(&WalRecord::Replace(inputs.clone()))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
             //vajag info log?
         {

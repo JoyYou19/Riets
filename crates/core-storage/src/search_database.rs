@@ -135,7 +135,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     pub fn shard_id(&self) -> ShardId {
-        self.shard_id.clone()
+        self.shard_id
     }
 
     pub fn owns_doc_id(&self, doc_id: DocId) -> bool {
@@ -215,7 +215,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("local document ID overflow"))?;
 
-        Ok(make_doc_id(self.shard_id.clone(), local_id))
+        Ok(make_doc_id(self.shard_id, local_id))
     }
 
     pub fn document_count(&self) -> usize {
@@ -525,19 +525,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             return Ok(Vec::new());
         }
 
-        // println!(
-        //     "offset={}, limit={}, requested={}, returned={}",
-        //     offset,
-        //     limit,
-        //     requested_hits,
-        //     hits.len(),
-        // );
-
-        //INFO: nahuj sito printu lmao
-        // for (i, hit) in hits.iter().take(15).enumerate() {
-        //     println!("{i}: doc={} score={}", hit.doc_id, hit.score);
-        // }
-
+        
         // I don't want to allocate another Vec and also lets not touch skipped docs
         hits.drain(..offset);
         hits.truncate(limit);
@@ -665,17 +653,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         stored_document_to_indexed(doc, &self.policy)
     }
 
-    pub fn apply_pending(&mut self, ops: Vec<PendingOp>) -> io::Result<()> {
-        for op in ops {
-            match op {
-                PendingOp::Index { doc } => self.index_worker.add_indexed_document_wait(doc)?,
-                PendingOp::Tombstone { internal_id } => {
-                    self.index_worker.delete_document_wait(internal_id)?
-                }
-            }
-        }
-        Ok(())
-    }
+   
     pub fn index_stats(&self) -> io::Result<IndexingStats> {
     self.index_worker.get_stats()
     }

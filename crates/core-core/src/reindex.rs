@@ -109,7 +109,7 @@ fn worker_loop(rx: Receiver<ReindexJob>) {
 fn build_staging_index(
     params: &ReindexParams,
     progress: &ReindexProgress,
-    stats:&DbStats
+    _stats:&DbStats
 ) -> Result<CompletedShardReindex, CorelamoError> {
     let staging_root = params.shard_root.join("index.new");
     if staging_root.exists() {

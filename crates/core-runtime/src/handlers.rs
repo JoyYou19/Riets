@@ -195,7 +195,7 @@ pub async fn lookup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
+    Extension(_principal): Extension<Principal>,
     body: String,
 ) -> Response {
     let manager = match state.lookup(&db_name) {
@@ -458,15 +458,15 @@ pub async fn clear_database_handler(
 
     match manager.clear_all().await {
         Ok(_) => {
-            return HttpOk::new(
+            HttpOk::new(
                 format!("database: {db_name}, is cleared of data and index"),
                 &ctx,
             )
-            .into_response();
+            .into_response()
         }
 
         Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
+            HttpError::from_corelamo(e, &ctx).into_response()
         }
     }
 }
@@ -951,7 +951,7 @@ pub async fn stats_handler(
                 "search_requests": metrics.search_requests,
                 "search_errors": metrics.search_errors,
                 "average_search_us": metrics.average_search_time()
-                    .map(|d| d.as_micros() as u64),
+                    .map(|d| d.as_millis() as u64),
                 "indexing_requests": metrics.indexing_requests,
                 "indexing_errors": metrics.indexing_errors,
                 "average_indexing_ms": metrics.average_indexing_time()

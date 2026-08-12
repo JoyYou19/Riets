@@ -75,7 +75,7 @@ pub struct DbStats {
     reindex: Arc<ReindexProgress>,
     reindex_outstanding: AtomicUsize,
     reindex_failed: AtomicBool,
-    documents_indexed: AtomicU64,
+    // documents_indexed: AtomicU64,
     
 }
 
@@ -87,7 +87,7 @@ impl DbStats {
             reindex: ReindexProgress::new(),
             reindex_outstanding: AtomicUsize::new(0),
             reindex_failed: AtomicBool::new(false),
-            documents_indexed: AtomicU64::new(0),   
+            // documents_indexed: AtomicU64::new(0),   
         })
     }
 
@@ -199,8 +199,8 @@ impl DbStats {
         let mut compaction = false;
         let mut indexed = 0u64;
         let mut deleted = 0u64;
-        let  written = 0u64;
-        let  compactions = 0u64;
+        let mut written = 0u64;
+        let mut compactions = 0u64;
 
         for g in &self.shards {
             documents += g.documents.load(Relaxed);
@@ -208,7 +208,9 @@ impl DbStats {
             terms += g.memtable_terms.load(Relaxed);
             compaction |= g.compaction_enabled.load(Relaxed);
             indexed += g.documents_indexed.load(Relaxed);
-            deleted += g.documents_deleted.load(Relaxed)
+            deleted += g.documents_deleted.load(Relaxed);
+            written += g.segments_written.load(Relaxed);
+            compactions += g.compactions_completed.load(Relaxed);
         }
 
         DatabaseStats {
@@ -248,6 +250,10 @@ impl ShardStatsHandle {
         g.documents.store(document_count, Relaxed);
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
+        // g.documents_indexed.store(stats.total_documents_indexed, Relaxed);
+        g.documents_deleted.store(stats.total_documents_deleted, Relaxed);
+        g.segments_written.store(stats.segments_written, Relaxed);
+        g.compactions_completed.store(stats.compactions_completed, Relaxed);
     }
     pub fn add_indexed(&self, n: u64) {
         self.stats.counters.indexing_requests.fetch_add(n, Relaxed);
