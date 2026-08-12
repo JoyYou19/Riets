@@ -1,18 +1,18 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::{ AtomicBool, Ordering };
+use std::thread::{ self, JoinHandle };
 
 use core_index::analyzer::Analyzer;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_storage::document_store::StoredDocument;
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{ Receiver, Sender, bounded };
 use indexmap::IndexMap;
 use tokio::sync::oneshot;
 
 use crate::DatabaseOptions;
-use crate::reindex::{CompletedShardReindex, ReindexParams};
+use crate::reindex::{ CompletedShardReindex, ReindexParams };
 use crate::shard_db::ShardDb;
 use crate::shared_state::SharedShardState;
 
@@ -20,9 +20,14 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
-use core_query::{Query, QueryExecutor, SearchHit};
+use core_query::{ Query, QueryExecutor, SearchHit };
 use core_storage::search_database::{
-    DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, visible_fields,
+    DeleteReport,
+    DocumentInput,
+    InsertReport,
+    ReplaceReport,
+    SearchDocumentHit,
+    visible_fields,
 };
 
 //insane portno kur dazaam komandam ir crossbeam_channel dazam ir oneshot
@@ -87,16 +92,12 @@ pub struct ShardHandle {
 impl ShardHandle {
     fn ensure_readable(&self) -> Result<(), CorelamoError> {
         if !self.is_running() {
-            return Err(CorelamoError::DatabaseNotRunning(format!(
-                "shard {} is not running",
-                self.id
-            )));
+            return Err(
+                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.id))
+            );
         }
         if self.is_clearing() {
-            return Err(CorelamoError::Busy(format!(
-                "shard {} is clearing",
-                self.id
-            )));
+            return Err(CorelamoError::Busy(format!("shard {} is clearing", self.id)));
         }
         Ok(())
     }
@@ -133,7 +134,7 @@ impl ShardHandle {
 
     pub fn get_document_direct(
         &self,
-        ids: &[String],
+        ids: &[String]
     ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
         self.ensure_readable()?;
         let mut out = Vec::with_capacity(ids.len());
@@ -158,12 +159,13 @@ impl ShardHandle {
         for entry in std::fs::read_dir(&logs_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+            if path.is_file() && path.extension().is_some_and(|e| e == "log") {
                 if let Some(ref date_str) = date {
-                    if path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map_or(false, |name| name.contains(date_str))
+                    if
+                        path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|name| name.contains(date_str))
                     {
                         files.push(path);
                     }
@@ -193,7 +195,7 @@ impl ShardHandle {
         for entry in std::fs::read_dir(&logs_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+            if path.is_file() && path.extension().is_some_and(|e| e == "log") {
                 std::fs::remove_file(&path)?;
             }
         }
@@ -204,17 +206,18 @@ impl ShardHandle {
         &self,
         ids: &[String],
         return_fields: Option<&IndexMap<String, bool>>,
-        policy: &IndexPolicy,
+        policy: &IndexPolicy
     ) -> Result<LookupResponse, CorelamoError> {
         self.ensure_readable()?;
         let mut found = Vec::new();
         let mut not_found = Vec::new();
         for id in ids {
             match self.shared.docs.get(id) {
-                Some(entry) => found.push((
-                    entry.value().external_id.clone(),
-                    visible_fields(&entry.value().fields, policy, return_fields),
-                )),
+                Some(entry) =>
+                    found.push((
+                        entry.value().external_id.clone(),
+                        visible_fields(&entry.value().fields, policy, return_fields),
+                    )),
                 None => not_found.push(id.clone()),
             }
         }
@@ -226,17 +229,14 @@ impl ShardHandle {
     pub fn resolve_hits_direct(
         &self,
         hits: Vec<SearchHit>,
-        policy: &IndexPolicy,
+        policy: &IndexPolicy
     ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         self.ensure_readable()?;
         let mut results = Vec::with_capacity(hits.len());
         for hit in hits {
-            let Some(external_id) = self
-                .shared
-                .internal_to_external
+            let Some(external_id) = self.shared.internal_to_external
                 .get(&hit.doc_id)
-                .map(|r| r.value().clone())
-            else {
+                .map(|r| r.value().clone()) else {
                 continue;
             };
             let Some(doc) = self.shared.docs.get(&external_id) else {
@@ -264,7 +264,7 @@ impl ShardHandle {
 
     async fn call<T>(
         &self,
-        make: impl FnOnce(oneshot::Sender<T>) -> ShardCmd,
+        make: impl FnOnce(oneshot::Sender<T>) -> ShardCmd
     ) -> Result<T, CorelamoError> {
         let (rtx, rrx) = oneshot::channel();
         self.tx.send(make(rtx)).map_err(|_| self.dead())?;
@@ -282,7 +282,7 @@ impl ShardHandle {
     }
     pub async fn replace(
         &self,
-        inputs: Vec<DocumentInput>,
+        inputs: Vec<DocumentInput>
     ) -> Result<ReplaceReport, CorelamoError> {
         self.call(|resp| ShardCmd::Replace { inputs, resp }).await?
     }
@@ -290,12 +290,10 @@ impl ShardHandle {
         self.call(|resp| ShardCmd::Delete { ids, resp }).await?
     }
     pub async fn set_policy(&self, policy: IndexPolicy) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::SetPolicy { policy, resp })
-            .await?
+        self.call(|resp| ShardCmd::SetPolicy { policy, resp }).await?
     }
     pub async fn set_config(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::SetConfig { options, resp })
-            .await?
+        self.call(|resp| ShardCmd::SetConfig { options, resp }).await?
     }
     pub async fn start(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Start { resp }).await?
@@ -322,7 +320,7 @@ impl Drop for AliveGuard {
 
 pub fn spawn(
     mut shard: ShardDb,
-    queue_depth: usize,
+    queue_depth: usize
 ) -> Result<(ShardHandle, JoinHandle<()>), CorelamoError> {
     let id = shard.shard_id();
     let progress = shard.progress();
@@ -335,7 +333,8 @@ pub fn spawn(
 
     let alive_worker = alive.clone();
     let shared_worker = shared.clone();
-    let join = thread::Builder::new()
+    let join = thread::Builder
+        ::new()
         .name(format!("shard-{}", id))
         .spawn(move || {
             let _guard = AliveGuard(alive_worker);
@@ -366,9 +365,31 @@ pub fn spawn(
     ))
 }
 
+enum QueuedWrite {
+    Insert {
+        inputs: Vec<DocumentInput>,
+        resp: Sender<Result<InsertReport, CorelamoError>>,
+    },
+    Upsert {
+        inputs: Vec<DocumentInput>,
+        resp: Sender<Result<InsertReport, CorelamoError>>,
+    },
+    Replace {
+        inputs: Vec<DocumentInput>,
+        resp: Sender<Result<ReplaceReport, CorelamoError>>,
+    },
+    Delete {
+        ids: Vec<String>,
+        resp: Sender<Result<DeleteReport, CorelamoError>>,
+    },
+}
+
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
     const MAX_BATCH: usize = 32;
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
+    //QUEUE prieks reindex
+    let mut reindexing = false;
+    let mut queued: Vec<QueuedWrite> = Vec::new();
 
     while let Ok(first) = rx.recv() {
         batch.push(first);
@@ -399,10 +420,33 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let _ = resp.send(shard.delete(ids));
                 }
                 ShardCmd::PrepareReindex { resp } => {
-                    let _ = resp.send(shard.prepare_reindex());
+                    let result = shard.prepare_reindex();
+                    if result.is_ok() {
+                        reindexing = true;
+                    }
+                    let _ = resp.send(result);
                 }
                 ShardCmd::CommitReindex { done, resp } => {
-                    let _ = resp.send(shard.commit_reindex(done));
+                    let result = shard.commit_reindex(done);
+                    reindexing = false;
+                    // drain in the order they arrived, against the now-live new index
+                    for w in queued.drain(..) {
+                        match w {
+                            QueuedWrite::Insert { inputs, resp } => {
+                                let _ = resp.send(shard.insert(inputs));
+                            }
+                            QueuedWrite::Upsert { inputs, resp } => {
+                                let _ = resp.send(shard.upsert(inputs));
+                            }
+                            QueuedWrite::Replace { inputs, resp } => {
+                                let _ = resp.send(shard.replace(inputs));
+                            }
+                            QueuedWrite::Delete { ids, resp } => {
+                                let _ = resp.send(shard.delete(ids));
+                            }
+                        }
+                    }
+                    let _ = resp.send(result);
                 }
                 ShardCmd::Start { resp } => {
                     let result = shard.start();

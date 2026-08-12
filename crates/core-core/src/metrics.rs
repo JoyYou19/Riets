@@ -75,6 +75,8 @@ pub struct DbStats {
     reindex: Arc<ReindexProgress>,
     reindex_outstanding: AtomicUsize,
     reindex_failed: AtomicBool,
+    documents_indexed: AtomicU64,
+    
 }
 
 impl DbStats {
@@ -85,6 +87,7 @@ impl DbStats {
             reindex: ReindexProgress::new(),
             reindex_outstanding: AtomicUsize::new(0),
             reindex_failed: AtomicBool::new(false),
+            documents_indexed: AtomicU64::new(0),   
         })
     }
 
@@ -246,9 +249,9 @@ impl ShardStatsHandle {
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
     }
-    // pub fn add_indexed(&self, n: u64) {
-    //     self.stats.counters.documents_indexed.fetch_add(n, Relaxed);
-    // }
+    pub fn add_indexed(&self, n: u64) {
+        self.stats.counters.indexing_requests.fetch_add(n, Relaxed);
+    }
     // pub fn add_deleted(&self, n: u64) {
     //     self.stats.counters.documents_deleted.fetch_add(n, Relaxed);
     // }
@@ -258,4 +261,6 @@ impl ShardStatsHandle {
             .compaction_enabled
             .store(on, Relaxed);
     }
+    
+    
 }
