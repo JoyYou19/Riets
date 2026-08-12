@@ -30,6 +30,9 @@ pub enum Permission {
     DeleteUser,
     UpdateRole,
     UpdatePwd,
+    //backup
+    Restore,
+    Backup
 }
 
 impl Permission {
@@ -59,6 +62,8 @@ impl Permission {
             "StartDB" => Some(Permission::StartDB),
             "StopDB" => Some(Permission::StopDB),
             "RestartDB" => Some(Permission::RestartDB),
+            "Backup" =>Some(Permission::Backup),
+            "Restore" => Some(Permission::Restore),
             _ => None,
         }
     }

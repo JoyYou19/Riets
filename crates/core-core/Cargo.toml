@@ -9,6 +9,7 @@ core-query = { path = "../core-query" }
 core-storage = { path = "../core-storage" }
 core-protocol = {path = "../core-protocol" }
 core-logs={path="../core-logs"}
+core-backup ={path ="../core-backup"}
 slog="2"
 slog-async="2"
 bincode="2.0"
