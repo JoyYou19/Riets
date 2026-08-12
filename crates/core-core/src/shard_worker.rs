@@ -365,36 +365,15 @@ pub fn spawn(
     ))
 }
 
-enum QueuedWrite {
-    Insert {
-        inputs: Vec<DocumentInput>,
-        resp: Sender<Result<InsertReport, CorelamoError>>,
-    },
-    Upsert {
-        inputs: Vec<DocumentInput>,
-        resp: Sender<Result<InsertReport, CorelamoError>>,
-    },
-    Replace {
-        inputs: Vec<DocumentInput>,
-        resp: Sender<Result<ReplaceReport, CorelamoError>>,
-    },
-    Delete {
-        ids: Vec<String>,
-        resp: Sender<Result<DeleteReport, CorelamoError>>,
-    },
-}
+
 
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
     const MAX_BATCH: usize = 32;
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
-    //QUEUE prieks reindex
-    let mut reindexing = false;
-    let mut queued: Vec<QueuedWrite> = Vec::new();
-
+   
     while let Ok(first) = rx.recv() {
         batch.push(first);
         batch.extend(rx.try_iter().take(MAX_BATCH - 1));
-
         for cmd in batch.drain(..) {
             match cmd {
                 ShardCmd::Insert { inputs, resp } => {
@@ -420,33 +399,10 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let _ = resp.send(shard.delete(ids));
                 }
                 ShardCmd::PrepareReindex { resp } => {
-                    let result = shard.prepare_reindex();
-                    if result.is_ok() {
-                        reindexing = true;
-                    }
-                    let _ = resp.send(result);
+                    let _ = resp.send(shard.prepare_reindex());
                 }
                 ShardCmd::CommitReindex { done, resp } => {
-                    let result = shard.commit_reindex(done);
-                    reindexing = false;
-                    // drain in the order they arrived, against the now-live new index
-                    for w in queued.drain(..) {
-                        match w {
-                            QueuedWrite::Insert { inputs, resp } => {
-                                let _ = resp.send(shard.insert(inputs));
-                            }
-                            QueuedWrite::Upsert { inputs, resp } => {
-                                let _ = resp.send(shard.upsert(inputs));
-                            }
-                            QueuedWrite::Replace { inputs, resp } => {
-                                let _ = resp.send(shard.replace(inputs));
-                            }
-                            QueuedWrite::Delete { ids, resp } => {
-                                let _ = resp.send(shard.delete(ids));
-                            }
-                        }
-                    }
-                    let _ = resp.send(result);
+                    let _ = resp.send(shard.commit_reindex(done));
                 }
                 ShardCmd::Start { resp } => {
                     let result = shard.start();
