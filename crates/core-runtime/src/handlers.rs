@@ -9,7 +9,7 @@ use axum::{
 };
 use core_auth::{Permission, Principal};
 
-use core_core::{DatabaseOptions, shard_manager::ShardManager, shard_worker::ShardCmd::BackupFull};
+use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use slog::{error, info, o};
 
 use crate::{
@@ -25,7 +25,7 @@ use core_protocol::{
     errors::CorelamoError,
 };
 use serde_json::json;
-use std::{collections::BTreeMap, path::Component::RootDir, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 //authorizations
 use serde::Deserialize;
@@ -167,13 +167,10 @@ pub async fn search_handler(
         Ok(hits) => hits,
         Err(e) => {
             handle.record_search(true, start.elapsed());
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("search task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
+            return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
+
     handle.record_search(false, start.elapsed());
     let hit_count = hits.len();
     let projected: Vec<(String, BTreeMap<String, String>)> = hits
@@ -457,17 +454,13 @@ pub async fn clear_database_handler(
     };
 
     match manager.clear_all().await {
-        Ok(_) => {
-            HttpOk::new(
-                format!("database: {db_name}, is cleared of data and index"),
-                &ctx,
-            )
-            .into_response()
-        }
+        Ok(_) => HttpOk::new(
+            format!("database: {db_name}, is cleared of data and index"),
+            &ctx,
+        )
+        .into_response(),
 
-        Err(e) => {
-            HttpError::from_corelamo(e, &ctx).into_response()
-        }
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -797,7 +790,7 @@ pub async fn create_database_handler(
     let db_path = state.databases_dir.join(&db_name);
 
     let created = tokio::task::spawn_blocking(move || {
-        ShardManager::create(db_path, 6, DatabaseOptions::default())
+        ShardManager::create(db_path, DatabaseOptions::default())
     })
     .await;
 
@@ -1322,15 +1315,19 @@ pub async fn backup_handler(
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
         match handle.backup_full().await {
-            Ok(_manifests) => slog::info!(slog::Logger::root(slog::Discard, o!()), "backup completed"; "db" => %name_for_log), //parmainit
-            Err(_e) => slog::error!(slog::Logger::root(slog::Discard, o!()), "backup failed"; "db" => %name_for_log),
+            Ok(_manifests) => {
+                slog::info!(slog::Logger::root(slog::Discard, o!()), "backup completed"; "db" => %name_for_log)
+            } //parmainit
+            Err(_e) => {
+                slog::error!(slog::Logger::root(slog::Discard, o!()), "backup failed"; "db" => %name_for_log)
+            }
         }
     });
 
     HttpOk::new(format!("backup started for '{db_name}'"), &ctx).into_response()
 }
 
- pub async fn backup_restore_handler(
+pub async fn backup_restore_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1346,7 +1343,9 @@ pub async fn backup_handler(
     };
 
     match handle.restore_backup().await {
-        Ok(()) => HttpOk::new(format!("restored '{db_name}' from latest backup"), &ctx).into_response(),
+        Ok(()) => {
+            HttpOk::new(format!("restored '{db_name}' from latest backup"), &ctx).into_response()
+        }
         Err(e) => HttpError::from_corelamo(
             CorelamoError::Internal(format!("restore failed for '{db_name}': {e}")),
             &ctx,

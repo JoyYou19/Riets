@@ -29,6 +29,9 @@ pub enum CorelamoError {
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 
+    #[error("path not indexed: {0}")]
+    PathNotIndexed(String),
+
     #[error("conflict: {0}")]
     Conflict(String),
 
@@ -55,6 +58,7 @@ impl CorelamoError {
             CorelamoError::Conflict(_) => "conflict",
             CorelamoError::UnknownRole(_) => "unknown_role",
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
+            CorelamoError::PathNotIndexed(_) => "path_not_indexed",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
             CorelamoError::Busy(_) => "Reindex is busy",
         }
@@ -72,6 +76,7 @@ impl CorelamoError {
             CorelamoError::Conflict(_) => "Conflict",
             CorelamoError::UnknownRole(_) => "Role Error",
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
+            CorelamoError::PathNotIndexed(_) => "Path Not Indexed",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
             CorelamoError::Busy(_) => "Service Unavailable",
         }
@@ -89,6 +94,7 @@ impl CorelamoError {
             | CorelamoError::Conflict(msg)
             | CorelamoError::DatabaseNotRunning(msg)
             | CorelamoError::DatabaseAlreadyRunning(msg)
+            | CorelamoError::PathNotIndexed(msg)
             | CorelamoError::UnknownRole(msg) => msg.clone(),
             CorelamoError::Busy(msg) => msg.clone(),
         }

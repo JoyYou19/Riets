@@ -5,9 +5,16 @@ use std::{
 
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
-    analyzer::analyzer::Analyzer, document::{IndexPolicy, IndexedDocument, policy::IndexKind}, lsm::{
-        LsmIndex, index_worker::{IndexCommand, IndexWorker, IndexingStats, ReindexProgress, build_segments_parallel}, snapshot::SharedIndexSnapshot,
-    }, types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
+    analyzer::analyzer::Analyzer,
+    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    lsm::{
+        LsmIndex,
+        index_worker::{
+            IndexCommand, IndexWorker, IndexingStats, ReindexProgress, build_segments_parallel,
+        },
+        snapshot::SharedIndexSnapshot,
+    },
+    types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
 use bincode::{Decode, Encode};
@@ -525,7 +532,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
             return Ok(Vec::new());
         }
 
-        
         // I don't want to allocate another Vec and also lets not touch skipped docs
         hits.drain(..offset);
         hits.truncate(limit);
@@ -653,9 +659,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
         stored_document_to_indexed(doc, &self.policy)
     }
 
-   
     pub fn index_stats(&self) -> io::Result<IndexingStats> {
-    self.index_worker.get_stats()
+        self.index_worker.get_stats()
     }
 }
 
@@ -721,23 +726,24 @@ fn should_include(
                 return include;
             }
             match candidate.rfind('/') {
-                Some(idx) => {
-                    candidate = &candidate[..idx];
-                }
-                None => {
-                    break;
-                }
+                Some(idx) => candidate = &candidate[..idx],
+                None => break,
             }
         }
     }
 
-    let top_level = path.split('/').next().unwrap_or(path);
-    policy
-        .fields
-        .iter()
-        .find(|f| f.name == top_level)
-        .map(|f| f.list)
-        .unwrap_or(false)
+    let mut candidate = path;
+    loop {
+        if let Some(field) = policy.fields.iter().find(|f| f.name == candidate) {
+            return field.list;
+        }
+        match candidate.rfind('/') {
+            Some(idx) => candidate = &candidate[..idx],
+            None => break,
+        }
+    }
+
+    false
 }
 
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
