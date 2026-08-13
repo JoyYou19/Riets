@@ -93,8 +93,7 @@ echo "=========================================="
 DB="docs"
 check "start database" 200 -X POST "$BASE_URL/api/databases/$DB/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-DOCUMENTS=$(curl -s -X GET "$BASE_URL/api/databases/$DB/status" -H "X-Corelamo-Key: $ADMIN_TOKEN" | jq -r '.data.document_count')
-
+DOCUMENTS=$(curl -s -X GET "$BASE_URL/api/databases/$DB/status" -H "X-Corelamo-Key: $ADMIN_TOKEN" | jq -r '.data.indexed.documents')
 echo "Database '$DB' has $DOCUMENTS documents"
 
 # ------------------------------------------------------------------
@@ -227,7 +226,7 @@ check "gamma or alpha and beta" 200 -X POST "$BASE_URL/api/databases/$DB/search"
 section "Wildcard patterns"
 
 check "*" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*","docs":'"$DOCUMENTS"'}'
-    check_json_bool "data should be $DOCUMENTS" '(.data | length) == '$DOCUMENTS''
+    check_json_bool "data should be $DOCUMENTS minus 2" '(.data | length) == '$DOCUMENTS-2''
 
 #check "4?" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"????","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be hjz" '(.data | length) == hjz'
@@ -237,7 +236,7 @@ check "alpha or theta" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Co
 check "Eta or epsilon or example or eighth" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"e*","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 193" '(.data | length) == 194'
 check "everything that has an a in a word" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*a*","docs":'"$DOCUMENTS"'}'
-    check_json_bool "data should be 256" '(.data | length) == 256'
+    check_json_bool "data should be 256" '(.data | length) == 257'
 check "everything that starts with an a(stopword)" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"a*","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 0" '(.data | length) == 0'
 

@@ -110,7 +110,7 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   max = 100
   '
 
-check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false
@@ -144,22 +144,25 @@ check "insert document without id value" 409 -X POST "$BASE_URL/api/databases/$D
 
 check "insert normal document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"1", "number":"1"}'
+
 check "insert duplicate id" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"1", "number":"none"}'
 
 check "insert text id" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"bruh", "number":"2"}'
+
 check "insert duplicate text id" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"bruh", "number":"none"}'
 
 check "insert document with two ids" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"no","id":"way", "number":"none"}'
-check "retrieve check both" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"no","id":"way", "number":"3"}'
+check "retrieve documents" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '["no","way"]'
 #neatrod no, atrod way(dokuments tikai ar id=way,number=none)
 
 check "insert document with id 3" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"3", "number":"3"}'
+  -d '{"id":"3", "number":"4"}'
+
 
 section "Insert with autoincrement id"
 
@@ -186,16 +189,16 @@ check "set autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-po
 
 
 check "insert document with id value" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"4", "number":"4 un 5"}'
+  -d '{"id":"4", "number":"5"}'
 check "insert document with duplicate id value" 409 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"4", "number":"4 un 5"}'
+  -d '{"id":"4", "number":"5"}'
 check "insert document with id text value" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"yo", "number":"6"}'
 check "insert document without id value" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"id":"", "number":"7"}'
+  -d '{"id":"", "number":"Latvija"}'
 check "insert document without id" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"number":"8"}'
-# ja insertee ar id tad i++, ka ari kad i nonak lidz sim skaitlim(ja tas ir skaitlis) tad to skipo.
+  -d '{"number":"Latvija"}'
+
 
 
 # ------------------------------------------------------------------
@@ -204,19 +207,19 @@ check "insert document without id" 200 -X POST "$BASE_URL/api/databases/$DB/inse
 
 section "Replace"
 
-check "replace bad document" 400 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d 'bad'
-check "replace non existing id" 404 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"idk","number":"none"}'
+check "replace bad document" 400 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d 'bad'
+check "replace non existing id" 404 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"idk","number":"none"}'
 #sitie saka not_found nevis ka trukst id value
-check "replace empty id" 404 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"","number":"none"}'
-check "replace no id" 404 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"number":"none"}'
+check "replace empty id" 404 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"","number":"none"}'
+check "replace no id" 404 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"number":"none"}'
 
 #vins kroc replaco to dokumentu kura id ir pedejaa id field
-check "replace two ids" 200 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"1","id":"3","number":"three"}'
+check "replace two ids" 200 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"1","id":"3","number":"three"}'
 check "retrieve check both" 200 -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '["1","3"]'
 
-check "replace existing number id" 200 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"1","number":"one"}'
-check "replace existing text id" 200 -X PUT "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"bruh","number":"two"}'
+check "replace existing number id" 200 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"1","number":"one"}'
+check "replace existing text id" 200 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"bruh","number":"two"}'
 
 
 # ------------------------------------------------------------------
@@ -327,11 +330,11 @@ section "Delete"
 
 check "delete bad document" 400 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d 'delit'
 check "delete existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["1"]'
-check "delete   multiple existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["3","4"]'
+check "delete multiple existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["3","4"]'
 check "delete existing text id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["bruh"]'
 
 check "delete non existing" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste"]'
-check "delete non existing, plus existing" 207 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","7"]'
+check "delete non existing, plus existing" 207 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","yo"]'
 check "delete multiple non existinging" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","neeksiste2"]'
 check "delete no document" 400 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 

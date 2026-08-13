@@ -169,10 +169,10 @@ section "MATRIX — Permission::Replace / (admin, editor granted; architect, vie
 check "admin seeds doc for admin-replace"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"id":"perm-replace-admin-'"$RUN_ID"'","title":"Original"}'
 check "admin seeds doc for editor-replace" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Original"}'
 
-check "admin can replace"        200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"perm-replace-admin-'"$RUN_ID"'","title":"Replaced"}'
-check "architect cannot replace" 403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
-check "viewer cannot replace"    403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
-check "editor can replace"       200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
+check "admin can replace"        200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"perm-replace-admin-'"$RUN_ID"'","title":"Replaced"}'
+check "architect cannot replace" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
+check "viewer cannot replace"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
+check "editor can replace"       200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
 
 section "MATRIX — Permission::Upsert / (admin, editor granted; architect, viewer denied)"
 
@@ -299,7 +299,7 @@ check "editor can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/g
 
 section "MATRIX — Permission::SetConfig (admin, architect, editor granted; viewer denied)"
 
-check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"\
+check "admin can set config"      200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false
@@ -317,7 +317,7 @@ check "admin can set config"      200 -X PUT "$BASE_URL/api/databases/$SCRATCH_D
   secs = 1
   nanos = 0
   '
-check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $VIEWER_TOKEN"\
+check "viewer cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $VIEWER_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false
@@ -335,7 +335,7 @@ check "viewer cannot set config"  403 -X PUT "$BASE_URL/api/databases/$SCRATCH_D
   secs = 1
   nanos = 0
   '
-check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
+check "editor can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false
@@ -353,7 +353,7 @@ check "editor can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/s
   secs = 1
   nanos = 0
   '
-check "architect can set config"  200 -X PUT "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"\
+check "architect can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false

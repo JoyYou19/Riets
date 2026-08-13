@@ -98,7 +98,7 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   max = 100
   '
 
-check "set config" 200 -X PUT "$BASE_URL/api/databases/$DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false

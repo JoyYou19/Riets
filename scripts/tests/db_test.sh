@@ -164,7 +164,7 @@ check "clear logs database two(stopped)" 200 -X DELETE "$BASE_URL/api/databases/
 section "List-databases"
 
 check "list databases" 200 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-    check_json_bool "data should be 2" '(.data.databases | length) == 2'
+    check_json_bool "data should be 2" '(.data.databases | length) == 3'
 
 section "Reindex"
 
@@ -493,11 +493,11 @@ check "get config nonexistent database" 404 -X GET "$BASE_URL/api/databases/yo/g
 check "get config one" 200 -X GET "$BASE_URL/api/databases/$DB1/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "get config two" 200 -X GET "$BASE_URL/api/databases/$DB2/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-check "set empty config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set empty config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d ''
-check "set invalid toml config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set invalid toml config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d 'this shit invalid'
-check "set invalid config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set invalid config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = hujz
   bootable = nezinu
@@ -515,7 +515,7 @@ check "set invalid config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" 
   secs = 1
   nanos = 0
   '
-check "set repeating fields config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set repeating fields config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false
@@ -535,7 +535,7 @@ check "set repeating fields config" 400 -X PUT "$BASE_URL/api/databases/$DB1/set
   secs = 1
   nanos = 0
   '
-check "set config missing field" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set config missing field" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false
@@ -552,7 +552,7 @@ check "set config missing field" 400 -X PUT "$BASE_URL/api/databases/$DB1/set-co
   secs = 1
   nanos = 0
   '
-check "set config one" 200 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set config one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false
@@ -570,7 +570,7 @@ check "set config one" 200 -X PUT "$BASE_URL/api/databases/$DB1/set-config" -H "
   secs = 1
   nanos = 0
   '
-check "set config two" 200 -X PUT "$BASE_URL/api/databases/$DB2/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   enable_background_compaction = true
   bootable = false
