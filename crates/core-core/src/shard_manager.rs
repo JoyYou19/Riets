@@ -5,6 +5,7 @@ use core_query::SearchHit;
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::bounded;
 use parking_lot::RwLock;
+use slog::error;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -74,7 +75,9 @@ impl ShardManager {
         let db_stats = DbStats::new(options.shard_count as usize);
         let mut shards = Vec::new();
         let mut joins = Vec::new();
+       
         for shard_id in 0..options.shard_count {
+           
             let shard_root = shards_dir.join(format!("shard-{}", shard_id));
             let db = ShardDb::create_shard(
                 shard_root,
@@ -88,7 +91,6 @@ impl ShardManager {
             shards.push(handle);
             joins.push(join);
         }
-
         Ok(Self {
             shards,
             joins,

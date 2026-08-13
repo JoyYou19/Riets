@@ -11,7 +11,8 @@ pub struct DatabaseOptions {
     pub enable_background_compaction: bool,
     pub compaction_interval: Duration,
     pub bootable: bool,
-    pub shard_count: u16,
+    pub shard_count: u16
+    
 }
 
 impl DatabaseOptions {
@@ -51,8 +52,9 @@ impl Default for DatabaseOptions {
             enable_background_compaction: true,
             compaction_interval: Duration::from_secs(1),
             //INFO: gnjau default jabut false
+            shard_count:5,
             bootable: true,
-            shard_count: 5,
+           
         }
     }
 }
