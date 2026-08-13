@@ -312,7 +312,7 @@ check "lookup text id" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Co
 check "lookup autoincremented" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"ids":["13"]}'
 check "lookup multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"ids":["1","2","3"]}'
+  -d '{"ids":["1","3","4"]}'
 check "lookup multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"ids":["1","1"]}'
 check "lookup mixed real notreal" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -327,9 +327,12 @@ section "Delete"
 
 check "delete bad document" 400 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d 'delit'
 check "delete existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["1"]'
+check "delete   multiple existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["3","4"]'
 check "delete existing text id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["bruh"]'
 
 check "delete non existing" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste"]'
+check "delete non existing, plus existing" 207 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","7"]'
+check "delete multiple non existinging" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","neeksiste2"]'
 check "delete no document" 400 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "delete empty id" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '[""]'
