@@ -12,7 +12,6 @@ use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-
 pub trait DocumentConversion {
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError>;
 }

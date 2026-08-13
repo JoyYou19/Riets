@@ -1,17 +1,25 @@
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap},
+    collections::{BinaryHeap, HashMap, HashSet},
     u32,
 };
 
 use core_index::{
-    analyzer::analyzer::Analyzer, posting::{
+    analyzer::analyzer::Analyzer,
+    document::{IndexPolicy, policy::IndexKind},
+    posting::{
         PostingList,
         ops::{intersection, union},
-    }, search::{SearchIndex, SearchStats}, types::{DocId, XPathId},
+    },
+    search::{SearchIndex, SearchStats},
+    types::{DocId, XPathId},
 };
+use core_protocol::errors::CorelamoError;
 
-use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan};
+use crate::{
+    ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan,
+    query_string_parser::parse_and_analyze,
+};
 
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
@@ -341,7 +349,7 @@ where
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
                         existing.distance_factor =
-                        existing.distance_factor.max(hit.distance_factor);
+                            existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -442,6 +450,155 @@ where
         });
 
         hits
+    }
+
+    pub fn resolve_filters(
+        &self,
+        filters: &HashMap<String, String>,
+        policy: &IndexPolicy,
+    ) -> Result<Option<HashSet<DocId>>, CorelamoError> {
+        if filters.is_empty() {
+            return Ok(None);
+        }
+
+        let mut restrict: Option<HashSet<DocId>> = None;
+
+        for (field_name, term) in filters {
+            if term.trim().is_empty() {
+                continue;
+            }
+
+            let field = policy
+                .fields
+                .iter()
+                .find(|f| &f.name == field_name)
+                .filter(|f| f.index == IndexKind::Text)
+                .ok_or_else(|| CorelamoError::PathNotIndexed(field_name.clone()))?;
+
+            let matched: HashSet<DocId> = match parse_and_analyze(term, self.analyzer)? {
+                Some(query) => self
+                    .execute(&query, field.xpath)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+                None => HashSet::new(),
+            };
+
+            restrict = Some(match restrict {
+                Some(current) => current.intersection(&matched).copied().collect(),
+                None => matched,
+            });
+
+            if restrict.as_ref().is_some_and(|s| s.is_empty()) {
+                return Ok(restrict);
+            }
+        }
+
+        Ok(restrict)
+    }
+
+    pub fn search_top_k_restricted(
+        &self,
+        query: &Query,
+        xpath: XPathId,
+        k: usize,
+        restrict: Option<&HashSet<DocId>>,
+    ) -> Vec<SearchHit> {
+        if k == 0 {
+            return Vec::new();
+        }
+        if restrict.is_some_and(|s| s.is_empty()) {
+            return Vec::new();
+        }
+
+        let scored = self.execute_scored(query, xpath);
+        let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
+
+        for p in scored {
+            if let Some(allowed) = restrict {
+                if !allowed.contains(&p.doc_id) {
+                    continue;
+                }
+            }
+
+            let score = p.score as f32 / 1000.0 * p.density;
+            let hit = SearchHit {
+                doc_id: p.doc_id,
+                matched_terms: p.matched_terms,
+                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                distance_factor: p.density,
+                score,
+            };
+
+            heap.push(TopHit(hit));
+            if heap.len() > k {
+                heap.pop();
+            }
+        }
+
+        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.doc_id.cmp(&b.doc_id))
+        });
+        hits
+    }
+
+    pub fn search_all_xpaths_top_k_restricted(
+        &self,
+        query: Option<&Query>,
+        xpaths: impl IntoIterator<Item = XPathId>,
+        k: usize,
+        restrict: Option<&HashSet<DocId>>,
+    ) -> Vec<SearchHit> {
+        if k == 0 {
+            return Vec::new();
+        }
+
+        let Some(query) = query else {
+            let Some(allowed) = restrict else {
+                return Vec::new();
+            };
+            let mut ids: Vec<DocId> = allowed.iter().copied().collect();
+            ids.sort();
+            return ids
+                .into_iter()
+                .take(k)
+                .map(|doc_id| SearchHit {
+                    doc_id,
+                    matched_terms: 0,
+                    weight_sum: 0,
+                    distance_factor: 0.0,
+                    score: 1.0,
+                })
+                .collect();
+        };
+
+        if restrict.is_some_and(|s| s.is_empty()) {
+            return Vec::new();
+        }
+
+        let mut by_doc = HashMap::<DocId, SearchHit>::new();
+
+        for xpath in xpaths {
+            for hit in self.search_top_k_restricted(query, xpath, k, restrict) {
+                by_doc
+                    .entry(hit.doc_id)
+                    .and_modify(|existing| {
+                        existing.matched_terms += hit.matched_terms;
+                        existing.weight_sum += hit.weight_sum;
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
+                        existing.score += hit.score;
+                    })
+                    .or_insert(hit);
+            }
+        }
+
+        top_k_from_hits(by_doc.into_values(), k)
     }
 
     // Search the entire database all xpaths

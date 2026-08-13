@@ -1,4 +1,3 @@
-
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -109,7 +108,6 @@ async fn main() -> io::Result<()> {
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(overrides) => overrides,
         Err(_) => {
-            
             process::exit(1);
         }
     };
@@ -123,10 +121,6 @@ async fn main() -> io::Result<()> {
     let (log, _guard) = logger::program_logger(&root_path);
     let _slog_guard = slog_scope::set_global_logger(log.clone());
     info!(log, "Program started");
-    
-    
-
-    
 
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
@@ -293,8 +287,14 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/restart-database",
             post(handlers::restart_database_handler),
         )
-        .route( "/api/databases/{db_name}/backup",post(handlers::backup_handler))
-        .route("/api/databases/{db_name}/restore-backup",post(handlers::backup_restore_handler));
+        .route(
+            "/api/databases/{db_name}/backup",
+            post(handlers::backup_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/restore-backup",
+            post(handlers::backup_restore_handler),
+        );
     let protected_routes = if enable_auth {
         protected_routes.layer(from_fn_with_state(
             state.clone(),
