@@ -331,7 +331,7 @@ check "delete   multiple existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB
 check "delete existing text id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["bruh"]'
 
 check "delete non existing" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste"]'
-check "delete non existing, plus existing" 27 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","7"]'
+check "delete non existing, plus existing" 207 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","7"]'
 check "delete multiple non existinging" 404 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["neeksiste","neeksiste2"]'
 check "delete no document" 400 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
