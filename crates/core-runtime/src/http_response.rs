@@ -63,6 +63,7 @@ fn error_to_status(err: &CorelamoError) -> StatusCode {
         CorelamoError::UnsupportedFormat(_) => StatusCode::NOT_ACCEPTABLE,
         CorelamoError::UnknownRole(_) => StatusCode::NOT_FOUND,
         CorelamoError::DatabaseAlreadyRunning(_) => StatusCode::CONFLICT,
+        CorelamoError::PathNotIndexed(_) => StatusCode::CONFLICT,
         CorelamoError::DatabaseNotRunning(_) => StatusCode::CONFLICT,
         CorelamoError::Busy(_) => StatusCode::SERVICE_UNAVAILABLE,
     }

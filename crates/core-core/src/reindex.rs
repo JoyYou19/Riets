@@ -38,7 +38,7 @@ pub struct ReindexJob {
     pub params: ReindexParams,
     pub shard_tx: Sender<ShardCmd>,
     pub progress: Arc<ReindexProgress>,
-    pub stats:Arc<DbStats>
+    pub stats: Arc<DbStats>,
 }
 
 /// One worker by default: a rebuild saturates disk and CPU, so running several
@@ -47,7 +47,6 @@ pub struct ReindexPool {
     tx: Sender<ReindexJob>,
     joins: Vec<JoinHandle<()>>,
 }
-
 
 impl ReindexPool {
     pub fn start(workers: usize) -> Self {
@@ -95,7 +94,11 @@ fn worker_loop(rx: Receiver<ReindexJob>) {
 
         // hand the finished build back to the thread that owns the shard state
         let (rtx, rrx) = bounded(1);
-        if job.shard_tx.send(ShardCmd::CommitReindex { done, resp: rtx }).is_err() {
+        if job
+            .shard_tx
+            .send(ShardCmd::CommitReindex { done, resp: rtx })
+            .is_err()
+        {
             job.stats.finish_shard_reindex(false, started.elapsed());
             continue;
         }
@@ -109,7 +112,7 @@ fn worker_loop(rx: Receiver<ReindexJob>) {
 fn build_staging_index(
     params: &ReindexParams,
     progress: &ReindexProgress,
-    _stats:&DbStats
+    _stats: &DbStats,
 ) -> Result<CompletedShardReindex, CorelamoError> {
     let staging_root = params.shard_root.join("index.new");
     if staging_root.exists() {
@@ -127,7 +130,7 @@ fn build_staging_index(
         params.shard_id,
     )
     .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-    
+
     staging
         .reindex_existing_documents(
             params.options.runtime.indexing_batch_size,
@@ -147,3 +150,4 @@ fn build_staging_index(
         generation: params.generation,
     })
 }
+

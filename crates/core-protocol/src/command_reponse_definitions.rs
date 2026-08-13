@@ -31,7 +31,7 @@ pub trait ResponseData {
 #[derive(Debug, Deserialize)]
 pub struct SearchCommand {
     pub query: String,
-    pub filter: Option<HashMap<String, String>>, //TODO: pielikt filters lidzigi kaa elastic
+    pub filters: Option<HashMap<String, String>>, //TODO: pielikt filters lidzigi kaa elastic
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,

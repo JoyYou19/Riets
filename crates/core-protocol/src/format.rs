@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use bincode::{Decode, Encode};
 use crate::errors::CorelamoError;
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[repr(u8)]
@@ -53,13 +53,14 @@ impl From<CorelamoError> for std::io::Error {
             CorelamoError::InvalidData(msg) => Error::new(ErrorKind::InvalidData, msg),
             CorelamoError::PermissionDenied(msg) => Error::new(ErrorKind::PermissionDenied, msg),
             CorelamoError::UnsupportedFormat(msg) => Error::new(ErrorKind::InvalidData, msg),
-            CorelamoError::DatabaseAlreadyRunning(msg) => Error::other( msg),
-            CorelamoError::DatabaseNotRunning(msg) => Error::other( msg),
+            CorelamoError::DatabaseAlreadyRunning(msg) => Error::other(msg),
+            CorelamoError::PathNotIndexed(msg) => Error::other(msg),
+            CorelamoError::DatabaseNotRunning(msg) => Error::other(msg),
             CorelamoError::Conflict(msg)
             | CorelamoError::UnknownRole(msg)
             | CorelamoError::Unauthorized(msg)
             | CorelamoError::Internal(msg) => Error::other(msg),
-            | CorelamoError::Busy(msg)=>Error::other(msg)
+            CorelamoError::Busy(msg) => Error::other(msg),
         }
     }
 }
