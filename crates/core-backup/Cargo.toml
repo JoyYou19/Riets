@@ -13,3 +13,4 @@ brotli="3.0"
 brotlic="0.8.2"
 core-storage = { path = "../core-storage" }
 chrono = "0.4.45"
+flate2 ="1.0"

@@ -5,7 +5,6 @@ use core_query::SearchHit;
 use core_storage::document_store::StoredDocument;
 use crossbeam_channel::bounded;
 use parking_lot::RwLock;
-use slog::error;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -774,11 +773,35 @@ impl ShardManager {
     }
 
     pub async fn backup_full(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
-        let mut manifests = Vec::with_capacity(self.shards.len());
-        for shard in &self.shards {
-            manifests.push(shard.backup_full().await?);
+        let mut set = JoinSet::new();
+    for shard in &self.shards {
+        let handle = shard.clone();
+        set.spawn(async move { handle.backup_full().await });
+    }
+
+    let mut manifests = Vec::with_capacity(self.shards.len());
+    let mut first_err = None;
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Ok(manifest)) => manifests.push(manifest),
+            Ok(Err(e)) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+            Err(je) => {
+                if first_err.is_none() {
+                    first_err = Some(CorelamoError::Internal(format!(
+                        "shard backup task panicked: {je}"
+                    )));
+                }
+            }
         }
-        Ok(manifests)
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    Ok(manifests)
     }
 
     pub async fn restore_backup(&self) -> Result<(), CorelamoError> {

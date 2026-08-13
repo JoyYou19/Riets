@@ -1316,7 +1316,8 @@ pub async fn backup_handler(
     tokio::spawn(async move {
         match handle.backup_full().await {
             Ok(_manifests) => {
-                slog::info!(slog::Logger::root(slog::Discard, o!()), "backup completed"; "db" => %name_for_log)
+                eprintln!("backup completed for '{}'", name_for_log);
+               
             } //parmainit
             Err(_e) => {
                 slog::error!(slog::Logger::root(slog::Discard, o!()), "backup failed"; "db" => %name_for_log)
