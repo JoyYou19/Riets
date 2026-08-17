@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed};
 
-//MEGABYTE
 const MIB: f64 = 1024.0 * 1024.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,9 +135,11 @@ impl BackupProgress {
     pub fn grow_total(&self, bytes: u64) {
         self.bytes_total.fetch_add(bytes, Relaxed);
     }
+
     pub fn add(&self, bytes: u64) {
         self.bytes_done.fetch_add(bytes, Relaxed);
     }
+
     pub fn set_phase(&self, phase: BackupPhase) {
         self.phase.store(phase as u8, Relaxed);
     }
@@ -147,13 +148,13 @@ impl BackupProgress {
         let phase = BackupPhase::from_u8(self.phase.load(Relaxed));
         let elapsed_ms = if phase == BackupPhase::Running {
             let started = self.started_at_ms.load(Relaxed);
-            let now = chrono::Utc::now().timestamp() as u64;
+            let now = chrono::Utc::now().timestamp_millis() as u64;
             Some(now.saturating_sub(started))
         } else {
             None
         };
         BackupProgressSnapshot {
-            phase: BackupPhase::from_u8(self.phase.load(Relaxed)),
+            phase,
             bytes_total: self.bytes_total.load(Relaxed),
             bytes_done: self.bytes_done.load(Relaxed),
             elapsed_ms,

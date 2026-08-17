@@ -935,6 +935,7 @@ pub async fn stats_handler(
     let indexing = &stats.indexing;
     let reindexing = &stats.reindexing;
     let metrics = &stats.metrics;
+    let backup = &stats.backup;
 
     HttpOk::with_data(
         format!("stats for '{db_name}'"),
@@ -962,6 +963,14 @@ pub async fn stats_handler(
                 "progress": reindexing.progress,
                 "documents_indexed": reindexing.documents_indexed,
                 "eta_seconds": reindexing.eta_seconds,
+            },
+            "backup": {
+                "status": backup.status,
+                "progress_percent": backup.progress_percent,
+                "mb_done": backup.mb_done,
+                "mb_total": backup.mb_total,
+                "eta_seconds": backup.eta_seconds,
+                "restoring": stats.restoring,
             }
         }),
         &ctx,
@@ -1303,21 +1312,19 @@ pub async fn backup_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // }
-
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
+    if let Err(e) = handle.try_start_backup() {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.backup_full().await {
-            Ok(_manifests) => {
-                eprintln!("backup completed for '{}'", name_for_log);
-            } //parmainit
+        match handle.run_backup_full().await {
+            Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
             Err(_e) => {
                 slog::error!(slog::Logger::root(slog::Discard, o!()), "backup failed"; "db" => %name_for_log)
             }

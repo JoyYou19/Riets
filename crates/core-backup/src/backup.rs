@@ -19,6 +19,9 @@ pub struct BackupManifest {
     pub parent_backup_id: Option<String>,
 }
 
+use crate::progress::BackupProgress;
+const COPY_BUF_SIZE: usize = 256 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BackupType {
     Full,
@@ -86,25 +89,45 @@ impl std::fmt::Display for BackupError {
     }
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+fn copy_with_progress<R: io::Read, W: io::Write>(
+    mut reader: R,
+    mut writer: W,
+    progress: &BackupProgress,
+) -> io::Result<()> {
+    let mut buf = vec![0u8; COPY_BUF_SIZE];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+        progress.add(n as u64);
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+            copy_dir_recursive(&src_path, &dst_path, progress)?;
         } else {
-            fs::copy(&src_path, &dst_path)?;
+            let bytes = fs::copy(&src_path, &dst_path)?;
+            if let Some(p) = progress {
+                p.add(bytes);
+            }
         }
     }
     Ok(())
 }
 
-fn compress_file(src: &Path, dst: &Path) -> io::Result<()> {
-    let mut reader = BufReader::new(File::open(src)?);
+fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::Result<()> {
+    let reader = BufReader::new(File::open(src)?);
     let mut encoder = GzEncoder::new(File::create(dst)?, Compression::default());
-    io::copy(&mut reader, &mut encoder)?;
+    copy_with_progress(reader, &mut encoder, progress)?;
     encoder.finish()?;
     Ok(())
 }
@@ -161,6 +184,19 @@ fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Resul
     Ok(())
 }
 
+fn dir_size(path: &Path) -> io::Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
 impl BackupManager {
     pub fn new(backup_dir: PathBuf) -> Self {
         let state_path = backup_dir.join("backup_state.json");
@@ -201,6 +237,7 @@ impl BackupManager {
             last_backup_offset,
         }
     }
+
     fn save_state(&self) -> Result<(), BackupError> {
         let tmp = self.backup_dir.join("backup_state.json.tmp");
         let dst = self.backup_dir.join("backup_state.json");
@@ -213,10 +250,12 @@ impl BackupManager {
         fs::rename(&tmp, &dst)?;
         Ok(())
     }
+
     pub fn create_full_backup(
         &mut self,
         db_root: &Path,
         wal: &Wal,
+        progress: &BackupProgress,
     ) -> Result<BackupManifest, BackupError> {
         //read wal offset before touching files so new things dont catch up with backup
         let wal_offset = wal.durable_offset();
@@ -224,12 +263,21 @@ impl BackupManager {
         let backup_path = self.backup_dir.join(&backup_id);
         fs::create_dir(&backup_path)?;
 
+        let total =
+            db_root.join("documents.bin").metadata()?.len() + dir_size(&db_root.join("index"))?;
+        progress.grow_total(total);
+
         let result = (|| -> Result<BackupManifest, BackupError> {
             compress_file(
                 &db_root.join("documents.bin"),
                 &backup_path.join("documents.bin.br"),
+                progress,
             )?;
-            copy_dir_recursive(&db_root.join("index"), &backup_path.join("index"))?;
+            copy_dir_recursive(
+                &db_root.join("index"),
+                &backup_path.join("index"),
+                Some(progress),
+            )?;
 
             let manifest = BackupManifest {
                 backup_id: backup_id.clone(),
@@ -351,7 +399,7 @@ impl BackupManager {
                     &backup_path.join("documents.bin.br"),
                     &target_dir.join("documents.bin"),
                 )?;
-                copy_dir_recursive(&backup_path.join("index"), &target_dir.join("index"))?;
+                copy_dir_recursive(&backup_path.join("index"), &target_dir.join("index"), None)?;
             }
             BackupType::Incremental => {
                 let raw = fs::read(backup_path.join("wal_records.bin"))?;
@@ -413,4 +461,3 @@ impl BackupManager {
         self.last_backup_id.as_deref()
     }
 }
-
