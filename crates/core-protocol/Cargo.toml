@@ -10,4 +10,4 @@ tracing = "0.1.44"
 thiserror = "2"
 toml = "1.1.2"
 bincode="2.0"
-indexmap = "2.14.0"
+indexmap = { version = "2", features = ["serde"] }
