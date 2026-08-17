@@ -935,6 +935,7 @@ pub async fn stats_handler(
     let indexing = &stats.indexing;
     let reindexing = &stats.reindexing;
     let metrics = &stats.metrics;
+    let backup = &stats.backup;
 
     HttpOk::with_data(
         format!("stats for '{db_name}'"),
@@ -962,6 +963,13 @@ pub async fn stats_handler(
                 "progress": reindexing.progress,
                 "documents_indexed": reindexing.documents_indexed,
                 "eta_seconds": reindexing.eta_seconds,
+            },
+            "backup": {
+                "status": backup.status,
+                "progress_percent": backup.progress,
+                "bytes_done": backup.mb_done,
+                "bytes_total": backup.mb_total,
+                "restoring": stats.restoring,
             }
         }),
         &ctx,
