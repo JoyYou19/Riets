@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use tokio::task::JoinSet;
-
+use std::fs;
+use std::io::{self, BufReader};
 use crate::ShardDb;
 use crate::metrics::DbStats;
 use crate::reindex::{ReindexJob, ReindexPool};
@@ -24,7 +25,7 @@ use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
-
+use core_backup::backup::compress_file;
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
     joins: Vec<JoinHandle<()>>, //JoinHandle atgriez ka thread uztaisits
@@ -34,6 +35,7 @@ pub struct ShardManager {
     analyzer: Analyzer,
     reindex_pool: ReindexPool,
     db_stats: Arc<DbStats>,
+    backup_dir:PathBuf
 }
 
 impl ShardManager {
@@ -70,7 +72,7 @@ impl ShardManager {
         let policy = IndexPolicy::default_document();
         policy.save(Self::policy_path(&root))?;
         options.save_to_file(Self::config_path(&root))?;
-
+        let backup_dir = root.join("backups");
         let db_stats = DbStats::new(options.shard_count as usize);
         let mut shards = Vec::new();
         let mut joins = Vec::new();
@@ -99,6 +101,7 @@ impl ShardManager {
             analyzer: Analyzer::new(),
             reindex_pool: ReindexPool::start(1),
             db_stats,
+            backup_dir,
         })
     }
 
@@ -441,7 +444,7 @@ impl ShardManager {
         //FIX: we probably need a load_or_default for policy too
         let policy = IndexPolicy::load(&policy_path)?;
         let options = DatabaseOptions::load_or_default(&config_path);
-
+        let backup_dir =root.join("backups");
         let db_stats = DbStats::new(shard_paths.len());
         let mut shards = Vec::new();
         let mut joins = Vec::new();
@@ -461,6 +464,7 @@ impl ShardManager {
             analyzer: Analyzer::new(),
             reindex_pool: ReindexPool::start(1),
             db_stats,
+            backup_dir
         })
     }
 
@@ -773,10 +777,31 @@ impl ShardManager {
     }
 
     pub async fn backup_full(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
-        let mut set = JoinSet::new();
-    for shard in &self.shards {
+    let backup_id = format!("full_{}", chrono::Utc::now().timestamp_millis());
+    let backup_root = self.backup_dir.join(&backup_id);
+
+    fs::create_dir_all(&backup_root)
+        .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+    for (src, dst) in &[
+        ("config.toml", "config.toml.gz"),
+        ("policy.toml", "policy.toml.gz"),
+    ] {
+        let src_path = self.root.join(src);
+        if src_path.exists() {
+            compress_file(&src_path, &backup_root.join(dst))
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        }
+    }
+
+    let mut set = JoinSet::new();
+    for (i, shard) in self.shards.iter().enumerate() {
         let handle = shard.clone();
-        set.spawn(async move { handle.backup_full().await });
+        let shard_backup_path = backup_root.join(format!("shard-{i}"));
+        let bid = backup_id.clone();
+        set.spawn(async move {
+            handle.backup_full(shard_backup_path, bid).await
+        });
     }
 
     let mut manifests = Vec::with_capacity(self.shards.len());
@@ -784,25 +809,57 @@ impl ShardManager {
     while let Some(res) = set.join_next().await {
         match res {
             Ok(Ok(manifest)) => manifests.push(manifest),
-            Ok(Err(e)) => {
-                if first_err.is_none() {
-                    first_err = Some(e);
-                }
-            }
-            Err(je) => {
-                if first_err.is_none() {
-                    first_err = Some(CorelamoError::Internal(format!(
-                        "shard backup task panicked: {je}"
-                    )));
-                }
-            }
+            Ok(Err(e)) => { if first_err.is_none() { first_err = Some(e); } }
+            Err(je) => { if first_err.is_none() {
+                first_err = Some(CorelamoError::Internal(format!("shard backup panicked: {je}")));
+            }}
         }
     }
+
     if let Some(e) = first_err {
+        let _ = fs::remove_dir_all(&backup_root);
         return Err(e);
     }
     Ok(manifests)
+}
+
+pub async fn backup_incremental(&self) -> Result<Vec<Option<BackupManifest>>, CorelamoError> {
+    let backup_id = format!("incr_{}", chrono::Utc::now().timestamp_millis());
+    let backup_root = self.backup_dir.join(&backup_id);
+
+    fs::create_dir_all(&backup_root)
+        .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+    let mut set = JoinSet::new();
+    for (i, shard) in self.shards.iter().enumerate() {
+        let handle = shard.clone();
+        let shard_backup_path = backup_root.join(format!("shard-{i}"));
+        let bid = backup_id.clone();
+        set.spawn(async move {
+            handle.backup_incremental(shard_backup_path, bid).await
+        });
     }
+
+    let mut manifests = Vec::with_capacity(self.shards.len());
+    let mut first_err = None;
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Ok(manifest)) => manifests.push(manifest),
+            Ok(Err(e)) => { if first_err.is_none() { first_err = Some(e); } }
+            Err(je) => { if first_err.is_none() {
+                first_err = Some(CorelamoError::Internal(format!(
+                    "shard incremental backup panicked: {je}"
+                )));
+            }}
+        }
+    }
+
+    if let Some(e) = first_err {
+        let _ = fs::remove_dir_all(&backup_root);
+        return Err(e);
+    }
+    Ok(manifests)
+}
 
     pub async fn restore_backup(&self) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();

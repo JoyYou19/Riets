@@ -97,9 +97,9 @@ impl ShardDb {
         )?;
         let store_path = root.join("documents.bin");
         BinaryDocumentStore::open(&store_path)?;
-        let backup_dir = db_root.as_ref().join("backups").join(&name);
+        let backup_dir = db_root.as_ref().join("backups");
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(backup_dir); // see note below
+        let backup = BackupManager::new(backup_dir,name.clone()); // see note below
         Ok(Self {
             shard_id,
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -147,7 +147,7 @@ impl ShardDb {
         )?;
         let backup_dir = db_root.as_ref().join("backups").join(&name);
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(backup_dir);
+        let backup = BackupManager::new(backup_dir,name.clone());
         Ok(Self {
             shard_id: ShardId::from(shard_id),
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -868,15 +868,19 @@ impl ShardDb {
         Ok(())
     }
 
-    pub fn backup_full(&mut self) -> Result<BackupManifest, CorelamoError> {
+    pub fn backup_full(
+        &mut self,
+        shard_backup_path: PathBuf,
+        backup_id: String
+    ) -> Result<BackupManifest, CorelamoError> {
         self.backup
-            .create_full_backup(&self.root, &self.wal)
+            .create_full_backup(&self.root, &shard_backup_path, &backup_id, &self.wal)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    pub fn backup_incremental(&mut self) -> Result<Option<BackupManifest>, CorelamoError> {
+    pub fn backup_incremental(&mut self, shard_backup_path: PathBuf, backup_id: String) -> Result<Option<BackupManifest>, CorelamoError> {
         self.backup
-            .create_incremental_backup(&self.wal)
+            .create_incremental_backup(&self.root,&shard_backup_path,&backup_id, &self.wal)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
     pub fn restore_backup(&mut self) -> Result<(), CorelamoError> {
@@ -893,7 +897,7 @@ impl ShardDb {
     }
 
     pub fn restore_from_backup(
-        &self,
+        &mut self,
         backup_id: &str,
         target_dir: &Path
     ) -> Result<(), CorelamoError> {
