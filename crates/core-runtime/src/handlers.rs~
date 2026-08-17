@@ -966,10 +966,9 @@ pub async fn stats_handler(
             },
             "backup": {
                 "status": backup.status,
-                "progress_percent": backup.progress_percent,
-                "mb_done": backup.mb_done,
-                "mb_total": backup.mb_total,
-                "eta_seconds": backup.eta_seconds,
+                "progress_percent": backup.progress,
+                "bytes_done": backup.mb_done,
+                "bytes_total": backup.mb_total,
                 "restoring": stats.restoring,
             }
         }),
@@ -1312,19 +1311,21 @@ pub async fn backup_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    if let Err(e) = handle.try_start_backup() {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.run_backup_full().await {
-            Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
+        match handle.backup_full().await {
+            Ok(_manifests) => {
+                eprintln!("backup completed for '{}'", name_for_log);
+            } //parmainit
             Err(_e) => {
                 slog::error!(slog::Logger::root(slog::Discard, o!()), "backup failed"; "db" => %name_for_log)
             }

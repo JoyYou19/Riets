@@ -62,6 +62,7 @@ struct ShardGauges {
     compactions_completed: AtomicU64,
 }
 
+use core_backup::progress::{BackupPhase, BackupProgress};
 use core_index::lsm::index_worker::{IndexingStats, Phase, ReindexProgress};
 
 use crate::shard_db::DatabaseStats;
@@ -75,8 +76,10 @@ pub struct DbStats {
     reindex: Arc<ReindexProgress>,
     reindex_outstanding: AtomicUsize,
     reindex_failed: AtomicBool,
+    backup: Arc<BackupProgress>,
+    backup_outstanding: AtomicUsize,
+    backup_failed: AtomicBool,
     // documents_indexed: AtomicU64,
-    
 }
 
 impl DbStats {
@@ -87,7 +90,10 @@ impl DbStats {
             reindex: ReindexProgress::new(),
             reindex_outstanding: AtomicUsize::new(0),
             reindex_failed: AtomicBool::new(false),
-            // documents_indexed: AtomicU64::new(0),   
+            backup: BackupProgress::new(),
+            backup_outstanding: AtomicUsize::new(0),
+            backup_failed: AtomicBool::new(false),
+            // documents_indexed: AtomicU64::new(0),
         })
     }
 
@@ -96,6 +102,10 @@ impl DbStats {
             stats: Arc::clone(self),
             index: shard_index,
         }
+    }
+
+    pub fn backup_progress(&self) -> &Arc<BackupProgress> {
+        &self.backup
     }
 
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
@@ -176,6 +186,35 @@ impl DbStats {
         self.reindex.set_phase(Phase::Failed);
     }
 
+    //backup related shit
+
+    pub fn begin_backup(&self, shard_count: usize) -> bool {
+        if !self.backup.try_begin() {
+            return false;
+        }
+        self.backup_failed.store(false, Relaxed);
+        self.backup_outstanding.store(shard_count, Relaxed);
+        true
+    }
+
+    pub fn finish_shard_backup(&self, ok: bool) {
+        if !ok {
+            self.backup_failed.store(true, Relaxed);
+        }
+        if self.backup_outstanding.fetch_sub(1, Relaxed) == 1 {
+            self.backup.set_phase(if self.backup_failed.load(Relaxed) {
+                BackupPhase::Failed
+            } else {
+                BackupPhase::Complete
+            });
+        }
+    }
+
+    pub fn abort_backup(&self) {
+        self.backup_outstanding.store(0, Relaxed);
+        self.backup.set_phase(BackupPhase::Failed);
+    }
+
     // ---- reads ----
 
     pub fn metrics(&self) -> DatabaseMetrics {
@@ -226,6 +265,8 @@ impl DbStats {
                 memtable_term_count: terms,
                 segment_count: segments,
             },
+            backup: self.backup.snapshot().into(),
+            restoring: false,
             reindexing: self.reindex.snapshot().into(),
         }
     }
@@ -243,6 +284,10 @@ impl ShardStatsHandle {
         &self.stats.reindex
     }
 
+    pub fn backup_progress(&self) -> &Arc<BackupProgress> {
+        &self.stats.backup
+    }
+
     /// Levels, so publish after anything that changes the index. The shard
     /// thread pays for reading these so the HTTP reader never has to.
     pub fn publish(&self, document_count: usize, stats: &IndexingStats) {
@@ -251,9 +296,11 @@ impl ShardStatsHandle {
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
         // g.documents_indexed.store(stats.total_documents_indexed, Relaxed);
-        g.documents_deleted.store(stats.total_documents_deleted, Relaxed);
+        g.documents_deleted
+            .store(stats.total_documents_deleted, Relaxed);
         g.segments_written.store(stats.segments_written, Relaxed);
-        g.compactions_completed.store(stats.compactions_completed, Relaxed);
+        g.compactions_completed
+            .store(stats.compactions_completed, Relaxed);
     }
     pub fn add_indexed(&self, n: u64) {
         self.stats.counters.indexing_requests.fetch_add(n, Relaxed);
@@ -267,6 +314,4 @@ impl ShardStatsHandle {
             .compaction_enabled
             .store(on, Relaxed);
     }
-    
-    
 }
