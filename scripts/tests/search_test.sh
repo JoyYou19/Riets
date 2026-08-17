@@ -251,6 +251,10 @@ check "Beta, delta zeta era theta" 200 -X POST "$BASE_URL/api/databases/$DB/sear
 #check "combo2" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"ch[au]*","docs":'"$DOCUMENTS"'}'
 #    check_json_bool "data should be 1" '(.data | length) == 1'
 
+section "Filters"
+
+check "" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"alpha", "filters":{"text":"first"},"docs":'"$DOCUMENTS"'}'
+    check_json_bool "data should be 248" '(.data | length) == 248'
 
 section "Numeric"
 
