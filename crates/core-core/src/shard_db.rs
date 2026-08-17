@@ -101,9 +101,9 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let store_path = root.join("documents.bin");
         BinaryDocumentStore::open(&store_path)?;
-        let backup_dir = db_root.as_ref().join("backups");
+        let backup_dir = db_root.as_ref().join("backups").join(&name);
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(backup_dir,name.clone()); // see note below
+        let backup = BackupManager::new(backup_dir); // see note below
         Ok(Self {
             shard_id,
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -153,7 +153,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let backup_dir = db_root.as_ref().join("backups").join(&name);
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(backup_dir,name.clone());
+        let backup = BackupManager::new(backup_dir);
         Ok(Self {
             shard_id: ShardId::from(shard_id),
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -926,9 +926,9 @@ impl ShardDb {
         result
     }
 
-    pub fn backup_incremental(&mut self, shard_backup_path: PathBuf, backup_id: String) -> Result<Option<BackupManifest>, CorelamoError> {
+    pub fn backup_incremental(&mut self) -> Result<Option<BackupManifest>, CorelamoError> {
         self.backup
-            .create_incremental_backup(&self.root,&shard_backup_path,&backup_id, &self.wal)
+            .create_incremental_backup(&self.wal)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
@@ -948,7 +948,7 @@ impl ShardDb {
     }
 
     pub fn restore_from_backup(
-        &mut self,
+        &self,
         backup_id: &str,
         target_dir: &Path,
     ) -> Result<(), CorelamoError> {
