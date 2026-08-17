@@ -47,6 +47,12 @@ impl ShardManager {
         root.join(Self::CONFIG_PATH_NAME)
     }
 
+    pub fn stats(&self) -> DatabaseStats {
+        let mut stats = self.db_stats.snapshot();
+        stats.restoring = self.shards.iter().any(|h| h.is_restoring());
+        stats
+    }
+
     fn policy_path(root: &Path) -> PathBuf {
         root.join(Self::POLICY_PATH_NAME)
     }
@@ -76,9 +82,8 @@ impl ShardManager {
         let db_stats = DbStats::new(options.shard_count as usize);
         let mut shards = Vec::new();
         let mut joins = Vec::new();
-       
+
         for shard_id in 0..options.shard_count {
-           
             let shard_root = shards_dir.join(format!("shard-{}", shard_id));
             let db = ShardDb::create_shard(
                 shard_root,
@@ -628,10 +633,6 @@ impl ShardManager {
         by_shard
     }
 
-    pub fn stats(&self) -> DatabaseStats {
-        self.db_stats.snapshot()
-    }
-
     pub async fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
 
@@ -852,6 +853,47 @@ pub async fn backup_incremental(&self) -> Result<Vec<Option<BackupManifest>>, Co
                 )));
             }}
         }
+    pub fn try_start_backup(&self) -> Result<(), CorelamoError> {
+        if !self.db_stats.begin_backup(self.shards.len()) {
+            return Err(CorelamoError::Busy("backup already in progress".into()));
+        }
+        Ok(())
+    }
+
+    pub async fn run_backup_full(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
+        let mut set = JoinSet::new();
+        for shard in &self.shards {
+            let handle = shard.clone();
+            set.spawn(async move { handle.backup_full().await });
+        }
+        let mut manifests = Vec::with_capacity(self.shards.len());
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Ok(manifest)) => {
+                    self.db_stats.finish_shard_backup(true);
+                    manifests.push(manifest);
+                }
+                Ok(Err(e)) => {
+                    self.db_stats.finish_shard_backup(false);
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+                Err(je) => {
+                    self.db_stats.finish_shard_backup(false);
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard backup task panicked: {je}"
+                        )));
+                    }
+                }
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+        Ok(manifests)
     }
 
     if let Some(e) = first_err {
@@ -871,15 +913,12 @@ pub async fn backup_incremental(&self) -> Result<Vec<Option<BackupManifest>>, Co
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(CorelamoError::Internal(
-                //janomaina
-                format!(
-                    "restore failed on {} of {} shards: {}",
-                    failures.len(),
-                    self.shards.len(),
-                    failures.join("; ")
-                ),
-            ))
+            Err(CorelamoError::Internal(format!(
+                "restore failed on {} of {} shards: {}",
+                failures.len(),
+                self.shards.len(),
+                failures.join("; ")
+            )))
         }
     }
 }
