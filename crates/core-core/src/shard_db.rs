@@ -874,7 +874,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    pub fn backup_incremental(&mut self) -> Result<BackupManifest, CorelamoError> {
+    pub fn backup_incremental(&mut self) -> Result<Option<BackupManifest>, CorelamoError> {
         self.backup
             .create_incremental_backup(&self.wal)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
