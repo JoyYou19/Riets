@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io;
+use std::path::Component::RootDir;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,9 +77,13 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
     BackupFull {
+        shard_backup_path: PathBuf,
+        backup_id: String,
         resp: oneshot::Sender<Result<BackupManifest, CorelamoError>>,
     },
     BackupIncremental {
+        shard_backup_path: PathBuf,
+        backup_id: String,
         resp: oneshot::Sender<Result<Option<BackupManifest>, CorelamoError>>,
     },
     Restore {
@@ -349,13 +354,20 @@ impl ShardHandle {
     pub async fn clear(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Clear { resp }).await?
     }
-    pub async fn backup_full(&self) -> Result<BackupManifest, CorelamoError> {
-        self.call(|resp| ShardCmd::BackupFull { resp }).await?
+    pub async fn backup_full(
+        &self,
+        shard_backup_path: PathBuf,
+        backup_id: String
+    ) -> Result<BackupManifest, CorelamoError> {
+        self.call(|resp| ShardCmd::BackupFull { shard_backup_path, backup_id, resp }).await?
     }
 
-    pub async fn backup_incremental(&self) -> Result<Option<BackupManifest>, CorelamoError> {
-        self.call(|resp| ShardCmd::BackupIncremental { resp })
-            .await?
+    pub async fn backup_incremental(
+        &self,
+        shard_backup_path: PathBuf,
+        backup_id: String
+    ) -> Result<Option<BackupManifest>, CorelamoError> {
+        self.call(|resp| ShardCmd::BackupIncremental { shard_backup_path, backup_id, resp }).await?
     }
 
     pub async fn restore_backup(&self) -> Result<(), CorelamoError> {
@@ -478,9 +490,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     shared.is_clearing.store(false, Ordering::Release);
                     let _ = resp.send(result);
                 }
-                ShardCmd::BackupFull { resp } => {
+                ShardCmd::BackupFull { shard_backup_path, backup_id, resp } => {
                     shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_full();
+                    let result = shard.backup_full(shard_backup_path, backup_id);
                     shared.is_backing_up.store(false, Ordering::Release);
                     if let Ok(manifest) = &result {
                         *shared
@@ -493,11 +505,10 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     }
                     let _ = resp.send(result);
                 }
-                ShardCmd::BackupIncremental { resp } => {
+                ShardCmd::BackupIncremental { shard_backup_path, backup_id, resp } => {
                     shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_incremental();
+                    let result = shard.backup_incremental(shard_backup_path, backup_id);
                     shared.is_backing_up.store(false, Ordering::Release);
-
                     match &result {
                         Ok(Some(manifest)) => {
                             *shared
@@ -509,12 +520,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                                 .last_backup_at
                                 .store(manifest.created_at, Ordering::Release);
                         }
-                        Ok(None) => {
-                            // Nothing new since the last backup, nothing to update.
-                        }
+                        Ok(None) => {}
                         Err(_) => {}
                     }
-
                     let _ = resp.send(result);
                 }
 
