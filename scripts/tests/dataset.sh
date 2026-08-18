@@ -6,16 +6,11 @@
 # One document per non-empty subset of the vocabulary -> 2^8 - 1 = 255 docs.
 # Plus an extra document inserted first.
 # Title = subset words joined by spaces (in vocabulary order).
-#
-# Every document also gets a nested "info" object:
-#   info.number = the subset's bitmask (1-255)          -> unique per doc
-#   info.date   = 2024-01-01 + bitmask days              -> mirrors number range-wise
-#   info.text   = VOCAB2[popcount(bitmask) - 1]           -> depends only on word COUNT
-#
-# This makes every field independently predictable:
-#   - number/date range queries map directly to mask ranges
-#   - info.text:"four" matches exactly C(8,4) = 70 docs (all 4-word titles)
-#   - combinations (e.g. title:alpha AND info.text:"one") stay exactly computable
+# Text = single-word title gets a text field with value from VOCAB2 at the same index.
+# Number = single-word title gets a number field with value from 1 to 8.
+# todo:
+#   Subtext = single-word title gets a subtext field with ???
+#   Date = ???
 #
 # HOW TO USE:
 #   1. Start the server first:  cargo run -p core-runtime -- --root-path /tmp
@@ -26,9 +21,7 @@ clear
 BASE_URL="http://localhost:6006"
 DB="docs"
 VOCAB=(alpha beta gamma delta epsilon zeta eta theta)
-VOCAB2=(one two three four five six seven eight)
-ORDINAL=(first second third fourth fifth sixth seventh eighth)
-BASE_DATE="2024-01-01"
+VOCAB2=(first second third fourth fifth sixth seventh eighth)
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -87,27 +80,18 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   max = 100
 
   [[fields]]
-  name = "info/date"
+  name = "text"
   xpath = 2
-  index = "Date"
+  index = "Text"
   list = true
   [fields.weight]
   min = 100
   max = 100
 
   [[fields]]
-  name = "info/number"
+  name = "number"
   xpath = 3
   index = "Number"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-
-  [[fields]]
-  name = "info/text"
-  xpath = 4
-  index = "Text"
   list = true
   [fields.weight]
   min = 100
@@ -118,7 +102,6 @@ check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Co
   -d '
   enable_background_compaction = true
   bootable = false
-  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -135,8 +118,7 @@ check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Co
   '
 
 check "insert first document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-        -d '{"id":"1","title":"EXAMPLE DATABASE DOCUMENT", "info":{"date":"2024-01-01","number":0,"text":"zero"}}'
-
+        -d '{"title":"EXAMPLE DATABASE DOCUMENT"}'
 # ------------------------------------------------------------------
 # Power-set document generation & insertion
 # ------------------------------------------------------------------
@@ -144,11 +126,11 @@ check "insert first document" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -
 # For n=8, bitmask ranges 1..255 (0 = empty set, skipped).
 
 N=${#VOCAB[@]}
-TOTAL=$(( (2 ** N) - 1 ))
+TOTAL=$(( (1 << N) - 1 ))
 
 echo
 echo "Inserting $TOTAL documents..."
-
+ 
 for (( mask=1; mask<=TOTAL; mask++ )); do
     title=""
     bit_count=0
@@ -164,22 +146,17 @@ for (( mask=1; mask<=TOTAL; mask++ )); do
             single_bit=$bit
         fi
     done
-
-    # info.number = mask itself (unique per doc, 1-255)
-    number=$mask
-    # info.date = base date + mask days (mirrors number range-wise)
-    doc_date=$(date -d "$BASE_DATE + $mask days" +%Y-%m-%d)
-    # info.text = word count spelled out (depends only on how many words the title has).
-    # Single-word titles additionally get the ordinal word for that specific vocab word,
-    # e.g. title "alpha" -> info.text "one first".
+ 
+    # Single-word titles (subsets of size 1) also get a "text" field,
+    # value taken from VOCAB2 at the same index as the matching VOCAB word.
     if [ "$bit_count" -eq 1 ]; then
-        text="${VOCAB2[$((bit_count - 1))]} ${ORDINAL[$single_bit]}"
+        text="${VOCAB2[$single_bit]}"
+        number=$((single_bit + 1))
+        payload="{\"title\":\"$title\",\"text\":\"$text\",\"number\":$number}"
     else
-        text="${VOCAB2[$((bit_count - 1))]}"
+        payload="{\"title\":\"$title\"}"
     fi
-
-    payload="{\"title\":\"$title\",\"info\":{\"date\":\"$doc_date\",\"number\":$number,\"text\":\"$text\"}}"
-
+ 
     check "insert doc (mask=$mask)" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
         -d "$payload"
 done
@@ -190,33 +167,33 @@ check "insert deletable1" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X
 check "insert deletable2" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"id":"del2"}'
 
-#check "insert 1" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"id":"0","title":"this id is a number"}'
-#check "insert two" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"id":"two","title":"this id is text"}'
-#check "insert auto" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"title":"this id is automatically generated"}'
+check "insert 1" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"0","title":"this id is a number"}'
+check "insert two" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"two","title":"this id is text"}'
+check "insert auto" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title":"this id is automatically generated"}'
 
-#check "upsert auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"title": "upsert without id"}'
-#check "upsert insert" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"id": "up", "title": "upsert with id"}'
-#check "upsert update" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '{"id": "up", "title": "upsert updated"}'
+check "upsert auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"title": "upsert without id"}'
+check "upsert insert" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id": "up", "title": "upsert with id"}'
+check "upsert update" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id": "up", "title": "upsert updated"}'
 
 #-------------------------------------------------
 
 #curl -X POST $BASE_URL/api/databases/$DB/retrieve -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#    -d '["0", "two"]'
+#    -d '["1"]'
 #curl -X DELETE $BASE_URL/api/databases/$DB/delete -H "X-Corelamo-Key: $ADMIN_TOKEN" \
 #    -d '["del1","del2"]'
 #curl -X POST $BASE_URL/api/databases/$DB/lookup -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#    -d '{"ids": ["1"]}'
+#    -d '{"ids": ["1", "2"]}'
 #curl -X POST $BASE_URL/api/databases/$DB/lookup -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#    -d '{"ids": ["1"],"return_fields": {"title":true,"info/text":false}}'
+#    -d '{"ids": ["1", "2"],"return_fields": {"title":true,"text":false}}'
 
 check "reindex" 200 -X POST "$BASE_URL/api/databases/$DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-
+ 
 echo
 echo "=============================================================="
 echo " Results: $PASS_COUNT passed, $FAIL_COUNT failed"
@@ -224,9 +201,10 @@ echo " Database '$DB' now has $TOTAL power-set documents (n=$N)."
 echo " NOTE: database left running for querying/testing."
 echo "       delete with: curl -X DELETE $BASE_URL/api/databases/$DB/delete-database -H \"X-Corelamo-Key: \$ADMIN_TOKEN\""
 echo "=============================================================="
-
+ 
 rm -f /tmp/powerset_body.json
-
+ 
 if [ "$FAIL_COUNT" -gt 0 ]; then
     exit 1
 fi
+ 
