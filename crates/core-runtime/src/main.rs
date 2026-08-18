@@ -8,7 +8,9 @@ use axum::{
 use core_auth::{AuthService, UserDatabase};
 use core_core::shard_manager::ShardManager;
 use core_index::{
-    analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig}, segment::handle,
+    analyzer::analyzer::Analyzer,
+    lsm::{LsmIndex, config::IndexRuntimeConfig},
+    segment::handle,
 };
 
 use core_logs::logger;
@@ -290,12 +292,15 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/backup",
             post(handlers::backup_handler),
         )
-        .route("/api/databases/{db_name}/backup-incremental", post(handlers::backup_incremental_handler),
+        .route(
+            "/api/databases/{db_name}/backup-incremental",
+            post(handlers::backup_incremental_handler),
         )
         .route(
             "/api/databases/{db_name}/restore-backup",
             post(handlers::backup_restore_handler),
         );
+
     let protected_routes = if enable_auth {
         protected_routes.layer(from_fn_with_state(
             state.clone(),

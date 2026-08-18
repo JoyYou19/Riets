@@ -1,11 +1,15 @@
 use core_storage::wal::Wal;
-use std::io::{ self, BufReader, BufWriter, Write };
-use std::path::{ Path, PathBuf };
-use std::fs::{ self, File };
-use serde::{ Serialize, Deserialize };
 use flate2::Compression;
-use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
+
+use crate::progress::BackupProgress;
+
+const COPY_BUF_SIZE: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
@@ -51,7 +55,6 @@ pub enum BackupError {
 
 impl From<std::io::Error> for BackupError {
     fn from(error: std::io::Error) -> Self {
-        
         BackupError::IoError(error)
     }
 }
@@ -70,41 +73,76 @@ impl std::fmt::Display for BackupError {
             BackupError::BincodeError(e) => write!(f, "Bincode error: {}", e),
             BackupError::WalError(e) => write!(f, "WAL error: {}", e),
             BackupError::CorruptRecord(e) => write!(f, "Corrupt WAL record: {}", e),
-            BackupError::NoBackupChain =>
-                write!(f, "Could not resolve a full backup at chain root"),
+            BackupError::NoBackupChain => {
+                write!(f, "Could not resolve a full backup at chain root")
+            }
             BackupError::NoBaseBackup => write!(f, "No full backup exists to base an increment on"),
-            BackupError::ChainGap { parent_id, parent_end, child_id, child_start } =>
-                write!(
-                    f,
-                    "Gap in chain: {} ends at {} but {} starts at {}",
-                    parent_id,
-                    parent_end,
-                    child_id,
-                    child_start
-                ),
+            BackupError::ChainGap {
+                parent_id,
+                parent_end,
+                child_id,
+                child_start,
+            } => write!(
+                f,
+                "Gap in chain: {} ends at {} but {} starts at {}",
+                parent_id, parent_end, child_id, child_start
+            ),
         }
     }
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+fn copy_with_progress<R: io::Read, W: io::Write>(
+    mut reader: R,
+    mut writer: W,
+    progress: &BackupProgress,
+) -> io::Result<()> {
+    let mut buf = vec![0u8; COPY_BUF_SIZE];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+        progress.add(n as u64);
+    }
+    Ok(())
+}
+
+fn dir_size(path: &Path) -> io::Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+            copy_dir_recursive(&src_path, &dst_path, progress)?;
         } else {
-            fs::copy(&src_path, &dst_path)?;
+            let bytes = fs::copy(&src_path, &dst_path)?;
+            if let Some(p) = progress {
+                p.add(bytes);
+            }
         }
     }
     Ok(())
 }
 
-pub fn compress_file(src: &Path, dst: &Path) -> io::Result<()> {
-    let mut reader = BufReader::new(File::open(src)?);
+pub fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::Result<()> {
+    let reader = BufReader::new(File::open(src)?);
     let mut encoder = GzEncoder::new(File::create(dst)?, Compression::default());
-    io::copy(&mut reader, &mut encoder)?;
+    copy_with_progress(reader, &mut encoder, progress)?;
     encoder.finish()?;
     Ok(())
 }
@@ -125,7 +163,9 @@ fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
 
     while cursor < bytes.len() {
         if cursor + 12 > bytes.len() {
-            return Err(BackupError::CorruptRecord("truncated record header".to_string()));
+            return Err(BackupError::CorruptRecord(
+                "truncated record header".to_string(),
+            ));
         }
 
         let offset = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
@@ -134,16 +174,12 @@ fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
         cursor += 4;
 
         if cursor + len > bytes.len() {
-            return Err(
-                BackupError::CorruptRecord(
-                    format!(
-                        "record at offset {} claims {} bytes but only {} remain",
-                        offset,
-                        len,
-                        bytes.len() - cursor
-                    )
-                )
-            );
+            return Err(BackupError::CorruptRecord(format!(
+                "record at offset {} claims {} bytes but only {} remain",
+                offset,
+                len,
+                bytes.len() - cursor
+            )));
         }
 
         let payload = bytes[cursor..cursor + len].to_vec();
@@ -166,40 +202,38 @@ impl BackupManager {
     fn shard_backup_path(&self, backup_id: &str) -> PathBuf {
         self.backup_dir.join(backup_id).join(&self.shard_name)
     }
-    pub fn new(backup_dir: PathBuf,shard_name:String) -> Self {
+    pub fn new(backup_dir: PathBuf, shard_name: String) -> Self {
         let state_path = backup_dir.join("backup_state.json");
-        
-        let (last_backup_offset, last_backup_id) = if
-            let Ok(state) = fs::read_to_string(&state_path)
-        {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
-                let offset = parsed["last_offset"].as_u64().unwrap_or(0);
-                let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
-                (offset, id)
-            } else {
-                (0, None)
-            }
-        } else {
-            // State file doesn't exist; scan disk for latest backup
-            let best = fs
-                ::read_dir(&backup_dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let manifest_path = e.path().join("manifest.json");
-                    let text = fs::read_to_string(&manifest_path).ok()?;
-                    let m: BackupManifest = serde_json::from_str(&text).ok()?;
-                    Some(m)
-                })
-                .max_by_key(|m| m.created_at);
 
-            match best {
-                Some(m) => (m.wal_offset, Some(m.backup_id)),
-                None => (0, None),
-            }
-        };
+        let (last_backup_offset, last_backup_id) =
+            if let Ok(state) = fs::read_to_string(&state_path) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+                    let offset = parsed["last_offset"].as_u64().unwrap_or(0);
+                    let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
+                    (offset, id)
+                } else {
+                    (0, None)
+                }
+            } else {
+                // State file doesn't exist; scan disk for latest backup
+                let best = fs::read_dir(&backup_dir)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let manifest_path = e.path().join("manifest.json");
+                        let text = fs::read_to_string(&manifest_path).ok()?;
+                        let m: BackupManifest = serde_json::from_str(&text).ok()?;
+                        Some(m)
+                    })
+                    .max_by_key(|m| m.created_at);
+
+                match best {
+                    Some(m) => (m.wal_offset, Some(m.backup_id)),
+                    None => (0, None),
+                }
+            };
 
         Self {
             backup_dir,
@@ -211,8 +245,7 @@ impl BackupManager {
     fn save_state(&self) -> Result<(), BackupError> {
         let tmp = self.backup_dir.join("backup_state.json.tmp");
         let dst = self.backup_dir.join("backup_state.json");
-        let state =
-            serde_json::json!({
+        let state = serde_json::json!({
             "last_offset": self.last_backup_offset,
             "last_backup_id": self.last_backup_id,
         });
@@ -226,20 +259,30 @@ impl BackupManager {
         shard_root: &Path,
         backup_path: &Path,
         backup_id: &str,
-        wal: &Wal
+        wal: &Wal,
+        progress: &BackupProgress,
     ) -> Result<BackupManifest, BackupError> {
         //read wal offset before touching files so new things dont catch up with backup
         let wal_offset = wal.durable_offset();
 
         fs::create_dir_all(backup_path)?;
-        
+
+        let total = shard_root.join("documents.bin").metadata()?.len()
+            + dir_size(&shard_root.join("index"))?;
+        progress.grow_total(total);
+
         let result = (|| -> Result<BackupManifest, BackupError> {
             compress_file(
                 &shard_root.join("documents.bin"),
-                &backup_path.join("documents.bin.gz")
+                &backup_path.join("documents.bin.gz"),
+                progress,
             )?;
-            copy_dir_recursive(&shard_root.join("index"), &backup_path.join("index"))?;
-            
+            copy_dir_recursive(
+                &shard_root.join("index"),
+                &backup_path.join("index"),
+                Some(progress),
+            )?;
+
             // compress_file(&db_root.join("config.toml"), &backup_path.join("config.toml.gz"))?;
             // compress_file(&db_root.join("policy.toml"), &backup_path.join("policy.toml.gz"))?;
             let manifest = BackupManifest {
@@ -247,19 +290,19 @@ impl BackupManager {
                 created_at: chrono::Utc::now().timestamp() as u64,
                 backup_type: BackupType::Full,
                 start_offset: 0,
-                wal_offset, // the value snapshotted above
+                wal_offset,        // the value snapshotted above
                 document_count: 0, // populate once ShardCut is wired up
                 record_count: 0,
                 parent_backup_id: None,
             };
-            
+
             write_manifest_atomic(&backup_path, &manifest)?;
             Ok(manifest)
         })();
 
         match result {
             Ok(manifest) => {
-               let old_id = self.last_backup_id.clone();
+                let old_id = self.last_backup_id.clone();
                 self.last_backup_id = Some(backup_id.to_string());
                 self.last_backup_offset = wal_offset;
                 self.save_state()?;
@@ -278,11 +321,14 @@ impl BackupManager {
     pub fn create_incremental_backup(
         &mut self,
         shard_root: &Path,
-        backup_path: &Path,   // pre-created by shard manager: backups/incr_123/shard-0/
-        backup_id: &str,      // shared id from shard manager: "incr_123"
+        backup_path: &Path, // pre-created by shard manager: backups/incr_123/shard-0/
+        backup_id: &str,    // shared id from shard manager: "incr_123"
         wal: &Wal,
     ) -> Result<Option<BackupManifest>, BackupError> {
-        let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
+        let parent_id = self
+            .last_backup_id
+            .clone()
+            .ok_or(BackupError::NoBaseBackup)?;
 
         let start_offset = self.last_backup_offset;
         let end_offset = wal.durable_offset();
@@ -314,7 +360,6 @@ impl BackupManager {
 
             w.flush()?;
             w.into_inner()
-            
                 .map_err(|e| BackupError::IoError(e.into_error()))?
                 .sync_all()?;
 
@@ -389,9 +434,9 @@ impl BackupManager {
                 fs::create_dir_all(target_dir)?;
                 decompress_file(
                     &backup_path.join("documents.bin.gz"),
-                    &target_dir.join("documents.bin")
+                    &target_dir.join("documents.bin"),
                 )?;
-                copy_dir_recursive(&backup_path.join("index"), &target_dir.join("index"))?;
+                copy_dir_recursive(&backup_path.join("index"), &target_dir.join("index"), None)?;
             }
             BackupType::Incremental => {
                 let raw = fs::read(backup_path.join("wal_records.bin"))?;
@@ -456,8 +501,7 @@ impl BackupManager {
         let restored_manifest = self.load_manifest(restored_backup_id)?;
 
         // Collect every backup on disk.
-        let all_manifests: Vec<BackupManifest> = fs
-            ::read_dir(&self.backup_dir)?
+        let all_manifests: Vec<BackupManifest> = fs::read_dir(&self.backup_dir)?
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let manifest_path = e.path().join("manifest.json");
@@ -469,13 +513,15 @@ impl BackupManager {
         // Delete any incremental whose start_offset is >= the restored point.
         // These were built on state that no longer exists after the restore.
         for manifest in all_manifests {
-            if
-                manifest.backup_type == BackupType::Incremental &&
-                manifest.start_offset >= restored_manifest.wal_offset
+            if manifest.backup_type == BackupType::Incremental
+                && manifest.start_offset >= restored_manifest.wal_offset
             {
                 let path = self.backup_dir.join(&manifest.backup_id);
                 if let Err(e) = fs::remove_dir_all(&path) {
-                    eprintln!("failed to delete stale incremental {}: {}", manifest.backup_id, e);
+                    eprintln!(
+                        "failed to delete stale incremental {}: {}",
+                        manifest.backup_id, e
+                    );
                 }
             }
         }
