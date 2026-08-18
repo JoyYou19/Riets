@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io;
-use std::path::Component::RootDir;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,13 +76,9 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
     BackupFull {
-        shard_backup_path: PathBuf,
-        backup_id: String,
         resp: oneshot::Sender<Result<BackupManifest, CorelamoError>>,
     },
     BackupIncremental {
-        shard_backup_path: PathBuf,
-        backup_id: String,
         resp: oneshot::Sender<Result<Option<BackupManifest>, CorelamoError>>,
     },
     Restore {
@@ -121,6 +116,10 @@ impl ShardHandle {
             )));
         }
         Ok(())
+    }
+
+    pub fn is_restoring(&self) -> bool {
+        self.shared.is_restoring.load(Ordering::Acquire)
     }
 
     pub fn id(&self) -> ShardId {
@@ -505,7 +504,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     resp,
                 } => {
                     shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_full(shard_backup_path, backup_id);
+                    let result = shard.backup_full();
                     shared.is_backing_up.store(false, Ordering::Release);
                     if let Ok(manifest) = &result {
                         *shared
@@ -524,8 +523,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     resp,
                 } => {
                     shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_incremental(shard_backup_path, backup_id);
+                    let result = shard.backup_incremental();
                     shared.is_backing_up.store(false, Ordering::Release);
+
                     match &result {
                         Ok(Some(manifest)) => {
                             *shared
@@ -537,9 +537,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                                 .last_backup_at
                                 .store(manifest.created_at, Ordering::Release);
                         }
-                        Ok(None) => {}
                         Err(_) => {}
                     }
+
                     let _ = resp.send(result);
                 }
 

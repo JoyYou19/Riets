@@ -48,6 +48,12 @@ impl ShardManager {
         root.join(Self::CONFIG_PATH_NAME)
     }
 
+    pub fn stats(&self) -> DatabaseStats {
+        let mut stats = self.db_stats.snapshot();
+        stats.restoring = self.shards.iter().any(|h| h.is_restoring());
+        stats
+    }
+
     fn policy_path(root: &Path) -> PathBuf {
         root.join(Self::POLICY_PATH_NAME)
     }
@@ -73,7 +79,7 @@ impl ShardManager {
         let policy = IndexPolicy::default_document();
         policy.save(Self::policy_path(&root))?;
         options.save_to_file(Self::config_path(&root))?;
-        let backup_dir = root.join("backups");
+
         let db_stats = DbStats::new(options.shard_count as usize);
         let mut shards = Vec::new();
         let mut joins = Vec::new();
@@ -101,7 +107,6 @@ impl ShardManager {
             analyzer: Analyzer::new(),
             reindex_pool: ReindexPool::start(1),
             db_stats,
-            backup_dir,
         })
     }
 
@@ -897,15 +902,12 @@ impl ShardManager {
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(CorelamoError::Internal(
-                //janomaina
-                format!(
-                    "restore failed on {} of {} shards: {}",
-                    failures.len(),
-                    self.shards.len(),
-                    failures.join("; ")
-                ),
-            ))
+            Err(CorelamoError::Internal(format!(
+                "restore failed on {} of {} shards: {}",
+                failures.len(),
+                self.shards.len(),
+                failures.join("; ")
+            )))
         }
     }
 }
