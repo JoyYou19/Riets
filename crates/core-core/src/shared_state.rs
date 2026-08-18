@@ -13,6 +13,7 @@ pub struct SharedShardState {
     pub internal_to_external: Arc<DashMap<DocId, String>>,
     pub is_running: AtomicBool,
     pub is_clearing: AtomicBool,
+    pub is_restoring: AtomicBool,
     pub is_backing_up: AtomicBool,
     pub is_restoring: AtomicBool,
     pub last_backup_at: AtomicU64,

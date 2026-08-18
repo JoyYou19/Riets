@@ -395,9 +395,7 @@ pub async fn start_database_handler(
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    if manager.all_running(){
-        return HttpError::from_corelamo(CorelamoError::Conflict(format!("Database'{db_name}' is already running")), &ctx).into_response();
-    }
+
     match manager.start().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -413,9 +411,7 @@ pub async fn stop_database_handler(
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    if !manager.all_running(){
-        return HttpError::from_corelamo(CorelamoError::Conflict(format!("Database '{db_name}' is already stopped")), &ctx).into_response();
-    }
+
     match manager.stop().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -772,7 +768,6 @@ pub async fn create_database_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
     {
         let dbs = match state.databases.read() {
             Ok(g) => g,
@@ -790,9 +785,6 @@ pub async fn create_database_handler(
                 &ctx,
             )
             .into_response();
-        }
-        if dbs.len() < 1{
-            return HttpError::from_corelamo(CorelamoError::InvalidData(format!("Database name cant be empty")), &ctx).into_response()
         }
     }
     let db_path = state.databases_dir.join(&db_name);
@@ -931,16 +923,13 @@ pub async fn stats_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
 ) -> Response {
-    
     let manager = match state.lookup(&db_name) {
         Ok(m) => m,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-    if !manager.all_running(){
-        return HttpError::from_corelamo(CorelamoError::Conflict(format!("Database '{db_name}' is not running")), &ctx).into_response();
-    }
+
     // atomics only: this never queues behind an fsync or a reindex commit
     let stats = manager.stats();
     let indexing = &stats.indexing;
@@ -976,12 +965,11 @@ pub async fn stats_handler(
                 "eta_seconds": reindexing.eta_seconds,
             },
             "backup": {
-            "status": backup.status,
-            "progress_percent": backup.progress_percent,
-            "mb_done": backup.mb_done,
-            "mb_total": backup.mb_total,
-            "eta_seconds": backup.eta_seconds,
-            "restoring": stats.restoring,
+                "status": backup.status,
+                "progress_percent": backup.progress,
+                "bytes_done": backup.mb_done,
+                "bytes_total": backup.mb_total,
+                "restoring": stats.restoring,
             }
         }),
         &ctx,
@@ -1323,82 +1311,23 @@ pub async fn backup_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-
-    if let Err(e) = handle.try_start_backup() {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
 
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
         match handle.backup_full().await {
-            Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
-            Err(e) => eprintln!("backup failed for '{}': {}", name_for_log, e),
-        }
-    });
-
-    HttpOk::new(format!("backup started for '{db_name}'"), &ctx).into_response()
-}
-
-pub async fn backup_restore_handler(
-    State(state): State<AppState>,
-    Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::Restore) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // }
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
-    };
-
-    if let Err(e) = handle.try_start_restore() {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-
-    let name_for_log = db_name.clone();
-    tokio::spawn(async move {
-        match handle.restore_backup().await {
-            Ok(()) => eprintln!("restore completed for '{}'", name_for_log),
-            Err(e) => eprintln!("restore failed for '{}': {}", name_for_log, e),
-        }
-    });
-
-    HttpOk::new(format!("restore started for '{db_name}'"), &ctx).into_response()
-}
-
-pub async fn backup_incremental_handler(
-    State(state): State<AppState>,
-    Path(db_name): Path<String>,
-    Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>,
-) -> Response {
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
-
-    let name_for_log = db_name.clone();
-    tokio::spawn(async move {
-        match handle.backup_incremental().await {
-            Ok(manifests) => {
-                let backed_up = manifests.iter().filter(|m| m.is_some()).count();
-                eprintln!(
-                    "incremental backup for '{}': {}/{} shards had new data",
-                    name_for_log,
-                    backed_up,
-                    manifests.len()
-                );
-            }
-            Err(e) => {
-                eprintln!("incremental backup failed for '{}': {}", name_for_log, e);
+            Ok(_manifests) => {
+                eprintln!("backup completed for '{}'", name_for_log);
+            } //parmainit
+            Err(_e) => {
+                slog::error!(slog::Logger::root(slog::Discard, o!()), "backup failed"; "db" => %name_for_log)
             }
         }
     });

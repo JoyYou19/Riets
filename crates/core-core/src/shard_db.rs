@@ -101,7 +101,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let store_path = root.join("documents.bin");
         BinaryDocumentStore::open(&store_path)?;
-        let backup_dir = db_root.as_ref().join("backups");
+        let backup_dir = db_root.as_ref().join("backups").join(&name);
         std::fs::create_dir_all(&backup_dir)?;
         let backup = BackupManager::new(backup_dir, name.clone()); // see note below
         Ok(Self {
@@ -962,7 +962,7 @@ impl ShardDb {
     }
 
     pub fn restore_from_backup(
-        &mut self,
+        &self,
         backup_id: &str,
         target_dir: &Path,
     ) -> Result<(), CorelamoError> {

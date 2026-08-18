@@ -27,6 +27,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use tokio::task::JoinSet;
+
+use crate::ShardDb;
+use crate::metrics::DbStats;
+use crate::reindex::{ReindexJob, ReindexPool};
+use crate::shard_db::DatabaseStats;
+use crate::shard_worker::{self, ShardCmd, ShardHandle};
+use crate::{DatabaseOptions, shard_for};
+use core_index::document::IndexPolicy;
+use core_index::types::{ShardId, shard_of};
+use core_protocol::errors::CorelamoError;
+use core_query::query_string_parser::parse_and_analyze;
+use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
+use core_storage::search_database::{DocumentInput, SearchDocumentHit};
+
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
     joins: Vec<JoinHandle<()>>, //JoinHandle atgriez ka thread uztaisits
@@ -46,6 +60,12 @@ impl ShardManager {
 
     fn config_path(root: &Path) -> PathBuf {
         root.join(Self::CONFIG_PATH_NAME)
+    }
+
+    pub fn stats(&self) -> DatabaseStats {
+        let mut stats = self.db_stats.snapshot();
+        stats.restoring = self.shards.iter().any(|h| h.is_restoring());
+        stats
     }
 
     fn policy_path(root: &Path) -> PathBuf {
@@ -73,7 +93,7 @@ impl ShardManager {
         let policy = IndexPolicy::default_document();
         policy.save(Self::policy_path(&root))?;
         options.save_to_file(Self::config_path(&root))?;
-        let backup_dir = root.join("backups");
+
         let db_stats = DbStats::new(options.shard_count as usize);
         let mut shards = Vec::new();
         let mut joins = Vec::new();
@@ -101,7 +121,6 @@ impl ShardManager {
             analyzer: Analyzer::new(),
             reindex_pool: ReindexPool::start(1),
             db_stats,
-            backup_dir,
         })
     }
 
@@ -897,15 +916,12 @@ impl ShardManager {
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(CorelamoError::Internal(
-                //janomaina
-                format!(
-                    "restore failed on {} of {} shards: {}",
-                    failures.len(),
-                    self.shards.len(),
-                    failures.join("; ")
-                ),
-            ))
+            Err(CorelamoError::Internal(format!(
+                "restore failed on {} of {} shards: {}",
+                failures.len(),
+                self.shards.len(),
+                failures.join("; ")
+            )))
         }
     }
 }

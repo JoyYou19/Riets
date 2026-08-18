@@ -130,8 +130,10 @@ def curl_post(url, body, token):
     result = subprocess.run(
         ["curl", "-s", "-X", "POST", url,
          "-H", "Accept: application/json",
+         "-H", "Content-Type: application/toml",  # or text/plain
          "-H", f"X-Corelamo-Key: {token}",
-         "-d", body],
+         "--data-binary", "@-"],                   # Reads raw bytes directly from stdin
+        input=body,                                # Pipes python string to stdin
         capture_output=True,
         text=True,
     )
