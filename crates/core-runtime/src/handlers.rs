@@ -395,7 +395,9 @@ pub async fn start_database_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-
+    if manager.all_running(){
+        return HttpError::from_corelamo(CorelamoError::Conflict(format!("Database'{db_name}' is already running")), &ctx).into_response();
+    }
     match manager.start().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -413,7 +415,9 @@ pub async fn stop_database_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-
+    if !manager.all_running(){
+        return HttpError::from_corelamo(CorelamoError::Conflict(format!("Database '{db_name}' is already stopped")), &ctx).into_response();
+    }
     match manager.stop().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -757,6 +761,7 @@ pub async fn create_database_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
+
     {
         let dbs = match state.databases.read() {
             Ok(g) => g,
@@ -772,6 +777,9 @@ pub async fn create_database_handler(
                 CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
                 &ctx
             ).into_response();
+        }
+        if dbs.len() < 1{
+            return HttpError::from_corelamo(CorelamoError::InvalidData(format!("Database name cant be empty")), &ctx).into_response()
         }
     }
     let db_path = state.databases_dir.join(&db_name);
@@ -900,13 +908,16 @@ pub async fn stats_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>
 ) -> Response {
+    
     let manager = match state.lookup(&db_name) {
         Ok(m) => m,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-
+    if !manager.all_running(){
+        return HttpError::from_corelamo(CorelamoError::Conflict(format!("Database '{db_name}' is not running")), &ctx).into_response();
+    }
     // atomics only: this never queues behind an fsync or a reindex commit
     let stats = manager.stats();
     let indexing = &stats.indexing;
