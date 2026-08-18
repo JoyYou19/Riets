@@ -1,11 +1,11 @@
 use core_storage::wal::Wal;
-use std::io::{ self, BufReader, BufWriter, Write };
-use std::path::{ Path, PathBuf };
-use std::fs::{ self, File };
-use serde::{ Serialize, Deserialize };
 use flate2::Compression;
-use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
@@ -18,6 +18,9 @@ pub struct BackupManifest {
     pub record_count: u64,
     pub parent_backup_id: Option<String>,
 }
+
+use crate::progress::BackupProgress;
+const COPY_BUF_SIZE: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BackupType {
@@ -83,28 +86,34 @@ impl std::fmt::Display for BackupError {
                     child_start
                 ),
         }
+        writer.write_all(&buf[..n])?;
+        progress.add(n as u64);
     }
+    Ok(())
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+            copy_dir_recursive(&src_path, &dst_path, progress)?;
         } else {
-            fs::copy(&src_path, &dst_path)?;
+            let bytes = fs::copy(&src_path, &dst_path)?;
+            if let Some(p) = progress {
+                p.add(bytes);
+            }
         }
     }
     Ok(())
 }
 
-pub fn compress_file(src: &Path, dst: &Path) -> io::Result<()> {
-    let mut reader = BufReader::new(File::open(src)?);
+fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::Result<()> {
+    let reader = BufReader::new(File::open(src)?);
     let mut encoder = GzEncoder::new(File::create(dst)?, Compression::default());
-    io::copy(&mut reader, &mut encoder)?;
+    copy_with_progress(reader, &mut encoder, progress)?;
     encoder.finish()?;
     Ok(())
 }
@@ -125,7 +134,9 @@ fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
 
     while cursor < bytes.len() {
         if cursor + 12 > bytes.len() {
-            return Err(BackupError::CorruptRecord("truncated record header".to_string()));
+            return Err(BackupError::CorruptRecord(
+                "truncated record header".to_string(),
+            ));
         }
 
         let offset = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
@@ -134,16 +145,12 @@ fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
         cursor += 4;
 
         if cursor + len > bytes.len() {
-            return Err(
-                BackupError::CorruptRecord(
-                    format!(
-                        "record at offset {} claims {} bytes but only {} remain",
-                        offset,
-                        len,
-                        bytes.len() - cursor
-                    )
-                )
-            );
+            return Err(BackupError::CorruptRecord(format!(
+                "record at offset {} claims {} bytes but only {} remain",
+                offset,
+                len,
+                bytes.len() - cursor
+            )));
         }
 
         let payload = bytes[cursor..cursor + len].to_vec();
@@ -153,6 +160,7 @@ fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
 
     Ok(records)
 }
+
 fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
     let tmp = backup_path.join("manifest.json.tmp");
     let dst = backup_path.join("manifest.json");
@@ -162,20 +170,35 @@ fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Resul
     Ok(())
 }
 
+fn dir_size(path: &Path) -> io::Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
 impl BackupManager {
     fn shard_backup_path(&self, backup_id: &str) -> PathBuf {
         self.backup_dir.join(backup_id).join(&self.shard_name)
     }
     pub fn new(backup_dir: PathBuf,shard_name:String) -> Self {
         let state_path = backup_dir.join("backup_state.json");
-        
-        let (last_backup_offset, last_backup_id) = if
-            let Ok(state) = fs::read_to_string(&state_path)
-        {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
-                let offset = parsed["last_offset"].as_u64().unwrap_or(0);
-                let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
-                (offset, id)
+
+        let (last_backup_offset, last_backup_id) =
+            if let Ok(state) = fs::read_to_string(&state_path) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+                    let offset = parsed["last_offset"].as_u64().unwrap_or(0);
+                    let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
+                    (offset, id)
+                } else {
+                    (0, None)
+                }
             } else {
                 (0, None)
             }
@@ -208,6 +231,7 @@ impl BackupManager {
             last_backup_offset,
         }
     }
+
     fn save_state(&self) -> Result<(), BackupError> {
         let tmp = self.backup_dir.join("backup_state.json.tmp");
         let dst = self.backup_dir.join("backup_state.json");
@@ -221,6 +245,7 @@ impl BackupManager {
         fs::rename(&tmp, &dst)?;
         Ok(())
     }
+
     pub fn create_full_backup(
         &mut self,
         shard_root: &Path,
@@ -242,6 +267,32 @@ impl BackupManager {
             
             // compress_file(&db_root.join("config.toml"), &backup_path.join("config.toml.gz"))?;
             // compress_file(&db_root.join("policy.toml"), &backup_path.join("policy.toml.gz"))?;
+        db_root: &Path,
+        wal: &Wal,
+        progress: &BackupProgress,
+    ) -> Result<BackupManifest, BackupError> {
+        //read wal offset before touching files so new things dont catch up with backup
+        let wal_offset = wal.durable_offset();
+        let backup_id = format!("full_{}", chrono::Utc::now().timestamp_millis());
+        let backup_path = self.backup_dir.join(&backup_id);
+        fs::create_dir(&backup_path)?;
+
+        let total =
+            db_root.join("documents.bin").metadata()?.len() + dir_size(&db_root.join("index"))?;
+        progress.grow_total(total);
+
+        let result = (|| -> Result<BackupManifest, BackupError> {
+            compress_file(
+                &db_root.join("documents.bin"),
+                &backup_path.join("documents.bin.br"),
+                progress,
+            )?;
+            copy_dir_recursive(
+                &db_root.join("index"),
+                &backup_path.join("index"),
+                Some(progress),
+            )?;
+
             let manifest = BackupManifest {
                 backup_id: backup_id.to_string(),
                 created_at: chrono::Utc::now().timestamp() as u64,
@@ -391,7 +442,7 @@ impl BackupManager {
                     &backup_path.join("documents.bin.gz"),
                     &target_dir.join("documents.bin")
                 )?;
-                copy_dir_recursive(&backup_path.join("index"), &target_dir.join("index"))?;
+                copy_dir_recursive(&backup_path.join("index"), &target_dir.join("index"), None)?;
             }
             BackupType::Incremental => {
                 let raw = fs::read(backup_path.join("wal_records.bin"))?;

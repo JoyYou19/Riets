@@ -47,6 +47,12 @@ impl ShardManager {
         root.join(Self::CONFIG_PATH_NAME)
     }
 
+    pub fn stats(&self) -> DatabaseStats {
+        let mut stats = self.db_stats.snapshot();
+        stats.restoring = self.shards.iter().any(|h| h.is_restoring());
+        stats
+    }
+
     fn policy_path(root: &Path) -> PathBuf {
         root.join(Self::POLICY_PATH_NAME)
     }
@@ -76,9 +82,8 @@ impl ShardManager {
         let db_stats = DbStats::new(options.shard_count as usize);
         let mut shards = Vec::new();
         let mut joins = Vec::new();
-       
+
         for shard_id in 0..options.shard_count {
-           
             let shard_root = shards_dir.join(format!("shard-{}", shard_id));
             let db = ShardDb::create_shard(
                 shard_root,
@@ -628,10 +633,6 @@ impl ShardManager {
         by_shard
     }
 
-    pub fn stats(&self) -> DatabaseStats {
-        self.db_stats.snapshot()
-    }
-
     pub async fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
 
@@ -871,15 +872,12 @@ pub async fn backup_incremental(&self) -> Result<Vec<Option<BackupManifest>>, Co
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(CorelamoError::Internal(
-                //janomaina
-                format!(
-                    "restore failed on {} of {} shards: {}",
-                    failures.len(),
-                    self.shards.len(),
-                    failures.join("; ")
-                ),
-            ))
+            Err(CorelamoError::Internal(format!(
+                "restore failed on {} of {} shards: {}",
+                failures.len(),
+                self.shards.len(),
+                failures.join("; ")
+            )))
         }
     }
 }
