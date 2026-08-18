@@ -114,6 +114,7 @@ check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Co
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
