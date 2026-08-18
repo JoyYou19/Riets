@@ -17,8 +17,8 @@ ADMIN_TOKEN=$(curl -s -X POST "http://localhost:6006/api/login" -d '{"username":
 
 curl -X POST "http://localhost:6006/api/databases/$DB/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-curl -X POST "http://localhost:6006/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-    -d "{\"query\":\"$QUERY\",\"docs\":$DOCS}"
-
 #curl -X POST "http://localhost:6006/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#    -d "{\"query\":$QUERY}"
+#    -d "{\"query\":\"$QUERY\",\"docs\":$DOCS}"
+
+curl -X POST "http://localhost:6006/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+    -d "{\"query\":$QUERY}"
