@@ -189,7 +189,6 @@ check "set policy no database" 404 -X POST "$BASE_URL/api/databases/set-policy" 
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -198,7 +197,6 @@ check "set policy no database" 404 -X POST "$BASE_URL/api/databases/set-policy" 
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -209,7 +207,6 @@ check "set policy empty database" 404 -X POST "$BASE_URL/api/databases//set-poli
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -218,7 +215,6 @@ check "set policy empty database" 404 -X POST "$BASE_URL/api/databases//set-poli
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -229,7 +225,6 @@ check "set policy nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -238,7 +233,6 @@ check "set policy nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -251,7 +245,6 @@ check "set invalid toml policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-po
   -d '
   [[fields]]
   name = id
-  xpath = 0
   index = Id
   list = true
   [fields.weight]
@@ -260,7 +253,6 @@ check "set invalid toml policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-po
 
   [[fields]]
   name
-  xpath = 1
   index = "Text"
   = true
   [fields.weight]
@@ -271,7 +263,6 @@ check "set invalid policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy"
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Yo"
   list = true
   [fields.weight]
@@ -280,7 +271,6 @@ check "set invalid policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy"
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -291,7 +281,6 @@ check "set repeating id fields policy" 400 -X POST "$BASE_URL/api/databases/$DB1
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -300,7 +289,6 @@ check "set repeating id fields policy" 400 -X POST "$BASE_URL/api/databases/$DB1
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Id"
   list = true
   [fields.weight]
@@ -311,7 +299,6 @@ check "set repeating id fields policy" 400 -X POST "$BASE_URL/api/databases/$DB1
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -320,18 +307,16 @@ check "set repeating id fields policy" 400 -X POST "$BASE_URL/api/databases/$DB1
 
   [[fields]]
   name = "id"
-  xpath = 1
   index = "Id"
   list = true
   [fields.weight]
   min = 100
   max = 100
   '
-check "set repeating id fields policy same name same xpath" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set repeating id fields policy same name" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -340,96 +325,17 @@ check "set repeating id fields policy same name same xpath" 400 -X POST "$BASE_U
 
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
   min = 100
   max = 100
   '
-check "set repeating id fields policy diff name same xpath" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '
-  [[fields]]
-  name = "id"
-  xpath = 0
-  index = "Id"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
 
-  [[fields]]
-  name = "title"
-  xpath = 0
-  index = "Id"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-  '
-check "set repeating title fields policy same xpath" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '
-  [[fields]]
-  name = "id"
-  xpath = 0
-  index = "Id"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-
-  [[fields]]
-  name = "title"
-  xpath = 1
-  index = "Text"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-  
-  [[fields]]
-  name = "title"
-  xpath = 1
-  index = "Text"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-  '
-check "set repeating title fields policy diff xpath" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '
-  [[fields]]
-  name = "id"
-  xpath = 0
-  index = "Id"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-
-  [[fields]]
-  name = "title"
-  xpath = 1
-  index = "Text"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-  
-  [[fields]]
-  name = "title"
-  xpath = 2
-  index = "Text"
-  list = true
-  [fields.weight]
-  min = 100
-  max = 100
-  '
 check "set missing weights policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -446,7 +352,6 @@ check "set policy one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H 
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -455,7 +360,6 @@ check "set policy one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H 
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -466,7 +370,6 @@ check "set policy two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-policy" -H 
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -475,7 +378,6 @@ check "set policy two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-policy" -H 
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -593,7 +495,9 @@ check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H 
   secs = 1
   nanos = 0
   '
-#
+
+section "Clear-database"
+section "Reindex"
 
 section "Delete-database"
 

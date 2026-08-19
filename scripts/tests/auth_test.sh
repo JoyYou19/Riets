@@ -223,6 +223,13 @@ check "architect cannot clear logs" 403 -X DELETE "$BASE_URL/api/databases/$SCRA
 check "editor cannot clear logs"    403 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/clear-logs" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "viewer cannot clear logs" 403 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/clear-logs" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 
+section "MATRIX — Permission::ClearDatabase (admin granted; viewer, editor, architect denied)"
+
+check "admin can clear database"     200 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "architect cannot clear database" 403 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/clear-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "editor cannot clear database"    403 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/clear-database" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "viewer cannot clear database" 403 -X DELETE "$BASE_URL/api/databases/$SCRATCH_DB/clear-database" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+
 section "MATRIX — Permission::DeleteDatabase (admin, architect granted; viewer, editor denied)"
 
 check "admin creates db for admin-delete test"     201 -X POST "$BASE_URL/api/databases/admin_deldb_$RUN_ID/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
@@ -257,10 +264,10 @@ check "viewer cannot get policy" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB
 
 section "MATRIX — Permission::SetPolicy (admin, architect granted; viewer, editor denied)"
 
-check "admin can set policy"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
-check "architect can set policy" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
-check "editor can set policy"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
-check "viewer cannot set policy" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "admin can set policy"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d $'[[fields]]\nname = "id"\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "architect can set policy" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d $'[[fields]]\nname = "id"\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "editor can set policy"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d $'[[fields]]\nname = "id"\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "viewer cannot set policy" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d $'[[fields]]\nname = "id"\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
 
 section "MATRIX — Permission::CreateUser (admin only)"
 
@@ -383,12 +390,26 @@ check "viewer cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/r
 check "editor cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "architect can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-#section "MATRIX — Permission::BackupFull (admin, architect, editor granted; viewer denied)"
+section "MATRIX — Permission::BackupFull (admin granted; viewer, editor, architect denied)"
 
-#check "admin can backup"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "viewer cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-#check "editor can backup" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-#check "architect can backup" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "admin can backup"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "viewer cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "editor cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "architect cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+
+#section "MATRIX — Permission::BackupIncremental (admin, architect granted; viewer, editor denied)"
+
+#check "admin can backup incremental"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+#check "viewer cannot backup incremental" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+#check "editor cannot backup incremental" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+#check "architect can backup incremental" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+
+#section "MATRIX — Permission::Restore (admin, architect granted; viewer, editor denied)"
+
+#check "admin can restore"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+#check "viewer cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+#check "editor cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+#check "architect can restore" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
 # ==================================================================
 # EXTRA — conflicts, not-found, malformed input

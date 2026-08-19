@@ -93,7 +93,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -102,7 +101,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -171,7 +169,6 @@ check "set autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-po
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "IdAuto"
   list = true
   [fields.weight]
@@ -180,7 +177,6 @@ check "set autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-po
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -241,7 +237,6 @@ check "set no autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "Id"
   list = true
   [fields.weight]
@@ -250,7 +245,6 @@ check "set no autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set
 
   [[fields]]
   name = "number"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]

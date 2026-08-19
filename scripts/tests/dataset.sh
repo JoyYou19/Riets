@@ -70,7 +70,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   -d '
   [[fields]]
   name = "id"
-  xpath = 0
   index = "IdAuto"
   list = true
   [fields.weight]
@@ -79,7 +78,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
 
   [[fields]]
   name = "title"
-  xpath = 1
   index = "Text"
   list = true
   [fields.weight]
@@ -88,7 +86,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
 
   [[fields]]
   name = "info/date"
-  xpath = 2
   index = "Date"
   list = true
   [fields.weight]
@@ -97,7 +94,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
 
   [[fields]]
   name = "info/number"
-  xpath = 3
   index = "Number"
   list = true
   [fields.weight]
@@ -106,7 +102,6 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
 
   [[fields]]
   name = "info/text"
-  xpath = 4
   index = "Text"
   list = true
   [fields.weight]
