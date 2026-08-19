@@ -677,7 +677,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
             continue;
         };
 
-        indexed = indexed.with_part(field.xpath, text, field.weight);
+        indexed = indexed.with_part(field.xpath(policy), text, field.weight);
     }
 
     indexed
