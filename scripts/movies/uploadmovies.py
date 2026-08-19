@@ -131,12 +131,12 @@ def curl_post(url, body, token):
         ["curl", "-s", "-X", "POST", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
-         "-d", body],
+         "--data-binary", "@-"],
+        input=body,
         capture_output=True,
         text=True,
     )
     return result.stdout.strip(), result.returncode
-
 
 def curl_put(url, body, token):
     result = subprocess.run(

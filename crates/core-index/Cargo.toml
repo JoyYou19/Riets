@@ -39,6 +39,3 @@ tantivy = "0.26.1"
 criterion = {workspace = true}
 rand = "0.10.1"
 
-[[bench]]
-name = "index_bench"
-harness = false
