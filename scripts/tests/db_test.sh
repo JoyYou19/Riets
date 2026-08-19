@@ -497,7 +497,36 @@ check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H 
   '
 
 section "Clear-database"
+
+check "clear no database" 404 -X DELETE "$BASE_URL/api/databases/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "clear database empty" 404 -X DELETE "$BASE_URL/api/databases//clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "clear nonexistent database" 404 -X DELETE "$BASE_URL/api/databases/yo/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "clear database one" 200 -X DELETE "$BASE_URL/api/databases/$DB1/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "clear database one again" 200 -X DELETE "$BASE_URL/api/databases/$DB1/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "clear database two" 200 -X DELETE "$BASE_URL/api/databases/$DB2/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
 section "Reindex"
+
+check "reindex no database" 404 -X POST "$BASE_URL/api/databases/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "reindex database empty" 404 -X POST "$BASE_URL/api/databases//reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "reindex nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "reindex database one" 200 -X POST "$BASE_URL/api/databases/$DB1/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "reindex database one again" 503 -X POST "$BASE_URL/api/databases/$DB1/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+#check "reindex database two" 200 -X POST "$BASE_URL/api/databases/$DB2/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+#reindex is busy
+
+section "Backup full"
+
+check "backup no database" 404 -X POST "$BASE_URL/api/databases/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup database empty" 404 -X POST "$BASE_URL/api/databases//backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "backup database one" 200 -X POST "$BASE_URL/api/databases/$DB1/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup database one again" 503 -X POST "$BASE_URL/api/databases/$DB1/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup database two" 200 -X POST "$BASE_URL/api/databases/$DB2/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
 
 section "Delete-database"
 
