@@ -454,7 +454,7 @@ impl ShardDb {
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
             if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
-                warn!(self.log, "checkpoint write failed"; "error" => %e);
+                 warn!(self.log, "checkpoint write failed"; "error" => %e);
             }
 
             Ok(report)
@@ -942,7 +942,7 @@ impl ShardDb {
         backup_id: String,
     ) -> Result<Option<BackupManifest>, CorelamoError> {
         self.backup
-            .create_incremental_backup(&self.root, &shard_backup_path, &backup_id, &self.wal)
+            .create_incremental_backup( &shard_backup_path, &backup_id, &self.wal)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
