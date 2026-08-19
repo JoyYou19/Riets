@@ -131,7 +131,8 @@ def curl_post(url, body, token):
         ["curl", "-s", "-X", "POST", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
-         "--data-binary", body],
+         "--data-binary", "@-"],
+        input=body,
         capture_output=True,
         text=True,
     )
@@ -143,7 +144,8 @@ def curl_put(url, body, token):
         ["curl", "-s", "-X", "PUT", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
-         "--data-binary", body],
+         "--data-binary", "@-"],
+        input=body,
         capture_output=True,
         text=True,
     )
@@ -173,7 +175,7 @@ def main():
     # 1. delete if exists
     print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
     out, _ = curl_delete(
-        f"{BASE_URL}/api/databases/{DB_NAME}/delete-database", token)
+        f"{BASE_URL}/api/databases/{DB_NAME}/clear-database", token)
     print(f"[INFO] {out}")
 
     # 2. create database
@@ -206,7 +208,7 @@ def main():
     for idx, file in enumerate(files, start=1):
         with open(file, "r", encoding="utf-8") as f:
             chunk = json.load(f)
-        payload = json.dumps(chunk, ensure_ascii=False)
+        payload = json.dumps(chunk*10, ensure_ascii=False)
         out, code = curl_post(
             f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
         if code != 0:

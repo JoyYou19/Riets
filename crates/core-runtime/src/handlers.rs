@@ -192,9 +192,13 @@ pub async fn lookup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Lookup) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let manager = match state.lookup(&db_name) {
         Ok(m) => m,
         Err(e) => {
@@ -392,7 +396,12 @@ pub async fn start_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::StartDB) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -410,7 +419,12 @@ pub async fn stop_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::StopDB) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -428,7 +442,12 @@ pub async fn restart_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::RestartDB) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -450,7 +469,7 @@ pub async fn clear_database_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    if let Err(e) = check_permission(&state, &principal, Permission::ClearDB) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
@@ -607,8 +626,13 @@ pub async fn replace_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -689,8 +713,13 @@ pub async fn upsert_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Upsert) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let body = match require_body(&body) {
         Ok(b) => b.to_string(),
         Err(e) => {
@@ -888,7 +917,12 @@ pub async fn delete_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::DeleteDatabase) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let log = slog_scope::logger().new(o!("components" => "handlers"));
 
     let manager = {
@@ -965,7 +999,12 @@ pub async fn stats_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Status) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let manager = match state.lookup(&db_name) {
         Ok(m) => m,
         Err(e) => {
@@ -1033,7 +1072,12 @@ pub async fn reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let manager = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
@@ -1091,7 +1135,7 @@ pub async fn set_policy_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::PostPolicy) {
+    if let Err(e) = check_permission(&state, &principal, Permission::SetPolicy) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
     let body = match require_body(&body) {
@@ -1191,7 +1235,12 @@ pub async fn set_config_handler(
 pub async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::ListDatabases) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let managers: Vec<(String, Arc<ShardManager>)> = {
         let dbs = match state.databases.read() {
             Ok(g) => g,
@@ -1301,7 +1350,10 @@ pub async fn update_user_password_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    //varbut japieliek tas check permission
+    if let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let body = match require_body(&body) {
         Ok(b) => b,
         Err(e) => {
@@ -1333,6 +1385,10 @@ pub async fn update_user_roles_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::UpdateRole) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let body = match require_body(&body) {
         Ok(b) => b,
         Err(e) => {
@@ -1363,6 +1419,10 @@ pub async fn backup_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::BackupFull) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -1389,9 +1449,10 @@ pub async fn backup_restore_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::Restore) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // }
+    if let Err(e) = check_permission(&state, &principal, Permission::Restore) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -1418,6 +1479,10 @@ pub async fn backup_incremental_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::BackupIncremental) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => {
