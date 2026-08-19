@@ -12,3 +12,4 @@ serde = { workspace = true, features =["derive"]}
 core-storage = { path = "../core-storage" }
 chrono = "0.4.45"
 flate2 ="1.0"
+tar = "0.4"
