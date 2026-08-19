@@ -973,6 +973,14 @@ pub async fn stats_handler(
         }
     };
 
+    if !manager.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
     // atomics only: this never queues behind an fsync or a reindex commit
     let stats = manager.stats();
     let indexing = &stats.indexing;

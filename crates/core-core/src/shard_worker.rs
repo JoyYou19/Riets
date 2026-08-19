@@ -416,12 +416,7 @@ pub fn spawn(
         .spawn(move || {
             let _guard = AliveGuard(alive_worker);
 
-            let started = if bootable {
-                println!("shards nahuj starto + bootable {:?}", bootable);
-                shard.start()
-            } else {
-                Ok(())
-            };
+            let started = if bootable { shard.start() } else { Ok(()) };
 
             let ok = started.is_ok();
             shared_worker
