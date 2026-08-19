@@ -776,6 +776,40 @@ pub async fn create_database_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
+
+    if db_name.is_empty() {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData("database name cannot be empty".to_string()),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    if db_name.len() > 30 {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData(format!(
+                "database name '{}' exceeds 30 characters",
+                db_name
+            )),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    if !db_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData(format!(
+                "database name '{}' contains invalid characters",
+                db_name
+            )),
+            &ctx,
+        )
+        .into_response();
+    }
+
     {
         let dbs = match state.databases.read() {
             Ok(g) => g,
