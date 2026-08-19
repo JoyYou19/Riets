@@ -1445,7 +1445,7 @@ pub async fn backup_handler(
 
 pub async fn backup_restore_handler(
     State(state): State<AppState>,
-    Path(db_name): Path<String>,
+    Path((db_name, backup_id)): Path<(String,String)>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
@@ -1461,16 +1461,16 @@ pub async fn backup_restore_handler(
     if let Err(e) = handle.try_start_restore() {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
+    let id_for_log = backup_id.clone();
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.restore_backup().await {
+        match handle.restore_backup(&backup_id).await {
             Ok(()) => eprintln!("restore completed for '{}'", name_for_log),
             Err(e) => eprintln!("restore failed for '{}': {}", name_for_log, e),
         }
     });
 
-    HttpOk::new(format!("restore started for '{db_name}'"), &ctx).into_response()
+    HttpOk::new(format!("restore of '{id_for_log}' started for '{db_name}'"), &ctx).into_response()
 }
 
 pub async fn backup_incremental_handler(
@@ -1509,4 +1509,39 @@ pub async fn backup_incremental_handler(
     });
 
     HttpOk::new(format!("incremental backup started for '{db_name}'"), &ctx).into_response()
+}
+pub async fn list_backups_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // } jauztaisa permission
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let backups = match handle.list_backups().await {
+        Ok(b) => b,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(e.to_string()),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    HttpOk::with_data(
+        format!("{} backup(s) for '{db_name}'", backups.len()),
+        json!({ "backups": backups }),
+        &ctx,
+    )
+    .into_response()
 }

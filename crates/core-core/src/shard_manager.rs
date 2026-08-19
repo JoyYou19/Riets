@@ -83,8 +83,11 @@ impl ShardManager {
                 policy.clone(),
                 db_stats.handle(shard_id as usize),
             )?;
-            let (handle, join) =
-                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
+            let (handle, join) = shard_worker::spawn(
+                db,
+                Self::DEFAULT_QUEUE_DEPTH,
+                options.bootable
+            )?;
             shards.push(handle);
             joins.push(join);
         }
@@ -446,8 +449,11 @@ impl ShardManager {
         let mut joins = Vec::new();
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
-            let (handle, join) =
-                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
+            let (handle, join) = shard_worker::spawn(
+                db,
+                Self::DEFAULT_QUEUE_DEPTH,
+                options.bootable
+            )?;
             shards.push(handle);
             joins.push(join);
         }
@@ -891,10 +897,10 @@ impl ShardManager {
         Ok(manifests)
     }
 
-    pub async fn restore_backup(&self) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();
         for shard in &self.shards {
-            if let Err(e) = shard.restore_backup().await {
+            if let Err(e) = shard.restore_backup(backup_id).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }
@@ -922,5 +928,10 @@ impl ShardManager {
             .flatten()
             .filter_map(|e| e.ok())
             .any(|e| e.path().is_dir())
+    }
+    // impl ShardManager
+    pub async fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
+        let shard = self.shards.first().ok_or_else(|| CorelamoError::Internal("no shards".into()))?;
+        shard.list_backups().await
     }
 }
