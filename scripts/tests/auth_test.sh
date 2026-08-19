@@ -303,6 +303,7 @@ check "admin can set config"      200 -X POST "$BASE_URL/api/databases/$SCRATCH_
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -321,6 +322,7 @@ check "viewer cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -339,6 +341,7 @@ check "editor can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -357,6 +360,7 @@ check "architect can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -404,6 +408,7 @@ section "EXTRA — token / header edge cases"
 check "missing token on protected route"  401 -X GET "$BASE_URL/api/list-databases"
 check "garbage token on protected route"  401 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: not-a-real-token"
 check "lowercase header name still works" 200 -X GET "$BASE_URL/api/list-databases" -H "x-corelamo-key: $ADMIN_TOKEN"
+check "random token for error" 401 -X GET "$BASE_URL/api/list-databases" -H "x-corelamo-key: $ACorelamoError::Internal(format!("failed to get stats: {e}")),DMIN_TOKEN"
 
 # ==================================================================
 # EXTRA — stale tokens after account changes

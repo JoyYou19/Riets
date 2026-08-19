@@ -93,7 +93,7 @@ check "create no database" 404 -X POST "$BASE_URL/api/databases/create-database"
 check "create empty" 409 -X POST "$BASE_URL/api/databases//create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "create database one" 201 -X POST "$BASE_URL/api/databases/$DB1/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "create duplicate database one" 409 -X POST "$BASE_URL/api/databases/$DB/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "create duplicate database one" 409 -X POST "$BASE_URL/api/databases/$DB1/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "create database two" 201 -X POST "$BASE_URL/api/databases/$DB2/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
@@ -164,7 +164,7 @@ check "clear logs database two(stopped)" 200 -X DELETE "$BASE_URL/api/databases/
 section "List-databases"
 
 check "list databases" 200 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-    check_json_bool "data should be 2" '(.data.databases | length) == 3'
+    check_json_bool "data should be 3" '(.data.databases | length) == 3'
 
 section "Reindex"
 
@@ -247,7 +247,7 @@ check "set policy nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/
   '
 check "set empty policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d ''
-check "set invalid toml policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ACorelamoError::Internal(format!("failed to get stats: {e}")),DMIN_TOKEN" \
+check "set invalid toml policy" 400 -X POST "$BASE_URL/api/databases/$DB1/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   [[fields]]
   name = id
@@ -482,7 +482,7 @@ check "set policy two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-policy" -H 
   min = 100
   max = 100
   '
-#
+
 
 section "Config"
 
@@ -501,6 +501,7 @@ check "set invalid config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config"
   -d '
   enable_background_compaction = hujz
   bootable = nezinu
+  shard_count = 5
 
   [runtime]
   flush_threshold = 1000000000000000000000000000
@@ -520,6 +521,7 @@ check "set repeating fields config" 400 -X POST "$BASE_URL/api/databases/$DB1/se
   enable_background_compaction = true
   bootable = false
   bootable = true
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -539,6 +541,7 @@ check "set config missing field" 400 -X POST "$BASE_URL/api/databases/$DB1/set-c
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -556,6 +559,7 @@ check "set config one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H 
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
@@ -574,6 +578,7 @@ check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H 
   -d '
   enable_background_compaction = true
   bootable = false
+  shard_count = 5
 
   [runtime]
   flush_threshold = 100000
