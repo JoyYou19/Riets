@@ -10,7 +10,6 @@ use core_core::shard_manager::ShardManager;
 use core_index::{
     analyzer::analyzer::Analyzer,
     lsm::{LsmIndex, config::IndexRuntimeConfig},
-    segment::handle,
 };
 
 use core_logs::logger;

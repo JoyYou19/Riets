@@ -1,7 +1,4 @@
-use crate::{
-    Permission::self,
-    PolicyStore,
-};
+use crate::{Permission, PolicyStore};
 
 pub fn default_policy() -> PolicyStore {
     let mut policy = PolicyStore::new();

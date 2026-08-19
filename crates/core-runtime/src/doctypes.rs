@@ -52,7 +52,7 @@ fn extract_external_id(
         Some(v) if !v.is_empty() => Ok(v.clone()),
         //INFO: we generate a random auto id for shard rounting if its auto shard_manager detects it
         //and inside the shard_db it gets a correct id
-        _ if id_field.index == IndexKind::IdAutoIncrement => Ok(generate_routing_id(fields)),
+        _ if id_field.index == IndexKind::IdAuto => Ok(generate_routing_id(fields)),
         _ => Err(FailReason::MissingId {
             field: id_field.name.clone(),
         }),

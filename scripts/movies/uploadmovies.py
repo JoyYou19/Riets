@@ -16,7 +16,7 @@ POLICY = """\
 [[fields]]
 name = "id"
 xpath = 21
-index = "IdAutoIncrement"
+index = "IdAuto"
 list = true
 [fields.weight]
 min = 90
@@ -131,7 +131,7 @@ def curl_post(url, body, token):
         ["curl", "-s", "-X", "POST", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
-         "-d", body],
+         "--data-binary", body],
         capture_output=True,
         text=True,
     )
@@ -143,7 +143,7 @@ def curl_put(url, body, token):
         ["curl", "-s", "-X", "PUT", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
-         "-d", body],
+         "--data-binary", body],
         capture_output=True,
         text=True,
     )
@@ -206,7 +206,7 @@ def main():
     for idx, file in enumerate(files, start=1):
         with open(file, "r", encoding="utf-8") as f:
             chunk = json.load(f)
-        payload = json.dumps(chunk*10, ensure_ascii=False)
+        payload = json.dumps(chunk, ensure_ascii=False)
         out, code = curl_post(
             f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
         if code != 0:
