@@ -15,7 +15,6 @@ PASSWORD = "secret"
 POLICY = """\
 [[fields]]
 name = "id"
-xpath = 21
 index = "IdAuto"
 list = true
 [fields.weight]
@@ -25,7 +24,6 @@ max = 95
 
 [[fields]]
 name = "title"
-xpath = 0
 index = "Text"
 list = true
 [fields.weight]
@@ -34,7 +32,6 @@ max = 95
 
 [[fields]]
 name     = "year"
-xpath    = 2
 index    = "Text"
 list   = true
 stemming = ""
@@ -44,7 +41,6 @@ max = 50
 
 [[fields]]
 name     = "cast"
-xpath    = 3
 index    = "Text"
 list   = true
 stemming = "english"
@@ -54,7 +50,6 @@ max = 75
 
 [[fields]]
 name     = "genres"
-xpath    = 4
 index    = "Text"
 list   = true
 stemming = ""
@@ -64,7 +59,6 @@ max = 60
 
 [[fields]]
 name     = "extract"
-xpath    = 5
 index    = "Text"
 list   = true
 stemming = "english"
@@ -74,7 +68,6 @@ max = 75
 
 [[fields]]
 name     = "href"
-xpath    = 6
 index    = "None"
 list   = true
 stemming = ""
@@ -84,7 +77,6 @@ max = 0
 
 [[fields]]
 name     = "thumbnail"
-xpath    = 7
 index    = "None"
 list   = true
 stemming = ""
@@ -94,7 +86,6 @@ max = 0
 
 [[fields]]
 name     = "thumbnail_width"
-xpath    = 8
 index    = "None"
 list   = true
 stemming = ""
@@ -104,7 +95,6 @@ max = 0
 
 [[fields]]
 name     = "thumbnail_height"
-xpath    = 9
 index    = "None"
 list   = true
 stemming = ""
@@ -137,6 +127,7 @@ def curl_post(url, body, token):
         text=True,
     )
     return result.stdout.strip(), result.returncode
+
 
 def curl_put(url, body, token):
     result = subprocess.run(

@@ -1,8 +1,11 @@
-//TODO: Valters uztaisi ka var nested fields, luuuuuuuuuuuuuuudzu
-
-use std::{collections::HashSet, fs, io, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
+use tantivy::schema::FieldType;
 
 use crate::types::XPathId;
 
@@ -30,40 +33,62 @@ impl WeightInterval {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldPolicy {
     pub name: String,
-    pub xpath: XPathId,
+    //now automatic
+    //pub xpath: XPathId,
     pub index: IndexKind,
     pub list: bool,
     pub weight: WeightInterval,
     pub stemming: Option<String>,
 }
 
+impl FieldPolicy {
+    pub fn xpath(&self, policy: &IndexPolicy) -> XPathId {
+        policy.xpath_of(&self.name).unwrap_or_else(|| {
+            panic!(
+                "field '{}' does not belong to the given IndexPolicy — \
+                 xpath() must be called with the policy that owns this field",
+                self.name
+            )
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexPolicy {
     pub fields: Vec<FieldPolicy>,
+
+    #[serde(skip)]
+    registry: FieldRegistry,
 }
 
 impl IndexPolicy {
-    pub fn new(fields: Vec<FieldPolicy>) -> Self {
-        Self { fields }
+    pub const POLICY_FILE_NAME: &'static str = "policy.toml";
+    pub const REGISTRY_FILE_NAME: &'static str = "xpath_registry.toml";
+
+    fn policy_path(root: &Path) -> PathBuf {
+        root.join(Self::POLICY_FILE_NAME)
     }
 
-    // Validates if each field of the policy is fine, might be missing some
+    fn registry_path(root: &Path) -> PathBuf {
+        root.join(Self::REGISTRY_FILE_NAME)
+    }
+
+    pub fn new(fields: Vec<FieldPolicy>) -> Self {
+        Self {
+            fields,
+            registry: FieldRegistry::new(),
+        }
+    }
+
+    //validates if everything is fine for policy
     pub fn validate(&self) -> io::Result<()> {
         let mut names = HashSet::new();
-        let mut xpaths = HashSet::new();
 
         for field in &self.fields {
             if !names.insert(field.name.clone()) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("duplicate field name '{}'", field.name),
-                ));
-            }
-
-            if !xpaths.insert(field.xpath) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("duplicate xpath '{}'", field.xpath),
                 ));
             }
 
@@ -76,7 +101,6 @@ impl IndexPolicy {
             }
         }
 
-        //there must be only one field with id/id-auto
         let id_count = self
             .fields
             .iter()
@@ -96,7 +120,6 @@ impl IndexPolicy {
         Self::new(vec![
             FieldPolicy {
                 name: "id".to_string(),
-                xpath: 1,
                 weight: WeightInterval { min: 100, max: 100 },
                 index: IndexKind::IdAuto,
                 list: true,
@@ -104,7 +127,6 @@ impl IndexPolicy {
             },
             FieldPolicy {
                 name: "title".to_string(),
-                xpath: 2,
                 weight: WeightInterval::TITLE,
                 index: IndexKind::Text,
                 list: true,
@@ -112,7 +134,6 @@ impl IndexPolicy {
             },
             FieldPolicy {
                 name: "body".to_string(),
-                xpath: 3,
                 weight: WeightInterval::TEXT,
                 index: IndexKind::Text,
                 list: true,
@@ -143,33 +164,61 @@ impl IndexPolicy {
             .filter(|field| field.index != IndexKind::None)
     }
 
-    pub fn searchable_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
-        self.indexed_fields().map(|field| field.xpath)
+    pub fn xpath_of(&self, name: &str) -> Option<XPathId> {
+        self.registry.get(name)
     }
 
-    // Loads a policy file from a file path
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        let contents = fs::read_to_string(path)?;
+    pub fn searchable_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
+        self.indexed_fields().map(move |field| {
+            self.registry.get(&field.name).unwrap_or_else(|| {
+                panic!(
+                    "field '{}' has no registered xpath id IndexPolicy::load()/save()/resolve() should happen",
+                    field.name
+                )
+            })
+        })
+    }
 
-        let policy: Self =
+    pub fn resolve(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
+        let root = root.as_ref();
+        let registry_path = Self::registry_path(root);
+        let mut registry = FieldRegistry::load(&registry_path)?;
+
+        let before = registry.len();
+        for field in &self.fields {
+            registry.resolve(&field.name);
+        }
+        if registry.len() != before {
+            registry.save(&registry_path)?;
+        }
+
+        self.registry = registry;
+        Ok(())
+    }
+
+    pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
+        let root = root.as_ref();
+        let contents = fs::read_to_string(Self::policy_path(root))?;
+        let mut policy: Self =
             toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
         policy.validate()?;
-
+        policy.resolve(root)?;
         Ok(policy)
     }
 
-    // Saves itself to a file path as a toml entry
-    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+    pub fn save(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
+        let root = root.as_ref();
+        self.validate()?;
+        self.resolve(root)?;
         let contents = toml::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        fs::write(path, contents)
+        fs::write(Self::policy_path(root), contents)
     }
 
-    // Writes to a disk a default policy
-    pub fn write_default(path: impl AsRef<Path>) -> io::Result<()> {
-        Self::default_document().save(path)
+    pub fn write_default(root: impl AsRef<Path>) -> io::Result<()> {
+        let mut policy = Self::default_document();
+        policy.save(root)
     }
 }
 
@@ -187,4 +236,80 @@ pub enum MatchMode {
     FullText,
     Exact,
     Both,
+}
+
+//
+//
+//
+//
+//
+//
+//
+//
+//
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct FieldRegistry {
+    next_id: XPathId,
+    ids: BTreeMap<String, XPathId>,
+}
+
+impl FieldRegistry {
+    fn new() -> Self {
+        Self {
+            next_id: 1,
+            ids: BTreeMap::new(),
+        }
+    }
+
+    fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let contents = fs::read_to_string(path)?;
+        let mut registry: Self =
+            toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let max_assigned = registry.ids.values().copied().max().unwrap_or(0);
+        registry.next_id = registry.next_id.max(max_assigned + 1);
+        Ok(registry)
+    }
+
+    fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path.as_ref();
+        let contents = toml::to_string_pretty(self)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let tmp_path = path.with_file_name(format!(
+            "{}.tmp",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        fs::write(&tmp_path, contents)?;
+        fs::rename(&tmp_path, path)?;
+        Ok(())
+    }
+
+    fn resolve(&mut self, name: &str) -> XPathId {
+        if let Some(&id) = self.ids.get(name) {
+            return id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.ids.insert(name.to_string(), id);
+        id
+    }
+
+    fn get(&self, name: &str) -> Option<XPathId> {
+        self.ids.get(name).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
+impl Default for FieldRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
