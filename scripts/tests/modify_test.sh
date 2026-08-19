@@ -172,7 +172,7 @@ check "set autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-po
   [[fields]]
   name = "id"
   xpath = 0
-  index = "IdAutoIncrement"
+  index = "IdAuto"
   list = true
   [fields.weight]
   min = 100

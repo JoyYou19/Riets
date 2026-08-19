@@ -90,7 +90,7 @@ DB2="db_test2"
 section "Create-database"
 
 check "create no database" 404 -X POST "$BASE_URL/api/databases/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "create empty" 409 -X POST "$BASE_URL/api/databases//create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "create empty" 400 -X POST "$BASE_URL/api/databases//create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "create database one" 201 -X POST "$BASE_URL/api/databases/$DB1/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "create duplicate database one" 409 -X POST "$BASE_URL/api/databases/$DB1/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"

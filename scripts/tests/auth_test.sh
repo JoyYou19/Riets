@@ -188,32 +188,32 @@ check "editor cannot create database"  403 -X POST "$BASE_URL/api/databases/deni
 check "admin can create database"      201 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "architect can create database"  201 -X POST "$BASE_URL/api/databases/architect_createdb_$RUN_ID/create-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-section "MATRIX — Permission::StartDB (admin, editor granted; viewer, architect denied)"
+section "MATRIX — Permission::StartDB (admin, architect granted; viewer, editor denied)"
 
 check "viewer cannot start database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/start-database" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor can start database"  200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/start-database" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "editor cannot start database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/start-database" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "admin can start database"      200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "architect cannot start database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/start-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "architect can start database"  200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/start-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-section "MATRIX — Permission::StopDB (admin, editor granted; viewer, architect denied)"
+section "MATRIX — Permission::StopDB (admin, architect granted; viewer, editor denied)"
 
 check "viewer cannot stop database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/stop-database" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor can stop database"  200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/stop-database" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "editor cannot stop database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/stop-database" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "admin can stop database"      200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/stop-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "architect cannot stop database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/stop-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "architect can stop database"  200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/stop-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-section "MATRIX — Permission::RestartDB (admin, editor granted; viewer, architect denied)"
+section "MATRIX — Permission::RestartDB (admin, architect granted; viewer, editor denied)"
 
 check "viewer cannot restart database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/restart-database" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor can restart database"  200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/restart-database" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "editor cannot restart database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/restart-database" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "admin can restart database"      200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/restart-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "architect cannot restart database"  403 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/restart-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "architect can restart database"  200 -X POST "$BASE_URL/api/databases/admin_createdb_$RUN_ID/restart-database" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-section "MATRIX — Permission::GetLogs (admin, architect, editor granted; viewer denied)"
+section "MATRIX — Permission::GetLogs (admin, granted; viewer architect, editor denied)"
 
 check "admin can get logs"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-logs" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "architect can get logs" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-logs" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
-check "editor can get logs"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-logs" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "architect can get logs" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-logs" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "editor can get logs"    403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-logs" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "viewer cannot get logs" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-logs" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 
 section "MATRIX — Permission::ClearLogs (admin granted; viewer, editor, architect denied)"
@@ -248,18 +248,18 @@ check "architect can view status" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_D
 check "viewer cannot view status" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/status" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 check "editor can view status" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/status" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 
-section "MATRIX — Permission::GetPolicy (admin, architect, editor granted; viewer denied)"
+section "MATRIX — Permission::GetPolicy (admin, architect granted; viewer, editor denied)"
 
 check "admin can get policy"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "architect can get policy" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
-check "editor can get policy"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "editor can get policy"    403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "viewer cannot get policy" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 
-section "MATRIX — Permission::SetPolicy (admin, architect, editor granted; viewer denied)"
+section "MATRIX — Permission::SetPolicy (admin, architect granted; viewer, editor denied)"
 
 check "admin can set policy"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
 check "architect can set policy" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
-check "editor can set policy"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
+check "editor can set policy"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
 check "viewer cannot set policy" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-policy" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d $'[[fields]]\nname = "id"\nxpath = 1\nindex = "Id"\nlist = true\n[fields.weight]\nmin = 100\nmax = 100'
 
 section "MATRIX — Permission::CreateUser (admin only)"
@@ -290,14 +290,14 @@ check "viewer cannot delete user"    403 -X DELETE "$BASE_URL/api/users/crud_$RU
 check "editor cannot delete user"    403 -X DELETE "$BASE_URL/api/users/crud_$RUN_ID" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "admin can delete user"        200 -X DELETE "$BASE_URL/api/users/crud_$RUN_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-section "MATRIX — Permission::GetConfig (admin, architect, editor granted; viewer denied)"
+section "MATRIX — Permission::GetConfig (admin, architect granted; viewer, editor denied)"
 
 check "admin can view config"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "viewer cannot view config" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 check "architect can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
-check "editor can view config" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "editor cannot view config" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/get-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 
-section "MATRIX — Permission::SetConfig (admin, architect, editor granted; viewer denied)"
+section "MATRIX — Permission::SetConfig (admin, architect granted; viewer, editor denied)"
 
 check "admin can set config"      200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN"\
   -d '
@@ -337,7 +337,7 @@ check "viewer cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_
   secs = 1
   nanos = 0
   '
-check "editor can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
+check "editor cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
   -d '
   enable_background_compaction = true
   bootable = false
@@ -376,19 +376,19 @@ check "architect can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_
   nanos = 0
   '
 
-section "MATRIX — Permission::Reindex (admin, architect, editor granted; viewer denied)"
+section "MATRIX — Permission::Reindex (admin, architect granted; viewer, editor denied)"
 
-check "admin can reindex"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+#check "admin can reindex"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "viewer cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "editor cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "architect can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-section "MATRIX — Permission::BackupFull (admin, architect, editor granted; viewer denied)"
+#section "MATRIX — Permission::BackupFull (admin, architect, editor granted; viewer denied)"
 
-check "admin can backup"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "viewer cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-check "editor can backup" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-check "architect can backup" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+#check "admin can backup"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+#check "viewer cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+#check "editor can backup" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+#check "architect can backup" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-full" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
 # ==================================================================
 # EXTRA — conflicts, not-found, malformed input

@@ -71,7 +71,7 @@ check "set policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Co
   [[fields]]
   name = "id"
   xpath = 0
-  index = "IdAutoIncrement"
+  index = "IdAuto"
   list = true
   [fields.weight]
   min = 100
