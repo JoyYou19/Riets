@@ -906,13 +906,8 @@ impl ShardManager {
         }
     }
     //to check before restore if there are any backups
-    pub fn has_backup(&self) -> bool {
-        fs::read_dir(&self.backup_dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .any(|e| e.path().is_dir())
+        pub fn has_backup(&self, backup_id: &str) -> bool {
+        self.backup_dir.join(backup_id).is_dir()
     }
     // impl ShardManager
     pub async fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {

@@ -1452,7 +1452,7 @@ pub async fn backup_restore_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Restore) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
+    
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
@@ -1461,16 +1461,22 @@ pub async fn backup_restore_handler(
     if let Err(e) = handle.try_start_restore() {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
+   
+
     let id_for_log = backup_id.clone();
     let name_for_log = db_name.clone();
+      if !handle.has_backup(&backup_id) {
+        return HttpError::from_corelamo(CorelamoError::NotFound(format!("Backup with id '{id_for_log}š does not exist")), &ctx).into_response();
+    }
     tokio::spawn(async move {
         match handle.restore_backup(&backup_id).await {
             Ok(()) => eprintln!("restore completed for '{}'", name_for_log),
             Err(e) => eprintln!("restore failed for '{}': {}", name_for_log, e),
         }
     });
-
+    
     HttpOk::new(format!("restore of '{id_for_log}' started for '{db_name}'"), &ctx).into_response()
+    
 }
 
 pub async fn backup_incremental_handler(
