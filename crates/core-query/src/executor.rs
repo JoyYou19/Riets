@@ -477,7 +477,7 @@ where
 
             let matched: HashSet<DocId> = match parse_and_analyze(term, self.analyzer)? {
                 Some(query) => self
-                    .execute(&query, field.xpath)
+                    .execute(&query, field.xpath(policy))
                     .items()
                     .iter()
                     .map(|p| p.doc_id)
