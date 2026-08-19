@@ -80,7 +80,7 @@ impl IndexPolicy {
         let id_count = self
             .fields
             .iter()
-            .filter(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAutoIncrement))
+            .filter(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAuto))
             .count();
         if id_count != 1 {
             return Err(io::Error::new(
@@ -98,7 +98,7 @@ impl IndexPolicy {
                 name: "id".to_string(),
                 xpath: 1,
                 weight: WeightInterval { min: 100, max: 100 },
-                index: IndexKind::IdAutoIncrement,
+                index: IndexKind::IdAuto,
                 list: true,
                 stemming: None,
             },
@@ -124,7 +124,7 @@ impl IndexPolicy {
     pub fn id_field(&self) -> Option<&FieldPolicy> {
         self.fields
             .iter()
-            .find(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAutoIncrement))
+            .find(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAuto))
     }
 
     pub fn id_field_name(&self) -> Option<&str> {
@@ -133,7 +133,7 @@ impl IndexPolicy {
 
     pub fn is_auto_increment(&self) -> bool {
         self.id_field()
-            .map(|f| f.index == IndexKind::IdAutoIncrement)
+            .map(|f| f.index == IndexKind::IdAuto)
             .unwrap_or(false)
     }
 
@@ -180,7 +180,7 @@ pub enum IndexKind {
     Number,
     Date,
     Id,
-    IdAutoIncrement,
+    IdAuto,
 }
 
 pub enum MatchMode {

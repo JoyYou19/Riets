@@ -397,6 +397,7 @@ impl Drop for AliveGuard {
 pub fn spawn(
     mut shard: ShardDb,
     queue_depth: usize,
+    bootable: bool,
 ) -> Result<(ShardHandle, JoinHandle<()>), CorelamoError> {
     let id = shard.shard_id();
     let progress = shard.progress();
@@ -413,9 +414,13 @@ pub fn spawn(
         .name(format!("shard-{}", id))
         .spawn(move || {
             let _guard = AliveGuard(alive_worker);
-            let started = shard.start();
+
+            let started = if bootable { shard.start() } else { Ok(()) };
+
             let ok = started.is_ok();
-            shared_worker.is_running.store(ok, Ordering::Release);
+            shared_worker
+                .is_running
+                .store(bootable && ok, Ordering::Release);
             let _ = boot_tx.send(started);
             if ok {
                 run(shard, rx, shared_worker);
