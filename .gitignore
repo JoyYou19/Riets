@@ -18,6 +18,8 @@
 #movies lol
 /scripts/movies/movies.json
 /scripts/movies/movie_chunks
+/scripts/fever
+/scripts/fever.zip
 
 # If all fixtures are generated and should never be committed:
 /crates/core-testkit/fixtures/*.jsonl

@@ -138,7 +138,6 @@ def curl_post(url, body, token):
     )
     return result.stdout.strip(), result.returncode
 
-
 def curl_put(url, body, token):
     result = subprocess.run(
         ["curl", "-s", "-X", "PUT", url,

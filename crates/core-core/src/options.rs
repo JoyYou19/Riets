@@ -31,12 +31,7 @@ impl DatabaseOptions {
             Ok(options) => options,
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    //WARN: user for invalid config
-                    // tracing::warn!(
-                    //     path=%path.as_ref().display(),
-                    //     error=%e,
-                    //     "Could not load options from the path. Using defaults.",
-                    // );
+
                 }
                 //if not found its ok, use defaults either way we use defaults
                 Self::default()
@@ -52,7 +47,7 @@ impl Default for DatabaseOptions {
             enable_background_compaction: true,
             compaction_interval: Duration::from_secs(1),
             //INFO: gnjau default jabut false
-            shard_count:5,
+            shard_count:8,
             bootable: true,
            
         }

@@ -320,7 +320,6 @@ impl BackupManager {
 
     pub fn create_incremental_backup(
         &mut self,
-        shard_root: &Path,
         backup_path: &Path, // pre-created by shard manager: backups/incr_123/shard-0/
         backup_id: &str,    // shared id from shard manager: "incr_123"
         wal: &Wal,

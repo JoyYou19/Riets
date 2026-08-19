@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io;
-use std::path::Component::RootDir;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
