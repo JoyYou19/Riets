@@ -16,7 +16,7 @@ POLICY = """\
 [[fields]]
 name = "id"
 xpath = 21
-index = "IdAutoIncrement"
+index = "IdAuto"
 list = true
 [fields.weight]
 min = 90
@@ -131,7 +131,8 @@ def curl_post(url, body, token):
         ["curl", "-s", "-X", "POST", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
-         "-d", body],
+         "--data-binary", "@-"],
+        input=body,
         capture_output=True,
         text=True,
     )
@@ -143,7 +144,8 @@ def curl_put(url, body, token):
         ["curl", "-s", "-X", "PUT", url,
          "-H", "Accept: application/json",
          "-H", f"X-Corelamo-Key: {token}",
-         "-d", body],
+         "--data-binary", "@-"],
+        input=body,
         capture_output=True,
         text=True,
     )
@@ -173,7 +175,7 @@ def main():
     # 1. delete if exists
     print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
     out, _ = curl_delete(
-        f"{BASE_URL}/api/databases/{DB_NAME}/delete-database", token)
+        f"{BASE_URL}/api/databases/{DB_NAME}/clear-database", token)
     print(f"[INFO] {out}")
 
     # 2. create database

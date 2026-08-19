@@ -22,7 +22,6 @@ pub fn load_saved_shard_managers(
         }
         let name = entry.file_name().to_string_lossy().to_string();
 
-        //FIX: this is the place where just one shard for now
         let manager = match ShardManager::load(path) {
             Ok(mgr) => mgr,
             Err(e) => {
