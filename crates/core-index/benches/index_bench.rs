@@ -1,7 +1,7 @@
 use std::{hint::black_box, sync::Arc};
 
 use core_index::{analyzer::analyzer::Analyzer, mem::MemIndex, search::SearchIndex};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_index_large_document(c: &mut Criterion) {
     let analyzer = Analyzer::new();

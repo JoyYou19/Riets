@@ -832,6 +832,7 @@ pub async fn create_database_handler(
     let db_path = state.databases_dir.join(&db_name);
 
     let created = tokio::task::spawn_blocking(move || {
+        //WARN: seit tiek padots default configs
         ShardManager::create(db_path, DatabaseOptions::default())
     })
     .await;

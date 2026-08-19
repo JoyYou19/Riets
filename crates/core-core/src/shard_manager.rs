@@ -88,7 +88,8 @@ impl ShardManager {
                 policy.clone(),
                 db_stats.handle(shard_id as usize),
             )?;
-            let (handle, join) = shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH)?;
+            let (handle, join) =
+                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
             shards.push(handle);
             joins.push(join);
         }
@@ -450,7 +451,8 @@ impl ShardManager {
         let mut joins = Vec::new();
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
-            let (handle, join) = shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH)?;
+            let (handle, join) =
+                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
             shards.push(handle);
             joins.push(join);
         }
