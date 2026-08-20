@@ -390,34 +390,34 @@ check "viewer cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/r
 check "editor cannot reindex" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "architect can reindex" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/reindex" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-#section "MATRIX — Permission::BackupFull (admin granted; viewer, editor, architect denied)"
+section "MATRIX — Permission::BackupFull (admin granted; viewer, editor, architect denied)"
 
 #check "admin can backup"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "viewer cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-#check "editor cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-#check "architect cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "viewer cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "editor cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "architect cannot backup" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-#section "MATRIX — Permission::BackupIncremental (admin, architect granted; viewer, editor denied)"
+section "MATRIX — Permission::BackupIncremental (admin granted; viewer, editor, architect denied)"
 
-#check "admin can backup incremental"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "viewer cannot backup incremental" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-#check "editor cannot backup incremental" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-#check "architect can backup incremental" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup-incremental" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+#check "admin can backup incremental"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "viewer cannot backup incremental" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup/incremental" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "editor cannot backup incremental" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup/incremental" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "architect cannot backup incremental" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/backup/incremental" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
-#section "MATRIX — Permission::ListBackups (admin, architect granted; viewer, editor denied)"
+section "MATRIX — Permission::ListBackups (admin granted; viewer, editor, architect denied)"
 
-#check "admin can list backups"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "viewer cannot list backups" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-#check "editor cannot list backups" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-#check "architect can list backups" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "admin can list backups"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "viewer cannot list backups" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "editor cannot list backups" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "architect cannot list backups" 403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
 
-#section "MATRIX — Permission::Restore (admin, architect granted; viewer, editor denied)"
-#BACKUP_ID=$(curl -s -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN" | jq -r '.data.backups[0].backup_id')
+section "MATRIX — Permission::Restore (admin granted; viewer, editor, architect denied)"
+BACKUP_ID=$(curl -s -X GET "$BASE_URL/api/databases/$SCRATCH_DB/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN" | jq -r '.data.backups[0].backup_id')
 #check "admin can restore"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "viewer cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $VIEWER_TOKEN"
-#check "editor cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $EDITOR_TOKEN"
-#check "architect can restore" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "viewer cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "editor cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+check "architect cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
 # ==================================================================
 # EXTRA — conflicts, not-found, malformed input
