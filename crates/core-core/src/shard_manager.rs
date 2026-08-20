@@ -76,8 +76,11 @@ impl ShardManager {
                 policy.clone(),
                 db_stats.handle(shard_id as usize)
             )?;
-            let (handle, join) =
-                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
+            let (handle, join) = shard_worker::spawn(
+                db,
+                Self::DEFAULT_QUEUE_DEPTH,
+                options.bootable
+            )?;
             shards.push(handle);
             joins.push(join);
         }
@@ -430,8 +433,11 @@ impl ShardManager {
         let mut joins = Vec::new();
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
-            let (handle, join) =
-                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
+            let (handle, join) = shard_worker::spawn(
+                db,
+                Self::DEFAULT_QUEUE_DEPTH,
+                options.bootable
+            )?;
             shards.push(handle);
             joins.push(join);
         }
@@ -755,7 +761,7 @@ impl ShardManager {
     }
 
     pub fn try_start_backup(&self) -> Result<(), CorelamoError> {
-        if self.db_stats.try_begin_restore() {
+        if self.db_stats.restore_progress().is_running() {
             return Err(CorelamoError::Busy("restore in progress".into()));
         }
         if !self.db_stats.begin_backup(self.shards.len()) {
@@ -899,7 +905,7 @@ impl ShardManager {
             )
         }
     }
-    pub fn finish_restore(&self, ok:bool) {
+    pub fn finish_restore(&self, ok: bool) {
         self.db_stats.finish_restore(ok);
     }
     //to check before restore if there are any backups
@@ -908,10 +914,7 @@ impl ShardManager {
     }
     // impl ShardManager
     pub async fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
-        let shard = self
-            .shards
-            .first()
-            .ok_or_else(|| CorelamoError::Internal("no shards".into()))?;
+        let shard = self.shards.first().ok_or_else(|| CorelamoError::Internal("no shards".into()))?;
         shard.list_backups().await
     }
 }

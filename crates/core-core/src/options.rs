@@ -43,6 +43,7 @@ impl Default for DatabaseOptions {
             runtime: IndexRuntimeConfig::default(),
             enable_background_compaction: true,
             compaction_interval: Duration::from_secs(1),
+
             //INFO: gnjau default jabut false
             shard_count: 8,
             bootable: true,

@@ -13,6 +13,7 @@ pub struct IndexRuntimeConfig {
     pub indexing_window_size: usize,
 
     pub compaction: CompactionConfig,
+    
    
 }
 

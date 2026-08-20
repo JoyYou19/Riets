@@ -1,9 +1,9 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{ AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed };
 use std::time::Duration;
 use crate::shard_db::DatabaseStats;
-use core_backup::progress::{BackupPhase, BackupProgress};
-use core_index::lsm::index_worker::{IndexingStats, Phase, ReindexProgress};
+use core_backup::progress::{ BackupPhase, BackupProgress };
+use core_index::lsm::index_worker::{ IndexingStats, Phase, ReindexProgress };
 /// Read-only snapshot. Built fresh on every read, never stored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DatabaseMetrics {
@@ -68,7 +68,7 @@ pub struct ShardStatsHandle {
     index: usize,
 }
 
-impl DatabaseMetrics{
+impl DatabaseMetrics {
     pub fn average_search_time(&self) -> Option<Duration> {
         if self.search_requests == 0 {
             return None;
@@ -111,15 +111,14 @@ impl DbStats {
     }
 
     pub fn finish_restore(&self, ok: bool) {
-        self.restore.set_phase(if ok {
-            BackupPhase::Complete
-        } else {
-            BackupPhase::Failed
-        });
+        self.restore.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
 
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.backup
+    }
+    pub fn restore_progress(&self) -> &BackupProgress {
+        &self.restore
     }
 
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
@@ -143,8 +142,7 @@ impl DbStats {
     pub fn record_indexing(&self, failed: bool, elapsed: Duration) {
         let c = &self.counters;
         c.indexing_requests.fetch_add(1, Relaxed);
-        c.indexing_nanos
-            .fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.indexing_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
         if failed {
             c.indexing_errors.fetch_add(1, Relaxed);
         }
@@ -178,19 +176,19 @@ impl DbStats {
     /// The last shard to finish settles the phase for the database.
     pub fn finish_shard_reindex(&self, ok: bool, elapsed: Duration) {
         let c = &self.counters;
-        c.reindex_nanos
-            .fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.reindex_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
         if !ok {
             c.reindex_errors.fetch_add(1, Relaxed);
             self.reindex_failed.store(true, Relaxed);
         }
         if self.reindex_outstanding.fetch_sub(1, Relaxed) == 1 {
-            self.reindex
-                .set_phase(if self.reindex_failed.load(Relaxed) {
+            self.reindex.set_phase(
+                if self.reindex_failed.load(Relaxed) {
                     Phase::Failed
                 } else {
                     Phase::Complete
-                });
+                }
+            );
         }
     }
 
@@ -216,11 +214,13 @@ impl DbStats {
             self.backup_failed.store(true, Relaxed);
         }
         if self.backup_outstanding.fetch_sub(1, Relaxed) == 1 {
-            self.backup.set_phase(if self.backup_failed.load(Relaxed) {
-                BackupPhase::Failed
-            } else {
-                BackupPhase::Complete
-            });
+            self.backup.set_phase(
+                if self.backup_failed.load(Relaxed) {
+                    BackupPhase::Failed
+                } else {
+                    BackupPhase::Complete
+                }
+            );
         }
     }
 
@@ -302,11 +302,9 @@ impl ShardStatsHandle {
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
         // g.documents_indexed.store(stats.total_documents_indexed, Relaxed);
-        g.documents_deleted
-            .store(stats.total_documents_deleted, Relaxed);
+        g.documents_deleted.store(stats.total_documents_deleted, Relaxed);
         g.segments_written.store(stats.segments_written, Relaxed);
-        g.compactions_completed
-            .store(stats.compactions_completed, Relaxed);
+        g.compactions_completed.store(stats.compactions_completed, Relaxed);
     }
     pub fn add_indexed(&self, n: u64) {
         self.stats.counters.indexing_requests.fetch_add(n, Relaxed);
@@ -316,8 +314,6 @@ impl ShardStatsHandle {
     // }
 
     pub fn set_compaction_enabled(&self, on: bool) {
-        self.stats.shards[self.index]
-            .compaction_enabled
-            .store(on, Relaxed);
+        self.stats.shards[self.index].compaction_enabled.store(on, Relaxed);
     }
 }
