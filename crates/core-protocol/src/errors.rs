@@ -60,7 +60,7 @@ impl CorelamoError {
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
             CorelamoError::PathNotIndexed(_) => "path_not_indexed",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
-            CorelamoError::Busy(_) => "Reindex is busy",
+            CorelamoError::Busy(_) => "Process is already happening", //mosk janomaina
         }
     }
 

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{ AtomicU8, AtomicU64, Ordering::Relaxed };
 
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -40,17 +40,15 @@ impl BackupProgressSnapshot {
         if self.bytes_total == 0 {
             return None;
         }
-        Some(round2(
-            (self.bytes_done as f64 / self.bytes_total as f64) * 100.0,
-        ))
+        Some(round2(((self.bytes_done as f64) / (self.bytes_total as f64)) * 100.0))
     }
 
     pub fn mb_done(&self) -> f64 {
-        round2(self.bytes_done as f64 / MIB)
+        round2((self.bytes_done as f64) / MIB)
     }
 
     pub fn mb_total(&self) -> f64 {
-        round2(self.bytes_total as f64 / MIB)
+        round2((self.bytes_total as f64) / MIB)
     }
 
     pub fn eta_seconds(&self) -> Option<u64> {
@@ -58,7 +56,7 @@ impl BackupProgressSnapshot {
         if elapsed_ms == 0 || self.bytes_done == 0 {
             return None;
         }
-        let rate = self.bytes_done as f64 / (elapsed_ms as f64 / 1000.0);
+        let rate = (self.bytes_done as f64) / ((elapsed_ms as f64) / 1000.0);
         if rate <= 0.0 {
             return None;
         }
@@ -79,13 +77,14 @@ pub struct BackupStats {
 impl From<BackupProgressSnapshot> for BackupStats {
     fn from(s: BackupProgressSnapshot) -> Self {
         BackupStats {
-            status: match s.phase {
-                BackupPhase::Idle => "idle",
-                BackupPhase::Running => "running",
-                BackupPhase::Complete => "complete",
-                BackupPhase::Failed => "failed",
-            }
-            .to_string(),
+            status: (
+                match s.phase {
+                    BackupPhase::Idle => "idle",
+                    BackupPhase::Running => "running",
+                    BackupPhase::Complete => "complete",
+                    BackupPhase::Failed => "failed",
+                }
+            ).to_string(),
             progress_percent: s.percent(),
             mb_done: s.mb_done(),
             mb_total: s.mb_total(),
@@ -113,10 +112,9 @@ impl BackupProgress {
     }
 
     pub fn try_begin(&self) -> bool {
-        let won = self
-            .phase
+        let won = self.phase
             .fetch_update(Relaxed, Relaxed, |current| {
-                if current == BackupPhase::Running as u8 {
+                if current == (BackupPhase::Running as u8) {
                     None
                 } else {
                     Some(BackupPhase::Running as u8)
@@ -126,8 +124,7 @@ impl BackupProgress {
         if won {
             self.bytes_total.store(0, Relaxed);
             self.bytes_done.store(0, Relaxed);
-            self.started_at_ms
-                .store(chrono::Utc::now().timestamp_millis() as u64, Relaxed);
+            self.started_at_ms.store(chrono::Utc::now().timestamp_millis() as u64, Relaxed);
         }
         won
     }
@@ -142,6 +139,9 @@ impl BackupProgress {
 
     pub fn set_phase(&self, phase: BackupPhase) {
         self.phase.store(phase as u8, Relaxed);
+    }
+    pub fn is_running(&self) -> bool {
+        self.phase.load(Relaxed) == (BackupPhase::Running as u8)
     }
 
     pub fn snapshot(&self) -> BackupProgressSnapshot {
