@@ -282,7 +282,7 @@ pub async fn insert_handler(
     let parse_failures = outcome.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.insert(outcome.docs,principal.id.0.clone()).await {
+    let report = match handle.insert(outcome.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();

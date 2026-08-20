@@ -22,7 +22,7 @@ use parking_lot::RwLock;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{ Path, PathBuf };
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use tokio::task::JoinSet;
@@ -939,23 +939,24 @@ impl ShardManager {
     }
 
     pub fn start_backup_scheduler(self: &Arc<Self>) {
-        let interval = self.options.read().backup_interval;
-        if interval.is_zero() {
-            return;
-        }
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(interval);
-     
-            tick.tick().await;
-            loop {
-                tick.tick().await;
-                if this.try_start_backup().is_err() {
-                    continue;
-                }
-                let ok = this.backup_incremental().await.is_ok();
-                this.finish_backup(ok);
-            }
-        });
+    let interval = self.options.read().backup_interval;
+    if interval.is_zero() {
+        return;
     }
+    let weak = Arc::downgrade(self);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(interval);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            // upgrade fails once the manager is dropped -> task exits
+            let Some(this) = weak.upgrade() else { return };
+            if this.try_start_backup().is_err() {
+                continue;
+            }
+            let ok = this.backup_incremental().await.is_ok();
+            this.finish_backup(ok);
+        }
+    });
+}
 }

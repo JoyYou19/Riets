@@ -343,23 +343,25 @@ async fn main() -> io::Result<()> {
         std::mem::take(&mut *guard)
     };
     for (db_name, manager) in handles {
-        info!(log,"shutting down database ...";"database"=>%db_name);
-        match Arc::try_unwrap(manager) {
-            Ok(mgr) => {
-                if let Err(e) = mgr.shutdown() {
-                    error!(log,"error shutting down database";"db" => %db_name, "error" => %e,);
-                }
-            }
-            Err(_) => {
-                error!(
-                    log,
-                    "could not get exclusive access to database during shutdown, \
-                     shard threads may not be joined cleanly";
-                    "db" => %db_name,
-                );
+    info!(log, "shutting down database ..."; "database" => %db_name);
+    match Arc::try_unwrap(manager) {
+        Ok(mgr) => {
+            if let Err(e) = mgr.shutdown() {
+                error!(log, "error shutting down database";
+                    "db" => %db_name, "error" => %e);
             }
         }
+        Err(still_shared) => {
+            error!(
+                log,
+                "could not get exclusive access to database during shutdown, \
+                 shard threads may not be joined cleanly";
+                "db" => %db_name,
+                "strong_count" => Arc::strong_count(&still_shared),
+            );
+        }
     }
+}
 
     //TODO: we might have extra stuff to do here later, for now i cant think of anything else
     info!(log, "Goodbye");
