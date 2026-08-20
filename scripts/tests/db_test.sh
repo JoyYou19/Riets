@@ -176,7 +176,6 @@ check "reindex one(running)" 200 -X POST "$BASE_URL/api/databases/$DB1/reindex" 
 check "reindex one again" 503 -X POST "$BASE_URL/api/databases/$DB1/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "reindex two(stopped)" 409 -X POST "$BASE_URL/api/databases/$DB2/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-curl -X GET "$BASE_URL/api/databases/$DB1/status" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 section "Policy"
@@ -517,9 +516,9 @@ check "backup no database" 404 -X POST "$BASE_URL/api/databases/backup" -H "X-Co
 check "backup database empty" 404 -X POST "$BASE_URL/api/databases//backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "backup nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-check "backup database one" 200 -X POST "$BASE_URL/api/databases/$DB1/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-
 curl -X GET "$BASE_URL/api/databases/$DB1/status" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "backup database one" 200 -X POST "$BASE_URL/api/databases/$DB1/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "backup database one again" 503 -X POST "$BASE_URL/api/databases/$DB1/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "backup database two" 200 -X POST "$BASE_URL/api/databases/$DB2/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
