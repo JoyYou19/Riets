@@ -121,23 +121,7 @@ fn dir_size(path: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path, progress)?;
-        } else {
-            let bytes = fs::copy(&src_path, &dst_path)?;
-            if let Some(p) = progress {
-                p.add(bytes);
-            }
-        }
-    }
-    Ok(())
-}
+
 //directory zipping
 fn tar_dir(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Result<()> {
     let enc = GzEncoder::new(File::create(dst)?, Compression::default());
