@@ -22,7 +22,7 @@ use parking_lot::RwLock;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use tokio::task::JoinSet;
@@ -39,12 +39,7 @@ pub struct ShardManager {
 }
 
 impl ShardManager {
-    const CONFIG_PATH_NAME: &'static str = "config.toml";
     const DEFAULT_QUEUE_DEPTH: usize = 256;
-
-    fn config_path(root: &Path) -> PathBuf {
-        root.join(Self::CONFIG_PATH_NAME)
-    }
 
     pub fn all_alive(&self) -> bool {
         self.shards.iter().all(|h| h.is_alive())
@@ -67,7 +62,7 @@ impl ShardManager {
         //single policy and config
         let mut policy = IndexPolicy::default_document();
         policy.save(&root)?;
-        options.save_to_file(Self::config_path(&root))?;
+        options.save_to_file(&root)?;
         let backup_dir = root.join("backups");
         let db_stats = DbStats::new(options.shard_count as usize);
         let mut shards = Vec::new();
@@ -83,11 +78,8 @@ impl ShardManager {
                 policy.clone(),
                 db_stats.handle(shard_id as usize),
             )?;
-            let (handle, join) = shard_worker::spawn(
-                db,
-                Self::DEFAULT_QUEUE_DEPTH,
-                options.bootable
-            )?;
+            let (handle, join) =
+                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
             shards.push(handle);
             joins.push(join);
         }
@@ -431,7 +423,6 @@ impl ShardManager {
         shard_paths.sort();
 
         let policy_path = root.join(IndexPolicy::POLICY_FILE_NAME);
-        let config_path = Self::config_path(&root);
 
         if !policy_path.exists() {
             return Err(CorelamoError::NotFound(format!(
@@ -442,18 +433,16 @@ impl ShardManager {
 
         //FIX: we probably need a load_or_default for policy too
         let policy = IndexPolicy::load(&root)?;
-        let options = DatabaseOptions::load_or_default(&config_path);
+        let options = DatabaseOptions::load_or_default(&root);
+
         let backup_dir = root.join("backups");
         let db_stats = DbStats::new(shard_paths.len());
         let mut shards = Vec::new();
         let mut joins = Vec::new();
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
-            let (handle, join) = shard_worker::spawn(
-                db,
-                Self::DEFAULT_QUEUE_DEPTH,
-                options.bootable
-            )?;
+            let (handle, join) =
+                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
             shards.push(handle);
             joins.push(join);
         }
@@ -581,7 +570,7 @@ impl ShardManager {
             return Err(e);
         }
 
-        options.save_to_file(&Self::config_path(&self.root))?;
+        options.save_to_file(&self.root)?;
         *self.options.write() = options;
         Ok(())
     }
@@ -802,7 +791,7 @@ impl ShardManager {
         let backup_root = self.backup_dir.join(&backup_id);
         fs::create_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
         for (src, dst) in &[
-            (Self::CONFIG_PATH_NAME, "config.toml.gz"),
+            (DatabaseOptions::CONFIG_FILE_NAME, "config.toml.gz"),
             (IndexPolicy::POLICY_FILE_NAME, "policy.toml.gz"),
             (IndexPolicy::REGISTRY_FILE_NAME, "xpath_registry.toml.gz"),
         ] {
@@ -921,12 +910,15 @@ impl ShardManager {
         }
     }
     //to check before restore if there are any backups
-        pub fn has_backup(&self, backup_id: &str) -> bool {
+    pub fn has_backup(&self, backup_id: &str) -> bool {
         self.backup_dir.join(backup_id).is_dir()
     }
     // impl ShardManager
     pub async fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
-        let shard = self.shards.first().ok_or_else(|| CorelamoError::Internal("no shards".into()))?;
+        let shard = self
+            .shards
+            .first()
+            .ok_or_else(|| CorelamoError::Internal("no shards".into()))?;
         shard.list_backups().await
     }
 }

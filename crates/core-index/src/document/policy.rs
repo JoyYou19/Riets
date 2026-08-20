@@ -4,10 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
-use tantivy::schema::FieldType;
-
 use crate::types::XPathId;
+use serde::{Deserialize, Serialize};
 
 // Core policy, eventually will need to move to a configuration file
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
