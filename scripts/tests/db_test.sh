@@ -176,6 +176,8 @@ check "reindex one(running)" 200 -X POST "$BASE_URL/api/databases/$DB1/reindex" 
 check "reindex one again" 503 -X POST "$BASE_URL/api/databases/$DB1/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "reindex two(stopped)" 409 -X POST "$BASE_URL/api/databases/$DB2/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
+curl -X GET "$BASE_URL/api/databases/$DB1/status" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
 
 section "Policy"
 
@@ -497,6 +499,7 @@ check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H 
   nanos = 0
   '
 
+
 section "Clear-database"
 
 check "clear no database" 404 -X DELETE "$BASE_URL/api/databases/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
@@ -507,6 +510,7 @@ check "clear database one" 200 -X DELETE "$BASE_URL/api/databases/$DB1/clear-dat
 check "clear database one again" 200 -X DELETE "$BASE_URL/api/databases/$DB1/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "clear database two" 200 -X DELETE "$BASE_URL/api/databases/$DB2/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
+
 section "Backup full"
 
 check "backup no database" 404 -X POST "$BASE_URL/api/databases/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
@@ -514,8 +518,12 @@ check "backup database empty" 404 -X POST "$BASE_URL/api/databases//backup" -H "
 check "backup nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "backup database one" 200 -X POST "$BASE_URL/api/databases/$DB1/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+curl -X GET "$BASE_URL/api/databases/$DB1/status" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
 check "backup database one again" 503 -X POST "$BASE_URL/api/databases/$DB1/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "backup database two" 200 -X POST "$BASE_URL/api/databases/$DB2/backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
 
 section "Backup incremental"
 
@@ -524,8 +532,9 @@ check "backup2 database empty" 404 -X POST "$BASE_URL/api/databases//backup-incr
 check "backup2 nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/backup-incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 check "backup2 database one" 200 -X POST "$BASE_URL/api/databases/$DB1/backup-incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "backup2 database one again" 503 -X POST "$BASE_URL/api/databases/$DB1/backup-incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup2 database one again" 200 -X POST "$BASE_URL/api/databases/$DB1/backup-incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "backup2 database two" 200 -X POST "$BASE_URL/api/databases/$DB2/backup-incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
 
 section "list backups"
 
@@ -537,20 +546,28 @@ check "list-backups database one" 200 -X GET "$BASE_URL/api/databases/$DB1/list-
 check "list-backups database one again" 200 -X GET "$BASE_URL/api/databases/$DB1/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "list-backups database two" 200 -X GET "$BASE_URL/api/databases/$DB2/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
+
 section "Restore"
 
 BACKUP_ID=$(curl -s -X GET "$BASE_URL/api/databases/$DB1/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN" | jq -r '.data.backups[0].backup_id')
+BACKUP_ID2=$(curl -s -X GET "$BASE_URL/api/databases/$DB2/list-backups" -H "X-Corelamo-Key: $ADMIN_TOKEN" | jq -r '.data.backups[0].backup_id')
 
-check "restore no database" 404 -X POST "$BASE_URL/api/databases/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "restore database empty" 404 -X POST "$BASE_URL/api/databases//restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-check "restore nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "restore no database" 404 -X POST "$BASE_URL/api/databases/restore-backup/backupid" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "restore database empty" 404 -X POST "$BASE_URL/api/databases//restore-backup/backupid" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "restore nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/restore-backup/backupid" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "restore no backup" 404 -X POST "$BASE_URL/api/databases/$DB1/restore-backup/" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "restore no backup2" 404 -X POST "$BASE_URL/api/databases/$DB1/restore-backup" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "restore nonexistent backup" 404 -X POST "$BASE_URL/api/databases/$DB1/restore-backup/notreal" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
+curl -X GET "$BASE_URL/api/databases/$DB1/status" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
 check "restore database one" 200 -X POST "$BASE_URL/api/databases/$DB1/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "restore database one again" 503 -X POST "$BASE_URL/api/databases/$DB1/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "restore database two" 200 -X POST "$BASE_URL/api/databases/$DB2/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+curl -X GET "$BASE_URL/api/databases/$DB1/status" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "restore database two" 200 -X POST "$BASE_URL/api/databases/$DB2/restore-backup/$BACKUP_ID2" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 section "Delete-database"
