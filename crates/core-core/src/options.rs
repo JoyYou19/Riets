@@ -10,6 +10,7 @@ pub struct DatabaseOptions {
     pub compaction_interval: Duration,
     pub bootable: bool,
     pub shard_count: u16,
+    pub backup_interval: Duration,
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -45,7 +46,9 @@ impl Default for DatabaseOptions {
             compaction_interval: Duration::from_secs(1),
 
             //INFO: gnjau default jabut false
-            shard_count: 8,
+            //katru stundu
+            backup_interval: Duration::from_secs(3600),
+            shard_count: 4,
             bootable: true,
         }
     }

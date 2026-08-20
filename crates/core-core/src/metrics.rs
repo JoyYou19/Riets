@@ -113,6 +113,9 @@ impl DbStats {
     pub fn finish_restore(&self, ok: bool) {
         self.restore.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
+    pub fn finish_backup(&self, ok: bool){
+        self.backup.set_phase(if ok {BackupPhase::Complete} else{BackupPhase::Failed});
+    }
 
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.backup
