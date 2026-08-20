@@ -198,7 +198,7 @@ def main():
     for idx, file in enumerate(files, start=1):
         with open(file, "r", encoding="utf-8") as f:
             chunk = json.load(f)
-        payload = json.dumps(chunk*10, ensure_ascii=False)
+        payload = json.dumps(chunk, ensure_ascii=False)
         out, code = curl_post(
             f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
         if code != 0:
