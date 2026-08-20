@@ -141,11 +141,12 @@ impl ShardManager {
         Self::create(root, options)
     }
 
-    pub async fn start(&self) -> Result<(), CorelamoError> {
+    pub async fn start(&self, user: String) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-            set.spawn(async move { handle.start().await });
+            let user = user.clone();
+            set.spawn(async move { handle.start(user).await });
         }
 
         let mut first_err = None;
@@ -180,11 +181,12 @@ impl ShardManager {
         self.shards.iter().all(|h| h.is_running())
     }
 
-    pub async fn stop(&self) -> Result<(), CorelamoError> {
+    pub async fn stop(&self, user: String) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-            set.spawn(async move { handle.stop().await });
+            let user= user.clone();
+            set.spawn(async move { handle.stop(user).await });
         }
 
         let mut first_err = None;
@@ -211,12 +213,13 @@ impl ShardManager {
         }
     }
 
-    pub async fn restart(&self) -> Result<(), CorelamoError> {
-        self.stop().await?;
-        self.start().await
+    pub async fn restart(&self, user: String) -> Result<(), CorelamoError> {
+        let user = user.clone();
+        self.stop(user.clone()).await?;
+        self.start(user).await
     }
 
-    pub async fn upsert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+    pub async fn upsert(&self, inputs: Vec<DocumentInput>, user: String) -> Result<InsertReport, CorelamoError> {
         let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
         for input in inputs {
             by_shard.entry(self.shard_index_for(&input.external_id)).or_default().push(input);
@@ -225,7 +228,8 @@ impl ShardManager {
         let mut set = JoinSet::new();
         for (idx, batch) in by_shard {
             let handle = self.shards[idx].clone();
-            set.spawn(async move { handle.upsert(batch).await });
+            let user = user.clone();
+            set.spawn(async move { handle.upsert(batch, user).await });
         }
 
         let mut report = InsertReport {
@@ -262,6 +266,7 @@ impl ShardManager {
     pub async fn replace(
         &self,
         inputs: Vec<DocumentInput>
+        , user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
         let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
         for input in inputs {
@@ -271,7 +276,8 @@ impl ShardManager {
         let mut set = JoinSet::new();
         for (idx, batch) in by_shard {
             let handle = self.shards[idx].clone();
-            set.spawn(async move { handle.replace(batch).await });
+            let user= user.clone();
+            set.spawn(async move { handle.replace(batch, user).await });
         }
 
         let mut report = ReplaceReport {
@@ -305,7 +311,7 @@ impl ShardManager {
         Ok(report)
     }
 
-    pub async fn delete(&self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+    pub async fn delete(&self, ids: Vec<String>, user: String) -> Result<DeleteReport, CorelamoError> {
         if ids.is_empty() {
             return Ok(DeleteReport {
                 deleted: 0,
@@ -324,7 +330,8 @@ impl ShardManager {
         let mut set = JoinSet::new();
         for (idx, batch) in by_shard {
             let handle = self.shards[idx].clone();
-            set.spawn(async move { handle.delete(batch).await });
+            let user =user.clone();
+            set.spawn(async move { handle.delete(batch, user).await });
         }
 
         let mut report = DeleteReport {
@@ -495,7 +502,7 @@ impl ShardManager {
         self.options.read().clone()
     }
 
-    pub async fn set_policy_all(&self, mut policy: IndexPolicy) -> Result<(), CorelamoError> {
+    pub async fn set_policy_all(&self, mut policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
         policy.validate()?;
         policy.resolve(&self.root)?;
 
@@ -503,7 +510,8 @@ impl ShardManager {
         for h in &self.shards {
             let handle = h.clone();
             let p = policy.clone();
-            set.spawn(async move { handle.set_policy(p).await });
+            let user= user.clone();
+            set.spawn(async move { handle.set_policy(p, user).await });
         }
 
         let mut first_err = None;
@@ -534,12 +542,13 @@ impl ShardManager {
         Ok(())
     }
 
-    pub async fn set_options_all(&self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+    pub async fn set_options_all(&self, options: DatabaseOptions, user: String) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
             let o = options.clone();
-            set.spawn(async move { handle.set_config(o).await });
+            let user =user.clone();
+            set.spawn(async move { handle.set_config(o, user).await });
         }
 
         let mut first_err = None;
@@ -599,7 +608,7 @@ impl ShardManager {
         }
         Ok(())
     }
-    //paligfunkcija no viber
+
     fn shard_index_for(&self, external_id: &str) -> usize {
         shard_for(external_id, self.shards.len() as u16) as usize
     }
@@ -618,7 +627,7 @@ impl ShardManager {
         stats
     }
 
-    pub async fn insert(&self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+    pub async fn insert(&self, inputs: Vec<DocumentInput>, user: String) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
 
         let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
@@ -629,7 +638,8 @@ impl ShardManager {
         let mut set = JoinSet::new();
         for (idx, batch) in by_shard {
             let handle = self.shards[idx].clone();
-            set.spawn(async move { handle.insert(batch).await });
+            let user =user.clone();
+            set.spawn(async move { handle.insert(batch, user).await });
         }
 
         let mut report = InsertReport {
@@ -760,6 +770,7 @@ impl ShardManager {
         Ok(resolved)
     }
 
+    //viss ar backups
     pub fn try_start_backup(&self) -> Result<(), CorelamoError> {
         if self.db_stats.restore_progress().is_running() {
             return Err(CorelamoError::Busy("restore in progress".into()));
@@ -780,7 +791,7 @@ impl ShardManager {
         Ok(())
     }
 
-    pub async fn backup_full(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
+    pub async fn backup_full(&self, user: String) -> Result<Vec<BackupManifest>, CorelamoError> {
         let backup_id = format!("full_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
         let backup_root = self.backup_dir.join(&backup_id);
         fs::create_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
@@ -801,7 +812,8 @@ impl ShardManager {
             let handle = shard.clone();
             let shard_backup_path = backup_root.join(format!("shard-{i}"));
             let bid = backup_id.clone();
-            set.spawn(async move { handle.backup_full(shard_backup_path, bid).await });
+            let user =user.clone();
+            set.spawn(async move { handle.backup_full(shard_backup_path, bid, user).await });
         }
         let mut manifests = Vec::with_capacity(self.shards.len());
         let mut first_err = None;
@@ -845,7 +857,8 @@ impl ShardManager {
             let handle = shard.clone();
             let shard_backup_path = backup_root.join(format!("shard-{i}"));
             let bid = backup_id.clone();
-            set.spawn(async move { handle.backup_incremental(shard_backup_path, bid).await });
+            
+            set.spawn(async move { handle.backup_incremental( shard_backup_path, bid,).await });
         }
 
         let mut manifests = Vec::with_capacity(self.shards.len());
@@ -880,10 +893,12 @@ impl ShardManager {
         Ok(manifests)
     }
 
-    pub async fn restore_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();
+        
+        
         for shard in &self.shards {
-            if let Err(e) = shard.restore_backup(backup_id).await {
+            if let Err(e) = shard.restore_backup(backup_id, user.clone()).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }
@@ -905,16 +920,42 @@ impl ShardManager {
             )
         }
     }
+
     pub fn finish_restore(&self, ok: bool) {
         self.db_stats.finish_restore(ok);
+    }
+    
+    pub fn finish_backup(&self, ok: bool) {
+        self.db_stats.finish_backup(ok);
     }
     //to check before restore if there are any backups
     pub fn has_backup(&self, backup_id: &str) -> bool {
         self.backup_dir.join(backup_id).is_dir()
     }
-    // impl ShardManager
+
     pub async fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
         let shard = self.shards.first().ok_or_else(|| CorelamoError::Internal("no shards".into()))?;
         shard.list_backups().await
+    }
+
+    pub fn start_backup_scheduler(self: &Arc<Self>) {
+        let interval = self.options.read().backup_interval;
+        if interval.is_zero() {
+            return;
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+     
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                if this.try_start_backup().is_err() {
+                    continue;
+                }
+                let ok = this.backup_incremental().await.is_ok();
+                this.finish_backup(ok);
+            }
+        });
     }
 }
