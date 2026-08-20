@@ -282,7 +282,7 @@ pub async fn insert_handler(
     let parse_failures = outcome.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.insert(outcome.docs).await {
+    let report = match manager.insert(outcome.docs,principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -398,7 +398,7 @@ pub async fn start_database_handler(
         }
     };
 
-    match manager.start().await {
+    match manager.start(principal.id.0.clone()).await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -421,7 +421,7 @@ pub async fn stop_database_handler(
         }
     };
 
-    match manager.stop().await {
+    match manager.stop(principal.id.0.clone()).await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -444,7 +444,7 @@ pub async fn restart_database_handler(
         }
     };
 
-    match manager.restart().await {
+    match manager.restart(principal.id.0.clone()).await {
         Ok(()) => {
             HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
         }
@@ -583,7 +583,7 @@ pub async fn delete_document_handler(
     let manager = Arc::clone(&handle);
     let ids = command.ids;
 
-    let report = match manager.delete(ids).await {
+    let report = match manager.delete(ids, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
@@ -661,7 +661,7 @@ pub async fn replace_document_handler(
     let parse_failures = outcome.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.replace(outcome.docs).await {
+    let report = match manager.replace(outcome.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
@@ -743,7 +743,7 @@ pub async fn upsert_document_handler(
     let parse_failures = outcome.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.upsert(outcome.docs).await {
+    let report = match manager.upsert(outcome.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
@@ -862,7 +862,9 @@ pub async fn create_database_handler(
                 &ctx
             ).into_response();
         }
-        dbs.insert(db_name.clone(), Arc::new(manager));
+        let manager = Arc::new(manager);
+        manager.start_backup_scheduler();
+        dbs.insert(db_name.clone(), manager);
     }
 
     HttpOk::with_status(
@@ -1110,7 +1112,7 @@ pub async fn set_policy_handler(
         }
     };
 
-    match handle.set_policy_all(policy).await {
+    match handle.set_policy_all(policy, principal.id.0.clone()).await {
         Ok(()) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -1173,7 +1175,7 @@ pub async fn set_config_handler(
         }
     };
 
-    match handle.set_options_all(options).await {
+    match handle.set_options_all(options, principal.id.0.clone()).await {
         Ok(_) => HttpOk::new(format!("config updated for '{db_name}'"), &ctx).into_response(),
         Err(e) =>
             HttpError::from_corelamo(
@@ -1380,7 +1382,7 @@ pub async fn backup_handler(
 
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.backup_full().await {
+        match handle.backup_full(principal.id.0.clone()).await {
             Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
             Err(e) => eprintln!("backup failed for '{}': {}", name_for_log, e),
         }
@@ -1419,7 +1421,7 @@ pub async fn backup_restore_handler(
     }
 
     tokio::spawn(async move {
-        let ok = match handle.restore_backup(&backup_id).await {
+        let ok = match handle.restore_backup(&backup_id, principal.id.0.clone()).await {
             Ok(()) => {
                 eprintln!("restore completed for '{}'", name_for_log);
                 true

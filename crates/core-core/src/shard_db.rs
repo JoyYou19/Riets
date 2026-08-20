@@ -170,7 +170,7 @@ impl ShardDb {
         if self.db.is_some() {
             return Ok(());
         }
-
+        
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
         let analyzer = self.analyzer();
@@ -198,6 +198,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
 
         info!(self.log, "WAL recovery started";
+            
             "shard_id" => self.shard_id,
             "checkpoint" => checkpoint,
             "durable_offset" => self.wal.durable_offset(),
@@ -221,7 +222,7 @@ impl ShardDb {
                     );
                 }
                 WalRecord::Upsert(inputs) => {
-                    info!(self.log, "WAL replay: Upsert"; "shard_id" => self.shard_id, "documents" => inputs.len());
+                    info!(self.log, "WAL replay: Upsert";"shard_id" => self.shard_id, "documents" => inputs.len());
                     for input in inputs {
                         db
                             .upsert_document(input, IndexMode::StoreAndIndex)
@@ -316,7 +317,7 @@ impl ShardDb {
         self.stop().map_err(|e| io::Error::other(format!("shutdown failed: {e}")))
     }
 
-    pub fn restart(&mut self) -> Result<(), CorelamoError> {
+    pub fn restart(&mut self, ) -> Result<(), CorelamoError> {
         self.stop()?;
         self.start()?;
         info!(self.log, "shard restarted"; "shard_id" => self.shard_id);
@@ -347,17 +348,18 @@ impl ShardDb {
         self.db.as_mut().ok_or_else(|| io::Error::other("shard is not running"))
     }
 
-    pub fn set_policy(&mut self, policy: IndexPolicy) -> Result<(), CorelamoError> {
+    pub fn set_policy(&mut self, policy: IndexPolicy, user:String) -> Result<(), CorelamoError> {
         policy.validate()?;
         if let Some(db) = &mut self.db {
             db.set_policy(policy.clone())?;
         }
         self.policy = policy;
-        info!(self.log, "policy set"; "shard_id" => self.shard_id);
+        info!(self.log, "policy set"; "shard_id" => self.shard_id, "user" => user);
         Ok(())
     }
 
-    pub fn set_options(&mut self, options: DatabaseOptions) -> Result<(), CorelamoError> {
+    pub fn set_options(&mut self, options: DatabaseOptions, user:String) -> Result<(), CorelamoError> {
+        info!(self.log, "Options set"; "User"=>user);
         self.options = options;
         Ok(())
     }
@@ -409,7 +411,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))
     }
 
-    pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+    pub fn insert(&mut self, inputs: Vec<DocumentInput>, user:String) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
         let batch_size = self.options.runtime.indexing_batch_size;
@@ -417,6 +419,7 @@ impl ShardDb {
         let result = (|| -> Result<InsertReport, CorelamoError> {
             let offset = self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
             info!(self.log, "WAL append";
+                "user" => user.clone(),
                 "operation" => "create",
                 "shard_id" => %self.shard_id,
                 "documents" => count,
@@ -519,7 +522,7 @@ impl ShardDb {
         Ok(())
     }
 
-    pub fn delete(&mut self, ids: Vec<String>) -> Result<DeleteReport, CorelamoError> {
+    pub fn delete(&mut self, ids: Vec<String>, user:String) -> Result<DeleteReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = ids.len();
         let mut deleted: u32 = 0;
@@ -575,6 +578,7 @@ impl ShardDb {
         self.publish_stats();
         let elapsed = started.elapsed();
         info!(self.log, "delete batch";
+            "user" => user.clone(),
             "shard_id" => %self.shard_id,
             "requested" => count,
             "deleted" => deleted,
@@ -644,7 +648,7 @@ impl ShardDb {
         Ok(())
     }
 
-    pub fn replace(&mut self, inputs: Vec<DocumentInput>) -> Result<ReplaceReport, CorelamoError> {
+    pub fn replace(&mut self, inputs: Vec<DocumentInput>, user:String) -> Result<ReplaceReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
         let mut replaced: u32 = 0;
@@ -704,6 +708,7 @@ impl ShardDb {
         }
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
+            "user" => user.clone(),
             "shard_id" => %self.shard_id,
             "requested" => count,
             "replaced" => replaced,
@@ -714,7 +719,7 @@ impl ShardDb {
         Ok(ReplaceReport { replaced, failures })
     }
 
-    pub fn upsert(&mut self, inputs: Vec<DocumentInput>) -> Result<InsertReport, CorelamoError> {
+    pub fn upsert(&mut self, inputs: Vec<DocumentInput>, user:String) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
 
@@ -771,6 +776,7 @@ impl ShardDb {
         }
         let elapsed = started.elapsed();
         info!(self.log, "upsert batch";
+            "user" => user.clone(),
             "shard_id" => %self.shard_id,
             "requested" => count,
             "upserted" => inserted,

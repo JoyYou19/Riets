@@ -105,15 +105,17 @@ max = 0
 
 
 def login(username, password):
-    """Logs in and returns the token string, or None on failure."""
     body = json.dumps({"username": username, "password": password})
     result = subprocess.run(
         ["curl", "-s", "-X", "POST", f"{BASE_URL}/api/login",
          "-H", "Accept: application/json",
+         "-H", "Content-Type: application/json",
          "-d", body],
         capture_output=True,
         text=True,
     )
+    print(result.stdout)
+    return json.loads(result.stdout)["data"]["token"]
 
 
 def curl_post(url, body, token):
