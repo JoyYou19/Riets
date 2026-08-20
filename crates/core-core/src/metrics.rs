@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::Duration;
-
+use crate::shard_db::DatabaseStats;
+use core_backup::progress::{BackupPhase, BackupProgress};
+use core_index::lsm::index_worker::{IndexingStats, Phase, ReindexProgress};
 /// Read-only snapshot. Built fresh on every read, never stored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DatabaseMetrics {
@@ -15,58 +17,6 @@ pub struct DatabaseMetrics {
     pub reindex_errors: u64,
     pub reindex_total_time: Duration,
 }
-
-impl DatabaseMetrics {
-    pub fn average_search_time(&self) -> Option<Duration> {
-        if self.search_requests == 0 {
-            return None;
-        }
-        Some(self.search_total_time / (self.search_requests as u32))
-    }
-
-    pub fn average_indexing_time(&self) -> Option<Duration> {
-        if self.indexing_requests == 0 {
-            return None;
-        }
-        Some(self.indexing_total_time / (self.indexing_requests as u32))
-    }
-}
-
-/// Counters written by shard threads and the manager. Relaxed throughout:
-/// these guard no other memory, only themselves.
-#[derive(Debug, Default)]
-struct Counters {
-    search_requests: AtomicU64,
-    search_errors: AtomicU64,
-    search_nanos: AtomicU64,
-    indexing_requests: AtomicU64,
-    indexing_errors: AtomicU64,
-    indexing_nanos: AtomicU64,
-    reindex_requests: AtomicU64,
-    reindex_errors: AtomicU64,
-    reindex_nanos: AtomicU64,
-}
-
-/// One slot per shard. Levels, not counters: the owning shard overwrites its
-/// own slot and no other thread ever writes it.
-#[derive(Debug, Default)]
-struct ShardGauges {
-    documents: AtomicUsize,
-    segments: AtomicUsize,
-    memtable_terms: AtomicUsize,
-    compaction_enabled: AtomicBool,
-    // Add cumulative counters that the shard thread updates
-    documents_indexed: AtomicU64,
-    documents_deleted: AtomicU64,
-    segments_written: AtomicU64,
-    compactions_completed: AtomicU64,
-}
-
-use core_backup::progress::{BackupPhase, BackupProgress};
-use core_index::lsm::index_worker::{IndexingStats, Phase, ReindexProgress};
-
-use crate::shard_db::DatabaseStats;
-
 #[derive(Debug)]
 pub struct DbStats {
     counters: Counters,
@@ -82,7 +32,57 @@ pub struct DbStats {
     restore: Arc<BackupProgress>,
     // documents_indexed: AtomicU64,
 }
+/// Counters written by shard threads and the manager. Relaxed throughout:
+/// these guard no other memory, only themselves.
+#[derive(Debug, Default)]
+struct Counters {
+    search_requests: AtomicU64,
+    search_errors: AtomicU64,
+    search_nanos: AtomicU64,
+    indexing_requests: AtomicU64,
+    indexing_errors: AtomicU64,
+    indexing_nanos: AtomicU64,
+    reindex_requests: AtomicU64,
+    reindex_errors: AtomicU64,
+    reindex_nanos: AtomicU64,
+}
+/// One slot per shard. Levels, not counters: the owning shard overwrites its
+/// own slot and no other thread ever writes it.
+#[derive(Debug, Default)]
+struct ShardGauges {
+    documents: AtomicUsize,
+    segments: AtomicUsize,
+    memtable_terms: AtomicUsize,
+    compaction_enabled: AtomicBool,
+    // Add cumulative counters that the shard thread updates
+    documents_indexed: AtomicU64,
+    documents_deleted: AtomicU64,
+    segments_written: AtomicU64,
+    compactions_completed: AtomicU64,
+}
+/// What one shard holds. Writes go to that shard's own gauge slot or to a
+/// shared counter, so nothing here can block the shard thread.
+#[derive(Debug, Clone)]
+pub struct ShardStatsHandle {
+    stats: Arc<DbStats>,
+    index: usize,
+}
 
+impl DatabaseMetrics{
+    pub fn average_search_time(&self) -> Option<Duration> {
+        if self.search_requests == 0 {
+            return None;
+        }
+        Some(self.search_total_time / (self.search_requests as u32))
+    }
+
+    pub fn average_indexing_time(&self) -> Option<Duration> {
+        if self.indexing_requests == 0 {
+            return None;
+        }
+        Some(self.indexing_total_time / (self.indexing_requests as u32))
+    }
+}
 impl DbStats {
     pub fn new(shard_count: usize) -> Arc<Self> {
         Arc::new(Self {
@@ -285,14 +285,6 @@ impl DbStats {
         }
     }
 }
-/// What one shard holds. Writes go to that shard's own gauge slot or to a
-/// shared counter, so nothing here can block the shard thread.
-#[derive(Debug, Clone)]
-pub struct ShardStatsHandle {
-    stats: Arc<DbStats>,
-    index: usize,
-}
-
 impl ShardStatsHandle {
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.stats.reindex

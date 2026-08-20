@@ -212,7 +212,7 @@ async fn main() -> io::Result<()> {
         )
         .route("/api/databases/{db_name}/backup", post(handlers::backup_handler))
         .route(
-            "/api/databases/{db_name}/backup-incremental",
+            "/api/databases/{db_name}/backup/incremental",
             post(handlers::backup_incremental_handler)
         )
         .route("/api/databases/{db_name}/list-backups",

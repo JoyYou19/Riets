@@ -302,7 +302,7 @@ impl BackupManager {
 
             let manifest = BackupManifest {
                 backup_id: backup_id.to_string(),
-                created_at: chrono::Utc::now().timestamp() as u64,
+                created_at: chrono::Utc::now().timestamp_millis() as u64,
                 backup_type: BackupType::Full,
                 start_offset: 0,
                 wal_offset, // the value snapshotted above
