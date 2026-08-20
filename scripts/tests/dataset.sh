@@ -62,6 +62,7 @@ echo "=========================================="
 # ------------------------------------------------------------------
 # Database setup
 # ------------------------------------------------------------------
+curl -s -X GET $BASE_URL/api/databases/$DB/status -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 curl -s -X DELETE $BASE_URL/api/databases/$DB/delete-database -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "create database" 201 -X POST "$BASE_URL/api/databases/$DB/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
@@ -126,6 +127,10 @@ check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Co
 
   [compaction_interval]
   secs = 1
+  nanos = 0
+
+  [backup_interval]
+  secs = 3600
   nanos = 0
   '
 

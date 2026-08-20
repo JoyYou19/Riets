@@ -324,6 +324,10 @@ check "admin can set config"      200 -X POST "$BASE_URL/api/databases/$SCRATCH_
   [compaction_interval]
   secs = 1
   nanos = 0
+
+  [backup_interval]
+  secs = 3600
+  nanos = 0
   '
 check "viewer cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $VIEWER_TOKEN"\
   -d '
@@ -342,6 +346,10 @@ check "viewer cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_
 
   [compaction_interval]
   secs = 1
+  nanos = 0
+
+  [backup_interval]
+  secs = 3600
   nanos = 0
   '
 check "editor cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
@@ -362,6 +370,10 @@ check "editor cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_
   [compaction_interval]
   secs = 1
   nanos = 0
+
+  [backup_interval]
+  secs = 3600
+  nanos = 0
   '
 check "architect can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"\
   -d '
@@ -380,6 +392,10 @@ check "architect can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_
 
   [compaction_interval]
   secs = 1
+  nanos = 0
+
+  [backup_interval]
+  secs = 3600
   nanos = 0
   '
 
@@ -481,6 +497,8 @@ check "multi-role user can insert (from editor)"    200 -X POST "$BASE_URL/api/d
 check "multi-role user still cannot list databases" 403 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $MULTI_TOKEN"
 
 check "admin deletes multi-role test user" 200 -X DELETE "$BASE_URL/api/users/multi_$RUN_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+cat /tmp/corelamo/databases/$SCRATCH_DB/
 
 # ==================================================================
 # CLEANUP

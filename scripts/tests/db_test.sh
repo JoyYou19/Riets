@@ -419,6 +419,10 @@ check "set invalid config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config"
   [compaction_interval]
   secs = 1
   nanos = 0
+
+  [backup_interval]
+  secs = 3600
+  nanos = 0
   '
 check "set repeating fields config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
@@ -440,6 +444,10 @@ check "set repeating fields config" 400 -X POST "$BASE_URL/api/databases/$DB1/se
   [compaction_interval]
   secs = 1
   nanos = 0
+
+  [backup_interval]
+  secs = 3600
+  nanos = 0
   '
 check "set config missing field" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
@@ -457,6 +465,10 @@ check "set config missing field" 400 -X POST "$BASE_URL/api/databases/$DB1/set-c
 
   [compaction_interval]
   secs = 1
+  nanos = 0
+
+  [backup_interval]
+  secs = 3600
   nanos = 0
   '
 check "set config one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -477,6 +489,10 @@ check "set config one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H 
   [compaction_interval]
   secs = 1
   nanos = 0
+
+  [backup_interval]
+  secs = 3600
+  nanos = 0
   '
 check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
@@ -495,6 +511,10 @@ check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H 
 
   [compaction_interval]
   secs = 1
+  nanos = 0
+
+  [backup_interval]
+  secs = 3600
   nanos = 0
   '
 

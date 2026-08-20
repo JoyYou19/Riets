@@ -126,6 +126,10 @@ check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Co
   [compaction_interval]
   secs = 1
   nanos = 0
+  
+  [backup_interval]
+  secs = 3600
+  nanos = 0
   '
 
 # ------------------------------------------------------------------
