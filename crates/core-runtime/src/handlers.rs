@@ -1533,7 +1533,7 @@ pub async fn backup_handler(
 
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.backup_full(principal.id.0.clone()).await {
+        match handle.backup_full().await {
             Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
             Err(e) => eprintln!("backup failed for '{}': {}", name_for_log, e),
         }
@@ -1573,10 +1573,7 @@ pub async fn backup_restore_handler(
     }
 
     tokio::spawn(async move {
-        let ok = match handle
-            .restore_backup(&backup_id, principal.id.0.clone())
-            .await
-        {
+        let ok = match handle.restore_backup(&backup_id).await {
             Ok(()) => {
                 eprintln!("restore completed for '{}'", name_for_log);
                 true

@@ -22,9 +22,9 @@ fn trace_segment_writer() -> bool {
     std::env::var_os("CORELAMO_TRACE_SEGMENT_WRITER").is_some()
 }
 
-fn write_u16(out: &mut impl Write, value: u16) -> io::Result<()> {
-    out.write_all(&value.to_le_bytes())
-}
+// fn write_u16(out: &mut impl Write, value: u16) -> io::Result<()> {
+//     out.write_all(&value.to_le_bytes())
+// }
 
 fn write_u32(out: &mut impl Write, value: u32) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
@@ -104,7 +104,6 @@ pub fn write_segment_to<W: Write + Seek>(
     let trace = trace_segment_writer();
     let total_started = std::time::Instant::now();
 
-    let started = std::time::Instant::now();
     write_header(out)?;
 
     if trace {

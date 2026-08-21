@@ -1,10 +1,10 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
+    http::StatusCode,
     middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
-use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::CorsLayer;
 use tower_http::{compression::CompressionLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
@@ -328,13 +328,13 @@ async fn main() -> io::Result<()> {
         ))
     };
 
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(10) // refill rate
-            .burst_size(100) // max burst
-            .finish()
-            .unwrap(),
-    );
+    // let governor_conf = Arc::new(
+    //     GovernorConfigBuilder::default()
+    //         .per_second(10) // refill rate
+    //         .burst_size(100) // max burst
+    //         .finish()
+    //         .unwrap(),
+    // );
 
     let app = Router::new()
         .merge(public_routes)
@@ -342,7 +342,10 @@ async fn main() -> io::Result<()> {
         //TODO: Make configurable
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
         .layer(TraceLayer::new_for_http()) // logs method/path/status/latency
-        .layer(TimeoutLayer::new(Duration::from_secs(30))) // kills hung requests
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        )) // kills hung requests
         .layer(CompressionLayer::new()) // gzip/br responses
         // .layer(GovernorLayer::new(governor_conf))
         .layer(from_fn_with_state(

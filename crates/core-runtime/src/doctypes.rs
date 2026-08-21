@@ -174,31 +174,6 @@ fn parse_one(
     })
 }
 
-pub fn apply_json_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
-    match patch {
-        serde_json::Value::Object(patch_obj) => {
-            if !target.is_object() {
-                *target = serde_json::Value::Object(serde_json::Map::new());
-            }
-            if let serde_json::Value::Object(target_obj) = target {
-                for (key, patch_value) in patch_obj {
-                    if patch_value.is_null() {
-                        target_obj.remove(key);
-                    } else {
-                        let entry = target_obj
-                            .entry(key.clone())
-                            .or_insert(serde_json::Value::Null);
-                        apply_json_merge_patch(entry, patch_value);
-                    }
-                }
-            }
-        }
-        _ => {
-            *target = patch.clone();
-        }
-    }
-}
-
 fn json_value_to_document_input(
     value: Value,
     policy: &IndexPolicy,

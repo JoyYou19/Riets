@@ -956,7 +956,7 @@ impl ShardManager {
         Ok(())
     }
 
-    pub async fn backup_full(&self, user: String) -> Result<Vec<BackupManifest>, CorelamoError> {
+    pub async fn backup_full(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
         let backup_id = format!("full_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
         let backup_root = self.backup_dir.join(&backup_id);
         fs::create_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
@@ -977,8 +977,7 @@ impl ShardManager {
             let handle = shard.clone();
             let shard_backup_path = backup_root.join(format!("shard-{i}"));
             let bid = backup_id.clone();
-            let user = user.clone();
-            set.spawn(async move { handle.backup_full(shard_backup_path, bid, user).await });
+            set.spawn(async move { handle.backup_full(shard_backup_path, bid).await });
         }
         let mut manifests = Vec::with_capacity(self.shards.len());
         let mut first_err = None;
@@ -1059,11 +1058,11 @@ impl ShardManager {
         Ok(manifests)
     }
 
-    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();
 
         for shard in &self.shards {
-            if let Err(e) = shard.restore_backup(backup_id, user.clone()).await {
+            if let Err(e) = shard.restore_backup(backup_id).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }

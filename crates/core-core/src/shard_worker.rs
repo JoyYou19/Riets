@@ -100,7 +100,6 @@ pub enum ShardCmd {
         resp: oneshot::Sender<Result<Vec<BackupManifest>, CorelamoError>>,
     },
     Restore {
-        user: String,
         backup_id: String,
         resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
@@ -404,7 +403,6 @@ impl ShardHandle {
         &self,
         shard_backup_path: PathBuf,
         backup_id: String,
-        user: String,
     ) -> Result<BackupManifest, CorelamoError> {
         self.call(|resp| ShardCmd::BackupFull {
             shard_backup_path,
@@ -430,14 +428,10 @@ impl ShardHandle {
         .await?
     }
 
-    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
-        self.call(move |resp| ShardCmd::Restore {
-            user,
-            backup_id,
-            resp,
-        })
-        .await?
+        self.call(move |resp| ShardCmd::Restore { backup_id, resp })
+            .await?
     }
     //reindex
     pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
@@ -612,11 +606,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let _ = resp.send(result);
                 }
 
-                ShardCmd::Restore {
-                    user,
-                    resp,
-                    backup_id,
-                } => {
+                ShardCmd::Restore { resp, backup_id } => {
                     shared.is_restoring.store(true, Ordering::Release);
                     let result = shard.restore_backup(&backup_id);
                     shared.is_restoring.store(false, Ordering::Release);
