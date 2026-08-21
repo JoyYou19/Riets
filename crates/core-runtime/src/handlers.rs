@@ -313,7 +313,7 @@ pub async fn insert_handler(
     let doc_indices = outcome.indices;
     let parse_failures = outcome.failures;
 
-    let manager = Arc::clone(&handle);
+    //let manager = Arc::clone(&handle);
     let report = match handle.insert(outcome.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
@@ -1575,9 +1575,9 @@ pub async fn list_backups_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // } jauztaisa permission
+    if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    } 
 
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,

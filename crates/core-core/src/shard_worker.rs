@@ -78,11 +78,10 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
     Start {
-        user:String,
         resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     Stop {
-        user:String,
+       
         resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     Shutdown {
@@ -353,11 +352,11 @@ impl ShardHandle {
     pub async fn set_config(&self, options: DatabaseOptions, user:String) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetConfig { user, options, resp }).await?
     }
-    pub async fn start(&self, user:String) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Start { user,resp }).await?
+    pub async fn start(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Start { resp }).await?
     }
-    pub async fn stop(&self, user:String) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Stop { user,resp }).await?
+    pub async fn stop(&self, _user:String) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Stop { resp }).await?
     }
     pub async fn clear(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Clear { resp }).await?
@@ -495,12 +494,12 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 ShardCmd::CommitReindex { done, resp } => {
                     let _ = resp.send(shard.commit_reindex(done));
                 }
-                ShardCmd::Start { resp, user } => {
+                ShardCmd::Start { resp,  } => {
                     let result = shard.start();
                     shared.is_running.store(result.is_ok(), Ordering::Release);
                     let _ = resp.send(result);
                 }
-                ShardCmd::Stop { resp, user  } => {
+                ShardCmd::Stop { resp } => {
                     let result = shard.stop();
                     shared.is_running.store(false, Ordering::Release);
                     let _ = resp.send(result);
@@ -517,7 +516,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     shared.is_clearing.store(false, Ordering::Release);
                     let _ = resp.send(result);
                 }
-                ShardCmd::BackupFull { shard_backup_path, backup_id, resp, user } => {
+                ShardCmd::BackupFull { shard_backup_path, backup_id, resp, user: _ } => {
                     shared.is_backing_up.store(true, Ordering::Release);
                     let result = shard.backup_full(shard_backup_path, backup_id);
                     shared.is_backing_up.store(false, Ordering::Release);
@@ -545,7 +544,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let _ = resp.send(result);
                 }
 
-                ShardCmd::Restore { user, resp, backup_id } => {
+                ShardCmd::Restore { user: _, resp, backup_id } => {
                     shared.is_restoring.store(true, Ordering::Release);
                     let result = shard.restore_backup(&backup_id);
                     shared.is_restoring.store(false, Ordering::Release);

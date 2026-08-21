@@ -1,4 +1,4 @@
-use std::{mem::zeroed, sync::Arc};
+use std::sync::Arc;
 
 use core_index::{
     posting::PostingList,
@@ -16,19 +16,19 @@ const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
 const SCORE_SCALE: f32 = 1000.0;
 
-fn trace_bm25() -> bool {
-    std::env::var_os("CORELAMO_TRACE_BM25").is_some()
-}
+// fn trace_bm25() -> bool {
+//     std::env::var_os("CORELAMO_TRACE_BM25").is_some()
+// }
 
 pub fn score_term_hybrid<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
     xpath: XPathId,
 ) -> Vec<ScoredPosting> {
-    let trace = trace_bm25();
-    let total_started = std::time::Instant::now();
+   // let trace = trace_bm25();
+    //let total_started = std::time::Instant::now();
 
-    let started = std::time::Instant::now();
+    //let started = std::time::Instant::now();
 
     let n = stats.doc_count(xpath) as f32;
     let df = postings.len() as f32;
@@ -45,7 +45,7 @@ pub fn score_term_hybrid<S: SearchStats>(
         );
     }
     */
-    let started = std::time::Instant::now();
+  //  let started = std::time::Instant::now();
 
     let scored: Vec<ScoredPosting> = postings
         .items()

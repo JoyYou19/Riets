@@ -331,9 +331,9 @@ impl BatchOutcome {
         }
     }
 
-    pub fn succeed(&mut self) {
-        self.succeeded += 1;
-    }
+    // pub fn succeed(&mut self) {
+    //     self.succeeded += 1;
+    // }
 
     pub fn succeed_many(&mut self, n: u32) {
         self.succeeded += n;
