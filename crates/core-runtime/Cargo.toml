@@ -33,3 +33,6 @@ indexmap = { version = "2.14.0", features = ["serde"] }
 rayon = "1.12.0"
 crossbeam-channel = "0.5.16"
 parking_lot = "0.12.5"
+tower-http = { version = "0.6", features = ["cors", "compression-full", "trace", "timeout"] }
+tower_governor = "0.8.0"
+governor = "0.10.4"

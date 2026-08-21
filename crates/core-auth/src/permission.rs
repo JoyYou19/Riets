@@ -32,6 +32,7 @@ pub enum Permission {
     UpdatePwd,
     //backup
     Restore,
+    Backup,
     BackupFull,
     BackupIncremental,
 }

@@ -187,12 +187,12 @@ impl ShardManager {
         Self::create(root, options)
     }
 
-    pub async fn start(&self, user: String) -> Result<(), CorelamoError> {
+    pub async fn start(&self, _user: String) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-            let user = user.clone();
-            set.spawn(async move { handle.start(user).await });
+           
+            set.spawn(async move { handle.start().await });
         }
 
         let mut first_err = None;

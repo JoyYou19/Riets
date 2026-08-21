@@ -848,19 +848,19 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     // Generates an external ID for documents that dont have one
     // packed global document ids are used as the generated external ID
     // (THIS IS NOT AUTOINCREMENT WE FUCK THEM)
-    fn allocate_generated_external_id(&mut self, mut internal_id: DocId) -> io::Result<String> {
-        loop {
-            let external_id = internal_id.to_string();
+    // fn allocate_generated_external_id(&mut self, mut internal_id: DocId) -> io::Result<String> {
+    //     loop {
+    //         let external_id = internal_id.to_string();
 
-            if !self.external_id_exists(&external_id)? {
-                self.seen.insert(external_id.clone());
+    //         if !self.external_id_exists(&external_id)? {
+    //             self.seen.insert(external_id.clone());
 
-                return Ok(external_id.to_string());
-            }
+    //             return Ok(external_id.to_string());
+    //         }
 
-            internal_id = self.db.allocate_internal_id()?;
-        }
-    }
+    //         internal_id = self.db.allocate_internal_id()?;
+    //     }
+    // }
 
     pub fn finish(mut self) -> io::Result<InsertReport> {
         self.flush_batch()?;

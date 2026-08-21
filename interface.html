@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>corelamo</title>
+<style>
+  :root {
+    --bg: #0d0f12;
+    --panel: #161920;
+    --panel2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e4e6eb;
+    --muted: #8b93a3;
+    --accent: #6ea8fe;
+    --get: #4caf50;
+    --post: #6ea8fe;
+    --delete: #e5534b;
+    --ok: #4caf50;
+    --err: #e5534b;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); margin: 0; padding: 24px 32px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+  .topbar {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 20px;
+  }
+  .topbar .grp { display: flex; align-items: center; gap: 6px; }
+  .topbar label { color: var(--muted); font-size: 12px; }
+  input, select, textarea {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px; font-family: inherit;
+  }
+  textarea { font-family: "SF Mono", Menlo, monospace; font-size: 12px; width: 100%; resize: vertical; }
+  button {
+    background: var(--accent); color: #0a0d12; border: none; border-radius: 6px;
+    padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  #loginStatus { font-size: 12px; color: var(--muted); }
+
+  .tabs { display: flex; gap: 6px; margin-bottom: 18px; border-bottom: 1px solid var(--border); }
+  .tab-btn {
+    background: transparent; color: var(--muted); border: none; border-radius: 0;
+    padding: 10px 16px; font-weight: 600; border-bottom: 2px solid transparent;
+  }
+  .tab-btn.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .card h3 { margin: 0; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .method { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; color: #0a0d12; }
+  .method.GET { background: var(--get); }
+  .method.POST { background: var(--post); }
+  .method.DELETE { background: var(--delete); }
+  .path { color: var(--muted); font-size: 11px; font-family: monospace; word-break: break-all; }
+
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 11px; color: var(--muted); }
+  .kv-row { display: flex; gap: 6px; margin-bottom: 4px; }
+  .kv-row input { flex: 1; }
+
+  /* ---- response rendering ---- */
+  .resp { border-top: 1px solid var(--border); padding-top: 8px; }
+  .resp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .status-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .status-pill.ok { background: rgba(76,175,80,0.15); color: var(--ok); }
+  .status-pill.err { background: rgba(229,83,75,0.15); color: var(--err); }
+  .resp-title { font-size: 12px; color: var(--text); font-weight: 600; }
+  .resp-time { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+  .resp { overflow-x: auto; max-width: 100%; }
+  table.dtab { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+  table.dtab th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  table.dtab td { padding: 5px 6px; border-bottom: 1px solid var(--border); word-wrap: break-word; overflow-wrap: break-word; vertical-align: top; }
+  table.dtab tr.clickable { cursor: pointer; }
+  table.dtab tr.clickable:hover { background: var(--panel2); }
+
+  .badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+  .badge.on { background: rgba(76,175,80,0.15); color: var(--ok); }
+  .badge.off { background: rgba(139,147,163,0.15); color: var(--muted); }
+
+  .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-bottom: 6px; }
+  .metric { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+  .metric .val { font-size: 16px; font-weight: 700; }
+  .metric .lbl { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  .section-lbl { font-size: 11px; color: var(--muted); font-weight: 700; text-transform: uppercase; margin: 6px 0 3px; }
+
+  .progress { background: var(--panel2); border-radius: 6px; height: 8px; overflow: hidden; border: 1px solid var(--border); }
+  .progress > div { background: var(--accent); height: 100%; }
+
+  dl.kvtree { margin: 0; font-size: 12px; overflow: hidden; }
+  dl.kvtree dt { color: var(--muted); float: left; width: 42%; padding: 3px 6px 3px 0; word-wrap: break-word; overflow-wrap: break-word; }
+  dl.kvtree dd { margin: 0 0 0 42%; padding: 3px 0; border-bottom: 1px solid var(--border); word-wrap: break-word; overflow-wrap: break-word; }
+  dl.kvtree .nested { margin: 2px 0 4px; padding-left: 10px; border-left: 2px solid var(--border); overflow: hidden; }
+
+  details.raw { margin-top: 4px; }
+  details.raw summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+  pre.rawpre { background: #000; border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+    font-size: 11px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+
+<h1>corelamo</h1>
+<div class="sub">base url: http://localhost:6006 (fixed)</div>
+
+<div class="topbar">
+  <div class="grp"><label>username</label><input id="username" value="admin" size="10"></div>
+  <div class="grp"><label>password</label><input id="password" type="password" size="10"></div>
+  <button onclick="login()">login</button>
+  <span id="loginStatus">not logged in</span>
+
+  <div class="grp" style="margin-left:auto;">
+    <label>db</label>
+    <select id="dbSelect"><option value="movies">movies</option></select>
+    <button class="ghost" onclick="run(CMD_LIST_DATABASES)">refresh list</button>
+  </div>
+</div>
+
+<div class="tabs" id="tabs"></div>
+<div id="tabContents"></div>
+
+<script>
+const BASE = "http://localhost:6006";
+let token = null;
+
+// ---------- auth ----------
+
+async function login() {
+  const status = document.getElementById('loginStatus');
+  try {
+    const res = await fetch(BASE + '/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value
+      })
+    });
+    const data = await res.json();
+    token = data.data?.token || data.token || data.data?.key || data.key || null;
+    status.textContent = token ? 'logged in' : ('failed: ' + JSON.stringify(data));
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+  }
+}
+
+function authHeaders(hasBody) {
+  const h = {};
+  if (hasBody) h['Content-Type'] = 'application/json';
+  if (token) h['X-Corelamo-Key'] = token;
+  return h;
+}
+
+function db() { return document.getElementById('dbSelect').value; }
+
+// ---------- command definitions ----------
+
+const CMD_LIST_DATABASES = {
+  id: 'list-databases', tab: 'databases', method: 'GET', path: '/api/list-databases',
+  title: 'list-databases', fields: [], special: 'listDatabases'
+};
+
+const COMMANDS = [
+  CMD_LIST_DATABASES,
+  { id: 'status', tab: 'databases', method: 'GET', path: '/api/databases/{db}/status', title: 'status', fields: [], special: 'status' },
+  { id: 'create-database', tab: 'databases', method: 'POST', path: '/api/databases/{db}/create-database', title: 'create-database', fields: [] },
+  { id: 'start-database', tab: 'databases', method: 'POST', path: '/api/databases/{db}/start-database', title: 'start-database', fields: [] },
+  { id: 'stop-database', tab: 'databases', method: 'POST', path: '/api/databases/{db}/stop-database', title: 'stop-database', fields: [] },
+  { id: 'restart-database', tab: 'databases', method: 'POST', path: '/api/databases/{db}/restart-database', title: 'restart-database', fields: [] },
+  { id: 'clear-database', tab: 'databases', method: 'DELETE', path: '/api/databases/{db}/clear-database', title: 'clear-database', fields: [] },
+  { id: 'delete-database', tab: 'databases', method: 'DELETE', path: '/api/databases/{db}/delete-database', title: 'delete-database', fields: [] },
+  { id: 'reindex', tab: 'databases', method: 'POST', path: '/api/databases/{db}/reindex', title: 'reindex', fields: [] },
+  { id: 'get-config', tab: 'databases', method: 'GET', path: '/api/databases/{db}/get-config', title: 'get-config', fields: [] },
+  { id: 'set-config', tab: 'databases', method: 'POST', path: '/api/databases/{db}/set-config', title: 'set-config',
+    fields: [{ key: 'body', label: 'config (toml keys as json)', type: 'json', scope: 'body', default: '{}' }] },
+  { id: 'get-policy', tab: 'databases', method: 'GET', path: '/api/databases/{db}/get-policy', title: 'get-policy', fields: [] },
+  { id: 'set-policy', tab: 'databases', method: 'POST', path: '/api/databases/{db}/set-policy', title: 'set-policy',
+    fields: [{ key: 'body', label: 'policy json', type: 'json', scope: 'body', default: '{}' }] },
+  { id: 'get-logs', tab: 'databases', method: 'GET', path: '/api/databases/{db}/get-logs', title: 'get-logs', fields: [] },
+  { id: 'clear-logs', tab: 'databases', method: 'DELETE', path: '/api/databases/{db}/clear-logs', title: 'clear-logs', fields: [] },
+
+  { id: 'search', tab: 'documents', method: 'POST', path: '/api/databases/{db}/search', title: 'search',
+    fields: [
+      { key: 'query', label: 'query', type: 'text', scope: 'body', default: 'batman' },
+      { key: 'docs', label: 'docs', type: 'number', scope: 'body', default: '5' },
+      { key: 'filters', label: 'filters', type: 'kv', scope: 'body' },
+      { key: 'return_fields', label: 'return_fields (true/false)', type: 'kv', scope: 'body' }
+    ] },
+  { id: 'insert', tab: 'documents', method: 'POST', path: '/api/databases/{db}/insert', title: 'insert',
+    fields: [{ key: 'body', label: 'document json', type: 'json', scope: 'body', default: '{}' }] },
+  { id: 'lookup', tab: 'documents', method: 'POST', path: '/api/databases/{db}/lookup', title: 'lookup',
+    fields: [{ key: 'body', label: 'lookup json', type: 'json', scope: 'body', default: '{}' }] },
+  { id: 'retrieve', tab: 'documents', method: 'POST', path: '/api/databases/{db}/retrieve', title: 'retrieve',
+    fields: [{ key: 'body', label: 'retrieve json', type: 'json', scope: 'body', default: '{}' }] },
+  { id: 'replace', tab: 'documents', method: 'POST', path: '/api/databases/{db}/replace', title: 'replace',
+    fields: [{ key: 'body', label: 'replace json', type: 'json', scope: 'body', default: '{}' }] },
+  { id: 'upsert', tab: 'documents', method: 'POST', path: '/api/databases/{db}/upsert', title: 'upsert',
+    fields: [{ key: 'body', label: 'upsert json', type: 'json', scope: 'body', default: '{}' }] },
+  { id: 'delete', tab: 'documents', method: 'DELETE', path: '/api/databases/{db}/delete', title: 'delete',
+    fields: [{ key: 'body', label: 'delete json', type: 'json', scope: 'body', default: '{}' }] },
+
+  { id: 'backup', tab: 'backups', method: 'POST', path: '/api/databases/{db}/backup', title: 'backup', fields: [] },
+  { id: 'backup-incremental', tab: 'backups', method: 'POST', path: '/api/databases/{db}/backup/incremental', title: 'backup (incremental)', fields: [] },
+  { id: 'list-backups', tab: 'backups', method: 'GET', path: '/api/databases/{db}/list-backups', title: 'list-backups', fields: [], special: 'listBackups' },
+  { id: 'restore-backup', tab: 'backups', method: 'POST', path: '/api/databases/{db}/restore-backup/{backup_id}', title: 'restore-backup',
+    fields: [{ key: 'backup_id', label: 'backup_id', type: 'select', scope: 'path', selectId: 'backupSelect', default: '' }] },
+
+  { id: 'create-user', tab: 'users', method: 'POST', path: '/api/users', title: 'create-user',
+    fields: [{ key: 'body', label: 'user json', type: 'json', scope: 'body', default: '{\n  "username": "",\n  "password": "",\n  "roles": []\n}' }] },
+  { id: 'delete-user', tab: 'users', method: 'DELETE', path: '/api/users/{username}', title: 'delete-user',
+    fields: [{ key: 'username', label: 'username', type: 'text', scope: 'path', default: '' }] },
+  { id: 'update-password', tab: 'users', method: 'POST', path: '/api/users/{username}/password', title: 'update-password',
+    fields: [
+      { key: 'username', label: 'username', type: 'text', scope: 'path', default: '' },
+      { key: 'body', label: 'body json', type: 'json', scope: 'body', default: '{\n  "password": ""\n}' }
+    ] },
+  { id: 'update-roles', tab: 'users', method: 'POST', path: '/api/users/{username}/roles', title: 'update-roles',
+    fields: [
+      { key: 'username', label: 'username', type: 'text', scope: 'path', default: '' },
+      { key: 'body', label: 'body json', type: 'json', scope: 'body', default: '{\n  "roles": []\n}' }
+    ] }
+];
+
+const TABS = [
+  { id: 'databases', label: 'Databases' },
+  { id: 'documents', label: 'Documents' },
+  { id: 'backups', label: 'Backups' },
+  { id: 'users', label: 'Users' }
+];
+
+// ---------- field rendering ----------
+
+function fieldId(cmd, f) { return `f_${cmd.id}_${f.key}`; }
+
+function renderField(cmd, f) {
+  const id = fieldId(cmd, f);
+  if (f.type === 'json') {
+    return `<div class="field"><label>${f.label}</label><textarea id="${id}" rows="4">${f.default || ''}</textarea></div>`;
+  }
+  if (f.type === 'kv') {
+    return `<div class="field"><label>${f.label}</label><div id="${id}"></div>
+      <button class="ghost" onclick="addKvRow('${id}')">+ add</button></div>`;
+  }
+  if (f.type === 'select') {
+    return `<div class="field"><label>${f.label}</label><select id="${id}"><option value="">-- run list-backups first --</option></select></div>`;
+  }
+  const type = f.type === 'password' ? 'password' : (f.type === 'number' ? 'number' : 'text');
+  return `<div class="field"><label>${f.label}</label><input id="${id}" type="${type}" value="${f.default || ''}"></div>`;
+}
+
+function addKvRow(containerId) {
+  const container = document.getElementById(containerId);
+  const row = document.createElement('div');
+  row.className = 'kv-row';
+  row.innerHTML = `<input class="k" placeholder="field"><input class="v" placeholder="value"><button class="ghost" onclick="this.parentElement.remove()">x</button>`;
+  container.appendChild(row);
+}
+
+function collectKv(containerId) {
+  const rows = document.querySelectorAll(`#${containerId} .kv-row`);
+  const out = {};
+  rows.forEach(r => {
+    const k = r.querySelector('.k').value;
+    const v = r.querySelector('.v').value;
+    if (k) out[k] = v;
+  });
+  return out;
+}
+
+function buildCard(cmd) {
+  const fieldsHtml = cmd.fields.map(f => renderField(cmd, f)).join('');
+  const liveBtn = cmd.special === 'status'
+    ? `<button class="ghost" id="liveBtn_${cmd.id}" onclick="toggleLive(COMMANDS.find(c => c.id === '${cmd.id}'), this)">■ stop live</button>`
+    : '';
+  return `
+  <div class="card" id="card_${cmd.id}">
+    <h3><span class="method ${cmd.method}">${cmd.method}</span>${cmd.title}</h3>
+    <div class="path">${cmd.path}</div>
+    ${fieldsHtml}
+    <div style="display:flex; gap:6px;">
+      <button onclick="run(COMMANDS.find(c => c.id === '${cmd.id}'))">run</button>
+      ${liveBtn}
+    </div>
+    <div class="resp" id="resp_${cmd.id}"></div>
+  </div>`;
+}
+
+function init() {
+  const tabsEl = document.getElementById('tabs');
+  const contentsEl = document.getElementById('tabContents');
+
+  TABS.forEach((t, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn' + (i === 0 ? ' active' : '');
+    btn.textContent = t.label;
+    btn.onclick = () => switchTab(t.id);
+    btn.id = 'tabbtn_' + t.id;
+    tabsEl.appendChild(btn);
+
+    const content = document.createElement('div');
+    content.className = 'tab-content' + (i === 0 ? ' active' : '');
+    content.id = 'tabcontent_' + t.id;
+    content.innerHTML = COMMANDS.filter(c => c.tab === t.id).map(buildCard).join('');
+    contentsEl.appendChild(content);
+  });
+
+  addKvRow('f_search_filters');
+  addKvRow('f_search_return_fields');
+
+  // status auto-refreshes live by default
+  const statusCmd = COMMANDS.find(c => c.id === 'status');
+  run(statusCmd);
+  liveInterval = setInterval(() => run(statusCmd), 5000);
+}
+
+let liveInterval = null;
+
+function toggleLive(cmd, btn) {
+  if (liveInterval) {
+    clearInterval(liveInterval);
+    liveInterval = null;
+    btn.textContent = '▶ start live';
+  } else {
+    run(cmd);
+    liveInterval = setInterval(() => run(cmd), 5000);
+    btn.textContent = '■ stop live';
+  }
+}
+
+function switchTab(id) {
+  TABS.forEach(t => {
+    document.getElementById('tabbtn_' + t.id).classList.toggle('active', t.id === id);
+    document.getElementById('tabcontent_' + t.id).classList.toggle('active', t.id === id);
+  });
+}
+
+// ---------- human-readable response rendering ----------
+
+function esc(v) {
+  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function fmtVal(v) {
+  if (v === null || v === undefined) return `<span style="color:var(--muted)">null</span>`;
+  if (typeof v === 'boolean') return `<span class="badge ${v ? 'on' : 'off'}">${v}</span>`;
+  return esc(v);
+}
+
+// generic recursive object/array -> readable tree
+function renderValue(v) {
+  if (v === null || v === undefined) return `<span style="color:var(--muted)">null</span>`;
+  if (Array.isArray(v)) {
+    if (v.length === 0) return `<span style="color:var(--muted)">empty</span>`;
+    if (v.every(x => x !== null && typeof x === 'object')) return renderTable(v);
+    return v.map(x => esc(x)).join(', ');
+  }
+  if (typeof v === 'object') {
+    let html = `<dl class="kvtree">`;
+    for (const k in v) {
+      const val = v[k];
+      if (val !== null && typeof val === 'object') {
+        html += `<dt>${esc(k)}</dt><dd><div class="nested">${renderValue(val)}</div></dd>`;
+      } else {
+        html += `<dt>${esc(k)}</dt><dd>${fmtVal(val)}</dd>`;
+      }
+    }
+    html += `</dl>`;
+    return html;
+  }
+  return fmtVal(v);
+}
+
+function renderTable(rows) {
+  const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+  let html = `<table class="dtab"><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>`;
+  rows.forEach(r => {
+    html += `<tr>${cols.map(c => `<td>${r[c] !== null && typeof r[c] === 'object' ? renderValue(r[c]) : fmtVal(r[c])}</td>`).join('')}</tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
+function fmtDate(ms) {
+  if (!ms) return '-';
+  try { return new Date(ms).toLocaleString(); } catch (e) { return String(ms); }
+}
+
+function renderDatabasesTable(databases) {
+  let html = `<table class="dtab"><thead><tr><th>name</th><th>status</th></tr></thead><tbody>`;
+  databases.forEach(d => {
+    html += `<tr class="clickable" onclick="selectDb('${d.name}')">
+      <td>${esc(d.name)}</td>
+      <td><span class="badge ${d.running ? 'on' : 'off'}">${d.running ? 'running' : 'stopped'}</span></td>
+    </tr>`;
+  });
+  html += `</tbody></table><div style="font-size:11px;color:var(--muted);margin-top:4px;">click a row to select it as active db</div>`;
+  return html;
+}
+
+function selectDb(name) {
+  document.getElementById('dbSelect').value = name;
+}
+
+function renderBackupsTable(backups) {
+  let html = `<table class="dtab"><thead><tr><th>backup_id</th><th>type</th><th>created</th><th>docs</th></tr></thead><tbody>`;
+  backups.forEach(b => {
+    html += `<tr>
+      <td>${esc(b.backup_id)}</td>
+      <td>${esc(b.backup_type)}</td>
+      <td>${fmtDate(b.created_at)}</td>
+      <td>${esc(b.document_count)}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
+function renderStatusCards(data) {
+  let html = '';
+  html += `<div class="metrics-grid">
+    <div class="metric"><div class="val">${fmtVal(data.background_compaction_enabled)}</div><div class="lbl">compaction</div></div>`;
+  if (data.indexed) {
+    html += `<div class="metric"><div class="val">${esc(data.indexed.documents)}</div><div class="lbl">documents</div></div>
+      <div class="metric"><div class="val">${esc(data.indexed.deleted)}</div><div class="lbl">deleted</div></div>
+      <div class="metric"><div class="val">${esc(data.indexed.segments)}</div><div class="lbl">segments</div></div>`;
+  }
+  html += `</div>`;
+
+  if (data.metrics) {
+    html += `<div class="section-lbl">metrics</div>${renderValue(data.metrics)}`;
+  }
+  if (data.reindexing) {
+    html += `<div class="section-lbl">reindexing — ${esc(data.reindexing.status)}</div>
+      <div class="progress"><div style="width:${data.reindexing.progress || 0}%"></div></div>`;
+  }
+  if (data.backup) {
+    html += `<div class="section-lbl">backup — ${esc(data.backup.status)}</div>
+      <div class="progress"><div style="width:${data.backup.progress_percent || 0}%"></div></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px;">${esc(data.backup.mb_done)} / ${esc(data.backup.mb_total)} MB</div>`;
+  }
+  return html;
+}
+
+function renderRawText(res, raw) {
+  const ok = res.status >= 200 && res.status < 300;
+  const head = `<div class="resp-head">
+    <span class="status-pill ${ok ? 'ok' : 'err'}">${res.status}</span>
+    <span class="resp-title">raw response (not json)</span>
+  </div>`;
+  return head + `<pre class="rawpre" style="max-height:320px;">${esc(raw)}</pre>`;
+}
+
+function renderResponse(cmd, response) {
+  const ok = response.status >= 200 && response.status < 300;
+  let head = `<div class="resp-head">
+    <span class="status-pill ${ok ? 'ok' : 'err'}">${response.status ?? '?'}</span>
+    <span class="resp-title">${esc(response.title || '')}</span>
+    <span class="resp-time">${esc(response.time_taken || '')}</span>
+  </div>`;
+
+  let body = '';
+  const d = response.data;
+  if (d !== undefined) {
+    if (cmd.special === 'listDatabases' && d.databases) body = renderDatabasesTable(d.databases);
+    else if (cmd.special === 'listBackups' && d.backups) body = renderBackupsTable(d.backups);
+    else if (cmd.special === 'status') body = renderStatusCards(d);
+    else body = renderValue(d);
+  } else {
+    body = renderValue(response);
+  }
+
+  const raw = `<details class="raw"><summary>raw json</summary><pre class="rawpre">${esc(JSON.stringify(response, null, 2))}</pre></details>`;
+
+  return head + body + raw;
+}
+
+// ---------- run a command ----------
+
+async function run(cmd) {
+  const target = document.getElementById('resp_' + cmd.id);
+  let path = cmd.path.replace('{db}', db());
+  const bodyObj = {};
+  let hasBody = false;
+
+  for (const f of cmd.fields) {
+    let value;
+    if (f.type === 'kv') {
+      value = collectKv(fieldId(cmd, f));
+      if (f.key === 'return_fields') {
+        const converted = {};
+        for (const k in value) converted[k] = value[k] === 'true';
+        value = converted;
+      }
+    } else if (f.type === 'json') {
+      const raw = document.getElementById(fieldId(cmd, f)).value;
+      try { value = raw.trim() ? JSON.parse(raw) : {}; }
+      catch (e) { target.innerHTML = `<div class="status-pill err">invalid json</div> ${esc(e.message)}`; return; }
+    } else {
+      value = document.getElementById(fieldId(cmd, f)).value;
+      if (f.type === 'number') value = Number(value);
+    }
+
+    if (f.scope === 'path') {
+      path = path.replace('{' + f.key + '}', value);
+    } else if (f.scope === 'body') {
+      hasBody = true;
+      if (f.key === 'body') Object.assign(bodyObj, value);
+      else bodyObj[f.key] = value;
+    }
+  }
+
+  try {
+    const opts = { method: cmd.method, headers: authHeaders(hasBody) };
+    if (hasBody) opts.body = JSON.stringify(bodyObj);
+    const res = await fetch(BASE + path, opts);
+    const raw = await res.text();
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      target.innerHTML = renderRawText(res, raw);
+      return;
+    }
+    target.innerHTML = renderResponse(cmd, data);
+
+    if (cmd.special === 'listDatabases') {
+      const names = (data.data?.databases || []).map(d => d.name);
+      const sel = document.getElementById('dbSelect');
+      const current = sel.value;
+      sel.innerHTML = names.map(n => `<option value="${n}">${n}</option>`).join('');
+      if (names.includes(current)) sel.value = current;
+    }
+    if (cmd.special === 'listBackups') {
+      const ids = (data.data?.backups || []).map(b => b.backup_id);
+      const sel = document.getElementById('f_restore-backup_backup_id');
+      if (sel) sel.innerHTML = ids.map(id => `<option value="${id}">${id}</option>`).join('');
+    }
+  } catch (e) {
+    target.innerHTML = `<div class="status-pill err">failed to fetch</div> <span style="font-size:12px;color:var(--muted)">${esc(e.message)} — check CORS on the server</span>`;
+  }
+}
+
+init();
+</script>
+
+</body>
+</html>

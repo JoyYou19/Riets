@@ -550,7 +550,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 ShardCmd::CommitReindex { done, resp } => {
                     let _ = resp.send(shard.commit_reindex(done));
                 }
-                ShardCmd::Start { resp, user } => {
+                ShardCmd::Start { resp,  } => {
                     let result = shard.start();
                     shared.is_running.store(result.is_ok(), Ordering::Release);
                     let _ = resp.send(result);
