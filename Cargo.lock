@@ -539,10 +539,16 @@ version = "0.1.0"
 dependencies = [
  "bincode 2.0.1",
  "chrono",
+ "core-logs",
  "core-storage",
  "flate2",
  "serde",
  "serde_json",
+ "slog",
+ "slog-async",
+ "slog-envlogger",
+ "slog-scope",
+ "slog-term",
  "tar",
 ]
 
