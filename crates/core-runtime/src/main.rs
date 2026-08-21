@@ -284,6 +284,10 @@ async fn main() -> io::Result<()> {
             post(handlers::set_config_handler),
         )
         .route(
+            "/api/databases/{db_name}/all-fields",
+            get(handlers::get_all_fields_handler),
+        )
+        .route(
             "/api/databases/{db_name}/restart-database",
             post(handlers::restart_database_handler),
         )
@@ -293,7 +297,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/backup/incremental",
-            post(handlers::backup_incremental_handler)
+            post(handlers::backup_incremental_handler),
         )
         .route(
             "/api/databases/{db_name}/list-backups",
@@ -343,25 +347,25 @@ async fn main() -> io::Result<()> {
         std::mem::take(&mut *guard)
     };
     for (db_name, manager) in handles {
-    info!(log, "shutting down database ..."; "database" => %db_name);
-    match Arc::try_unwrap(manager) {
-        Ok(mgr) => {
-            if let Err(e) = mgr.shutdown() {
-                error!(log, "error shutting down database";
+        info!(log, "shutting down database ..."; "database" => %db_name);
+        match Arc::try_unwrap(manager) {
+            Ok(mgr) => {
+                if let Err(e) = mgr.shutdown() {
+                    error!(log, "error shutting down database";
                     "db" => %db_name, "error" => %e);
+                }
+            }
+            Err(still_shared) => {
+                error!(
+                    log,
+                    "could not get exclusive access to database during shutdown, \
+                     shard threads may not be joined cleanly";
+                    "db" => %db_name,
+                    "strong_count" => Arc::strong_count(&still_shared),
+                );
             }
         }
-        Err(still_shared) => {
-            error!(
-                log,
-                "could not get exclusive access to database during shutdown, \
-                 shard threads may not be joined cleanly";
-                "db" => %db_name,
-                "strong_count" => Arc::strong_count(&still_shared),
-            );
-        }
     }
-}
 
     //TODO: we might have extra stuff to do here later, for now i cant think of anything else
     info!(log, "Goodbye");

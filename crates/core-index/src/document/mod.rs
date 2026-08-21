@@ -1,3 +1,4 @@
+pub mod all_fields;
 pub mod document;
 pub mod policy;
 
