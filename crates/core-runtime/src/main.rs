@@ -1,10 +1,13 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
+    http::StatusCode,
     middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
 use tower_http::cors::CorsLayer;
+use tower_http::{compression::CompressionLayer, timeout::TimeoutLayer, trace::TraceLayer};
+
 use core_auth::{AuthService, UserDatabase};
 use core_core::shard_manager::ShardManager;
 use core_index::{
@@ -22,6 +25,7 @@ use std::{
     path::PathBuf,
     process,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use tokio::signal;
@@ -210,6 +214,10 @@ async fn main() -> io::Result<()> {
             post(handlers::replace_document_handler),
         )
         .route(
+            "/api/databases/{db_name}/partial-replace",
+            post(handlers::partial_replace_handler),
+        )
+        .route(
             "/api/databases/{db_name}/upsert",
             post(handlers::upsert_document_handler),
         )
@@ -320,16 +328,31 @@ async fn main() -> io::Result<()> {
         ))
     };
 
+    // let governor_conf = Arc::new(
+    //     GovernorConfigBuilder::default()
+    //         .per_second(10) // refill rate
+    //         .burst_size(100) // max burst
+    //         .finish()
+    //         .unwrap(),
+    // );
+
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
         //TODO: Make configurable
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http()) // logs method/path/status/latency
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        )) // kills hung requests
+        .layer(CompressionLayer::new()) // gzip/br responses
+        // .layer(GovernorLayer::new(governor_conf))
         .layer(from_fn_with_state(
             state.clone(),
             middleware::request_context_middleware,
         ))
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
     let addr = format!("{host}:{port}");

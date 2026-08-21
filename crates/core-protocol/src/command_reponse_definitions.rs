@@ -224,3 +224,30 @@ impl ResponseData for LoginResponse {
         Ok(json!({"token":self.token}))
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct PartialReplaceItem {
+    pub id: String,
+    pub patch: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub struct PartialReplaceCommand {
+    pub items: Vec<PartialReplaceItem>,
+}
+
+impl Command for PartialReplaceCommand {
+    fn from_json(body: &str) -> Result<Self, CorelamoError> {
+        let items: Vec<PartialReplaceItem> = serde_json::from_str(body).map_err(|e| {
+            CorelamoError::InvalidData(format!("invalid partial-replace request: {e}"))
+        })?;
+
+        if items.is_empty() {
+            return Err(CorelamoError::InvalidData(
+                "partial-replace requires at least one document".into(),
+            ));
+        }
+
+        Ok(PartialReplaceCommand { items })
+    }
+}

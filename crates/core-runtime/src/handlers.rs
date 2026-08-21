@@ -16,8 +16,8 @@ use crate::{
 };
 use core_protocol::{
     command_reponse_definitions::{
-        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, RetrieveCommand,
-        RetrieveResponse, SearchCommand, SearchResponse,
+        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand,
+        PartialReplaceCommand, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
     },
     errors::CorelamoError,
 };
@@ -313,7 +313,7 @@ pub async fn insert_handler(
     let doc_indices = outcome.indices;
     let parse_failures = outcome.failures;
 
-    let manager = Arc::clone(&handle);
+    //let manager = Arc::clone(&handle);
     let report = match handle.insert(outcome.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
@@ -433,7 +433,7 @@ pub async fn start_database_handler(
         }
     };
 
-    match manager.start(principal.id.0.clone()).await {
+    match manager.start().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -456,7 +456,7 @@ pub async fn stop_database_handler(
         }
     };
 
-    match manager.stop(principal.id.0.clone()).await {
+    match manager.stop().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -479,7 +479,7 @@ pub async fn restart_database_handler(
         }
     };
 
-    match manager.restart(principal.id.0.clone()).await {
+    match manager.restart().await {
         Ok(()) => {
             HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
         }
@@ -641,6 +641,74 @@ pub async fn delete_document_handler(
         outcome.failed_count()
     );
 
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
+pub async fn partial_replace_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let command = match PartialReplaceCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    if !handle.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let report = match handle
+        .partial_replace(command.items, principal.id.0.clone())
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("partial replace task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
+    outcome.succeed_many(report.replaced);
+    outcome.fail_many(report.failures);
+
+    let title = format!(
+        "partially replaced {} document(s) in '{db_name}', {} failed",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
     outcome
         .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
@@ -1465,7 +1533,7 @@ pub async fn backup_handler(
 
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.backup_full(principal.id.0.clone()).await {
+        match handle.backup_full().await {
             Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
             Err(e) => eprintln!("backup failed for '{}': {}", name_for_log, e),
         }
@@ -1505,10 +1573,7 @@ pub async fn backup_restore_handler(
     }
 
     tokio::spawn(async move {
-        let ok = match handle
-            .restore_backup(&backup_id, principal.id.0.clone())
-            .await
-        {
+        let ok = match handle.restore_backup(&backup_id).await {
             Ok(()) => {
                 eprintln!("restore completed for '{}'", name_for_log);
                 true
@@ -1575,9 +1640,9 @@ pub async fn list_backups_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // } jauztaisa permission
+    if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
 
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,

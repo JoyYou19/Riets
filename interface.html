@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>corelamo test interface</title>
+<title>corelamo</title>
 <style>
   :root {
     --bg: #0d0f12;
@@ -15,6 +15,8 @@
     --get: #4caf50;
     --post: #6ea8fe;
     --delete: #e5534b;
+    --ok: #4caf50;
+    --err: #e5534b;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   * { box-sizing: border-box; }
@@ -50,7 +52,7 @@
   .tab-btn.active { color: var(--text); border-bottom: 2px solid var(--accent); }
 
   .tab-content { display: none; }
-  .tab-content.active { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .tab-content.active { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
 
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px;
@@ -67,26 +69,56 @@
   .field label { font-size: 11px; color: var(--muted); }
   .kv-row { display: flex; gap: 6px; margin-bottom: 4px; }
   .kv-row input { flex: 1; }
-  .kv-add { align-self: flex-start; }
 
-  pre.out {
-    background: #000; border: 1px solid var(--border); border-radius: 6px; padding: 8px;
-    font-size: 11px; max-height: 260px; overflow: auto; white-space: pre-wrap; margin: 0;
-  }
+  /* ---- response rendering ---- */
+  .resp { border-top: 1px solid var(--border); padding-top: 8px; }
+  .resp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .status-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .status-pill.ok { background: rgba(76,175,80,0.15); color: var(--ok); }
+  .status-pill.err { background: rgba(229,83,75,0.15); color: var(--err); }
+  .resp-title { font-size: 12px; color: var(--text); font-weight: 600; }
+  .resp-time { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+  .resp { overflow-x: auto; max-width: 100%; }
+  table.dtab { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+  table.dtab th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  table.dtab td { padding: 5px 6px; border-bottom: 1px solid var(--border); word-wrap: break-word; overflow-wrap: break-word; vertical-align: top; }
+  table.dtab tr.clickable { cursor: pointer; }
+  table.dtab tr.clickable:hover { background: var(--panel2); }
+
+  .badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+  .badge.on { background: rgba(76,175,80,0.15); color: var(--ok); }
+  .badge.off { background: rgba(139,147,163,0.15); color: var(--muted); }
+
+  .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-bottom: 6px; }
+  .metric { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+  .metric .val { font-size: 16px; font-weight: 700; }
+  .metric .lbl { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  .section-lbl { font-size: 11px; color: var(--muted); font-weight: 700; text-transform: uppercase; margin: 6px 0 3px; }
+
+  .progress { background: var(--panel2); border-radius: 6px; height: 8px; overflow: hidden; border: 1px solid var(--border); }
+  .progress > div { background: var(--accent); height: 100%; }
+
+  dl.kvtree { margin: 0; font-size: 12px; overflow: hidden; }
+  dl.kvtree dt { color: var(--muted); float: left; width: 42%; padding: 3px 6px 3px 0; word-wrap: break-word; overflow-wrap: break-word; }
+  dl.kvtree dd { margin: 0 0 0 42%; padding: 3px 0; border-bottom: 1px solid var(--border); word-wrap: break-word; overflow-wrap: break-word; }
+  dl.kvtree .nested { margin: 2px 0 4px; padding-left: 10px; border-left: 2px solid var(--border); overflow: hidden; }
+
+  details.raw { margin-top: 4px; }
+  details.raw summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+  pre.rawpre { background: #000; border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+    font-size: 11px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 6px 0 0; }
 </style>
 </head>
 <body>
 
-<h1>corelamo test interface</h1>
+<h1>corelamo</h1>
 <div class="sub">base url: http://localhost:6006 (fixed)</div>
 
 <div class="topbar">
-  <div class="grp">
-    <label>username</label><input id="username" value="admin" size="10">
-  </div>
-  <div class="grp">
-    <label>password</label><input id="password" type="password" size="10">
-  </div>
+  <div class="grp"><label>username</label><input id="username" value="admin" size="10"></div>
+  <div class="grp"><label>password</label><input id="password" type="password" size="10"></div>
   <button onclick="login()">login</button>
   <span id="loginStatus">not logged in</span>
 
@@ -134,9 +166,7 @@ function authHeaders(hasBody) {
 
 function db() { return document.getElementById('dbSelect').value; }
 
-// ---------- command definitions (data-driven, one renderer for all) ----------
-// field types: text | password | number | json | kv
-// scope: 'path' -> substitutes {name} in path, 'body' -> goes into JSON body
+// ---------- command definitions ----------
 
 const CMD_LIST_DATABASES = {
   id: 'list-databases', tab: 'databases', method: 'GET', path: '/api/list-databases',
@@ -145,7 +175,7 @@ const CMD_LIST_DATABASES = {
 
 const COMMANDS = [
   CMD_LIST_DATABASES,
-  { id: 'status', tab: 'databases', method: 'GET', path: '/api/databases/{db}/status', title: 'status', fields: [] },
+  { id: 'status', tab: 'databases', method: 'GET', path: '/api/databases/{db}/status', title: 'status', fields: [], special: 'status' },
   { id: 'create-database', tab: 'databases', method: 'POST', path: '/api/databases/{db}/create-database', title: 'create-database', fields: [] },
   { id: 'start-database', tab: 'databases', method: 'POST', path: '/api/databases/{db}/start-database', title: 'start-database', fields: [] },
   { id: 'stop-database', tab: 'databases', method: 'POST', path: '/api/databases/{db}/stop-database', title: 'stop-database', fields: [] },
@@ -155,7 +185,7 @@ const COMMANDS = [
   { id: 'reindex', tab: 'databases', method: 'POST', path: '/api/databases/{db}/reindex', title: 'reindex', fields: [] },
   { id: 'get-config', tab: 'databases', method: 'GET', path: '/api/databases/{db}/get-config', title: 'get-config', fields: [] },
   { id: 'set-config', tab: 'databases', method: 'POST', path: '/api/databases/{db}/set-config', title: 'set-config',
-    fields: [{ key: 'body', label: 'config json', type: 'json', scope: 'body', default: '{}' }] },
+    fields: [{ key: 'body', label: 'config (toml keys as json)', type: 'json', scope: 'body', default: '{}' }] },
   { id: 'get-policy', tab: 'databases', method: 'GET', path: '/api/databases/{db}/get-policy', title: 'get-policy', fields: [] },
   { id: 'set-policy', tab: 'databases', method: 'POST', path: '/api/databases/{db}/set-policy', title: 'set-policy',
     fields: [{ key: 'body', label: 'policy json', type: 'json', scope: 'body', default: '{}' }] },
@@ -211,7 +241,7 @@ const TABS = [
   { id: 'users', label: 'Users' }
 ];
 
-// ---------- rendering ----------
+// ---------- field rendering ----------
 
 function fieldId(cmd, f) { return `f_${cmd.id}_${f.key}`; }
 
@@ -222,10 +252,10 @@ function renderField(cmd, f) {
   }
   if (f.type === 'kv') {
     return `<div class="field"><label>${f.label}</label><div id="${id}"></div>
-      <button class="ghost kv-add" onclick="addKvRow('${id}')">+ add</button></div>`;
+      <button class="ghost" onclick="addKvRow('${id}')">+ add</button></div>`;
   }
   if (f.type === 'select') {
-    return `<div class="field"><label>${f.label}</label><select id="${id}" data-source="${f.selectId}"><option value="">-- run list-backups first --</option></select></div>`;
+    return `<div class="field"><label>${f.label}</label><select id="${id}"><option value="">-- run list-backups first --</option></select></div>`;
   }
   const type = f.type === 'password' ? 'password' : (f.type === 'number' ? 'number' : 'text');
   return `<div class="field"><label>${f.label}</label><input id="${id}" type="${type}" value="${f.default || ''}"></div>`;
@@ -252,13 +282,19 @@ function collectKv(containerId) {
 
 function buildCard(cmd) {
   const fieldsHtml = cmd.fields.map(f => renderField(cmd, f)).join('');
+  const liveBtn = cmd.special === 'status'
+    ? `<button class="ghost" id="liveBtn_${cmd.id}" onclick="toggleLive(COMMANDS.find(c => c.id === '${cmd.id}'), this)">■ stop live</button>`
+    : '';
   return `
   <div class="card" id="card_${cmd.id}">
     <h3><span class="method ${cmd.method}">${cmd.method}</span>${cmd.title}</h3>
     <div class="path">${cmd.path}</div>
     ${fieldsHtml}
-    <button onclick="run(COMMANDS.find(c => c.id === '${cmd.id}'))">run</button>
-    <pre class="out" id="out_${cmd.id}">-</pre>
+    <div style="display:flex; gap:6px;">
+      <button onclick="run(COMMANDS.find(c => c.id === '${cmd.id}'))">run</button>
+      ${liveBtn}
+    </div>
+    <div class="resp" id="resp_${cmd.id}"></div>
   </div>`;
 }
 
@@ -281,9 +317,27 @@ function init() {
     contentsEl.appendChild(content);
   });
 
-  // one starter filter/return_field row for search
   addKvRow('f_search_filters');
   addKvRow('f_search_return_fields');
+
+  // status auto-refreshes live by default
+  const statusCmd = COMMANDS.find(c => c.id === 'status');
+  run(statusCmd);
+  liveInterval = setInterval(() => run(statusCmd), 5000);
+}
+
+let liveInterval = null;
+
+function toggleLive(cmd, btn) {
+  if (liveInterval) {
+    clearInterval(liveInterval);
+    liveInterval = null;
+    btn.textContent = '▶ start live';
+  } else {
+    run(cmd);
+    liveInterval = setInterval(() => run(cmd), 5000);
+    btn.textContent = '■ stop live';
+  }
 }
 
 function switchTab(id) {
@@ -293,10 +347,150 @@ function switchTab(id) {
   });
 }
 
+// ---------- human-readable response rendering ----------
+
+function esc(v) {
+  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function fmtVal(v) {
+  if (v === null || v === undefined) return `<span style="color:var(--muted)">null</span>`;
+  if (typeof v === 'boolean') return `<span class="badge ${v ? 'on' : 'off'}">${v}</span>`;
+  return esc(v);
+}
+
+// generic recursive object/array -> readable tree
+function renderValue(v) {
+  if (v === null || v === undefined) return `<span style="color:var(--muted)">null</span>`;
+  if (Array.isArray(v)) {
+    if (v.length === 0) return `<span style="color:var(--muted)">empty</span>`;
+    if (v.every(x => x !== null && typeof x === 'object')) return renderTable(v);
+    return v.map(x => esc(x)).join(', ');
+  }
+  if (typeof v === 'object') {
+    let html = `<dl class="kvtree">`;
+    for (const k in v) {
+      const val = v[k];
+      if (val !== null && typeof val === 'object') {
+        html += `<dt>${esc(k)}</dt><dd><div class="nested">${renderValue(val)}</div></dd>`;
+      } else {
+        html += `<dt>${esc(k)}</dt><dd>${fmtVal(val)}</dd>`;
+      }
+    }
+    html += `</dl>`;
+    return html;
+  }
+  return fmtVal(v);
+}
+
+function renderTable(rows) {
+  const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+  let html = `<table class="dtab"><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>`;
+  rows.forEach(r => {
+    html += `<tr>${cols.map(c => `<td>${r[c] !== null && typeof r[c] === 'object' ? renderValue(r[c]) : fmtVal(r[c])}</td>`).join('')}</tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
+function fmtDate(ms) {
+  if (!ms) return '-';
+  try { return new Date(ms).toLocaleString(); } catch (e) { return String(ms); }
+}
+
+function renderDatabasesTable(databases) {
+  let html = `<table class="dtab"><thead><tr><th>name</th><th>status</th></tr></thead><tbody>`;
+  databases.forEach(d => {
+    html += `<tr class="clickable" onclick="selectDb('${d.name}')">
+      <td>${esc(d.name)}</td>
+      <td><span class="badge ${d.running ? 'on' : 'off'}">${d.running ? 'running' : 'stopped'}</span></td>
+    </tr>`;
+  });
+  html += `</tbody></table><div style="font-size:11px;color:var(--muted);margin-top:4px;">click a row to select it as active db</div>`;
+  return html;
+}
+
+function selectDb(name) {
+  document.getElementById('dbSelect').value = name;
+}
+
+function renderBackupsTable(backups) {
+  let html = `<table class="dtab"><thead><tr><th>backup_id</th><th>type</th><th>created</th><th>docs</th></tr></thead><tbody>`;
+  backups.forEach(b => {
+    html += `<tr>
+      <td>${esc(b.backup_id)}</td>
+      <td>${esc(b.backup_type)}</td>
+      <td>${fmtDate(b.created_at)}</td>
+      <td>${esc(b.document_count)}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
+function renderStatusCards(data) {
+  let html = '';
+  html += `<div class="metrics-grid">
+    <div class="metric"><div class="val">${fmtVal(data.background_compaction_enabled)}</div><div class="lbl">compaction</div></div>`;
+  if (data.indexed) {
+    html += `<div class="metric"><div class="val">${esc(data.indexed.documents)}</div><div class="lbl">documents</div></div>
+      <div class="metric"><div class="val">${esc(data.indexed.deleted)}</div><div class="lbl">deleted</div></div>
+      <div class="metric"><div class="val">${esc(data.indexed.segments)}</div><div class="lbl">segments</div></div>`;
+  }
+  html += `</div>`;
+
+  if (data.metrics) {
+    html += `<div class="section-lbl">metrics</div>${renderValue(data.metrics)}`;
+  }
+  if (data.reindexing) {
+    html += `<div class="section-lbl">reindexing — ${esc(data.reindexing.status)}</div>
+      <div class="progress"><div style="width:${data.reindexing.progress || 0}%"></div></div>`;
+  }
+  if (data.backup) {
+    html += `<div class="section-lbl">backup — ${esc(data.backup.status)}</div>
+      <div class="progress"><div style="width:${data.backup.progress_percent || 0}%"></div></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px;">${esc(data.backup.mb_done)} / ${esc(data.backup.mb_total)} MB</div>`;
+  }
+  return html;
+}
+
+function renderRawText(res, raw) {
+  const ok = res.status >= 200 && res.status < 300;
+  const head = `<div class="resp-head">
+    <span class="status-pill ${ok ? 'ok' : 'err'}">${res.status}</span>
+    <span class="resp-title">raw response (not json)</span>
+  </div>`;
+  return head + `<pre class="rawpre" style="max-height:320px;">${esc(raw)}</pre>`;
+}
+
+function renderResponse(cmd, response) {
+  const ok = response.status >= 200 && response.status < 300;
+  let head = `<div class="resp-head">
+    <span class="status-pill ${ok ? 'ok' : 'err'}">${response.status ?? '?'}</span>
+    <span class="resp-title">${esc(response.title || '')}</span>
+    <span class="resp-time">${esc(response.time_taken || '')}</span>
+  </div>`;
+
+  let body = '';
+  const d = response.data;
+  if (d !== undefined) {
+    if (cmd.special === 'listDatabases' && d.databases) body = renderDatabasesTable(d.databases);
+    else if (cmd.special === 'listBackups' && d.backups) body = renderBackupsTable(d.backups);
+    else if (cmd.special === 'status') body = renderStatusCards(d);
+    else body = renderValue(d);
+  } else {
+    body = renderValue(response);
+  }
+
+  const raw = `<details class="raw"><summary>raw json</summary><pre class="rawpre">${esc(JSON.stringify(response, null, 2))}</pre></details>`;
+
+  return head + body + raw;
+}
+
 // ---------- run a command ----------
 
 async function run(cmd) {
-  const out = document.getElementById('out_' + cmd.id);
+  const target = document.getElementById('resp_' + cmd.id);
   let path = cmd.path.replace('{db}', db());
   const bodyObj = {};
   let hasBody = false;
@@ -313,7 +507,7 @@ async function run(cmd) {
     } else if (f.type === 'json') {
       const raw = document.getElementById(fieldId(cmd, f)).value;
       try { value = raw.trim() ? JSON.parse(raw) : {}; }
-      catch (e) { out.textContent = 'invalid json: ' + e.message; return; }
+      catch (e) { target.innerHTML = `<div class="status-pill err">invalid json</div> ${esc(e.message)}`; return; }
     } else {
       value = document.getElementById(fieldId(cmd, f)).value;
       if (f.type === 'number') value = Number(value);
@@ -332,8 +526,15 @@ async function run(cmd) {
     const opts = { method: cmd.method, headers: authHeaders(hasBody) };
     if (hasBody) opts.body = JSON.stringify(bodyObj);
     const res = await fetch(BASE + path, opts);
-    const data = await res.json();
-    out.textContent = JSON.stringify(data, null, 2);
+    const raw = await res.text();
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      target.innerHTML = renderRawText(res, raw);
+      return;
+    }
+    target.innerHTML = renderResponse(cmd, data);
 
     if (cmd.special === 'listDatabases') {
       const names = (data.data?.databases || []).map(d => d.name);
@@ -348,7 +549,7 @@ async function run(cmd) {
       if (sel) sel.innerHTML = ids.map(id => `<option value="${id}">${id}</option>`).join('');
     }
   } catch (e) {
-    out.textContent = 'error: ' + e.message;
+    target.innerHTML = `<div class="status-pill err">failed to fetch</div> <span style="font-size:12px;color:var(--muted)">${esc(e.message)} — check CORS on the server</span>`;
   }
 }
 

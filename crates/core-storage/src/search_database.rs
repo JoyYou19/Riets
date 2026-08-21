@@ -20,6 +20,7 @@ use core_index::{
 use bincode::{Decode, Encode};
 use core_protocol::{
     command_reponse_definitions::LookupResponse,
+    command_response_helpers::{apply_merge_patch, traverse_json},
     errors::{DocFailure, FailReason},
     format::Format,
 };
@@ -350,6 +351,55 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(())
     }
 
+    pub fn partial_replace_document(
+        &mut self,
+        external_id: &str,
+        patch: &serde_json::Value,
+    ) -> io::Result<Option<StoredDocument>> {
+        let Some(old_doc) = self.store.get(external_id)? else {
+            return Ok(None);
+        };
+
+        let mut doc_value: serde_json::Value =
+            serde_json::from_slice(&old_doc.source).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("stored document is not valid JSON: {e}"),
+                )
+            })?;
+
+        apply_merge_patch(&mut doc_value, patch);
+
+        let new_source = serde_json::to_vec(&doc_value).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize patched document: {e}"),
+            )
+        })?;
+
+        let mut fields = BTreeMap::new();
+        traverse_json(&doc_value, "", &mut fields);
+
+        let new_internal_id = self.allocate_internal_id()?;
+        let new_doc = StoredDocument {
+            external_id: external_id.to_string(),
+            internal_id: new_internal_id,
+            source: new_source,
+            fields,
+            format: old_doc.format,
+        };
+
+        self.index_worker
+            .delete_document_wait(old_doc.internal_id)?;
+
+        self.store.put(new_doc.clone())?;
+
+        let indexed = stored_document_to_indexed(&new_doc, &self.policy);
+        self.index_worker.add_indexed_document_wait(indexed)?;
+
+        Ok(Some(new_doc))
+    }
+
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
             self.index_worker
@@ -668,8 +718,10 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
     let mut indexed = IndexedDocument::new(doc.internal_id);
 
     for field in policy.indexed_fields() {
-        //TODO: we now have IndexKind::Id/IdAutoIncrement it should be searchable imo
-        if field.index != IndexKind::Text {
+        if field.index != IndexKind::Text
+            && field.index != IndexKind::Id
+            && field.index != IndexKind::IdAuto
+        {
             continue;
         }
 
@@ -796,19 +848,19 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     // Generates an external ID for documents that dont have one
     // packed global document ids are used as the generated external ID
     // (THIS IS NOT AUTOINCREMENT WE FUCK THEM)
-    fn allocate_generated_external_id(&mut self, mut internal_id: DocId) -> io::Result<String> {
-        loop {
-            let external_id = internal_id.to_string();
+    // fn allocate_generated_external_id(&mut self, mut internal_id: DocId) -> io::Result<String> {
+    //     loop {
+    //         let external_id = internal_id.to_string();
 
-            if !self.external_id_exists(&external_id)? {
-                self.seen.insert(external_id.clone());
+    //         if !self.external_id_exists(&external_id)? {
+    //             self.seen.insert(external_id.clone());
 
-                return Ok(external_id.to_string());
-            }
+    //             return Ok(external_id.to_string());
+    //         }
 
-            internal_id = self.db.allocate_internal_id()?;
-        }
-    }
+    //         internal_id = self.db.allocate_internal_id()?;
+    //     }
+    // }
 
     pub fn finish(mut self) -> io::Result<InsertReport> {
         self.flush_batch()?;

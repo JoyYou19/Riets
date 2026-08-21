@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::{AppState, http_response::HttpError};
 use axum::{
     extract::{Request, State},
-    http::{StatusCode, header},
+    http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -26,34 +26,34 @@ pub struct RequestContext {
 }
 
 //WARN: hardcodes json here, fix when json done
-fn resolve_format(state: &AppState, request: &Request) -> Result<Format, String> {
+fn resolve_format(_state: &AppState,_request: &Request) -> Result<Format, String> {
     return Ok(Format::JSON);
-    //TODO: start where xml detected
-    todo!();
-    let accept = request
-        .headers()
-        .get(header::ACCEPT)
-        .and_then(|v| v.to_str().ok());
+    // //TODO: start where xml detected
+    // todo!();
+    // let accept = request
+    //     .headers()
+    //     .get(header::ACCEPT)
+    //     .and_then(|v| v.to_str().ok());
 
-    match accept {
-        None => Ok(state.default_format),
-        Some(accept) => {
-            let first = accept.split(',').next().unwrap_or("").trim();
-            let subtype = first
-                .split('/')
-                .nth(1)
-                .unwrap_or("")
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim();
-            if first.is_empty() || subtype.is_empty() || subtype == "*" {
-                Ok(state.default_format)
-            } else {
-                Format::try_from(subtype).map_err(|_| subtype.to_string())
-            }
-        }
-    }
+    // match accept {
+    //     None => Ok(state.default_format),
+    //     Some(accept) => {
+    //         let first = accept.split(',').next().unwrap_or("").trim();
+    //         let subtype = first
+    //             .split('/')
+    //             .nth(1)
+    //             .unwrap_or("")
+    //             .split(';')
+    //             .next()
+    //             .unwrap_or("")
+    //             .trim();
+    //         if first.is_empty() || subtype.is_empty() || subtype == "*" {
+    //             Ok(state.default_format)
+    //         } else {
+    //             Format::try_from(subtype).map_err(|_| subtype.to_string())
+    //         }
+    //     }
+    // }
 }
 
 //adds request_id and makes the RequestContext for other parts of programm
