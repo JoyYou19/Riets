@@ -106,7 +106,8 @@ def print_corpus():
         print(f"\n{label} ({len(rows)} docs)")
         print(RULE)
         for d in rows[:8]:
-            print(f"  {d['id']:<12} {len(d['title'].split()):>2} tok  {d['title']}")
+            print(f"  {d['id']:<12} {
+                  len(d['title'].split()):>2} tok  {d['title']}")
         if len(rows) > 8:
             print(f"  ... and {len(rows) - 8} more")
     print(f"\ntotal: {len(docs)} documents")
@@ -189,7 +190,8 @@ def create_db(base, db, shards, dump_json):
     url = f"{base}/api/databases/{db}/create-database"
     payload = {"shards": shards} if shards else None
     status, raw, elapsed = post(url, payload)
-    show_exchange("CREATE DATABASE", url, payload, status, raw, elapsed, dump_json)
+    show_exchange("CREATE DATABASE", url, payload,
+                  status, raw, elapsed, dump_json)
     return status < 400
 
 
@@ -307,9 +309,11 @@ CHECKS = [
 
 def run_one_query(base, db, query, params, dump_json):
     hits, raw, status, elapsed, err = search(base, db, query, **params)
-    print(f"\nquery {query!r}  docs={params['docs']} offset={params['offset']}")
+    print(f"\nquery {query!r}  docs={
+          params['docs']} offset={params['offset']}")
     print(RULE)
-    print(f"HTTP {status}  {elapsed * 1000:.0f} ms  {len(hits) if hits is not None else 0} hit(s)")
+    print(f"HTTP {status}  {elapsed * 1000:.0f} ms  {len(hits)
+          if hits is not None else 0} hit(s)")
     if err:
         print(f"      {err}")
         print(pretty(raw))
@@ -326,7 +330,8 @@ def run_checks(base, db, dump_json):
     passed = failed = 0
     verdicts = []
     for check in CHECKS:
-        hits = run_one_query(base, db, check["query"], check["params"], dump_json)
+        hits = run_one_query(
+            base, db, check["query"], check["params"], dump_json)
         if hits is None:
             print("      FAIL  request did not return usable results")
             verdicts.append(("FAIL", check["name"]))

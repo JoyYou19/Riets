@@ -1,27 +1,30 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
+    http::StatusCode,
     middleware::from_fn_with_state,
-    routing::{ delete, get, post },
+    routing::{delete, get, post},
 };
-use tower_http::{ trace::TraceLayer, timeout::TimeoutLayer, compression::CompressionLayer };
 use tower_http::cors::CorsLayer;
-use tower_governor::{ governor::GovernorConfigBuilder, GovernorLayer };
+use tower_http::{compression::CompressionLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
-use core_auth::{ AuthService, UserDatabase };
+use core_auth::{AuthService, UserDatabase};
 use core_core::shard_manager::ShardManager;
-use core_index::{ analyzer::analyzer::Analyzer, lsm::{ LsmIndex, config::IndexRuntimeConfig } };
+use core_index::{
+    analyzer::analyzer::Analyzer,
+    lsm::{LsmIndex, config::IndexRuntimeConfig},
+};
 
 use core_logs::logger;
-use core_protocol::{ errors::CorelamoError, format::Format };
+use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::binary_store::BinaryDocumentStore;
-use slog::{ debug, error, info, warn };
+use slog::{debug, error, info, warn};
 use std::{
     collections::HashMap,
     io,
     path::PathBuf,
     process,
-    sync::{ Arc, RwLock },
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -44,7 +47,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn lookup(&self, db_name: &str) -> Result<Arc<ShardManager>, CorelamoError> {
-        let dbs = self.databases
+        let dbs = self
+            .databases
             .read()
             .map_err(|_| CorelamoError::Internal("databases lock poisoned".into()))?;
         dbs.get(db_name)
@@ -57,41 +61,42 @@ impl AppState {
 async fn shutdown_signal() {
     let log = slog_scope::logger();
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix
-            ::signal(signal::unix::SignalKind::terminate())
+        signal::unix::signal(signal::unix::SignalKind::terminate())
             .expect("failed to install SIGTERM handler")
-            .recv().await;
+            .recv()
+            .await;
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
     #[cfg(unix)]
     let hangup = async {
-        signal::unix
-            ::signal(signal::unix::SignalKind::hangup())
+        signal::unix::signal(signal::unix::SignalKind::hangup())
             .expect("failed to install SIGHUP handler")
-            .recv().await;
+            .recv()
+            .await;
     };
     #[cfg(not(unix))]
     let hangup = std::future::pending::<()>();
 
     #[cfg(unix)]
     let quit = async {
-        signal::unix
-            ::signal(signal::unix::SignalKind::quit())
+        signal::unix::signal(signal::unix::SignalKind::quit())
             .expect("failed to install SIGQUIT handler")
-            .recv().await;
+            .recv()
+            .await;
     };
     #[cfg(not(unix))]
     let quit = std::future::pending::<()>();
 
-    let reason =
-        tokio::select! {
+    let reason = tokio::select! {
         _ = ctrl_c => "SIGINT (Ctrl+C)",
         _ = terminate => "SIGTERM",
         _ = hangup => "SIGHUP",
@@ -188,64 +193,148 @@ async fn main() -> io::Result<()> {
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
-        .route("/api/databases/{db_name}/search", post(handlers::search_handler))
-        .route("/api/databases/{db_name}/insert", post(handlers::insert_handler))
-        .route("/api/databases/{db_name}/lookup", post(handlers::lookup_handler))
-        .route("/api/databases/{db_name}/retrieve", post(handlers::retrieve_handler))
-        .route("/api/databases/{db_name}/replace", post(handlers::replace_document_handler))
-        .route("/api/databases/{db_name}/upsert", post(handlers::upsert_document_handler))
-        .route("/api/databases/{db_name}/delete", delete(handlers::delete_document_handler))
-        .route("/api/databases/{db_name}/get-logs", get(handlers::get_logs_handler))
-        .route("/api/databases/{db_name}/clear-logs", delete(handlers::clear_logs_handler))
-        .route("/api/databases/{db_name}/create-database", post(handlers::create_database_handler))
-        .route("/api/databases/{db_name}/clear-database", delete(handlers::clear_database_handler))
+        .route(
+            "/api/databases/{db_name}/search",
+            post(handlers::search_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/insert",
+            post(handlers::insert_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/lookup",
+            post(handlers::lookup_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/retrieve",
+            post(handlers::retrieve_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/replace",
+            post(handlers::replace_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/partial-replace",
+            post(handlers::partial_replace_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/upsert",
+            post(handlers::upsert_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/delete",
+            delete(handlers::delete_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/get-logs",
+            get(handlers::get_logs_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/clear-logs",
+            delete(handlers::clear_logs_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/create-database",
+            post(handlers::create_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/clear-database",
+            delete(handlers::clear_database_handler),
+        )
         .route(
             "/api/databases/{db_name}/delete-database",
-            delete(handlers::delete_database_handler)
+            delete(handlers::delete_database_handler),
         )
-        .route("/api/databases/{db_name}/start-database", post(handlers::start_database_handler))
-        .route("/api/databases/{db_name}/stop-database", post(handlers::stop_database_handler))
+        .route(
+            "/api/databases/{db_name}/start-database",
+            post(handlers::start_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/stop-database",
+            post(handlers::stop_database_handler),
+        )
         .route("/api/list-databases", get(handlers::list_databases_handler))
-        .route("/api/databases/{db_name}/status", get(handlers::stats_handler))
-        .route("/api/databases/{db_name}/reindex", post(handlers::reindex_handler))
-        .route("/api/databases/{db_name}/get-policy", get(handlers::get_policy_handler))
-        .route("/api/databases/{db_name}/set-policy", post(handlers::set_policy_handler))
+        .route(
+            "/api/databases/{db_name}/status",
+            get(handlers::stats_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/reindex",
+            post(handlers::reindex_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/get-policy",
+            get(handlers::get_policy_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/set-policy",
+            post(handlers::set_policy_handler),
+        )
         .route("/api/users", post(handlers::create_user_handler))
-        .route("/api/users/{username}", delete(handlers::delete_user_handler))
-        .route("/api/users/{username}/password", post(handlers::update_user_password_handler))
-        .route("/api/users/{username}/roles", post(handlers::update_user_roles_handler))
-        .route("/api/databases/{db_name}/get-config", get(handlers::get_config_handler))
-        .route("/api/databases/{db_name}/set-config", post(handlers::set_config_handler))
-        .route("/api/databases/{db_name}/all-fields", get(handlers::get_all_fields_handler))
+        .route(
+            "/api/users/{username}",
+            delete(handlers::delete_user_handler),
+        )
+        .route(
+            "/api/users/{username}/password",
+            post(handlers::update_user_password_handler),
+        )
+        .route(
+            "/api/users/{username}/roles",
+            post(handlers::update_user_roles_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/get-config",
+            get(handlers::get_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/set-config",
+            post(handlers::set_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/all-fields",
+            get(handlers::get_all_fields_handler),
+        )
         .route(
             "/api/databases/{db_name}/restart-database",
-            post(handlers::restart_database_handler)
+            post(handlers::restart_database_handler),
         )
-        .route("/api/databases/{db_name}/backup", post(handlers::backup_handler))
+        .route(
+            "/api/databases/{db_name}/backup",
+            post(handlers::backup_handler),
+        )
         .route(
             "/api/databases/{db_name}/backup/incremental",
-            post(handlers::backup_incremental_handler)
+            post(handlers::backup_incremental_handler),
         )
-        .route("/api/databases/{db_name}/list-backups", get(handlers::list_backups_handler))
+        .route(
+            "/api/databases/{db_name}/list-backups",
+            get(handlers::list_backups_handler),
+        )
         .route(
             "/api/databases/{db_name}/restore-backup/{backup_id}",
-            post(handlers::backup_restore_handler)
+            post(handlers::backup_restore_handler),
         );
     let protected_routes = if enable_auth {
-        protected_routes.layer(from_fn_with_state(state.clone(), middleware::auth_middleware))
+        protected_routes.layer(from_fn_with_state(
+            state.clone(),
+            middleware::auth_middleware,
+        ))
     } else {
         warn!(log, "AUTH DISABLED — You're on your own!");
 
-        protected_routes.layer(axum::middleware::from_fn(middleware::disabled_auth_middleware))
+        protected_routes.layer(axum::middleware::from_fn(
+            middleware::disabled_auth_middleware,
+        ))
     };
 
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(10) // refill rate
-            .burst_size(100) // max burst
-            .finish()
-            .unwrap()
-    );
+    // let governor_conf = Arc::new(
+    //     GovernorConfigBuilder::default()
+    //         .per_second(10) // refill rate
+    //         .burst_size(100) // max burst
+    //         .finish()
+    //         .unwrap(),
+    // );
 
     let app = Router::new()
         .merge(public_routes)
@@ -253,10 +342,16 @@ async fn main() -> io::Result<()> {
         //TODO: Make configurable
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
         .layer(TraceLayer::new_for_http()) // logs method/path/status/latency
-        .layer(TimeoutLayer::new(Duration::from_secs(30))) // kills hung requests
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        )) // kills hung requests
         .layer(CompressionLayer::new()) // gzip/br responses
         // .layer(GovernorLayer::new(governor_conf))
-        .layer(from_fn_with_state(state.clone(), middleware::request_context_middleware))
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::request_context_middleware,
+        ))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -265,7 +360,9 @@ async fn main() -> io::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     debug!(log,"listening on";"address"=>%addr);
 
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     //something or someone killed our beloved programm
     info!(log, "Server stopped, shutting down databases..");

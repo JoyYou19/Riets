@@ -565,8 +565,6 @@ impl Phase {
     }
 }
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ProgressSnapshot {
     pub phase: Phase,
@@ -599,7 +597,6 @@ pub struct ReindexProgress {
     phase: AtomicU8,
     total: AtomicU64,
     done: AtomicU64,
-    started: Mutex<Option<Instant>>,
     cancel: AtomicBool,
     first_add: Mutex<Option<Instant>>,
 }
@@ -610,7 +607,6 @@ impl ReindexProgress {
             phase: AtomicU8::new(Phase::Idle as u8),
             total: AtomicU64::new(0),
             done: AtomicU64::new(0),
-            started: Mutex::new(None),
             first_add: Mutex::new(None),
             cancel: AtomicBool::new(false),
         })

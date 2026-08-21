@@ -69,6 +69,64 @@ pub fn tree_to_json(node: &FieldNode) -> Value {
     Value::Object(obj)
 }
 
+pub fn traverse_json(value: &Value, path: &str, fields: &mut BTreeMap<String, String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map {
+                let new_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}/{}", path, key)
+                };
+                traverse_json(val, &new_path, fields);
+            }
+        }
+        Value::Array(arr) => {
+            // TODO: figure out best way to handle arrays, for now separate with " "
+            let joined = arr
+                .iter()
+                .map(value_to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            fields.insert(path.to_string(), joined);
+        }
+        other => {
+            fields.insert(path.to_string(), value_to_string(other));
+        }
+    }
+}
+
+fn value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+pub fn apply_merge_patch(target: &mut Value, patch: &Value) {
+    match patch {
+        Value::Object(patch_obj) => {
+            if !target.is_object() {
+                *target = Value::Object(serde_json::Map::new());
+            }
+            if let Value::Object(target_obj) = target {
+                for (key, patch_value) in patch_obj {
+                    if patch_value.is_null() {
+                        target_obj.remove(key);
+                    } else {
+                        let entry = target_obj.entry(key.clone()).or_insert(Value::Null);
+                        apply_merge_patch(entry, patch_value);
+                    }
+                }
+            }
+        }
+        _ => {
+            *target = patch.clone();
+        }
+    }
+}
+
 fn node_to_json(node: &FieldNode) -> Value {
     match node {
         FieldNode::Leaf(s) => Value::String(s.clone()),

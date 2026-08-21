@@ -12,7 +12,9 @@ use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
 use core_index::types::{ShardId, shard_of};
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
+use core_protocol::command_reponse_definitions::{
+    LookupCommand, LookupResponse, PartialReplaceItem, SearchCommand,
+};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::query_string_parser::parse_and_analyze;
@@ -185,11 +187,11 @@ impl ShardManager {
         Self::create(root, options)
     }
 
-    pub async fn start(&self, _user: String) -> Result<(), CorelamoError> {
+    pub async fn start(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-           
+
             set.spawn(async move { handle.start().await });
         }
 
@@ -225,12 +227,11 @@ impl ShardManager {
         self.shards.iter().all(|h| h.is_running())
     }
 
-    pub async fn stop(&self, user: String) -> Result<(), CorelamoError> {
+    pub async fn stop(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-            let user = user.clone();
-            set.spawn(async move { handle.stop(user).await });
+            set.spawn(async move { handle.stop().await });
         }
 
         let mut first_err = None;
@@ -257,10 +258,9 @@ impl ShardManager {
         }
     }
 
-    pub async fn restart(&self, user: String) -> Result<(), CorelamoError> {
-        let user = user.clone();
-        self.stop(user.clone()).await?;
-        self.start(user).await
+    pub async fn restart(&self) -> Result<(), CorelamoError> {
+        self.stop().await?;
+        self.start().await
     }
 
     pub async fn upsert(
@@ -293,6 +293,59 @@ impl ShardManager {
             match res {
                 Ok(Ok(r)) => {
                     report.inserted += r.inserted;
+                    report.failures.extend(r.failures);
+                }
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+                Err(je) => {
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard task panicked: {je}"
+                        )));
+                    }
+                }
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+        Ok(report)
+    }
+
+    pub async fn partial_replace(
+        &self,
+        items: Vec<PartialReplaceItem>,
+        user: String,
+    ) -> Result<ReplaceReport, CorelamoError> {
+        let mut by_shard: HashMap<usize, Vec<(String, serde_json::Value)>> = HashMap::new();
+        for item in items {
+            by_shard
+                .entry(self.shard_index_for(&item.id))
+                .or_default()
+                .push((item.id, item.patch));
+        }
+
+        //FIX: all-fields + WAL
+
+        let mut set = JoinSet::new();
+        for (idx, batch) in by_shard {
+            let handle = self.shards[idx].clone();
+            let user = user.clone();
+            set.spawn(async move { handle.partial_replace(batch, user).await });
+        }
+
+        let mut report = ReplaceReport {
+            replaced: 0,
+            failures: Vec::new(),
+        };
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Ok(r)) => {
+                    report.replaced += r.replaced;
                     report.failures.extend(r.failures);
                 }
                 Ok(Err(e)) => {
@@ -903,7 +956,7 @@ impl ShardManager {
         Ok(())
     }
 
-    pub async fn backup_full(&self, user: String) -> Result<Vec<BackupManifest>, CorelamoError> {
+    pub async fn backup_full(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
         let backup_id = format!("full_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
         let backup_root = self.backup_dir.join(&backup_id);
         fs::create_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
@@ -924,8 +977,7 @@ impl ShardManager {
             let handle = shard.clone();
             let shard_backup_path = backup_root.join(format!("shard-{i}"));
             let bid = backup_id.clone();
-            let user = user.clone();
-            set.spawn(async move { handle.backup_full(shard_backup_path, bid, user).await });
+            set.spawn(async move { handle.backup_full(shard_backup_path, bid).await });
         }
         let mut manifests = Vec::with_capacity(self.shards.len());
         let mut first_err = None;
@@ -1006,11 +1058,11 @@ impl ShardManager {
         Ok(manifests)
     }
 
-    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();
 
         for shard in &self.shards {
-            if let Err(e) = shard.restore_backup(backup_id, user.clone()).await {
+            if let Err(e) = shard.restore_backup(backup_id).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }

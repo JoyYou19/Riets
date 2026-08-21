@@ -1,5 +1,6 @@
 use core_index::document::{IndexPolicy, policy::IndexKind};
 use core_protocol::{
+    command_response_helpers::traverse_json,
     errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
@@ -190,41 +191,6 @@ fn json_value_to_document_input(
         source,
         format: Format::JSON,
     })
-}
-
-fn traverse_json(value: &Value, path: &str, fields: &mut BTreeMap<String, String>) {
-    match value {
-        Value::Object(map) => {
-            for (key, val) in map {
-                let new_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{}/{}", path, key)
-                };
-                traverse_json(val, &new_path, fields);
-            }
-        }
-        Value::Array(arr) => {
-            // TODO: figure out best way to handle arrays, for now separate with " "
-            let joined = arr
-                .iter()
-                .map(value_to_string)
-                .collect::<Vec<_>>()
-                .join(" ");
-            fields.insert(path.to_string(), joined);
-        }
-        other => {
-            fields.insert(path.to_string(), value_to_string(other));
-        }
-    }
-}
-
-fn value_to_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
 }
 
 //retrieve byte-for-byte response + skipped for format

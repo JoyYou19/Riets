@@ -25,7 +25,7 @@ pub fn score_term_hybrid<S: SearchStats>(
     postings: &PostingList,
     xpath: XPathId,
 ) -> Vec<ScoredPosting> {
-   // let trace = trace_bm25();
+    // let trace = trace_bm25();
     //let total_started = std::time::Instant::now();
 
     //let started = std::time::Instant::now();
@@ -34,7 +34,7 @@ pub fn score_term_hybrid<S: SearchStats>(
     let df = postings.len() as f32;
     let avgdl = stats.avg_doc_len(xpath);
 
-   /*  if trace {
+    /*  if trace {
       tracing::trace!(
             xpath=%xpath,
             docs=n,
@@ -45,7 +45,7 @@ pub fn score_term_hybrid<S: SearchStats>(
         );
     }
     */
-  //  let started = std::time::Instant::now();
+    //  let started = std::time::Instant::now();
 
     let scored: Vec<ScoredPosting> = postings
         .items()
@@ -78,35 +78,35 @@ pub fn score_term_hybrid<S: SearchStats>(
         })
         .collect();
 
-  /*   if trace {
-       tracing::trace!(
-            xpath=%xpath,
-            postings=%postings.len(),
-            scored=%scored.len(),
-            scoring_took=?started.elapsed(),
-            total_took=?total_started.elapsed(),
+    /*   if trace {
+           tracing::trace!(
+                xpath=%xpath,
+                postings=%postings.len(),
+                scored=%scored.len(),
+                scoring_took=?started.elapsed(),
+                total_took=?total_started.elapsed(),
 
-            "bm25 score",
-        );
-    }
-*/
+                "bm25 score",
+            );
+        }
+    */
     scored
 }
 
-pub fn score_term(postings: &PostingList) -> Vec<ScoredPosting> {
-    postings
-        .items()
-        .iter()
-        .filter(|p| !p.positions.is_empty())
-        .map(|p| ScoredPosting {
-            doc_id: p.doc_id,
-            positions: Arc::from(p.positions.as_slice()),
-            score: p.weight as u64 * 1000,
-            matched_terms: 1,
-            density: 1.0,
-        })
-        .collect()
-}
+// pub fn score_term(postings: &PostingList) -> Vec<ScoredPosting> {
+//     postings
+//         .items()
+//         .iter()
+//         .filter(|p| !p.positions.is_empty())
+//         .map(|p| ScoredPosting {
+//             doc_id: p.doc_id,
+//             positions: Arc::from(p.positions.as_slice()),
+//             score: p.weight as u64 * 1000,
+//             matched_terms: 1,
+//             density: 1.0,
+//         })
+//         .collect()
+// }
 
 pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPosting> {
     let mut result = Vec::new();

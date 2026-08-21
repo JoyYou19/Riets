@@ -8,7 +8,10 @@ use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
         format::{SegmentFooter, SegmentHeader, TermEntry},
-    }, posting::{self, PostingList}, segment::ImmutableSegment, types::{DocId, XPathId},
+    },
+    posting::PostingList,
+    segment::ImmutableSegment,
+    types::{DocId, XPathId},
 };
 
 /*
@@ -19,9 +22,9 @@ fn trace_segment_writer() -> bool {
     std::env::var_os("CORELAMO_TRACE_SEGMENT_WRITER").is_some()
 }
 
-fn write_u16(out: &mut impl Write, value: u16) -> io::Result<()> {
-    out.write_all(&value.to_le_bytes())
-}
+// fn write_u16(out: &mut impl Write, value: u16) -> io::Result<()> {
+//     out.write_all(&value.to_le_bytes())
+// }
 
 fn write_u32(out: &mut impl Write, value: u32) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
@@ -101,11 +104,10 @@ pub fn write_segment_to<W: Write + Seek>(
     let trace = trace_segment_writer();
     let total_started = std::time::Instant::now();
 
-    let started = std::time::Instant::now();
     write_header(out)?;
 
     if trace {
-      //  tracing.trace!(time=?started.elapsed(),"segment writer: header took");
+        //  tracing.trace!(time=?started.elapsed(),"segment writer: header took");
     }
 
     let started = std::time::Instant::now();
@@ -200,7 +202,8 @@ fn write_doc_lengths(
 ) -> io::Result<()> {
     write_u32(out, doc_lengths.len() as u32)?;
 
-    for (&(doc_id, xpath), &len) in doc_lengths { //maybe change to DocId
+    for (&(doc_id, xpath), &len) in doc_lengths {
+        //maybe change to DocId
         write_u64(out, doc_id)?;
         write_u32(out, xpath)?;
         write_u32(out, len)?;

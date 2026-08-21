@@ -5,7 +5,7 @@ use memmap2::Mmap;
 use crate::{
     disk::{
         codec::{read_var_u16, read_var_u32, read_var_u64},
-        format::{SegmentFooter, TermEntry, FOOTER_LEN, MAGIC, VERSION},
+        format::{FOOTER_LEN, MAGIC, SegmentFooter, TermEntry, VERSION},
     },
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchStats},
@@ -336,7 +336,7 @@ fn read_doc_lengths(
     let mut doc_lengths = std::collections::BTreeMap::new();
 
     for _ in 0..count {
-        let doc_id = cursor.read_u64()?;// read doc_id
+        let doc_id = cursor.read_u64()?; // read doc_id
         let xpath = cursor.read_u32()?;
         let len = cursor.read_u32()?;
         doc_lengths.insert((doc_id, xpath), len);
@@ -413,10 +413,10 @@ impl<'a> Cursor<'a> {
         Self { bytes, offset: 0 }
     }
 
-    fn read_u16(&mut self) -> io::Result<u16> {
-        let value = u16::from_le_bytes(self.take(2)?.try_into().unwrap());
-        Ok(value)
-    }
+    // fn read_u16(&mut self) -> io::Result<u16> {
+    //     let value = u16::from_le_bytes(self.take(2)?.try_into().unwrap());
+    //     Ok(value)
+    // }
 
     fn read_u32(&mut self) -> io::Result<u32> {
         let value = u32::from_le_bytes(self.take(4)?.try_into().unwrap());
