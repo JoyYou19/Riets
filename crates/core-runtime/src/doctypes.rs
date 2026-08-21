@@ -1,5 +1,6 @@
 use core_index::document::{IndexPolicy, policy::IndexKind};
 use core_protocol::{
+    command_response_helpers::traverse_json,
     errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
@@ -173,6 +174,31 @@ fn parse_one(
     })
 }
 
+pub fn apply_json_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    match patch {
+        serde_json::Value::Object(patch_obj) => {
+            if !target.is_object() {
+                *target = serde_json::Value::Object(serde_json::Map::new());
+            }
+            if let serde_json::Value::Object(target_obj) = target {
+                for (key, patch_value) in patch_obj {
+                    if patch_value.is_null() {
+                        target_obj.remove(key);
+                    } else {
+                        let entry = target_obj
+                            .entry(key.clone())
+                            .or_insert(serde_json::Value::Null);
+                        apply_json_merge_patch(entry, patch_value);
+                    }
+                }
+            }
+        }
+        _ => {
+            *target = patch.clone();
+        }
+    }
+}
+
 fn json_value_to_document_input(
     value: Value,
     policy: &IndexPolicy,
@@ -190,41 +216,6 @@ fn json_value_to_document_input(
         source,
         format: Format::JSON,
     })
-}
-
-fn traverse_json(value: &Value, path: &str, fields: &mut BTreeMap<String, String>) {
-    match value {
-        Value::Object(map) => {
-            for (key, val) in map {
-                let new_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{}/{}", path, key)
-                };
-                traverse_json(val, &new_path, fields);
-            }
-        }
-        Value::Array(arr) => {
-            // TODO: figure out best way to handle arrays, for now separate with " "
-            let joined = arr
-                .iter()
-                .map(value_to_string)
-                .collect::<Vec<_>>()
-                .join(" ");
-            fields.insert(path.to_string(), joined);
-        }
-        other => {
-            fields.insert(path.to_string(), value_to_string(other));
-        }
-    }
-}
-
-fn value_to_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
 }
 
 //retrieve byte-for-byte response + skipped for format

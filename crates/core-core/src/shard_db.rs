@@ -689,6 +689,58 @@ impl ShardDb {
         Ok(())
     }
 
+    pub fn partial_replace(
+        &mut self,
+        items: Vec<(String, serde_json::Value)>,
+        user: String,
+    ) -> Result<ReplaceReport, CorelamoError> {
+        let started = std::time::Instant::now();
+        let count = items.len();
+        let mut replaced: u32 = 0;
+        let mut failures: Vec<DocFailure> = Vec::new();
+
+        let db = self
+            .db_mut()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+        for (external_id, patch) in items {
+            match db.partial_replace_document(&external_id, &patch) {
+                Ok(Some(_)) => {
+                    replaced += 1;
+                }
+                Ok(None) => {
+                    failures.push(DocFailure::new(
+                        None,
+                        Some(external_id),
+                        FailReason::NotFound,
+                    ));
+                }
+                Err(e) => {
+                    failures.push(DocFailure::new(
+                        None,
+                        Some(external_id),
+                        FailReason::Internal(e.to_string()),
+                    ));
+                }
+            }
+        }
+
+        db.flush()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+        let elapsed = started.elapsed();
+        info!(self.log, "partial replace batch";
+            "user" => user.clone(),
+            "shard_id" => %self.shard_id,
+            "requested" => count,
+            "replaced" => replaced,
+            "failed" => failures.len(),
+            "elapsed_ms" => elapsed.as_millis(),
+        );
+
+        Ok(ReplaceReport { replaced, failures })
+    }
+
     pub fn replace(
         &mut self,
         inputs: Vec<DocumentInput>,

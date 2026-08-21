@@ -210,6 +210,10 @@ async fn main() -> io::Result<()> {
             post(handlers::replace_document_handler),
         )
         .route(
+            "/api/databases/{db_name}/partial-replace",
+            post(handlers::partial_replace_handler),
+        )
+        .route(
             "/api/databases/{db_name}/upsert",
             post(handlers::upsert_document_handler),
         )
