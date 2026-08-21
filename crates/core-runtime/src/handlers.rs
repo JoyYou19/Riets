@@ -1462,12 +1462,12 @@ pub async fn backup_handler(
     if let Err(e) = handle.try_start_backup() {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
+    let ctx_bg = ctx.clone();
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
         match handle.backup_full(principal.id.0.clone()).await {
-            Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
-            Err(e) => eprintln!("backup failed for '{}': {}", name_for_log, e),
+            Ok(_manifests) => HttpOk::new(format!("backup completed for '{}'", name_for_log),&ctx_bg).into_response(),
+            Err(e) => HttpError::from_corelamo(CorelamoError::FailedToEx(format!("backup failed for '{}': {}", name_for_log, e)),&ctx_bg).into_response(),
         }
     });
 
@@ -1504,17 +1504,18 @@ pub async fn backup_restore_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
+    let ctx_val = ctx.clone();
     tokio::spawn(async move {
         let ok = match handle
             .restore_backup(&backup_id, principal.id.0.clone())
             .await
         {
             Ok(()) => {
-                eprintln!("restore completed for '{}'", name_for_log);
+                HttpOk::new(format!("restore completed for '{}'", name_for_log), &ctx_val);
                 true
             }
             Err(e) => {
-                eprintln!("restore failed for '{}': {}", name_for_log, e);
+                CorelamoError::FailedToEx(format!("restore failed for '{}': {}", name_for_log, e));
                 false
             }
         };
@@ -1547,21 +1548,21 @@ pub async fn backup_incremental_handler(
     if let Err(e) = handle.try_start_backup() {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
+    let ctx_bg =ctx.clone();
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
         match handle.backup_incremental().await {
             Ok(manifests) => {
                 let backed_up = manifests.iter().filter(|m| m.is_some()).count();
-                eprintln!(
-                    "incremental backup for '{}': {}/{} shards had new data",
+                HttpOk::new(
+                    format!("incremental backup for '{}': {}/{} shards had new data",
                     name_for_log,
                     backed_up,
                     manifests.len()
-                );
+                ), &ctx_bg);
             }
             Err(e) => {
-                eprintln!("incremental backup failed for '{}': {}", name_for_log, e);
+                HttpError::from_corelamo(CorelamoError::FailedToEx(format!("incremental backup failed for '{}': {}", name_for_log, e)),&ctx_bg);
             }
         }
     });
