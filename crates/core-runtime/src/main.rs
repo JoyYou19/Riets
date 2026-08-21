@@ -188,17 +188,54 @@ async fn main() -> io::Result<()> {
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
-        .route("/api/databases/{db_name}/search", post(handlers::search_handler))
-        .route("/api/databases/{db_name}/insert", post(handlers::insert_handler))
-        .route("/api/databases/{db_name}/lookup", post(handlers::lookup_handler))
-        .route("/api/databases/{db_name}/retrieve", post(handlers::retrieve_handler))
-        .route("/api/databases/{db_name}/replace", post(handlers::replace_document_handler))
-        .route("/api/databases/{db_name}/upsert", post(handlers::upsert_document_handler))
-        .route("/api/databases/{db_name}/delete", delete(handlers::delete_document_handler))
-        .route("/api/databases/{db_name}/get-logs", get(handlers::get_logs_handler))
-        .route("/api/databases/{db_name}/clear-logs", delete(handlers::clear_logs_handler))
-        .route("/api/databases/{db_name}/create-database", post(handlers::create_database_handler))
-        .route("/api/databases/{db_name}/clear-database", delete(handlers::clear_database_handler))
+        .route(
+            "/api/databases/{db_name}/search",
+            post(handlers::search_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/insert",
+            post(handlers::insert_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/lookup",
+            post(handlers::lookup_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/retrieve",
+            post(handlers::retrieve_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/replace",
+            post(handlers::replace_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/partial-replace",
+            post(handlers::partial_replace_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/upsert",
+            post(handlers::upsert_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/delete",
+            delete(handlers::delete_document_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/get-logs",
+            get(handlers::get_logs_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/clear-logs",
+            delete(handlers::clear_logs_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/create-database",
+            post(handlers::create_database_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/clear-database",
+            delete(handlers::clear_database_handler),
+        )
         .route(
             "/api/databases/{db_name}/delete-database",
             delete(handlers::delete_database_handler)

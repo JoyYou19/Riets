@@ -12,7 +12,9 @@ use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
 use core_index::types::{ShardId, shard_of};
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
+use core_protocol::command_reponse_definitions::{
+    LookupCommand, LookupResponse, PartialReplaceItem, SearchCommand,
+};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::query_string_parser::parse_and_analyze;
@@ -293,6 +295,59 @@ impl ShardManager {
             match res {
                 Ok(Ok(r)) => {
                     report.inserted += r.inserted;
+                    report.failures.extend(r.failures);
+                }
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+                Err(je) => {
+                    if first_err.is_none() {
+                        first_err = Some(CorelamoError::Internal(format!(
+                            "shard task panicked: {je}"
+                        )));
+                    }
+                }
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+        Ok(report)
+    }
+
+    pub async fn partial_replace(
+        &self,
+        items: Vec<PartialReplaceItem>,
+        user: String,
+    ) -> Result<ReplaceReport, CorelamoError> {
+        let mut by_shard: HashMap<usize, Vec<(String, serde_json::Value)>> = HashMap::new();
+        for item in items {
+            by_shard
+                .entry(self.shard_index_for(&item.id))
+                .or_default()
+                .push((item.id, item.patch));
+        }
+
+        //FIX: all-fields + WAL
+
+        let mut set = JoinSet::new();
+        for (idx, batch) in by_shard {
+            let handle = self.shards[idx].clone();
+            let user = user.clone();
+            set.spawn(async move { handle.partial_replace(batch, user).await });
+        }
+
+        let mut report = ReplaceReport {
+            replaced: 0,
+            failures: Vec::new(),
+        };
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Ok(r)) => {
+                    report.replaced += r.replaced;
                     report.failures.extend(r.failures);
                 }
                 Ok(Err(e)) => {

@@ -10,7 +10,6 @@ core-query = {path = "../core-query"}
 core-logs={path="../core-logs"}
 
 
-
 slog="2"
 serde = { workspace = true, features =["derive"]}
 

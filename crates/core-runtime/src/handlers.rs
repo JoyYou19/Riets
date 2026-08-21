@@ -16,8 +16,8 @@ use crate::{
 };
 use core_protocol::{
     command_reponse_definitions::{
-        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand, RetrieveCommand,
-        RetrieveResponse, SearchCommand, SearchResponse,
+        Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand,
+        PartialReplaceCommand, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
     },
     errors::CorelamoError,
 };
@@ -641,6 +641,74 @@ pub async fn delete_document_handler(
         outcome.failed_count()
     );
 
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
+}
+
+pub async fn partial_replace_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let command = match PartialReplaceCommand::parse(&body, ctx.format) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    if !handle.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let report = match handle
+        .partial_replace(command.items, principal.id.0.clone())
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("partial replace task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
+    outcome.succeed_many(report.replaced);
+    outcome.fail_many(report.failures);
+
+    let title = format!(
+        "partially replaced {} document(s) in '{db_name}', {} failed",
+        outcome.succeeded_count(),
+        outcome.failed_count()
+    );
     outcome
         .into_ok(StatusCode::OK, title, &db_name, &ctx)
         .into_response()
