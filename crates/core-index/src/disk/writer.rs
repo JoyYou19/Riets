@@ -8,7 +8,10 @@ use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
         format::{SegmentFooter, SegmentHeader, TermEntry},
-    }, posting::{self, PostingList}, segment::ImmutableSegment, types::{DocId, XPathId},
+    },
+    posting::PostingList,
+    segment::ImmutableSegment,
+    types::{DocId, XPathId},
 };
 
 /*
@@ -105,7 +108,7 @@ pub fn write_segment_to<W: Write + Seek>(
     write_header(out)?;
 
     if trace {
-      //  tracing.trace!(time=?started.elapsed(),"segment writer: header took");
+        //  tracing.trace!(time=?started.elapsed(),"segment writer: header took");
     }
 
     let started = std::time::Instant::now();
@@ -200,7 +203,8 @@ fn write_doc_lengths(
 ) -> io::Result<()> {
     write_u32(out, doc_lengths.len() as u32)?;
 
-    for (&(doc_id, xpath), &len) in doc_lengths { //maybe change to DocId
+    for (&(doc_id, xpath), &len) in doc_lengths {
+        //maybe change to DocId
         write_u64(out, doc_id)?;
         write_u32(out, xpath)?;
         write_u32(out, len)?;

@@ -433,7 +433,7 @@ pub async fn start_database_handler(
         }
     };
 
-    match manager.start(principal.id.0.clone()).await {
+    match manager.start().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -456,7 +456,7 @@ pub async fn stop_database_handler(
         }
     };
 
-    match manager.stop(principal.id.0.clone()).await {
+    match manager.stop().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -479,7 +479,7 @@ pub async fn restart_database_handler(
         }
     };
 
-    match manager.restart(principal.id.0.clone()).await {
+    match manager.restart().await {
         Ok(()) => {
             HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
         }
@@ -1645,7 +1645,7 @@ pub async fn list_backups_handler(
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
         return HttpError::from_corelamo(e, &ctx).into_response();
-    } 
+    }
 
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,

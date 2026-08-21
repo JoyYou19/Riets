@@ -187,11 +187,11 @@ impl ShardManager {
         Self::create(root, options)
     }
 
-    pub async fn start(&self, _user: String) -> Result<(), CorelamoError> {
+    pub async fn start(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-           
+
             set.spawn(async move { handle.start().await });
         }
 
@@ -227,12 +227,11 @@ impl ShardManager {
         self.shards.iter().all(|h| h.is_running())
     }
 
-    pub async fn stop(&self, user: String) -> Result<(), CorelamoError> {
+    pub async fn stop(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-            let user = user.clone();
-            set.spawn(async move { handle.stop(user).await });
+            set.spawn(async move { handle.stop().await });
         }
 
         let mut first_err = None;
@@ -259,10 +258,9 @@ impl ShardManager {
         }
     }
 
-    pub async fn restart(&self, user: String) -> Result<(), CorelamoError> {
-        let user = user.clone();
-        self.stop(user.clone()).await?;
-        self.start(user).await
+    pub async fn restart(&self) -> Result<(), CorelamoError> {
+        self.stop().await?;
+        self.start().await
     }
 
     pub async fn upsert(
