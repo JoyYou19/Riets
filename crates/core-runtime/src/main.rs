@@ -4,7 +4,7 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
-
+use tower_http::cors::CorsLayer;
 use core_auth::{AuthService, UserDatabase};
 use core_core::shard_manager::ShardManager;
 use core_index::{
@@ -325,6 +325,7 @@ async fn main() -> io::Result<()> {
         .merge(protected_routes)
         //TODO: Make configurable
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
+        .layer(CorsLayer::permissive())
         .layer(from_fn_with_state(
             state.clone(),
             middleware::request_context_middleware,
