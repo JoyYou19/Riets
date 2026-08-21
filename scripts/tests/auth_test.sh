@@ -140,6 +140,13 @@ check "architect can retrieve" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/
 check "viewer can retrieve"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/retrieve" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '["seed-doc-'"$RUN_ID"'"]'
 check "editor can retrieve"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/retrieve" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '["seed-doc-'"$RUN_ID"'"]'
 
+section "MATRIX — Permission::AllFields (admin, architect, viewer, editor all granted)"
+
+check "admin can retrieve all fields"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "architect can retrieve all fields" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
+check "viewer can retrieve all fields"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "editor can retrieve all fields"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $EDITOR_TOKEN"
+
 section "MATRIX — Permission::Lookup (admin, architect, viewer, editor all granted)"
 
 check "admin can lookup"     200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"ids": ["seed-doc-'"$RUN_ID"'"]}'
@@ -498,7 +505,6 @@ check "multi-role user still cannot list databases" 403 -X GET "$BASE_URL/api/li
 
 check "admin deletes multi-role test user" 200 -X DELETE "$BASE_URL/api/users/multi_$RUN_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-cat /tmp/corelamo/databases/$SCRATCH_DB/
 
 # ==================================================================
 # CLEANUP
