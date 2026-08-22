@@ -44,7 +44,6 @@ pub enum CorelamoError {
     Busy(String),
     #[error("failed: {0}")]
     FailedToEx(String),
-
 }
 
 //INFO: helpers to get all needed info from an error to http response
@@ -83,7 +82,7 @@ impl CorelamoError {
             CorelamoError::PathNotIndexed(_) => "Path Not Indexed",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
             CorelamoError::Busy(_) => "Service Unavailable",
-            CorelamoError::FailedToEx(_) => "Execution failed"
+            CorelamoError::FailedToEx(_) => "Execution failed",
         }
     }
 
@@ -101,8 +100,8 @@ impl CorelamoError {
             | CorelamoError::DatabaseAlreadyRunning(msg)
             | CorelamoError::PathNotIndexed(msg)
             | CorelamoError::UnknownRole(msg)
-            |CorelamoError::Busy(msg)
-            |CorelamoError::FailedToEx(msg)=> msg.clone(),
+            | CorelamoError::Busy(msg)
+            | CorelamoError::FailedToEx(msg) => msg.clone(),
         }
     }
 }

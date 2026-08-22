@@ -12,9 +12,7 @@ use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
 use core_index::types::{ShardId, shard_of};
-use core_protocol::command_reponse_definitions::{
-    LookupCommand, LookupResponse, PartialReplaceItem, SearchCommand,
-};
+use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::query_string_parser::parse_and_analyze;

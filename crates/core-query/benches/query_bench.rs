@@ -6,7 +6,7 @@ use core_index::{
     mem::MemIndex,
 };
 use core_query::{Query, QueryExecutor};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn build_mem_index() -> (Analyzer, MemIndex) {
     let analyzer = Analyzer::new();
@@ -49,21 +49,21 @@ fn bench_and_search(c: &mut Criterion) {
     });
 }
 
-fn bench_and_search_scored(c: &mut Criterion) {
-    let (analyzer, index) = build_mem_index();
-    let executor = QueryExecutor::new(&index, &analyzer);
-
-    let query = Query::And(vec![
-        Query::Term("rust".into()),
-        Query::Term("database".into()),
-    ]);
-
-    c.bench_function("and_search_scored_10k_docs", |b| {
-        b.iter(|| {
-            black_box(executor.search(&query, 1));
-        });
-    });
-}
+// fn bench_and_search_scored(c: &mut Criterion) {
+//     let (analyzer, index) = build_mem_index();
+//     let executor = QueryExecutor::new(&index, &analyzer);
+//
+//     let query = Query::And(vec![
+//         Query::Term("rust".into()),
+//         Query::Term("database".into()),
+//     ]);
+//
+//     c.bench_function("and_search_scored_10k_docs", |b| {
+//         b.iter(|| {
+//             black_box(executor.search(&query, 1));
+//         });
+//     });
+// }
 
 fn bench_or_search(c: &mut Criterion) {
     let (analyzer, index) = build_mem_index();
