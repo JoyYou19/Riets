@@ -66,6 +66,7 @@ fn error_to_status(err: &CorelamoError) -> StatusCode {
         CorelamoError::PathNotIndexed(_) => StatusCode::CONFLICT,
         CorelamoError::DatabaseNotRunning(_) => StatusCode::CONFLICT,
         CorelamoError::Busy(_) => StatusCode::SERVICE_UNAVAILABLE,
+        CorelamoError::FailedToEx(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
