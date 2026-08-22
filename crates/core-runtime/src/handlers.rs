@@ -686,14 +686,48 @@ pub async fn partial_replace_handler(
         .into_response();
     }
 
-    let report = match handle
-        .partial_replace(command.items, principal.id.0.clone())
-        .await
-    {
+    // Convert PartialReplaceItem to (String, Value) tuples
+    let items: Vec<(String, serde_json::Value)> = command
+        .items
+        .into_iter()
+        .map(|item| (item.id, item.patch))
+        .collect();
+
+    // Get original docs and apply patches to produce full DocumentInputs
+    let manager = Arc::clone(&handle);
+    let parsed = tokio::task::spawn_blocking(move || {
+        doctypes::parse_partial_replace_to_inputs(&items, |id| manager.retrieve_one(id))
+    })
+    .await;
+
+    let inputs = match parsed {
+        Ok(Ok(inputs)) => inputs,
+        Ok(Err(failures)) => {
+            let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
+            outcome.fail_many(failures);
+            let title = format!(
+                "partially replaced 0 document(s) in '{db_name}', {} failed",
+                outcome.failed_count()
+            );
+            return outcome
+                .into_ok(StatusCode::OK, title, &db_name, &ctx)
+                .into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("parse task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    // Just use the existing replace flow!
+    let report = match handle.replace(inputs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("partial replace task panicked: {e}")),
+                CorelamoError::Internal(format!("replace task panicked: {e}")),
                 &ctx,
             )
             .into_response();
@@ -1533,7 +1567,7 @@ pub async fn backup_handler(
 
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.backup_full().await {
+        match handle.backup_full(principal.id.0.clone()).await {
             Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
             Err(e) => eprintln!("backup failed for '{}': {}", name_for_log, e),
         }
@@ -1573,7 +1607,10 @@ pub async fn backup_restore_handler(
     }
 
     tokio::spawn(async move {
-        let ok = match handle.restore_backup(&backup_id).await {
+        let ok = match handle
+            .restore_backup(&backup_id, principal.id.0.clone())
+            .await
+        {
             Ok(()) => {
                 eprintln!("restore completed for '{}'", name_for_log);
                 true
