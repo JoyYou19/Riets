@@ -117,7 +117,7 @@ pub async fn auth_middleware(
     };
 
     let principal = {
-        let Ok(mut auth) = state.auth.write() else {
+        let Ok(auth) = state.auth.read() else {
             warn!( log,"rejected request: auth service unavailable";
               "method"=>%request.method(),
               "uri"=>%request.uri());
