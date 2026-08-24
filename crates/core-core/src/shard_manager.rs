@@ -500,7 +500,9 @@ impl ShardManager {
         }
     }
 
-    pub fn load(root: PathBuf) -> Result<Self, CorelamoError> {
+    //INFO: manual load is basically only used for rename_database so that it doesnt start based on
+    //boot : bool
+    pub fn load(root: PathBuf, manual_load: bool) -> Result<Self, CorelamoError> {
         let shards_dir = root.join("shards");
 
         if !shards_dir.exists() {
@@ -540,8 +542,11 @@ impl ShardManager {
 
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
-            let (handle, join) =
-                shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
+            let (handle, join) = shard_worker::spawn(
+                db,
+                Self::DEFAULT_QUEUE_DEPTH,
+                options.bootable && manual_load,
+            )?;
             shards.push(handle);
             joins.push(join);
         }

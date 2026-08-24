@@ -27,6 +27,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
             Permission::ListDatabases,
+            Permission::RenameDatabse,
             Permission::StartDB,
             Permission::StopDB,
             Permission::RestartDB,
@@ -45,6 +46,8 @@ pub fn default_policy() -> PolicyStore {
             Permission::BackupFull,
             Permission::Restore,
             Permission::BackupIncremental,
+            Permission::ListBackups,
+            Permission::Backup,
         ],
     );
 
@@ -59,6 +62,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
             Permission::ListDatabases,
+            Permission::RenameDatabse,
             Permission::StartDB,
             Permission::StopDB,
             Permission::RestartDB,
