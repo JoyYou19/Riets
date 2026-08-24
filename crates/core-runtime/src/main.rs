@@ -5,8 +5,8 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
-use tower_http::cors::CorsLayer;
 use tower_http::{compression::CompressionLayer, timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::{cors::CorsLayer, decompression::RequestDecompressionLayer};
 
 use core_auth::{AuthService, UserDatabase};
 use core_core::shard_manager::ShardManager;
@@ -349,7 +349,7 @@ async fn main() -> io::Result<()> {
     //         .unwrap(),
     // );
 
-    println!("{}", max_request_timeout);
+    //TODO: HTTTPS + tas CorsLayer vajag uztaisit more secure jo Allow-Origin: * is a big no-no
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
@@ -359,7 +359,10 @@ async fn main() -> io::Result<()> {
             //we parse this as uzise to bypass negative time and shit
             Duration::from_secs(max_request_timeout as u64),
         ))
+        //to and from gzip n shit
         .layer(CompressionLayer::new())
+        .layer(RequestDecompressionLayer::new())
+        ////////////////////////////
         .layer(from_fn_with_state(
             state.clone(),
             middleware::request_context_middleware,
