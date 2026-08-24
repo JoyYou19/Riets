@@ -991,7 +991,7 @@ impl ShardManager {
         Ok(manifests)
     }
 
-    pub async fn backup_incremental(&self) -> Result<Vec<Option<BackupManifest>>, CorelamoError> {
+    pub async fn backup_incremental(&self, user: String) -> Result<Vec<Option<BackupManifest>>, CorelamoError> {
         let backup_id = format!("incr_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
         let backup_root = self.backup_dir.join(&backup_id);
 
@@ -1003,7 +1003,8 @@ impl ShardManager {
             let shard_backup_path = backup_root.join(format!("shard-{i}"));
             let bid = backup_id.clone();
 
-            set.spawn(async move { handle.backup_incremental(shard_backup_path, bid).await });
+            let value = user.clone();
+            set.spawn(async move { handle.backup_incremental(    value.clone(), shard_backup_path, bid, ).await });
         }
 
         let mut manifests = Vec::with_capacity(self.shards.len());
@@ -1107,7 +1108,7 @@ impl ShardManager {
         Ok(())
     }
 
-    pub fn start_backup_scheduler(self: &Arc<Self>, user: String) {
+    pub fn start_backup_scheduler(self: &Arc<Self>) {
         let (inc_period, full_period) = {
             let o = self.options.read();
             (o.incremental_backup_interval, o.full_backup_interval)
@@ -1145,9 +1146,9 @@ impl ShardManager {
                     continue;
                 }
                 let ok = if is_full {
-                    this.backup_full(user.clone()).await.is_ok()
+                    this.backup_full("system".to_string()).await.is_ok()
                 } else {
-                    this.backup_incremental().await.is_ok()
+                    this.backup_incremental("system".to_string()).await.is_ok()
                 };
                 this.finish_backup(ok);
                 let lifetime = this.options.read().backup_lifetime;

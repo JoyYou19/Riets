@@ -947,13 +947,14 @@ impl ShardDb {
         &mut self,
         shard_backup_path: PathBuf,
         backup_id: String
+        ,user: String,
     ) -> Result<BackupManifest, CorelamoError> {
         if let Some(worker) = self.compaction_worker.take() {
             worker
                 .stop()
                 .map_err(|e| CorelamoError::Internal(format!("failed to stop compaction: {e}")))?;
         }
-
+        info!(self.log, "Backup full made"; "Backup id "=> backup_id.clone(), "user" => user.clone());
         let progress = self.stats.backup_progress().clone();
         let result = self.backup
             .create_full_backup(&self.root, &shard_backup_path, &backup_id, &self.wal, &progress)
@@ -978,15 +979,17 @@ impl ShardDb {
         &mut self,
         shard_backup_path: PathBuf,
         backup_id: String
+        , user: String
     ) -> Result<Option<BackupManifest>, CorelamoError> {
+        info!(self.log, "Backup full made"; "Backup id "=> backup_id.clone(), "user" => user.clone());
         self.backup
             .create_incremental_backup(&shard_backup_path, &backup_id, &self.wal)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    pub fn restore_backup(&mut self, backup_id: &str) -> Result<(), CorelamoError> {
+    pub fn restore_backup(&mut self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let root = self.root.clone();
-
+        info!(self.log, "Backup recovered"; "Backup id "=> backup_id, "user" => user.clone());
         self.stop()?;
         self.backup
             .restore_chain(&backup_id, &root, &mut self.wal)
