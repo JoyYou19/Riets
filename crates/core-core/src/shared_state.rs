@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicU64;
 use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool};
 
+use core_storage::binary_store::DocLocation;
 use dashmap::DashMap;
 
 use core_index::lsm::snapshot::SharedIndexSnapshot;
@@ -10,6 +11,7 @@ use core_storage::document_store::StoredDocument;
 pub struct SharedShardState {
     pub snapshot: SharedIndexSnapshot,
     pub docs: Arc<DashMap<String, StoredDocument>>,
+    pub locations: Arc<DashMap<String, DocLocation>>,
     pub internal_to_external: Arc<DashMap<DocId, String>>,
     pub is_running: AtomicBool,
     pub is_clearing: AtomicBool,
@@ -25,6 +27,7 @@ impl SharedShardState {
         Self {
             snapshot: SharedIndexSnapshot::empty(),
             docs: Arc::new(DashMap::new()),
+            locations: Arc::new(DashMap::new()),
             internal_to_external: Arc::new(DashMap::new()),
             is_running: AtomicBool::new(false),
             is_clearing: AtomicBool::new(false),

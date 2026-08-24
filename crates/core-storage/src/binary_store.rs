@@ -1,3 +1,6 @@
+//WARN: Valter, luudzu piedod ja es generationally sapisu visu ko raskstiji - Kristians (nevis
+//Normunds)
+
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
@@ -22,6 +25,7 @@ pub struct BinaryDocumentStore {
     path: PathBuf,
     docs: Arc<DashMap<String, StoredDocument>>,
     internal_to_external: Arc<DashMap<DocId, String>>,
+    locations: Arc<DashMap<String, DocLocation>>,
 }
 
 impl BinaryDocumentStore {
@@ -41,6 +45,7 @@ impl BinaryDocumentStore {
             path,
             docs: Arc::new(DashMap::new()),
             internal_to_external: Arc::new(DashMap::new()),
+            locations: Arc::new(DashMap::new()),
         };
 
         store.load()?;
@@ -52,6 +57,7 @@ impl BinaryDocumentStore {
         path: impl AsRef<Path>,
         docs: Arc<DashMap<String, StoredDocument>>,
         internal_to_external: Arc<DashMap<DocId, String>>,
+        locations: Arc<DashMap<String, DocLocation>>,
     ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
 
@@ -65,11 +71,13 @@ impl BinaryDocumentStore {
 
         docs.clear();
         internal_to_external.clear();
+        locations.clear();
 
         let mut store = Self {
             path,
             docs,
             internal_to_external,
+            locations,
         };
         store.load()?;
         Ok(store)
@@ -77,7 +85,7 @@ impl BinaryDocumentStore {
 
     fn load(&mut self) -> io::Result<()> {
         let file = File::open(&self.path)?;
-        let mut reader = BufReader::new(file);
+        let mut reader = CountingReader::new(BufReader::new(file));
 
         let mut magic = [0u8; 8];
         reader.read_exact(&mut magic)?;
@@ -93,10 +101,18 @@ impl BinaryDocumentStore {
             match read_u8(&mut reader) {
                 Ok(OP_PUT) => {
                     let doc = read_document(&mut reader)?;
+                    let doc_offset = reader.position();
 
                     self.internal_to_external
                         .insert(doc.internal_id, doc.external_id.clone());
 
+                    self.locations.insert(
+                        doc.external_id.clone(),
+                        DocLocation {
+                            internal_id: doc.internal_id,
+                            offset: doc_offset,
+                        },
+                    );
                     self.docs.insert(doc.external_id.clone(), doc);
                 }
                 Ok(OP_DELETE) => {
@@ -105,6 +121,7 @@ impl BinaryDocumentStore {
                     if let Some((_, doc)) = self.docs.remove(&external_id) {
                         self.internal_to_external.remove(&doc.internal_id);
                     }
+                    self.locations.remove(&external_id);
                 }
                 Ok(other) => {
                     return Err(io::Error::new(
@@ -334,4 +351,34 @@ fn read_u64(reader: &mut impl Read) -> io::Result<u64> {
     let mut bytes = [0u8; 8];
     reader.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
+}
+
+//a map containing internal_id -> byte position in the documents.bin for a really fast retrieval
+#[derive(Debug, Clone, Copy)]
+pub struct DocLocation {
+    pub internal_id: DocId,
+    pub offset: u64,
+}
+
+struct CountingReader<R> {
+    inner: R,
+    pos: u64,
+}
+
+impl<R: Read> CountingReader<R> {
+    fn new(inner: R) -> Self {
+        Self { inner, pos: 0 }
+    }
+
+    fn position(&self) -> u64 {
+        self.pos
+    }
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
 }
