@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal};
+use core_auth::{Permission, Principal, UserId, principal};
 
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use slog::{error, info, o};
@@ -1004,7 +1004,7 @@ pub async fn create_database_handler(
             .into_response();
         }
         let manager = Arc::new(manager);
-        manager.start_backup_scheduler();
+        manager.start_backup_scheduler(principal.id.0.clone());
         dbs.insert(db_name.clone(), manager);
     }
 
@@ -1699,6 +1699,26 @@ pub async fn list_backups_handler(
     .into_response()
 }
 
+pub async fn backup_delete_handler(
+    State(state): State<AppState>,
+    Path((db_name, backup_id)): Path<(String, String)>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    // if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    //     return HttpError::from_corelamo(e, &ctx).into_response();
+    // }
+
+    let handle = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+
+    if !handle.has_backup(&backup_id) {
+        return HttpError::from_corelamo(
+            CorelamoError::NotFound(format!("Backup with id '{backup_id}' does not exist")),
 pub async fn rename_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1739,6 +1759,12 @@ pub async fn rename_database_handler(
         .into_response();
     }
 
+    if let Err(e) = handle.delete_backup(&backup_id.clone()).await {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    HttpOk::new(format!("backup '{backup_id}' deleted for '{db_name}'"), &ctx).into_response()
+}
     let log = slog_scope::logger().new(o!("component" => "handlers"));
 
     let manager = {

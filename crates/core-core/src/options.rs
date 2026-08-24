@@ -11,7 +11,9 @@ pub struct DatabaseOptions {
     pub compaction_interval: Duration,
     pub bootable: bool,
     pub shard_count: u16,
-    pub backup_interval: Duration,
+    pub incremental_backup_interval: Duration,
+    pub full_backup_interval:Duration,
+    pub backup_lifetime: Duration,
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -46,9 +48,11 @@ impl Default for DatabaseOptions {
             enable_background_compaction: true,
             compaction_interval: Duration::from_secs(1),
 
-            //INFO: gnjau default jabut false
-            //katru stundu
-            backup_interval: Duration::from_secs(3600),
+            
+            
+            incremental_backup_interval: Duration::from_secs(3600),
+            full_backup_interval:Duration::from_hours(24),
+            backup_lifetime:Duration::from_hours(24*7),
             shard_count: 4,
             bootable: true,
         }
