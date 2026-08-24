@@ -1082,7 +1082,7 @@ impl ShardManager {
         shard.list_backups().await
     }
 
-    pub async fn delete_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
+    pub async fn delete_backup(&self, backup_id: String) -> Result<(), CorelamoError> {
         let backup_root = self.backup_dir.join(backup_id);
         fs::remove_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
         Ok(())

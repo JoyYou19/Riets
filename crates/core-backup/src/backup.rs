@@ -10,8 +10,6 @@ use std::io::{ self, BufReader, BufWriter, Write };
 use std::path::{ Path, PathBuf };
 use std::time::SystemTime;
 use slog::{ Logger, error };
-use crate::progress::BackupProgress;
-use core_logs::logger;
 const COPY_BUF_SIZE: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,10 +212,8 @@ impl BackupManager {
                 } else {
                     (0, None)
                 }
-            } else {
-                (0, None)
-            }
-        } else {
+           
+              }  else {
             // State file doesn't exist; scan disk for latest backup
             let best = fs
                 ::read_dir(&backup_dir)
@@ -403,14 +399,7 @@ impl BackupManager {
                     BackupType::Full => {
                         break;
                     }
-                    BackupType::Incremental => {
-                        let path = self.shard_backup_path(&current_id);
-                        if let Err(e) = fs::remove_dir_all(&path) {
-                            error!(
-                                self.log,
-                                "failed to delete old incremental {current_id}: {e}"
-                            );
-                        }
+                    
                         BackupType::Incremental => {
                             let path = self.shard_backup_path(&current_id);
                             if let Err(e) = fs::remove_dir_all(&path) {

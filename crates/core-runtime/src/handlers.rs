@@ -1719,6 +1719,19 @@ pub async fn backup_delete_handler(
     if !handle.has_backup(&backup_id) {
         return HttpError::from_corelamo(
             CorelamoError::NotFound(format!("Backup with id '{backup_id}' does not exist")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    if let Err(e) = handle.delete_backup(backup_id.clone()).await {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    HttpOk::new(format!("backup '{backup_id}' deleted for '{db_name}'"), &ctx).into_response()
+}
+
+
 pub async fn rename_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1759,12 +1772,6 @@ pub async fn rename_database_handler(
         .into_response();
     }
 
-    if let Err(e) = handle.delete_backup(&backup_id.clone()).await {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
-
-    HttpOk::new(format!("backup '{backup_id}' deleted for '{db_name}'"), &ctx).into_response()
-}
     let log = slog_scope::logger().new(o!("component" => "handlers"));
 
     let manager = {
