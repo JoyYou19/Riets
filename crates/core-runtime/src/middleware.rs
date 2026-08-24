@@ -26,7 +26,7 @@ pub struct RequestContext {
 }
 
 //WARN: hardcodes json here, fix when json done
-fn resolve_format(_state: &AppState,_request: &Request) -> Result<Format, String> {
+fn resolve_format(_state: &AppState, _request: &Request) -> Result<Format, String> {
     return Ok(Format::JSON);
     // //TODO: start where xml detected
     // todo!();
@@ -97,7 +97,6 @@ pub async fn request_context_middleware(
     next.run(request).await
 }
 
-//TODO: auth/https before request (check permissions....)
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
@@ -118,7 +117,7 @@ pub async fn auth_middleware(
     };
 
     let principal = {
-        let Ok(mut auth) = state.auth.write() else {
+        let Ok(auth) = state.auth.read() else {
             warn!( log,"rejected request: auth service unavailable";
               "method"=>%request.method(),
               "uri"=>%request.uri());
