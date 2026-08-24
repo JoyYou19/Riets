@@ -1,3 +1,5 @@
+use crate::progress::BackupProgress;
+use core_logs::logger;
 use core_storage::wal::Wal;
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -203,13 +205,15 @@ impl BackupManager {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
         let name = shard_name.clone();
         let log = logger::shard_logger(shard_root, &name);
-        let (last_backup_offset, last_backup_id) = if
-            let Ok(state) = fs::read_to_string(&state_path)
-        {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
-                let offset = parsed["last_offset"].as_u64().unwrap_or(0);
-                let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
-                (offset, id)
+        let (last_backup_offset, last_backup_id) =
+            if let Ok(state) = fs::read_to_string(&state_path) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+                    let offset = parsed["last_offset"].as_u64().unwrap_or(0);
+                    let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
+                    (offset, id)
+                } else {
+                    (0, None)
+                }
             } else {
                 (0, None)
             }
@@ -395,10 +399,17 @@ impl BackupManager {
                 Err(_) => {
                     break;
                 }
-                Ok(m) =>
-                    match m.backup_type {
-                        BackupType::Full => {
-                            break;
+                Ok(m) => match m.backup_type {
+                    BackupType::Full => {
+                        break;
+                    }
+                    BackupType::Incremental => {
+                        let path = self.shard_backup_path(&current_id);
+                        if let Err(e) = fs::remove_dir_all(&path) {
+                            error!(
+                                self.log,
+                                "failed to delete old incremental {current_id}: {e}"
+                            );
                         }
                         BackupType::Incremental => {
                             let path = self.shard_backup_path(&current_id);

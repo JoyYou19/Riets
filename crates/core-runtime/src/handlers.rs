@@ -10,14 +10,17 @@ use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use slog::{error, info, o};
 
 use crate::{
-    AppState, doctypes,
+    AppState,
+    database_helpers::validate_db_name,
+    doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
 use core_protocol::{
     command_reponse_definitions::{
         Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand,
-        PartialReplaceCommand, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        PartialReplaceCommand, RenameDatabaseRequest, RetrieveCommand, RetrieveResponse,
+        SearchCommand, SearchResponse,
     },
     errors::CorelamoError,
 };
@@ -67,6 +70,7 @@ fn check_permission(
         .map_err(|_| CorelamoError::Internal("auth service unavailable".into()))?;
     auth.check(principal, permission)
 }
+
 pub async fn login_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
@@ -932,37 +936,8 @@ pub async fn create_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    if db_name.is_empty() {
-        return HttpError::from_corelamo(
-            CorelamoError::InvalidData("database name cannot be empty".to_string()),
-            &ctx,
-        )
-        .into_response();
-    }
-
-    if db_name.len() > 30 {
-        return HttpError::from_corelamo(
-            CorelamoError::InvalidData(format!(
-                "database name '{}' exceeds 30 characters",
-                db_name
-            )),
-            &ctx,
-        )
-        .into_response();
-    }
-
-    if !db_name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return HttpError::from_corelamo(
-            CorelamoError::InvalidData(format!(
-                "database name '{}' contains invalid characters",
-                db_name
-            )),
-            &ctx,
-        )
-        .into_response();
+    if let Err(e) = validate_db_name(&db_name) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
     {
@@ -1697,7 +1672,7 @@ pub async fn list_backups_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Backup) {
+    if let Err(e) = check_permission(&state, &principal, Permission::ListBackups) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
@@ -1744,6 +1719,41 @@ pub async fn backup_delete_handler(
     if !handle.has_backup(&backup_id) {
         return HttpError::from_corelamo(
             CorelamoError::NotFound(format!("Backup with id '{backup_id}' does not exist")),
+pub async fn rename_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::RenameDatabse) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let body = match require_body(&body) {
+        Ok(b) => b,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let req: RenameDatabaseRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::InvalidData(format!("invalid rename-database request: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+    let new_name = req.name;
+
+    if let Err(e) = validate_db_name(&new_name) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    if new_name == db_name {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData("new name is the same as the current name".to_string()),
             &ctx,
         )
         .into_response();
@@ -1754,4 +1764,142 @@ pub async fn backup_delete_handler(
     }
 
     HttpOk::new(format!("backup '{backup_id}' deleted for '{db_name}'"), &ctx).into_response()
+}
+    let log = slog_scope::logger().new(o!("component" => "handlers"));
+
+    let manager = {
+        let mut dbs = match state.databases.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+
+        if !dbs.contains_key(&db_name) {
+            return HttpError::from_corelamo(
+                CorelamoError::NotFound(format!("database '{db_name}' not found")),
+                &ctx,
+            )
+            .into_response();
+        }
+        if dbs.contains_key(&new_name) {
+            return HttpError::from_corelamo(
+                CorelamoError::AlreadyExists(format!("database '{new_name}' already exists")),
+                &ctx,
+            )
+            .into_response();
+        }
+
+        let handle = dbs.get(&db_name).unwrap();
+        if handle.all_running() {
+            return HttpError::from_corelamo(
+                CorelamoError::Conflict(format!(
+                    "database '{db_name}' must be stopped before renaming; call stop-database first"
+                )),
+                &ctx,
+            )
+            .into_response();
+        }
+
+        dbs.remove(&db_name).unwrap()
+    };
+
+    let manager = match Arc::try_unwrap(manager) {
+        Ok(mgr) => mgr,
+        Err(still_shared) => {
+            if let Ok(mut dbs) = state.databases.write() {
+                dbs.insert(db_name.clone(), still_shared);
+            }
+            return HttpError::from_corelamo(
+                CorelamoError::Conflict(format!("database '{db_name}' is in use, try again")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let old_path = state.databases_dir.join(&db_name);
+    let new_path = state.databases_dir.join(&new_name);
+    let old_name_for_task = db_name.clone();
+    let new_name_for_task = new_name.clone();
+
+    let result = tokio::task::spawn_blocking(move || -> Result<ShardManager, CorelamoError> {
+        if let Err(e) = manager.shutdown() {
+            return Err(CorelamoError::Internal(format!(
+                "failed to shut down '{old_name_for_task}' before rename: {e}"
+            )));
+        }
+        std::fs::rename(&old_path, &new_path).map_err(|e| {
+            CorelamoError::Internal(format!(
+                "failed to rename '{old_name_for_task}' to '{new_name_for_task}' on disk: {e}"
+            ))
+        })?;
+        ShardManager::load(new_path.clone(), false).map_err(|e| {
+            CorelamoError::Internal(format!(
+                "renamed on disk but failed to reopen as '{new_name_for_task}': {e}. \
+                 the data is safe at its new path and will be picked up on the next server restart"
+            ))
+        })
+    })
+    .await;
+
+    let reopened = match result {
+        Ok(Ok(mgr)) => mgr,
+        Ok(Err(e)) => {
+            error!(log, "rename-database failed"; "old_name" => %db_name, "new_name" => %new_name, "error" => %e);
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+        Err(e) => {
+            error!(log, "rename-database task panicked"; "old_name" => %db_name, "new_name" => %new_name, "error" => %e);
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("rename task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    {
+        let mut dbs = match state.databases.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal(
+                        "databases lock poisoned after rename; data is on disk at its new path \
+                         but not registered in memory, restart to recover"
+                            .into(),
+                    ),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+
+        if dbs.contains_key(&new_name) {
+            if let Err(e) = reopened.shutdown() {
+                error!(log, "failed to shut down orphaned manager after name collision"; "name" => %new_name, "error" => %e);
+            }
+            return HttpError::from_corelamo(
+                CorelamoError::AlreadyExists(format!(
+                    "database '{new_name}' was created by another request during the rename; \
+                     your data is safe on disk and will reappear as '{new_name}' after a server restart"
+                )),
+                &ctx,
+            )
+            .into_response();
+        }
+
+        dbs.insert(new_name.clone(), Arc::new(reopened));
+    }
+
+    info!(log, "database renamed"; "old_name" => %db_name, "new_name" => %new_name);
+    HttpOk::new(
+        format!("database '{db_name}' renamed to '{new_name}'"),
+        &ctx,
+    )
+    .into_response()
 }

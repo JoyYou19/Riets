@@ -1,6 +1,5 @@
 use core_index::document::{IndexPolicy, policy::IndexKind};
 use core_protocol::{
-    command_reponse_definitions::ParsedPartialReplace,
     command_response_helpers::{apply_merge_patch, traverse_json},
     errors::{CorelamoError, DocFailure, FailReason},
     format::Format,

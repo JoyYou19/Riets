@@ -91,6 +91,7 @@ pub enum ShardCmd {
         shard_backup_path: PathBuf,
         backup_id: String,
         resp: oneshot::Sender<Result<BackupManifest, CorelamoError>>,
+        user: String,
     },
     BackupIncremental {
         shard_backup_path: PathBuf,
@@ -396,7 +397,9 @@ impl ShardHandle {
             shard_backup_path,
             backup_id,
             resp,
-        }).await?
+            user,
+        })
+        .await?
     }
     pub async fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
         self.call(|resp| ShardCmd::ListBackups { resp }).await?
@@ -555,7 +558,12 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     shared.is_clearing.store(false, Ordering::Release);
                     let _ = resp.send(result);
                 }
-                ShardCmd::BackupFull { shard_backup_path, backup_id, resp } => {
+                ShardCmd::BackupFull {
+                    shard_backup_path,
+                    backup_id,
+                    resp,
+                    user,
+                } => {
                     shared.is_backing_up.store(true, Ordering::Release);
                     let result = shard.backup_full(shard_backup_path, backup_id);
                     shared.is_backing_up.store(false, Ordering::Release);

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{fs, io};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseOptions {
     pub runtime: IndexRuntimeConfig,
