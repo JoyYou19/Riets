@@ -246,6 +246,10 @@ async fn main() -> io::Result<()> {
             delete(handlers::delete_database_handler),
         )
         .route(
+            "/api/databases/{db_name}/rename-database",
+            post(handlers::rename_database_handler),
+        )
+        .route(
             "/api/databases/{db_name}/start-database",
             post(handlers::start_database_handler),
         )
@@ -303,6 +307,7 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/backup",
             post(handlers::backup_handler),
         )
+        .route("/api/databases/{db_name}/delete-backup/{backup_id}", delete(handlers::backup_delete_handler))
         .route(
             "/api/databases/{db_name}/backup/incremental",
             post(handlers::backup_incremental_handler),
@@ -370,6 +375,7 @@ async fn main() -> io::Result<()> {
         let mut guard = state_for_shutdown.databases.write().unwrap();
         std::mem::take(&mut *guard)
     };
+
     for (db_name, manager) in handles {
         info!(log, "shutting down database ..."; "database" => %db_name);
         match Arc::try_unwrap(manager) {
