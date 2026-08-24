@@ -181,6 +181,17 @@ check "architect cannot replace" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_D
 check "viewer cannot replace"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
 check "editor can replace"       200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/replace" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '{"id":"perm-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
 
+
+section "MATRIX — Permission::PartialReplace / (admin, editor granted; architect, viewer denied)"
+
+check "admin seeds doc for admin-partial-replace"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"id":"partial-replace-admin-'"$RUN_ID"'","title":"Original"}'
+check "admin seeds doc for editor-partial-replace" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Original"}'
+
+check "admin can partial-replace"        200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"partial-replace-admin-'"$RUN_ID"'","title":"Replaced"}'
+check "architect cannot partial-replace" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
+check "viewer cannot partial-replace"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
+check "editor can partial-replace"       200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
+
 section "MATRIX — Permission::Upsert / (admin, editor granted; architect, viewer denied)"
 
 check "admin can upsert"        200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"perm-upsert-admin-'"$RUN_ID"'","title":"Upserted"}'
