@@ -29,9 +29,10 @@ pub trait ResponseData {
 }
 
 #[derive(Debug, Deserialize)]
+//TODO: numbers exact-match
 pub struct SearchCommand {
     pub query: String,
-    pub filters: Option<HashMap<String, String>>, //TODO: pielikt filters lidzigi kaa elastic
+    pub filters: Option<HashMap<String, String>>,
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,

@@ -14,48 +14,47 @@ pub enum FieldNode {
 pub fn unflatten(fields: BTreeMap<String, String>) -> Result<FieldNode, CorelamoError> {
     let mut root = IndexMap::new();
     for (path, value) in fields {
-        let parts: Vec<&str> = path.split('/').collect();
-        insert_path(&mut root, &parts, value)?;
+        insert_path(&mut root, &path, value)?;
     }
     Ok(FieldNode::Branch(root))
 }
 
 fn insert_path(
     branch: &mut IndexMap<String, FieldNode>,
-    parts: &[&str],
+    path: &str,
     value: String,
 ) -> Result<(), CorelamoError> {
-    let (head, tail) = match parts.split_first() {
-        Some(split) => split,
-        None => return Ok(()),
-    };
-
-    if tail.is_empty() {
-        match branch.get(*head) {
-            //FIX: {a:"name", a:{b:"text"}} collides — "a" is both value and container.
-            //possible fix: dont nest the response, keep flat "a":name "a/b":"text"
-            Some(FieldNode::Branch(_)) => {
-                return Err(CorelamoError::Internal(format!(
-                    "field path collision: '{head}' is both a value and a container"
-                )));
-            }
-            _ => {
-                branch.insert(head.to_string(), FieldNode::Leaf(value));
+    match path.split_once('/') {
+        None => {
+            use indexmap::map::Entry;
+            match branch.entry(path.to_string()) {
+                Entry::Occupied(mut occupied) => {
+                    if matches!(occupied.get(), FieldNode::Branch(_)) {
+                        return Err(CorelamoError::Internal(format!(
+                            "field path collision: '{path}' is both a value and a container"
+                        )));
+                    }
+                    occupied.insert(FieldNode::Leaf(value));
+                    Ok(())
+                }
+                Entry::Vacant(vacant) => {
+                    vacant.insert(FieldNode::Leaf(value));
+                    Ok(())
+                }
             }
         }
-        return Ok(());
-    }
+        Some((head, rest)) => {
+            let entry = branch
+                .entry(head.to_string())
+                .or_insert_with(|| FieldNode::Branch(IndexMap::new()));
 
-    let entry = branch
-        .entry(head.to_string())
-        .or_insert_with(|| FieldNode::Branch(IndexMap::new()));
-
-    match entry {
-        FieldNode::Branch(inner) => insert_path(inner, tail, value),
-        //FIX: same collision, other direction
-        FieldNode::Leaf(_) => Err(CorelamoError::Internal(format!(
-            "field path collision: '{head}' is both a value and a container"
-        ))),
+            match entry {
+                FieldNode::Branch(inner) => insert_path(inner, rest, value),
+                FieldNode::Leaf(_) => Err(CorelamoError::Internal(format!(
+                    "field path collision: '{head}' is both a value and a container"
+                ))),
+            }
+        }
     }
 }
 
@@ -69,16 +68,17 @@ pub fn tree_to_json(node: &FieldNode) -> Value {
     Value::Object(obj)
 }
 
-pub fn traverse_json(value: &Value, path: &str, fields: &mut BTreeMap<String, String>) {
+pub fn traverse_json(value: &Value, path: &mut String, fields: &mut BTreeMap<String, String>) {
     match value {
         Value::Object(map) => {
+            let base_len = path.len();
             for (key, val) in map {
-                let new_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{}/{}", path, key)
-                };
-                traverse_json(val, &new_path, fields);
+                if !path.is_empty() {
+                    path.push('/');
+                }
+                path.push_str(key);
+                traverse_json(val, path, fields);
+                path.truncate(base_len);
             }
         }
         Value::Array(arr) => {

@@ -161,7 +161,7 @@ fn parse_one(
     let source = raw.get().as_bytes().to_vec();
 
     let mut fields = BTreeMap::new();
-    traverse_json(&value, "", &mut fields);
+    traverse_json(&value, &mut "".to_string(), &mut fields);
 
     let external_id =
         extract_external_id(&fields, policy).map_err(|reason| DocFailure::at(index, reason))?;
@@ -181,7 +181,7 @@ fn json_value_to_document_input(
     let source = serde_json::to_vec(&value).map_err(|e| FailReason::InvalidJson(e.to_string()))?;
 
     let mut fields = BTreeMap::new();
-    traverse_json(&value, "", &mut fields);
+    traverse_json(&value, &mut "".to_string(), &mut fields);
 
     let external_id = extract_external_id(&fields, policy)?;
 
@@ -257,7 +257,7 @@ pub fn parse_partial_replace_to_inputs(
 
         //get the fields
         let mut fields = BTreeMap::new();
-        traverse_json(&doc_value, "", &mut fields);
+        traverse_json(&doc_value, &mut "".to_string(), &mut fields);
 
         let source = match serde_json::to_vec(&doc_value) {
             Ok(v) => v,

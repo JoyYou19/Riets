@@ -378,7 +378,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
         })?;
 
         let mut fields = BTreeMap::new();
-        traverse_json(&doc_value, "", &mut fields);
+        //gay af bet ok
+        traverse_json(&doc_value, &mut "".to_string(), &mut fields);
 
         let new_internal_id = self.allocate_internal_id()?;
         let new_doc = StoredDocument {

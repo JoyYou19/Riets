@@ -20,18 +20,15 @@ use crate::middleware::RequestContext;
 const DOCS_ROOT_URL: &str = "http://corelamo.com/errors/";
 const REQUEST_ID_HEADER_NAME: &str = "x-corelamo-request-id";
 
-struct JsonData {
-    value: Value,
+struct SerializableData<T: serde::Serialize> {
+    data: T,
 }
 
-impl ResponseData for JsonData {
+impl<T: serde::Serialize> ResponseData for SerializableData<T> {
     fn to_json(&self) -> Result<Value, CorelamoError> {
-        Ok(self.value.clone())
+        serde_json::to_value(&self.data)
+            .map_err(|e| CorelamoError::Internal(format!("failed to serialize response data: {e}")))
     }
-
-    // fn to_xml(&self, _w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {
-    //     Ok(())
-    // }
 }
 
 fn escape_json_text(s: &str) -> String {
@@ -199,16 +196,15 @@ impl HttpOk {
         }
     }
 
-    pub fn with_data<T: serde::Serialize>(
+    pub fn with_data<T: serde::Serialize + 'static>(
         title: impl Into<String>,
         data: T,
         ctx: &RequestContext,
     ) -> Self {
-        let value = serde_json::to_value(&data).unwrap_or(Value::Null);
         Self {
             status: StatusCode::OK,
             title: title.into(),
-            data: Some(Box::new(JsonData { value })),
+            data: Some(Box::new(SerializableData { data })),
             request_id: ctx.request_id,
             instance: ctx.instance.clone(),
             format: ctx.format,
@@ -216,24 +212,22 @@ impl HttpOk {
         }
     }
 
-    pub fn with_data_and_status<T: serde::Serialize>(
+    pub fn with_data_and_status<T: serde::Serialize + 'static>(
         status: StatusCode,
         title: impl Into<String>,
         data: T,
         ctx: &RequestContext,
     ) -> Self {
-        let value = serde_json::to_value(&data).unwrap_or(Value::Null);
         Self {
             status,
             title: title.into(),
-            data: Some(Box::new(JsonData { value })),
+            data: Some(Box::new(SerializableData { data })),
             request_id: ctx.request_id,
             instance: ctx.instance.clone(),
             format: ctx.format,
             time_start: ctx.time_start,
         }
     }
-
     pub fn with_response(
         title: impl Into<String>,
         data: impl ResponseData + 'static,

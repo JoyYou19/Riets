@@ -5,8 +5,8 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
-use tower_http::cors::CorsLayer;
 use tower_http::{compression::CompressionLayer, timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::{cors::CorsLayer, decompression::RequestDecompressionLayer};
 
 use core_auth::{AuthService, UserDatabase};
 use core_core::shard_manager::ShardManager;
@@ -111,16 +111,23 @@ async fn main() -> io::Result<()> {
     //logging izmantojot slog lib
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(overrides) => overrides,
-        Err(_) => {
+        Err(e) => {
+            eprintln!("error: {}", e);
             process::exit(1);
         }
     };
     let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
         Ok(s) => s,
-        Err(_) => {
+        Err(e) => {
+            eprintln!("error: {}", e);
             process::exit(1);
         }
     };
+
+    if let Err(e) = corelamo_settings::validate_settings(&settings) {
+        eprintln!("error: {}", e);
+        process::exit(1);
+    }
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));
     let (log, _guard) = logger::program_logger(&root_path);
     let _slog_guard = slog_scope::set_global_logger(log.clone());
@@ -129,6 +136,8 @@ async fn main() -> io::Result<()> {
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
+    let max_payload_size = corelamo_settings::get_usize(&settings, "max_payload_size");
+    let max_request_timeout = corelamo_settings::get_usize(&settings, "max_request_timeout");
     let default_format_str = corelamo_settings::get(&settings, "format");
     let enable_auth = corelamo_settings::get(&settings, "auth") != "false";
     info!(log, "auth setting resolved";"info" => %enable_auth);
@@ -341,23 +350,26 @@ async fn main() -> io::Result<()> {
     //         .unwrap(),
     // );
 
+    //TODO: HTTTPS + tas CorsLayer vajag uztaisit more secure jo Allow-Origin: * is a big no-no
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
-        //TODO: Make configurable
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-        .layer(TraceLayer::new_for_http()) // logs method/path/status/latency
+        .layer(DefaultBodyLimit::max(max_payload_size * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
-        )) // kills hung requests
-        .layer(CompressionLayer::new()) // gzip/br responses
-        // .layer(GovernorLayer::new(governor_conf))
+            //we parse this as uzise to bypass negative time and shit
+            Duration::from_secs(max_request_timeout as u64),
+        ))
+        //to and from gzip n shit
+        .layer(CompressionLayer::new())
+        .layer(RequestDecompressionLayer::new())
+        ////////////////////////////
         .layer(from_fn_with_state(
             state.clone(),
             middleware::request_context_middleware,
         ))
         .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let addr = format!("{host}:{port}");
