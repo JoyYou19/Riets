@@ -1,14 +1,14 @@
+use crate::progress::BackupProgress;
+use core_logs::logger;
 use core_storage::wal::Wal;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
+use slog::{Logger, error};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use slog::{Logger, error};
-use crate::progress::BackupProgress;
-use core_logs::logger;
 const COPY_BUF_SIZE: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,8 +34,7 @@ pub struct BackupManager {
     shard_name: String,
     last_backup_offset: u64,
     last_backup_id: Option<String>,
-    log:Logger,
-  
+    log: Logger,
 }
 
 #[derive(Debug)]
@@ -198,10 +197,10 @@ impl BackupManager {
     fn shard_backup_path(&self, backup_id: &str) -> PathBuf {
         self.backup_dir.join(backup_id).join(&self.shard_name)
     }
-    pub fn new(shard_root: &Path,backup_dir: PathBuf, shard_name: String) -> Self {
+    pub fn new(shard_root: &Path, backup_dir: PathBuf, shard_name: String) -> Self {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
         let name = shard_name.clone();
-        let log = logger::shard_logger(shard_root,&name);
+        let log = logger::shard_logger(shard_root, &name);
         let (last_backup_offset, last_backup_id) =
             if let Ok(state) = fs::read_to_string(&state_path) {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
@@ -332,7 +331,6 @@ impl BackupManager {
         let end_offset = wal.durable_offset();
 
         if end_offset <= start_offset {
-
             return Ok(None);
         }
 
@@ -406,7 +404,10 @@ impl BackupManager {
                     BackupType::Incremental => {
                         let path = self.shard_backup_path(&current_id);
                         if let Err(e) = fs::remove_dir_all(&path) {
-                            error!(self.log,"failed to delete old incremental {current_id}: {e}");
+                            error!(
+                                self.log,
+                                "failed to delete old incremental {current_id}: {e}"
+                            );
                         }
                         let _ = fs::remove_dir(self.backup_dir.join(&current_id)); // only succeeds when last shard is done
                         match m.parent_backup_id {
@@ -524,9 +525,11 @@ impl BackupManager {
             {
                 let path = self.shard_backup_path(&manifest.backup_id);
                 if let Err(e) = fs::remove_dir_all(&path) {
-                    error!(self.log,
-                        "failed to delete stale incremental {}: {}", 
-                        manifest.backup_id, e //gnj nepareizi
+                    error!(
+                        self.log,
+                        "failed to delete stale incremental {}: {}",
+                        manifest.backup_id,
+                        e //gnj nepareizi
                     );
                 }
             }

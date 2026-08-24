@@ -256,3 +256,8 @@ impl Command for PartialReplaceCommand {
         Ok(PartialReplaceCommand { items })
     }
 }
+
+#[derive(Deserialize)]
+pub struct RenameDatabaseRequest {
+    pub name: String,
+}

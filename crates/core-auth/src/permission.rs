@@ -16,6 +16,7 @@ pub enum Permission {
     //databases
     CreateDatabase,
     DeleteDatabase,
+    RenameDatabse,
     ListDatabases,
     StartDB,
     StopDB,
@@ -32,6 +33,7 @@ pub enum Permission {
     UpdateRole,
     UpdatePwd,
     //backup
+    ListBackups,
     Restore,
     Backup,
     BackupFull,
@@ -52,6 +54,7 @@ impl Permission {
             "ClearDB" => Some(Permission::ClearDB),
             "GetLogs" => Some(Permission::GetLogs),
             "ClearLogs" => Some(Permission::ClearLogs),
+            "RenameDatabse" => Some(Permission::RenameDatabse),
             "CreateDatabase" => Some(Permission::CreateDatabase),
             "DeleteDatabase" => Some(Permission::DeleteDatabase),
             "ListDatabases" => Some(Permission::ListDatabases),
@@ -70,6 +73,7 @@ impl Permission {
             "UpdatePwd" => Some(Permission::UpdatePwd),
             "Restore" => Some(Permission::Restore),
             "BackupFull" => Some(Permission::BackupFull),
+            "ListBackups" => Some(Permission::ListBackups),
             "BackupIncremental" => Some(Permission::BackupIncremental),
             _ => None,
         }
