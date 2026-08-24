@@ -140,11 +140,11 @@ check "architect can retrieve" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/
 check "viewer can retrieve"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/retrieve" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '["seed-doc-'"$RUN_ID"'"]'
 check "editor can retrieve"    200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/retrieve" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '["seed-doc-'"$RUN_ID"'"]'
 
-section "MATRIX — Permission::AllFields (admin, architect, viewer, editor all granted)"
+section "MATRIX — Permission::AllFields (viewer denied, admin, architect, editor granted)"
 
 check "admin can retrieve all fields"     200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "architect can retrieve all fields" 200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
-check "viewer can retrieve all fields"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $VIEWER_TOKEN"
+check "viewer cannot retrieve all fields"    403 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $VIEWER_TOKEN"
 check "editor can retrieve all fields"    200 -X GET "$BASE_URL/api/databases/$SCRATCH_DB/all-fields" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 
 section "MATRIX — Permission::Lookup (admin, architect, viewer, editor all granted)"
@@ -187,10 +187,10 @@ section "MATRIX — Permission::PartialReplace / (admin, editor granted; archite
 check "admin seeds doc for admin-partial-replace"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"id":"partial-replace-admin-'"$RUN_ID"'","title":"Original"}'
 check "admin seeds doc for editor-partial-replace" 200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Original"}'
 
-check "admin can partial-replace"        200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"partial-replace-admin-'"$RUN_ID"'","title":"Replaced"}'
-check "architect cannot partial-replace" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
-check "viewer cannot partial-replace"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
-check "editor can partial-replace"       200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '{"id":"partial-replace-editor-'"$RUN_ID"'","title":"Replaced"}'
+check "admin can partial-replace"        200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '[{"id":"partial-replace-admin-'"$RUN_ID"'","patch":{"title":"Replaced"}}]'
+check "architect cannot partial-replace" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $ARCHITECT_TOKEN" -d '[{"id":"partial-replace-editor-'"$RUN_ID"'","patch":{"title":"Replaced"}}]'
+check "viewer cannot partial-replace"    403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $VIEWER_TOKEN"    -d '[{"id":"partial-replace-editor-'"$RUN_ID"'","patch":{"title":"Replaced"}}]'
+check "editor can partial-replace"       200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/partial-replace" -H "X-Corelamo-Key: $EDITOR_TOKEN"    -d '[{"id":"partial-replace-editor-'"$RUN_ID"'","patch":{"title":"Replaced"}}]'
 
 section "MATRIX — Permission::Upsert / (admin, editor granted; architect, viewer denied)"
 
@@ -343,8 +343,16 @@ check "admin can set config"      200 -X POST "$BASE_URL/api/databases/$SCRATCH_
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 check "viewer cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $VIEWER_TOKEN"\
@@ -366,8 +374,16 @@ check "viewer cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 check "editor cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $EDITOR_TOKEN"\
@@ -389,8 +405,16 @@ check "editor cannot set config"  403 -X POST "$BASE_URL/api/databases/$SCRATCH_
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 check "architect can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/set-config" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"\
@@ -412,8 +436,16 @@ check "architect can set config"  200 -X POST "$BASE_URL/api/databases/$SCRATCH_
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 

@@ -228,7 +228,7 @@ check "gamma or alpha and beta" 200 -X POST "$BASE_URL/api/databases/$DB/search"
 section "Wildcard patterns"
 
 check "*" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*","docs":'"$DOCUMENTS"'}'
-    check_json_bool "data should be $DOCUMENTS minus 2" '(.data | length) == '$DOCUMENTS-2''
+    check_json_bool "data should be $DOCUMENTS" '(.data | length) == '$DOCUMENTS''
 
 check "3?" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"???","docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 163" '(.data | length) == 163'
@@ -256,9 +256,9 @@ check "Beta, delta zeta eta theta" 200 -X POST "$BASE_URL/api/databases/$DB/sear
 section "Filters"
 
 check "Filter empty brackets" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*", "filters":{},"docs":'"$DOCUMENTS"'}'
-    check_json_bool "data should be $DOCUMENTS -2" '(.data | length) == '$DOCUMENTS-2''
+    check_json_bool "data should be $DOCUMENTS" '(.data | length) == '$DOCUMENTS''
 check "Filter empty field" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"*", "filters":{"":""},"docs":'"$DOCUMENTS"'}'
-    check_json_bool "data should be $DOCUMENTS -2" '(.data | length) == '$DOCUMENTS-2''
+    check_json_bool "data should be $DOCUMENTS" '(.data | length) == '$DOCUMENTS''
 check "Filter empty query" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"", "filters":{"title":"alpha"},"docs":'"$DOCUMENTS"'}'
     check_json_bool "data should be 128" '(.data | length) == 128'
 check "Filter empty query, empty filter" 200 -X POST "$BASE_URL/api/databases/$DB/search" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"query":"", "filters":{"title":""},"docs":'"$DOCUMENTS"'}'

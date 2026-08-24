@@ -85,7 +85,7 @@ echo "=========================================="
 
 DB1="db_test1"
 DB2="db_test2"
-
+DB3="db_test3"
 
 section "Create-database"
 
@@ -95,6 +95,7 @@ check "create empty" 400 -X POST "$BASE_URL/api/databases//create-database" -H "
 check "create database one" 201 -X POST "$BASE_URL/api/databases/$DB1/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "create duplicate database one" 409 -X POST "$BASE_URL/api/databases/$DB1/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "create database two" 201 -X POST "$BASE_URL/api/databases/$DB2/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "create database three" 201 -X POST "$BASE_URL/api/databases/$DB3/create-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 section "Start"
@@ -116,6 +117,7 @@ check "stop nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/stop-d
 check "stop database one" 200 -X POST "$BASE_URL/api/databases/$DB1/stop-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "stop database one again" 200 -X POST "$BASE_URL/api/databases/$DB1/stop-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "stop database two" 200 -X POST "$BASE_URL/api/databases/$DB2/stop-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "stop database three" 200 -X POST "$BASE_URL/api/databases/$DB3/stop-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 section "Restart"
@@ -163,7 +165,7 @@ check "clear logs database two(stopped)" 200 -X DELETE "$BASE_URL/api/databases/
 section "List-databases"
 
 check "list databases" 200 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-    check_json_bool "data should be 3" '(.data.databases | length) == 3'
+    check_json_bool "data should be 4" '(.data.databases | length) == 4'
 
 section "Reindex"
 
@@ -420,8 +422,16 @@ check "set invalid config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config"
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 check "set repeating fields config" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -445,8 +455,16 @@ check "set repeating fields config" 400 -X POST "$BASE_URL/api/databases/$DB1/se
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 check "set config missing field" 400 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -467,8 +485,16 @@ check "set config missing field" 400 -X POST "$BASE_URL/api/databases/$DB1/set-c
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 check "set config one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -490,8 +516,16 @@ check "set config one" 200 -X POST "$BASE_URL/api/databases/$DB1/set-config" -H 
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
@@ -513,8 +547,16 @@ check "set config two" 200 -X POST "$BASE_URL/api/databases/$DB2/set-config" -H 
   secs = 1
   nanos = 0
 
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 
@@ -590,6 +632,22 @@ check "restore database two" 200 -X POST "$BASE_URL/api/databases/$DB2/restore-b
 
 sleep 10
 
+section "rename-database"
+
+check "rename no database" 404 -X POST "http://localhost:6006/api/databases/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "no"}'
+check "rename database empty" 404 -X POST "http://localhost:6006/api/databases//rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "no"}'
+check "rename nonexistent database" 404 -X POST "http://localhost:6006/api/databases/yo/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "no"}'
+
+check "rename database to the same" 400 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "'$DB3'"}'
+check "rename database to existing name" 409 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "'$DB1'"}'
+check "rename database bad name" 400 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d 'bad'
+check "rename database empty name" 400 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name":""}'
+check "rename database" 200 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "db_test"}'
+
+check "start database three" 200 -X POST "$BASE_URL/api/databases/db_test/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+check "rename database running" 409 -X POST "http://localhost:6006/api/databases/db_test/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "'$DB3'"}'
+
 
 section "Delete-database"
 
@@ -599,6 +657,7 @@ check "delete nonexistent database" 404 -X DELETE "$BASE_URL/api/databases/yo/de
 
 check "delete database one" 200 -X DELETE "$BASE_URL/api/databases/$DB1/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 check "delete database two" 200 -X DELETE "$BASE_URL/api/databases/$DB2/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "delete database three" 200 -X DELETE "$BASE_URL/api/databases/db_test/delete-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 echo

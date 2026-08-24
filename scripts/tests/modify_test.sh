@@ -127,8 +127,16 @@ check "set config" 200 -X POST "$BASE_URL/api/databases/$DB/set-config" -H "X-Co
   secs = 1
   nanos = 0
   
-  [backup_interval]
+  [incremental_backup_interval]
   secs = 3600
+  nanos = 0
+
+  [full_backup_interval]
+  secs = 86400
+  nanos = 0
+
+  [backup_lifetime]
+  secs = 604800
   nanos = 0
   '
 
