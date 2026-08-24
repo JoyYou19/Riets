@@ -2,6 +2,18 @@ use crate::ast::Query;
 use core_index::{analyzer::Analyzer, wildcard::WildcardPattern};
 use core_protocol::errors::CorelamoError;
 
+//TODO: pielikt search komandai kko lidzigu sim:
+//  "highlight": {
+//   "fields": {
+//     "content": {
+//       "fragment_size": 150,
+//       "number_of_fragments": 3,
+//       "pre_tags": ["<em>"],
+//       "post_tags": ["</em>"]
+//     }
+//   }
+// }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
     LBrace, // {

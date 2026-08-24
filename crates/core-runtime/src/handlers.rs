@@ -1189,21 +1189,25 @@ pub async fn reindex_handler(
         }
     };
 
-    // prepare flushes each shard, so keep it off the tokio workers
-    let m = Arc::clone(&manager);
-    match tokio::task::spawn_blocking(move || m.reindex()).await {
-        Ok(Ok(())) => HttpOk::new(
-            format!("reindex started for '{db_name}', poll /status for progress"),
-            &ctx,
-        )
-        .into_response(),
-        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(
-            CorelamoError::Internal(format!("reindex task panicked: {e}")),
-            &ctx,
-        )
-        .into_response(),
-    }
+    let name_for_log = db_name.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let log = slog_scope::logger();
+        match manager.reindex() {
+            Ok(()) => {
+                info!(log, "reindex prep finished, background reindexing started"; "db" => %name_for_log);
+            }
+            Err(e) => {
+                error!(log, "reindex failed to start"; "db" => %name_for_log, "error" => %e);
+            }
+        }
+    });
+
+    HttpOk::new(
+        format!("reindex requested for '{db_name}', poll /status for progress"),
+        &ctx,
+    )
+    .into_response()
 }
 
 pub async fn get_policy_handler(
