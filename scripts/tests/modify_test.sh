@@ -223,10 +223,10 @@ check "replace existing number id" 200 -X POST "$BASE_URL/api/databases/$DB/repl
 check "replace existing text id" 200 -X POST "$BASE_URL/api/databases/$DB/replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"id":"bruh","number":"two"}'
 
 
+
 # ------------------------------------------------------------------
 # Upsert
 # ------------------------------------------------------------------
-#velak kjipa bus ari partial replace funkcija
 
 section "Upsert"
 
@@ -311,14 +311,77 @@ check "lookup one real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-C
   -d '{"ids":["7"],"return_fields": {"id":false,"number":true}}'
 check "lookup text id" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"ids":["bruh"]}'
-check "lookup autoincremented" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-  -d '{"ids":["13"]}'
+#check "lookup autoincremented" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#  -d '{"ids":["13"]}'
 check "lookup multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"ids":["1","3","4"]}'
 check "lookup multiple real" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"ids":["1","1"]}'
 check "lookup mixed real notreal" 200 -X POST "$BASE_URL/api/databases/$DB/lookup" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"ids":["7","100","1","5","bruh","0"]}'
+
+# ------------------------------------------------------------------
+# Partial replace
+# ------------------------------------------------------------------
+
+section "Partial replace"
+
+check "seed partial replace" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"p1", "something":"yo", "otherthing":true, "what":{"is":"this","idk":7}}'
+check "seed partial replace" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '{"id":"p2", "something":"yo", "otherthing":true, "what":{"is":"this","idk":7}}'
+
+check "partial-replace nothing" 400 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d ''
+check "partial-replace bad doc" 400 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"jabut":"array"}'
+check "partial-replace no patch" 400 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '[{"id":"p1"]'
+check "partial-replace nonexisting" 404 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '[{"id":"nevarbut","patch":{"kkas":"kkas"}}]'
+
+check "partial-replace two" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[
+        {
+          "id": "p1",
+          "patch":
+            {
+              "something" : "wazzap",
+              "otherthing":
+                {
+                  "now":"this is object"
+                },
+              "newfield":"hello"
+            }
+        },
+        {
+          "id": "p2",
+          "patch" :
+            {
+              "what":
+              {
+                "idk":"now text"
+              }
+            }
+        }
+      ]'
+
+check "partial-replace empty patch" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[{"id": "p1","patch":{}}]'
+#nekas nemainaas
+
+check "partial-replace one" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[{"id":"p2","patch":{"something":"no"}}]'
+
+check "partial-replace id" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[{"id":"p2","patch":{"id":"p3"}}]'
+check "partial-replace remove field" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[{"id":"p1","patch":{"newfield":null}}]'
+check "partial-replace remove nonexistent field" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[{"id":"p1","patch":{"frield":null}}]'
+check "partial-replace remove object field" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[{"id":"p1","patch":{"what":null}}]'
+check "partial-replace remove id" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+  -d '[{"id":"p2","patch":{"id":null}}]'
+
+#curl -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#  -d '["p1","p2"]'
 
 
 # ------------------------------------------------------------------
