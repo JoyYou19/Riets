@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal, UserId, principal};
+use core_auth::{Permission, Principal, };
 
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use slog::{error, info, o};
@@ -1004,7 +1004,7 @@ pub async fn create_database_handler(
             .into_response();
         }
         let manager = Arc::new(manager);
-        manager.start_backup_scheduler(principal.id.0.clone());
+        manager.start_backup_scheduler();
         dbs.insert(db_name.clone(), manager);
     }
 
@@ -1642,7 +1642,7 @@ pub async fn backup_incremental_handler(
     let ctx_bg = ctx.clone();
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.backup_incremental().await {
+        match handle.backup_incremental(principal.id.0.clone()).await {
             Ok(manifests) => {
                 let backed_up = manifests.iter().filter(|m| m.is_some()).count();
                 HttpOk::new(
@@ -1709,9 +1709,9 @@ pub async fn backup_delete_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // }
+    if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
 
     let handle = match state.lookup(&db_name) {
         Ok(h) => h,
@@ -1728,7 +1728,7 @@ pub async fn backup_delete_handler(
         .into_response();
     }
 
-    if let Err(e) = handle.delete_backup(backup_id.clone()).await {
+    if let Err(e) = handle.delete_backup(backup_id.clone(),principal.id.0.clone()).await {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 

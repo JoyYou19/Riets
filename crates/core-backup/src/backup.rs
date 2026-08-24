@@ -390,7 +390,7 @@ impl BackupManager {
         let mut current_id = from_id.to_string();
         loop {
             let manifest = self.load_manifest(&current_id);
-
+            
             match manifest {
                 Err(_) => {
                     break;
