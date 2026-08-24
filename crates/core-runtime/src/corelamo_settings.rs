@@ -11,6 +11,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("format", "json"),
     ("auth", "true"),
     ("max_payload_size", "512"),
+    ("max_request_timeout", "30"),
 ];
 
 pub const HELP: &str = "\
@@ -34,12 +35,16 @@ OPTIONS:
     --format <format>     Default format for requests, responses and documents (json)
                           [default: json]
 
-    --auth <toggle>       Enable/Disabe any form of auth  
+    --auth <true|false>   Enable/Disabe any form of auth  
                           [default: true]
 
     --max_payload_size <MB>      
                           Maximum payload size for a single requests  
                           [default: 512MB]
+
+    --max_request_timeout <s>      
+                          Maximum time to wait before responding back to the user 
+                          [default: 30s]
 
     --overwrite_config <true|false>
                           If true, CLI args override config file values.
@@ -49,7 +54,7 @@ OPTIONS:
 
     NOTE: config file takes priority over CLI args if it exists (unless --overwrite_config true)
 
-    -h, --help            Print this help message and exit
+    -h, --h, -help, --help            Print this help message and exit
 ";
 
 pub fn default_value(key: &str) -> &'static str {
@@ -76,9 +81,8 @@ pub fn parse_args() -> Result<HashMap<String, String>, String> {
     let mut overrides = HashMap::new();
     let mut args = std::env::args().skip(1).peekable();
     let keys = valid_keys();
-    let log = slog_scope::logger();
     while let Some(arg) = args.next() {
-        if arg == "-h" || arg == "--help" {
+        if arg == "-h" || arg == "--help" || arg == "--h" || arg == "-help" {
             println!("{}", HELP);
             process::exit(0);
         }
@@ -184,10 +188,8 @@ pub fn load_or_init_settings(
         root_path.to_string_lossy().to_string(),
     );
 
-    // Remove overwrite_config since it's CLI-only and not persisted
     settings.remove("overwrite_config");
 
-    // Write config to file (either first time or if overwrite_config=true)
     if !config_existed || overwrite_config {
         let raw = toml::to_string_pretty(&settings).map_err(io::Error::other)?;
         std::fs::write(&settings_path, raw)?;
@@ -227,6 +229,21 @@ pub fn validate_settings(settings: &HashMap<String, String>) -> Result<(), Strin
         return Err(format!(
             "invalid max_payload_size {}: must be at least 1 MB",
             max_payload_size
+        ));
+    }
+
+    let max_request_timeout: usize =
+        get(settings, "max_request_timeout").parse().map_err(|_| {
+            format!(
+                "invalid max_request_timeout '{}': must be a valid integer",
+                get(settings, "max_payload_size")
+            )
+        })?;
+
+    if max_request_timeout < 1 {
+        return Err(format!(
+            "invalid max_request_timeout {}: must be at least 1s",
+            max_request_timeout
         ));
     }
 

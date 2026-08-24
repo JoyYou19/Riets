@@ -137,6 +137,7 @@ async fn main() -> io::Result<()> {
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
     let max_payload_size = corelamo_settings::get_usize(&settings, "max_payload_size");
+    let max_request_timeout = corelamo_settings::get_usize(&settings, "max_request_timeout");
     let default_format_str = corelamo_settings::get(&settings, "format");
     let enable_auth = corelamo_settings::get(&settings, "auth") != "false";
     info!(log, "auth setting resolved";"info" => %enable_auth);
@@ -348,13 +349,15 @@ async fn main() -> io::Result<()> {
     //         .unwrap(),
     // );
 
+    println!("{}", max_request_timeout);
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
         .layer(DefaultBodyLimit::max(max_payload_size * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
+            //we parse this as uzise to bypass negative time and shit
+            Duration::from_secs(max_request_timeout as u64),
         ))
         .layer(CompressionLayer::new())
         .layer(from_fn_with_state(
