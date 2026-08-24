@@ -103,7 +103,7 @@ impl ShardDb {
         BinaryDocumentStore::open(&store_path)?;
         let backup_dir = db_root.as_ref().join("backups");
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(backup_dir, name.clone()); // see note below
+        let backup = BackupManager::new(&root, backup_dir, name.clone()); // see note below
         Ok(Self {
             shard_id,
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -153,7 +153,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let backup_dir = db_root.as_ref().join("backups");
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(backup_dir, name.clone());
+        let backup = BackupManager::new(&root, backup_dir, name.clone());
         Ok(Self {
             shard_id: ShardId::from(shard_id),
             shared: Arc::new(SharedShardState::new(root.clone())),

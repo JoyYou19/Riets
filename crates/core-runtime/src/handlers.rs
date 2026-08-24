@@ -187,7 +187,7 @@ pub async fn get_all_fields_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
+    if let Err(e) = check_permission(&state, &principal, Permission::AllFields) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
@@ -686,14 +686,48 @@ pub async fn partial_replace_handler(
         .into_response();
     }
 
-    let report = match handle
-        .partial_replace(command.items, principal.id.0.clone())
-        .await
-    {
+    // Convert PartialReplaceItem to (String, Value) tuples
+    let items: Vec<(String, serde_json::Value)> = command
+        .items
+        .into_iter()
+        .map(|item| (item.id, item.patch))
+        .collect();
+
+    // Get original docs and apply patches to produce full DocumentInputs
+    let manager = Arc::clone(&handle);
+    let parsed = tokio::task::spawn_blocking(move || {
+        doctypes::parse_partial_replace_to_inputs(&items, |id| manager.retrieve_one(id))
+    })
+    .await;
+
+    let inputs = match parsed {
+        Ok(Ok(inputs)) => inputs,
+        Ok(Err(failures)) => {
+            let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
+            outcome.fail_many(failures);
+            let title = format!(
+                "partially replaced 0 document(s) in '{db_name}', {} failed",
+                outcome.failed_count()
+            );
+            return outcome
+                .into_ok(StatusCode::OK, title, &db_name, &ctx)
+                .into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("parse task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    // Just use the existing replace flow!
+    let report = match handle.replace(inputs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("partial replace task panicked: {e}")),
+                CorelamoError::Internal(format!("replace task panicked: {e}")),
                 &ctx,
             )
             .into_response();
@@ -1530,12 +1564,19 @@ pub async fn backup_handler(
     if let Err(e) = handle.try_start_backup() {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
+    let ctx_bg = ctx.clone();
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
-        match handle.backup_full().await {
-            Ok(_manifests) => eprintln!("backup completed for '{}'", name_for_log),
-            Err(e) => eprintln!("backup failed for '{}': {}", name_for_log, e),
+        match handle.backup_full(principal.id.0.clone()).await {
+            Ok(_manifests) => {
+                HttpOk::new(format!("backup completed for '{}'", name_for_log), &ctx_bg)
+                    .into_response()
+            }
+            Err(e) => HttpError::from_corelamo(
+                CorelamoError::FailedToEx(format!("backup failed for '{}': {}", name_for_log, e)),
+                &ctx_bg,
+            )
+            .into_response(),
         }
     });
 
@@ -1572,14 +1613,21 @@ pub async fn backup_restore_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
+    let ctx_val = ctx.clone();
     tokio::spawn(async move {
-        let ok = match handle.restore_backup(&backup_id).await {
+        let ok = match handle
+            .restore_backup(&backup_id, principal.id.0.clone())
+            .await
+        {
             Ok(()) => {
-                eprintln!("restore completed for '{}'", name_for_log);
+                HttpOk::new(
+                    format!("restore completed for '{}'", name_for_log),
+                    &ctx_val,
+                );
                 true
             }
             Err(e) => {
-                eprintln!("restore failed for '{}': {}", name_for_log, e);
+                CorelamoError::FailedToEx(format!("restore failed for '{}': {}", name_for_log, e));
                 false
             }
         };
@@ -1612,21 +1660,30 @@ pub async fn backup_incremental_handler(
     if let Err(e) = handle.try_start_backup() {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
+    let ctx_bg = ctx.clone();
     let name_for_log = db_name.clone();
     tokio::spawn(async move {
         match handle.backup_incremental().await {
             Ok(manifests) => {
                 let backed_up = manifests.iter().filter(|m| m.is_some()).count();
-                eprintln!(
-                    "incremental backup for '{}': {}/{} shards had new data",
-                    name_for_log,
-                    backed_up,
-                    manifests.len()
+                HttpOk::new(
+                    format!(
+                        "incremental backup for '{}': {}/{} shards had new data",
+                        name_for_log,
+                        backed_up,
+                        manifests.len()
+                    ),
+                    &ctx_bg,
                 );
             }
             Err(e) => {
-                eprintln!("incremental backup failed for '{}': {}", name_for_log, e);
+                HttpError::from_corelamo(
+                    CorelamoError::FailedToEx(format!(
+                        "incremental backup failed for '{}': {}",
+                        name_for_log, e
+                    )),
+                    &ctx_bg,
+                );
             }
         }
     });

@@ -60,11 +60,6 @@ pub enum ShardCmd {
         inputs: Vec<DocumentInput>,
         resp: oneshot::Sender<Result<ReplaceReport, CorelamoError>>,
     },
-    PartialReplace {
-        user: String,
-        items: Vec<(String, serde_json::Value)>,
-        resp: oneshot::Sender<Result<ReplaceReport, CorelamoError>>,
-    },
     Delete {
         user: String,
         ids: Vec<String>,
@@ -100,6 +95,7 @@ pub enum ShardCmd {
         resp: oneshot::Sender<Result<Vec<BackupManifest>, CorelamoError>>,
     },
     Restore {
+        user: String,
         backup_id: String,
         resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
@@ -321,15 +317,6 @@ impl ShardHandle {
         CorelamoError::Internal(format!("shard {} is not running", self.id))
     }
 
-    pub async fn partial_replace(
-        &self,
-        items: Vec<(String, serde_json::Value)>,
-        user: String,
-    ) -> Result<ReplaceReport, CorelamoError> {
-        self.call(|resp| ShardCmd::PartialReplace { user, items, resp })
-            .await?
-    }
-
     async fn call<T>(
         &self,
         make: impl FnOnce(oneshot::Sender<T>) -> ShardCmd,
@@ -403,6 +390,7 @@ impl ShardHandle {
         &self,
         shard_backup_path: PathBuf,
         backup_id: String,
+        user: String,
     ) -> Result<BackupManifest, CorelamoError> {
         self.call(|resp| ShardCmd::BackupFull {
             shard_backup_path,
@@ -428,10 +416,14 @@ impl ShardHandle {
         .await?
     }
 
-    pub async fn restore_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
-        self.call(move |resp| ShardCmd::Restore { backup_id, resp })
-            .await?
+        self.call(move |resp| ShardCmd::Restore {
+            user,
+            backup_id,
+            resp,
+        })
+        .await?
     }
     //reindex
     pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
@@ -528,9 +520,6 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 ShardCmd::Replace { inputs, resp, user } => {
                     let _ = resp.send(shard.replace(inputs, user));
                 }
-                ShardCmd::PartialReplace { items, resp, user } => {
-                    let _ = resp.send(shard.partial_replace(items, user));
-                }
                 ShardCmd::Delete { ids, resp, user } => {
                     let _ = resp.send(shard.delete(ids, user));
                 }
@@ -606,7 +595,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     let _ = resp.send(result);
                 }
 
-                ShardCmd::Restore { resp, backup_id } => {
+                ShardCmd::Restore {
+                    user,
+                    resp,
+                    backup_id,
+                } => {
                     shared.is_restoring.store(true, Ordering::Release);
                     let result = shard.restore_backup(&backup_id);
                     shared.is_restoring.store(false, Ordering::Release);

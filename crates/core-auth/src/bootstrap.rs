@@ -22,6 +22,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::ClearDB,
             Permission::GetLogs,
             Permission::ClearLogs,
+            Permission::AllFields,
             //databases
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
@@ -66,6 +67,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::GetConfig,
             Permission::SetConfig,
             Permission::Reindex,
+            Permission::AllFields,
         ],
     );
 
@@ -87,6 +89,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::Delete,
             Permission::Replace,
             Permission::Status,
+            Permission::AllFields,
         ],
     );
 

@@ -12,9 +12,7 @@ use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
 use core_index::types::{ShardId, shard_of};
-use core_protocol::command_reponse_definitions::{
-    LookupCommand, LookupResponse, PartialReplaceItem, SearchCommand,
-};
+use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::query_string_parser::parse_and_analyze;
@@ -24,7 +22,7 @@ use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 use crossbeam_channel::bounded;
 use parking_lot::RwLock;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -110,8 +108,24 @@ impl ShardManager {
         self.all_fields.read().clone()
     }
 
-    fn update_all_fields_from_docs(&self, inputs: &[DocumentInput]) -> Result<(), CorelamoError> {
-        if inputs.is_empty() {
+    //helper
+    pub fn update_all_fields_from_partial_replace(
+        &self,
+        items: &[(String, BTreeMap<String, String>)],
+    ) -> Result<(), CorelamoError> {
+        let mut all_fields_map = BTreeMap::new();
+        for (_, fields) in items {
+            all_fields_map.extend(fields.clone());
+        }
+        self.update_all_fields_from_fields(&all_fields_map)
+    }
+
+    //peak name
+    fn update_all_fields_from_fields(
+        &self,
+        fields: &BTreeMap<String, String>,
+    ) -> Result<(), CorelamoError> {
+        if fields.is_empty() {
             return Ok(());
         }
 
@@ -119,19 +133,17 @@ impl ShardManager {
         let mut all_fields = self.all_fields.write().clone();
         let mut changed = false;
 
-        for input in inputs {
-            for (xpath, _) in &input.fields {
-                let kind = policy
-                    .fields
-                    .iter()
-                    .find(|f| f.name == *xpath)
-                    .map(|f| f.index.clone())
-                    .unwrap_or(IndexKind::None);
+        for (xpath, _) in fields {
+            let kind = policy
+                .fields
+                .iter()
+                .find(|f| f.name == *xpath)
+                .map(|f| f.index.clone())
+                .unwrap_or(IndexKind::None);
 
-                if all_fields.get_fields().get(xpath) != Some(&kind) {
-                    all_fields.get_fields_mut().insert(xpath.clone(), kind);
-                    changed = true;
-                }
+            if all_fields.get_fields().get(xpath) != Some(&kind) {
+                all_fields.get_fields_mut().insert(xpath.clone(), kind);
+                changed = true;
             }
         }
 
@@ -269,7 +281,13 @@ impl ShardManager {
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
         let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
-        self.update_all_fields_from_docs(&inputs)?;
+
+        let mut all_fields_map = BTreeMap::new();
+        for input in &inputs {
+            all_fields_map.extend(input.fields.clone());
+        }
+        self.update_all_fields_from_fields(&all_fields_map)?;
+
         for input in inputs {
             by_shard
                 .entry(self.shard_index_for(&input.external_id))
@@ -315,57 +333,10 @@ impl ShardManager {
         Ok(report)
     }
 
-    pub async fn partial_replace(
-        &self,
-        items: Vec<PartialReplaceItem>,
-        user: String,
-    ) -> Result<ReplaceReport, CorelamoError> {
-        let mut by_shard: HashMap<usize, Vec<(String, serde_json::Value)>> = HashMap::new();
-        for item in items {
-            by_shard
-                .entry(self.shard_index_for(&item.id))
-                .or_default()
-                .push((item.id, item.patch));
-        }
-
-        //FIX: all-fields + WAL
-
-        let mut set = JoinSet::new();
-        for (idx, batch) in by_shard {
-            let handle = self.shards[idx].clone();
-            let user = user.clone();
-            set.spawn(async move { handle.partial_replace(batch, user).await });
-        }
-
-        let mut report = ReplaceReport {
-            replaced: 0,
-            failures: Vec::new(),
-        };
-        let mut first_err = None;
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok(Ok(r)) => {
-                    report.replaced += r.replaced;
-                    report.failures.extend(r.failures);
-                }
-                Ok(Err(e)) => {
-                    if first_err.is_none() {
-                        first_err = Some(e);
-                    }
-                }
-                Err(je) => {
-                    if first_err.is_none() {
-                        first_err = Some(CorelamoError::Internal(format!(
-                            "shard task panicked: {je}"
-                        )));
-                    }
-                }
-            }
-        }
-        if let Some(e) = first_err {
-            return Err(e);
-        }
-        Ok(report)
+    pub fn retrieve_one(&self, id: &str) -> Result<Option<StoredDocument>, CorelamoError> {
+        let shard_idx = self.shard_index_for(id);
+        let docs = self.shards[shard_idx].get_document_direct(&[id.to_string()])?;
+        Ok(docs.into_iter().next().and_then(|(_, doc)| doc))
     }
 
     pub async fn replace(
@@ -374,7 +345,12 @@ impl ShardManager {
         user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
         let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
-        self.update_all_fields_from_docs(&inputs)?;
+
+        let mut all_fields_map = BTreeMap::new();
+        for input in &inputs {
+            all_fields_map.extend(input.fields.clone());
+        }
+        self.update_all_fields_from_fields(&all_fields_map)?;
 
         for input in inputs {
             by_shard
@@ -791,7 +767,12 @@ impl ShardManager {
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
-        self.update_all_fields_from_docs(&inputs)?;
+
+        let mut all_fields_map = BTreeMap::new();
+        for input in &inputs {
+            all_fields_map.extend(input.fields.clone());
+        }
+        self.update_all_fields_from_fields(&all_fields_map)?;
 
         let mut by_shard: HashMap<usize, Vec<DocumentInput>> = HashMap::new();
         for input in inputs {
@@ -956,7 +937,7 @@ impl ShardManager {
         Ok(())
     }
 
-    pub async fn backup_full(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
+    pub async fn backup_full(&self, user: String) -> Result<Vec<BackupManifest>, CorelamoError> {
         let backup_id = format!("full_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
         let backup_root = self.backup_dir.join(&backup_id);
         fs::create_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
@@ -977,7 +958,15 @@ impl ShardManager {
             let handle = shard.clone();
             let shard_backup_path = backup_root.join(format!("shard-{i}"));
             let bid = backup_id.clone();
-            set.spawn(async move { handle.backup_full(shard_backup_path, bid).await });
+
+            //ko tik cilveks nedariitu lai uzvareetu rusta kompilatoru
+            let user = user.clone();
+
+            set.spawn(async move {
+                handle
+                    .backup_full(shard_backup_path, bid, user.clone())
+                    .await
+            });
         }
         let mut manifests = Vec::with_capacity(self.shards.len());
         let mut first_err = None;
@@ -1058,11 +1047,11 @@ impl ShardManager {
         Ok(manifests)
     }
 
-    pub async fn restore_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();
 
         for shard in &self.shards {
-            if let Err(e) = shard.restore_backup(backup_id).await {
+            if let Err(e) = shard.restore_backup(backup_id, user.clone()).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }

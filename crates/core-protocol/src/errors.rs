@@ -42,6 +42,8 @@ pub enum CorelamoError {
     DatabaseAlreadyRunning(String),
     #[error("Busy:{0}")]
     Busy(String),
+    #[error("failed: {0}")]
+    FailedToEx(String),
 }
 
 //INFO: helpers to get all needed info from an error to http response
@@ -61,6 +63,7 @@ impl CorelamoError {
             CorelamoError::PathNotIndexed(_) => "path_not_indexed",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
             CorelamoError::Busy(_) => "Process is already happening", //mosk janomaina
+            CorelamoError::FailedToEx(_) => "Failed to execute the task",
         }
     }
 
@@ -79,6 +82,7 @@ impl CorelamoError {
             CorelamoError::PathNotIndexed(_) => "Path Not Indexed",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
             CorelamoError::Busy(_) => "Service Unavailable",
+            CorelamoError::FailedToEx(_) => "Execution failed",
         }
     }
 
@@ -95,8 +99,9 @@ impl CorelamoError {
             | CorelamoError::DatabaseNotRunning(msg)
             | CorelamoError::DatabaseAlreadyRunning(msg)
             | CorelamoError::PathNotIndexed(msg)
-            | CorelamoError::UnknownRole(msg) => msg.clone(),
-            CorelamoError::Busy(msg) => msg.clone(),
+            | CorelamoError::UnknownRole(msg)
+            | CorelamoError::Busy(msg)
+            | CorelamoError::FailedToEx(msg) => msg.clone(),
         }
     }
 }

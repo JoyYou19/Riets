@@ -12,6 +12,7 @@ pub enum Permission {
     ClearDB,
     GetLogs,
     ClearLogs,
+    AllFields,
     //databases
     CreateDatabase,
     DeleteDatabase,
@@ -54,6 +55,7 @@ impl Permission {
             "CreateDatabase" => Some(Permission::CreateDatabase),
             "DeleteDatabase" => Some(Permission::DeleteDatabase),
             "ListDatabases" => Some(Permission::ListDatabases),
+            "AllFields" => Some(Permission::AllFields),
             "StartDB" => Some(Permission::StartDB),
             "StopDB" => Some(Permission::StopDB),
             "RestartDB" => Some(Permission::RestartDB),

@@ -1,6 +1,7 @@
 use core_index::document::{IndexPolicy, policy::IndexKind};
 use core_protocol::{
-    command_response_helpers::traverse_json,
+    command_reponse_definitions::ParsedPartialReplace,
+    command_response_helpers::{apply_merge_patch, traverse_json},
     errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
@@ -208,6 +209,82 @@ pub fn convert_from_storage(
         }
     }
     (output, skipped)
+}
+
+pub fn parse_partial_replace_to_inputs(
+    items: &[(String, serde_json::Value)],
+    get_document: impl Fn(&str) -> Result<Option<StoredDocument>, CorelamoError>,
+) -> Result<Vec<DocumentInput>, Vec<DocFailure>> {
+    let mut inputs = Vec::with_capacity(items.len());
+    let mut failures = Vec::new();
+
+    for (index, (id, patch)) in items.iter().enumerate() {
+        //get original
+        let doc = match get_document(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) => {
+                failures.push(DocFailure::new(
+                    Some(index),
+                    Some(id.clone()),
+                    FailReason::NotFound,
+                ));
+                continue;
+            }
+            Err(e) => {
+                failures.push(DocFailure::new(
+                    Some(index),
+                    Some(id.clone()),
+                    FailReason::Internal(e.to_string()),
+                ));
+                continue;
+            }
+        };
+
+        //parse
+        let mut doc_value: serde_json::Value = match serde_json::from_slice(&doc.source) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(DocFailure::new(
+                    Some(index),
+                    Some(id.clone()),
+                    FailReason::Internal(format!("stored document is not valid json: {e}")),
+                ));
+                continue;
+            }
+        };
+
+        //partial-replace yoyo
+        apply_merge_patch(&mut doc_value, patch);
+
+        //get the fields
+        let mut fields = BTreeMap::new();
+        traverse_json(&doc_value, "", &mut fields);
+
+        let source = match serde_json::to_vec(&doc_value) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(DocFailure::new(
+                    Some(index),
+                    Some(id.clone()),
+                    FailReason::Internal(format!("failed to serialize patched document: {e}")),
+                ));
+                continue;
+            }
+        };
+
+        inputs.push(DocumentInput {
+            external_id: id.clone(),
+            fields,
+            source,
+            format: Format::JSON,
+        });
+    }
+
+    if failures.is_empty() {
+        Ok(inputs)
+    } else {
+        Err(failures)
+    }
 }
 
 //polocy is just toml so no worries

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::{
     command_response_helpers::{FieldNode, tree_to_json, unflatten},
-    errors::CorelamoError,
+    errors::{CorelamoError, DocFailure},
     format::Format,
 };
 
@@ -234,6 +234,11 @@ pub struct PartialReplaceItem {
 #[derive(Debug)]
 pub struct PartialReplaceCommand {
     pub items: Vec<PartialReplaceItem>,
+}
+
+pub struct ParsedPartialReplace {
+    pub items: Vec<(String, BTreeMap<String, String>)>, // id  -> fields
+    pub failures: Vec<DocFailure>,
 }
 
 impl Command for PartialReplaceCommand {
