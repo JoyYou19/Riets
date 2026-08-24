@@ -21,5 +21,6 @@ serde_json = "1"
 indexmap = "2.14.0"
 tokio ={workspace=true}
 dashmap = "6.2.1"
+moka = { version = "0.12.16", features = ["sync"] }
 [dev-dependencies]
 criterion = { workspace = true }

@@ -1,16 +1,19 @@
+use std::io;
 use std::sync::atomic::AtomicU64;
 use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool};
 
-use core_storage::binary_store::DocLocation;
+use core_storage::binary_store::{DocLocation, read_document_at_path};
 use dashmap::DashMap;
 
 use core_index::lsm::snapshot::SharedIndexSnapshot;
 use core_index::types::DocId;
 use core_storage::document_store::StoredDocument;
+use moka::sync::Cache;
+use tokio::task;
 
 pub struct SharedShardState {
     pub snapshot: SharedIndexSnapshot,
-    pub docs: Arc<DashMap<String, StoredDocument>>,
+    pub docs: Cache<String, StoredDocument>,
     pub locations: Arc<DashMap<String, DocLocation>>,
     pub internal_to_external: Arc<DashMap<DocId, String>>,
     pub is_running: AtomicBool,
@@ -26,7 +29,7 @@ impl SharedShardState {
     pub fn new(root: PathBuf) -> Self {
         Self {
             snapshot: SharedIndexSnapshot::empty(),
-            docs: Arc::new(DashMap::new()),
+            docs: Cache::builder().max_capacity(10).build(),
             locations: Arc::new(DashMap::new()),
             internal_to_external: Arc::new(DashMap::new()),
             is_running: AtomicBool::new(false),
@@ -37,5 +40,25 @@ impl SharedShardState {
             last_backup_id: std::sync::RwLock::new(None),
             root,
         }
+    }
+
+    pub async fn get_document(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
+        if let Some(doc) = self.docs.get(external_id) {
+            return Ok(Some(doc));
+        }
+
+        let Some(loc) = self.locations.get(external_id).map(|r| *r.value()) else {
+            return Ok(None);
+        };
+
+        //WARN: bellow is a todo comment lmao
+        //TODO: pass this to the shared state in a pretty way, this is a placeholder
+        let path = self.root.join("documents.bin");
+        let doc = task::spawn_blocking(move || read_document_at_path(&path, loc.offset))
+            .await
+            .map_err(|e| io::Error::other(format!("disk read task panicked: {e}")))??;
+
+        self.docs.insert(external_id.to_string(), doc.clone());
+        Ok(Some(doc))
     }
 }

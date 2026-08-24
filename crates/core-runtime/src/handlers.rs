@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal, UserId, principal};
+use core_auth::{Permission, Principal};
 
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use slog::{error, info, o};
@@ -25,7 +25,10 @@ use core_protocol::{
     errors::CorelamoError,
 };
 use serde_json::json;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 //authorizations
 use serde::Deserialize;
 #[derive(Deserialize)]
@@ -160,7 +163,7 @@ pub async fn search_handler(
     let query = command.query.clone();
     let start = std::time::Instant::now();
     let manager = Arc::clone(&handle);
-    let hits = match manager.search(&command) {
+    let hits = match manager.search(&command).await {
         Ok(hits) => hits,
         Err(e) => {
             handle.record_search(true, start.elapsed());
@@ -248,7 +251,7 @@ pub async fn lookup_handler(
         }
     };
 
-    let result = manager.lookup(&command);
+    let result = manager.lookup(&command).await;
 
     let resp = match result {
         Ok(r) => r,
@@ -386,7 +389,7 @@ pub async fn retrieve_handler(
 
     let manager = Arc::clone(&handle);
     let ids = command.ids;
-    let results = match manager.retrieve(ids) {
+    let results = match manager.retrieve(ids).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -690,33 +693,36 @@ pub async fn partial_replace_handler(
         .into_response();
     }
 
-    // Convert PartialReplaceItem to (String, Value) tuples
+    //convert this to Vec<(id, value)>
     let items: Vec<(String, serde_json::Value)> = command
         .items
         .into_iter()
         .map(|item| (item.id, item.patch))
         .collect();
 
-    // Get original docs and apply patches to produce full DocumentInputs
-    let manager = Arc::clone(&handle);
+    //now we fetch the docs while still in async
+    let mut fetched = HashMap::with_capacity(items.len());
+    for (id, _) in &items {
+        if fetched.contains_key(id) {
+            continue;
+        }
+        //WARN: this happens sequentially, for small partial-replaces its ok, if something happens we
+        //can upgrade this
+        let result = handle.retrieve_one(id).await.map_err(|e| e.to_string());
+        fetched.insert(id.clone(), result);
+    }
+
     let parsed = tokio::task::spawn_blocking(move || {
-        doctypes::parse_partial_replace_to_inputs(&items, |id| manager.retrieve_one(id))
+        doctypes::parse_partial_replace_to_inputs(&items, |id| match fetched.get(id) {
+            Some(Ok(doc)) => Ok(doc.clone()),
+            Some(Err(msg)) => Err(CorelamoError::Internal(msg.clone())),
+            None => Ok(None),
+        })
     })
     .await;
 
-    let inputs = match parsed {
-        Ok(Ok(inputs)) => inputs,
-        Ok(Err(failures)) => {
-            let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
-            outcome.fail_many(failures);
-            let title = format!(
-                "partially replaced 0 document(s) in '{db_name}', {} failed",
-                outcome.failed_count()
-            );
-            return outcome
-                .into_ok(StatusCode::OK, title, &db_name, &ctx)
-                .into_response();
-        }
+    let (inputs, parse_failures) = match parsed {
+        Ok(result) => result,
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
@@ -726,7 +732,18 @@ pub async fn partial_replace_handler(
         }
     };
 
-    // Just use the existing replace flow!
+    if inputs.is_empty() {
+        let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
+        outcome.fail_many(parse_failures);
+        let title = format!(
+            "partially replaced 0 document(s) in '{db_name}', {} failed",
+            outcome.failed_count()
+        );
+        return outcome
+            .into_ok(StatusCode::OK, title, &db_name, &ctx)
+            .into_response();
+    }
+
     let report = match handle.replace(inputs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
@@ -740,6 +757,7 @@ pub async fn partial_replace_handler(
 
     let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
     outcome.succeed_many(report.replaced);
+    outcome.fail_many(parse_failures);
     outcome.fail_many(report.failures);
 
     let title = format!(
@@ -1732,9 +1750,12 @@ pub async fn backup_delete_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    HttpOk::new(format!("backup '{backup_id}' deleted for '{db_name}'"), &ctx).into_response()
+    HttpOk::new(
+        format!("backup '{backup_id}' deleted for '{db_name}'"),
+        &ctx,
+    )
+    .into_response()
 }
-
 
 pub async fn rename_database_handler(
     State(state): State<AppState>,
