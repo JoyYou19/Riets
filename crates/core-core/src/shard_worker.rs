@@ -97,7 +97,6 @@ pub enum ShardCmd {
         shard_backup_path: PathBuf,
         backup_id: String,
         resp: oneshot::Sender<Result<Option<BackupManifest>, CorelamoError>>,
-        user:String
     },
     ListBackups {
         resp: oneshot::Sender<Result<Vec<BackupManifest>, CorelamoError>>,
@@ -407,7 +406,7 @@ impl ShardHandle {
     }
     pub async fn backup_incremental(
         &self,
-        user: String,
+
         shard_backup_path: PathBuf,
         backup_id: String
     ) -> Result<Option<BackupManifest>, CorelamoError> {
@@ -415,7 +414,6 @@ impl ShardHandle {
             shard_backup_path,
             backup_id,
             resp,
-            user
         }).await?
     }
 
@@ -567,7 +565,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     user,
                 } => {
                     shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_full(shard_backup_path, backup_id, user);
+                    let result = shard.backup_full(shard_backup_path, backup_id);
                     shared.is_backing_up.store(false, Ordering::Release);
                     if let Ok(manifest) = &result {
                         *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) = Some(
@@ -577,9 +575,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     }
                     let _ = resp.send(result);
                 }
-                ShardCmd::BackupIncremental { shard_backup_path, backup_id,user, resp } => {
+                ShardCmd::BackupIncremental { shard_backup_path, backup_id, resp } => {
                     shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_incremental(shard_backup_path, backup_id, user);
+                    let result = shard.backup_incremental(shard_backup_path, backup_id);
                     shared.is_backing_up.store(false, Ordering::Release);
                     match &result {
                         Ok(Some(manifest)) => {
@@ -595,7 +593,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
 
                 ShardCmd::Restore { user, resp, backup_id } => {
                     shared.is_restoring.store(true, Ordering::Release);
-                    let result = shard.restore_backup(&backup_id,user);
+                    let result = shard.restore_backup(&backup_id);
                     shared.is_restoring.store(false, Ordering::Release);
                     let _ = resp.send(result);
                 }
