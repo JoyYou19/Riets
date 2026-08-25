@@ -177,7 +177,7 @@ check "insert document with id 3" 200 -X POST "$BASE_URL/api/databases/$DB/inser
 
 section "Insert with autoincrement id"
 
-check "set autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set autoid policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   [[fields]]
   name = "id"
@@ -207,7 +207,6 @@ check "insert document without id value" 200 -X POST "$BASE_URL/api/databases/$D
   -d '{"id":"", "number":"Latvija"}'
 check "insert document without id" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '{"number":"Latvija"}'
-
 
 
 # ------------------------------------------------------------------
@@ -245,7 +244,7 @@ check "upsert bad doc" 400 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Co
 check "upsert missing id auto" 200 -X POST "$BASE_URL/api/databases/$DB/upsert" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '{"number":"10/11"}'
 
 
-check "set no autoincrement policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+check "set no autoid policy" 200 -X POST "$BASE_URL/api/databases/$DB/set-policy" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '
   [[fields]]
   name = "id"
@@ -388,9 +387,43 @@ check "partial-replace remove object field" 200 -X POST "$BASE_URL/api/databases
 check "partial-replace remove id" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
   -d '[{"id":"p2","patch":{"id":null}}]'
 
-#curl -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
-#  -d '["p1","p2"]'
 
+
+
+# ------------------------------------------------------------------
+# All fields
+# ------------------------------------------------------------------
+
+#section "All fields"
+
+#curl -X GET "$BASE_URL/api/databases/$DB/all-fields" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+#check "insert remove1" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#  -d '{"remove1":"yo", "id":"a1"}'
+#check "insert remove2" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#  -d '{"remove2":null, "id":"a2"}'
+#check "insert remove3" 200 -X POST "$BASE_URL/api/databases/$DB/insert" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#  -d '{"remove3":"", "id":"a3"}'
+
+#curl -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#  -d '["a1","a2","a3"]'
+
+#curl -X GET "$BASE_URL/api/databases/$DB/all-fields" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+#check "remove1" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '[{"id":"a1","patch":{"remove1":null}}]'
+#check "remove2" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '[{"id":"a2","patch":{"remove2":null}}]'
+#check "remove3" 200 -X POST "$BASE_URL/api/databases/$DB/partial-replace" -H "X-Corelamo-Key: $ADMIN_TOKEN"     -d '[{"id":"a3","patch":{"remove3":null}}]'
+
+#check "delete existing id" 200 -X DELETE "$BASE_URL/api/databases/$DB/delete" -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '["a1","a2"]'
+
+#curl -X POST "$BASE_URL/api/databases/$DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+#sleep 5
+
+#curl -X POST "$BASE_URL/api/databases/$DB/retrieve" -H "X-Corelamo-Key: $ADMIN_TOKEN" \
+#  -d '["a1","a2","a3"]'
+
+#curl -X GET "$BASE_URL/api/databases/$DB/all-fields" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 # ------------------------------------------------------------------
 # Delete

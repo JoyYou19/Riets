@@ -642,7 +642,7 @@ check "rename database to the same" 400 -X POST "http://localhost:6006/api/datab
 check "rename database to existing name" 409 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "'$DB1'"}'
 check "rename database bad name" 400 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d 'bad'
 check "rename database empty name" 400 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name":""}'
-check "rename database" 00 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "db_test"}'
+check "rename database" 200 -X POST "http://localhost:6006/api/databases/$DB3/rename-database"  -H "X-Corelamo-Key: $ADMIN_TOKEN" -d '{"name": "db_test"}'
 
 check "start database three" 200 -X POST "$BASE_URL/api/databases/db_test/start-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
