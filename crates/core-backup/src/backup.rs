@@ -1,4 +1,3 @@
-use crate::progress::BackupPhase::Complete;
 use crate::progress::BackupProgress;
 use core_logs::logger;
 use core_storage::wal::Wal;
