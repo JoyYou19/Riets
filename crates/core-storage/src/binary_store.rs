@@ -2,8 +2,12 @@
 //Normunds)
 
 //TODO: make the DEFAULT_DOC_CACHE_CAPACITY configurable per database, then persist the locations on
+
 //disk periodically + on shutdown so that we dont have to build it each time + the
+
 //external_id->internal could be saved too, this would massivly improve the speed of startup
+
+//+ check what happens on movies * 10000 + status + search something off about searching
 
 use std::{
     collections::BTreeMap,
@@ -122,7 +126,8 @@ impl BinaryDocumentStore {
                             offset: doc_offset,
                         },
                     );
-                    self.docs.insert(doc.external_id.clone(), doc);
+                    //IET?
+                    //self.docs.insert(doc.external_id.clone(), doc);
                 }
                 //TODO: periodic cleanup for deleted documents
                 Ok(OP_DELETE) => {

@@ -1,3 +1,5 @@
+//WARN: Valter, luudzu piedod es atvicaju es centos Kristianu aptureet - Normunds
+
 use std::{collections::BTreeMap, io, path::Path};
 
 use memmap2::Mmap;
@@ -17,7 +19,7 @@ use crate::{
 
 // Read only disk segment.
 // Segmetn file layout is roughly [header][posting bytes][dictionary bytes][footer]
-// the whole file is MMAPED we are cool
+// the whole file is MMAPED we are cool 🤘
 #[derive(Debug)]
 pub struct DiskSegment {
     mmap: Mmap,
