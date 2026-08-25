@@ -165,10 +165,10 @@ def main():
     print("[INFO] Login successful, token acquired.")
 
     # 1. delete if exists
-    print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
-    out, _ = curl_delete(
-        f"{BASE_URL}/api/databases/{DB_NAME}/clear-database", token)
-    print(f"[INFO] {out}")
+    # print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
+    # out, _ = curl_delete(
+    #    f"{BASE_URL}/api/databases/{DB_NAME}/clear-database", token)
+    # print(f"[INFO] {out}")
 
     # 2. create database
     print(f"[INFO] Creating database '{DB_NAME}'...")
@@ -211,10 +211,10 @@ def main():
                 f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
 
     # 5. reindex
-    print("[INFO] Reindexing...")
-    out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/reindex", "", token)
-    print(f"[INFO] {out}")
+    # print("[INFO] Reindexing...")
+    # out, _ = curl_post(
+    #     f"{BASE_URL}/api/databases/{DB_NAME}/reindex", "", token)
+    # print(f"[INFO] {out}")
 
     duration = time.time() - start_time
     print(f"\n[INFO] Done in {duration:.2f}s.")
