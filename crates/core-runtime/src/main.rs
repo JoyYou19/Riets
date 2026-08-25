@@ -316,7 +316,10 @@ async fn main() -> io::Result<()> {
             "/api/databases/{db_name}/backup",
             post(handlers::backup_handler),
         )
-        .route("/api/databases/{db_name}/delete-backup/{backup_id}", delete(handlers::backup_delete_handler))
+        .route(
+            "/api/databases/{db_name}/delete-backup/{backup_id}",
+            delete(handlers::backup_delete_handler),
+        )
         .route(
             "/api/databases/{db_name}/backup/incremental",
             post(handlers::backup_incremental_handler),

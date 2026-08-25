@@ -213,12 +213,11 @@ pub fn convert_from_storage(
 pub fn parse_partial_replace_to_inputs(
     items: &[(String, serde_json::Value)],
     get_document: impl Fn(&str) -> Result<Option<StoredDocument>, CorelamoError>,
-) -> Result<Vec<DocumentInput>, Vec<DocFailure>> {
+) -> (Vec<DocumentInput>, Vec<DocFailure>) {
     let mut inputs = Vec::with_capacity(items.len());
     let mut failures = Vec::new();
 
     for (index, (id, patch)) in items.iter().enumerate() {
-        //get original
         let doc = match get_document(id) {
             Ok(Some(doc)) => doc,
             Ok(None) => {
@@ -239,7 +238,6 @@ pub fn parse_partial_replace_to_inputs(
             }
         };
 
-        //parse
         let mut doc_value: serde_json::Value = match serde_json::from_slice(&doc.source) {
             Ok(v) => v,
             Err(e) => {
@@ -252,10 +250,8 @@ pub fn parse_partial_replace_to_inputs(
             }
         };
 
-        //partial-replace yoyo
         apply_merge_patch(&mut doc_value, patch);
 
-        //get the fields
         let mut fields = BTreeMap::new();
         traverse_json(&doc_value, &mut "".to_string(), &mut fields);
 
@@ -279,11 +275,7 @@ pub fn parse_partial_replace_to_inputs(
         });
     }
 
-    if failures.is_empty() {
-        Ok(inputs)
-    } else {
-        Err(failures)
-    }
+    (inputs, failures)
 }
 
 //polocy is just toml so no worries
