@@ -16,7 +16,7 @@ curl -X POST "$BASE_URL/api/databases/$DB/start-database" -H "X-Corelamo-Key: $A
 
 curl -X POST "$BASE_URL/api/databases/$DB/reindex" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
-sleep 5
+curl -X DELETE "$BASE_URL/api/databases/$DB/clear-database" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 curl -s -X GET $BASE_URL/api/databases/$DB/status -H "X-Corelamo-Key: $ADMIN_TOKEN"
 curl -s -X DELETE $BASE_URL/api/databases/$DB/delete-database -H "X-Corelamo-Key: $ADMIN_TOKEN"
