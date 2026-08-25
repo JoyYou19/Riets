@@ -983,6 +983,7 @@ impl ShardDb {
 
     pub fn backup_full(
         &mut self,
+        user: String,
         shard_backup_path: PathBuf,
         backup_id: String,
     ) -> Result<BackupManifest, CorelamoError> {
@@ -991,7 +992,7 @@ impl ShardDb {
                 .stop()
                 .map_err(|e| CorelamoError::Internal(format!("failed to stop compaction: {e}")))?;
         }
-
+        info!(self.log, "Full backup made"; "Backup id"=> backup_id.clone(), "User"=>user);
         let progress = self.stats.backup_progress().clone();
         let result = self
             .backup
@@ -1020,16 +1021,18 @@ impl ShardDb {
     pub fn backup_incremental(
         &mut self,
         shard_backup_path: PathBuf,
-        backup_id: String,
+        backup_id: String
+        ,user: String
     ) -> Result<Option<BackupManifest>, CorelamoError> {
+        info!(self.log, "Incremental backup made"; "user"=> user);
         self.backup
             .create_incremental_backup(&shard_backup_path, &backup_id, &self.wal)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    pub fn restore_backup(&mut self, backup_id: &str) -> Result<(), CorelamoError> {
+    pub fn restore_backup(&mut self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let root = self.root.clone();
-
+        info!(self.log, "Restore to backup"; "backup id"=> backup_id, "user"=>user);
         self.stop()?;
         self.backup
             .restore_chain(&backup_id, &root, &mut self.wal)
@@ -1066,11 +1069,10 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    // shard_db.rs
-    pub fn delete_backup(&self, backup_id: &str) -> Result<(), CorelamoError> {
-        self.backup
-            .delete_backup(backup_id)
-            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+    
+    pub fn delete_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+        self.backup.delete_backup(backup_id).map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        info!(self.log, "backup deleted"; "Backup id "=> backup_id, "User" =>user);
         Ok(())
     }
     pub fn delete_backups_old(&self, cutoff: SystemTime) -> Result<(), CorelamoError> {
