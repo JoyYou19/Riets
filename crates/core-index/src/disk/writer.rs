@@ -11,7 +11,7 @@ use crate::{
     },
     posting::PostingList,
     segment::ImmutableSegment,
-    types::{DocId, XPathId},
+    types::{DocId, TermKey, XPathId},
 };
 
 /*
@@ -231,4 +231,61 @@ fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
             push_var_u32(out, position_delta);
         }
     }
+}
+
+pub fn write_merged_segment(
+    path: impl AsRef<Path>,
+    terms: impl Iterator<Item = (TermKey, PostingList)>,
+    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+) -> io::Result<()> {
+    let file = File::create(path)?;
+    let mut out = BufWriter::new(file);
+    write_merged_segment_to(&mut out, terms, doc_lengths)?;
+    out.flush()
+}
+
+pub fn write_merged_segment_to<W: Write + Seek>(
+    out: &mut W,
+    terms: impl Iterator<Item = (TermKey, PostingList)>,
+    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+) -> io::Result<()> {
+    write_header(out)?;
+
+    let mut dictionary = Vec::new();
+    let mut postings_buf = Vec::with_capacity(64 * 1024);
+
+    for (key, postings) in terms {
+        postings_buf.clear();
+
+        let postings_offset = out.stream_position()?;
+        encode_posting_list(&mut postings_buf, &postings);
+        out.write_all(&postings_buf)?;
+        let postings_len = postings_buf.len() as u32;
+
+        dictionary.push(TermEntry {
+            term: key.term,
+            xpath: key.xpath,
+            postings_offset,
+            postings_len,
+            doc_freq: postings.len() as u32,
+        });
+    }
+
+    let doc_lengths_offset = out.stream_position()?;
+    write_doc_lengths(out, doc_lengths)?;
+    let doc_lengths_end = out.stream_position()?;
+
+    let dictionary_offset = out.stream_position()?;
+    write_dictionary(out, &dictionary)?;
+    let dictionary_end = out.stream_position()?;
+
+    let footer = SegmentFooter {
+        doc_lengths_offset,
+        doc_lengths_len: doc_lengths_end - doc_lengths_offset,
+        dictionary_offset,
+        dictionary_len: dictionary_end - dictionary_offset,
+        term_count: dictionary.len() as u32,
+    };
+
+    write_footer(out, &footer)
 }

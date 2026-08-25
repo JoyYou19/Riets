@@ -11,7 +11,7 @@ use crate::{
     },
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchStats},
-    types::{DocId, FieldStats, XPathId},
+    types::{DocId, FieldStats, TermKey, XPathId},
 };
 /*
 * MMaps a disk segment and implements SearchIndex
@@ -24,6 +24,8 @@ use crate::{
 pub struct DiskSegment {
     mmap: Mmap,
     dictionary: Vec<TermEntry>,
+    //TODO: we should look into this, if doc_lengths takes up too much RAM wikipedia-scale then we
+    //could cache this
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
 }
@@ -73,6 +75,18 @@ impl DiskSegment {
             dictionary,
             doc_lengths,
             field_stats,
+        })
+    }
+
+    pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
+        &self.doc_lengths
+    }
+
+    //bro yo zis so good function
+    pub fn iter_terms(&self) -> impl Iterator<Item = (TermKey, PostingList)> + '_ {
+        self.dictionary.iter().map(|entry| {
+            let postings = self.read_postings(entry);
+            (TermKey::new(entry.term.clone(), entry.xpath), postings)
         })
     }
 

@@ -1,14 +1,114 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    io,
+    iter::Peekable,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    disk::{reader::DiskSegment, writer::write_merged_segment},
     posting::{DeleteSet, PostingList, ops::union},
     segment::{ImmutableSegment, SegmentHandle},
     types::{DocId, FieldStats, TermKey, XPathId},
 };
 
-// WARN: Compacts and merges segments together, this desperately needs to be udpated to a smarter system
+type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
+
+enum OpenSegment {
+    Disk(DiskSegment),
+    Memory(Arc<ImmutableSegment>),
+}
+
+impl OpenSegment {
+    fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
+        match self {
+            OpenSegment::Disk(d) => d.doc_lengths(),
+            OpenSegment::Memory(m) => m.doc_lengths(),
+        }
+    }
+
+    fn iter_terms(&self) -> TermIter<'_> {
+        match self {
+            OpenSegment::Disk(d) => Box::new(d.iter_terms()),
+            OpenSegment::Memory(m) => {
+                Box::new(m.terms().iter().map(|(k, v)| (k.clone(), v.clone())))
+            }
+        }
+    }
+}
+
+struct MergedTerms<'a> {
+    sources: Vec<Peekable<TermIter<'a>>>,
+    deleted: &'a DeleteSet,
+}
+
+impl<'a> Iterator for MergedTerms<'a> {
+    type Item = (TermKey, PostingList);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let min_key = self
+                .sources
+                .iter_mut()
+                .filter_map(|s| s.peek().map(|(k, _)| k.clone()))
+                .min()?;
+
+            let mut items = Vec::new();
+            for source in self.sources.iter_mut() {
+                if let Some((k, _)) = source.peek() {
+                    if *k == min_key {
+                        let (_, postings) = source.next().unwrap();
+                        items.extend(postings.items().iter().cloned());
+                    }
+                }
+            }
+
+            let merged = self.deleted.filter(&PostingList::from_items(items));
+            if !merged.is_empty() {
+                return Some((min_key, merged));
+            }
+            // every posting for this term was tombstoned — keep scanning
+        }
+    }
+}
+
+pub fn compact_segments_streaming(
+    handles: &[SegmentHandle],
+    deleted: &DeleteSet,
+    output_path: &Path,
+) -> io::Result<()> {
+    let mut opened = Vec::with_capacity(handles.len());
+    for handle in handles {
+        opened.push(match handle {
+            SegmentHandle::Disk(path) => OpenSegment::Disk(DiskSegment::open(path)?),
+            SegmentHandle::Memory(segment) => OpenSegment::Memory(segment.clone()),
+        });
+    }
+
+    // doc_lengths has no position lists, so it's far smaller than postings —
+    // merging it eagerly here is a deliberate simplification, not an oversight.
+    let mut merged_doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
+    for segment in &opened {
+        for (&(doc_id, xpath), &len) in segment.doc_lengths() {
+            if deleted.contains(doc_id) {
+                continue;
+            }
+            merged_doc_lengths.insert((doc_id, xpath), len);
+        }
+    }
+
+    let sources: Vec<Peekable<TermIter<'_>>> =
+        opened.iter().map(|s| s.iter_terms().peekable()).collect();
+
+    let merged_terms = MergedTerms { sources, deleted };
+
+    write_merged_segment(output_path, merged_terms, &merged_doc_lengths)
+}
+
+// WARN: Compacts and merges segments together, this desperately needs to be udpated to a smarter system - Valtero Meero
 pub fn compact_segments(segments: &[ImmutableSegment], deleted: &DeleteSet) -> ImmutableSegment {
     let mut merged: BTreeMap<TermKey, PostingList> = BTreeMap::new();
     let mut merged_doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();

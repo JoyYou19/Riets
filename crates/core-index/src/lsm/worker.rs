@@ -13,7 +13,9 @@ use crate::{
     disk::{reader::DiskSegment, writer::write_segment},
     lsm::{
         compact_segments,
-        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
+        compaction::{
+            CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
+        },
         index_worker::IndexCommand,
     },
     segment::SegmentHandle,
@@ -113,22 +115,7 @@ impl CompactionWorker {
 }
 
 fn run_compaction_job(job: CompactionJob) -> io::Result<CompletedCompaction> {
-    let mut segments = Vec::new();
-
-    for handle in &job.selected {
-        match handle {
-            SegmentHandle::Disk(path) => {
-                let disk = DiskSegment::open(path)?;
-                segments.push(disk.to_immutable_segment());
-            }
-            SegmentHandle::Memory(segment) => {
-                segments.push((**segment).clone());
-            }
-        }
-    }
-
-    let compacted = compact_segments(&segments, &job.deleted);
-    write_segment(&job.output_path, &compacted)?;
+    compact_segments_streaming(&job.selected, &job.deleted, &job.output_path)?;
 
     Ok(CompletedCompaction {
         job_id: job.job_id,
