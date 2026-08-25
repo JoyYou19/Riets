@@ -947,7 +947,7 @@ impl ShardDb {
         &mut self,
         user: String,
         shard_backup_path: PathBuf,
-        backup_id: String
+        backup_id: String,
     ) -> Result<BackupManifest, CorelamoError> {
         if let Some(worker) = self.compaction_worker.take() {
             worker
@@ -955,9 +955,25 @@ impl ShardDb {
                 .map_err(|e| CorelamoError::Internal(format!("failed to stop compaction: {e}")))?;
         }
         info!(self.log, "Full backup made"; "Backup id"=> backup_id.clone(), "User"=>user);
+        let checkpoint = self.wal
+            .read_checkpoint()
+            .map_err(|e| CorelamoError::Internal(format!("failed to read WAL checkpoint: {e}")))?;
+
+        let record_count = self.wal
+            .replay_from(checkpoint)
+            .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
+
         let progress = self.stats.backup_progress().clone();
         let result = self.backup
-            .create_full_backup(&self.root, &shard_backup_path, &backup_id, &self.wal, &progress)
+            .create_full_backup(
+                &self.root,
+                &shard_backup_path,
+                &backup_id,
+                &self.wal,
+                &progress,
+                self.document_count(),
+                record_count.len()
+            )
             .map_err(|e| CorelamoError::Internal(e.to_string()));
 
         if self.options.enable_background_compaction {
@@ -978,12 +994,13 @@ impl ShardDb {
     pub fn backup_incremental(
         &mut self,
         shard_backup_path: PathBuf,
-        backup_id: String
-        ,user: String
+        backup_id: String,
+        user: String
     ) -> Result<Option<BackupManifest>, CorelamoError> {
         info!(self.log, "Incremental backup made"; "user"=> user);
+        let progress = self.stats.backup_progress().clone();
         self.backup
-            .create_incremental_backup(&shard_backup_path, &backup_id, &self.wal)
+            .create_incremental_backup(&shard_backup_path, &backup_id, &self.wal, self.document_count(), &progress)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
@@ -1024,7 +1041,6 @@ impl ShardDb {
         self.backup.list_backups().map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    
     pub fn delete_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         self.backup.delete_backup(backup_id).map_err(|e| CorelamoError::Internal(e.to_string()))?;
         info!(self.log, "backup deleted"; "Backup id "=> backup_id, "User" =>user);

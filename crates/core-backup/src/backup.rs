@@ -1,3 +1,4 @@
+use crate::progress::BackupPhase::Complete;
 use crate::progress::BackupProgress;
 use core_logs::logger;
 use core_storage::wal::Wal;
@@ -19,8 +20,8 @@ pub struct BackupManifest {
     pub backup_type: BackupType,
     pub start_offset: u64,
     pub wal_offset: u64,
-    pub document_count: u64,
-    pub record_count: u64,
+    pub document_count: usize,
+    pub record_count: usize,
     pub parent_backup_id: Option<String>,
 }
 
@@ -203,17 +204,17 @@ impl BackupManager {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
         let name = shard_name.clone();
         let log = logger::shard_logger(shard_root, &name);
-        let (last_backup_offset, last_backup_id) =
-            if let Ok(state) = fs::read_to_string(&state_path) {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
-                    let offset = parsed["last_offset"].as_u64().unwrap_or(0);
-                    let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
-                    (offset, id)
-                } else {
-                    (0, None)
-                }
-           
-              }  else {
+        let (last_backup_offset, last_backup_id) = if
+            let Ok(state) = fs::read_to_string(&state_path)
+        {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+                let offset = parsed["last_offset"].as_u64().unwrap_or(0);
+                let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
+                (offset, id)
+            } else {
+                (0, None)
+            }
+        } else {
             // State file doesn't exist; scan disk for latest backup
             let best = fs
                 ::read_dir(&backup_dir)
@@ -262,7 +263,9 @@ impl BackupManager {
         backup_path: &Path,
         backup_id: &str,
         wal: &Wal,
-        progress: &BackupProgress
+        progress: &BackupProgress,
+        document_count: usize,
+        record_count: usize
     ) -> Result<BackupManifest, BackupError> {
         //read wal offset before touching files so new things dont catch up with backup
         let wal_offset = wal.durable_offset();
@@ -288,8 +291,8 @@ impl BackupManager {
                 backup_type: BackupType::Full,
                 start_offset: 0,
                 wal_offset, // the value snapshotted above
-                document_count: 0, // populate once ShardCut is wired up
-                record_count: 0,
+                document_count,
+                record_count,
                 parent_backup_id: None,
             };
 
@@ -307,6 +310,7 @@ impl BackupManager {
                 if let Some(old_id) = old_id {
                     self.delete_incremental_chain(&old_id);
                 }
+                
                 Ok(manifest)
             }
             Err(e) => {
@@ -320,7 +324,9 @@ impl BackupManager {
         &mut self,
         backup_path: &Path, // pre-created by shard manager: backups/incr_123/shard-0/
         backup_id: &str, // shared id from shard manager: "incr_123"
-        wal: &Wal
+        wal: &Wal,
+        document_count: usize,
+        progress: &BackupProgress
     ) -> Result<Option<BackupManifest>, BackupError> {
         let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
 
@@ -337,10 +343,15 @@ impl BackupManager {
             let records = wal
                 .replay_from(start_offset)
                 .map_err(|e| BackupError::WalError(e.to_string()))?;
+            let total: u64 = records
+                .iter()
+                .map(|(_, payload)| payload.len() as u64)
+                .sum();
+            progress.grow_total(total);
 
             let file = File::create(backup_path.join("wal_records.bin"))?;
             let mut w = BufWriter::new(file);
-            let mut record_count: u64 = 0;
+            let mut record_count = 0;
 
             for (offset, payload) in records {
                 if offset <= start_offset || offset > end_offset {
@@ -358,13 +369,14 @@ impl BackupManager {
                 .map_err(|e| BackupError::IoError(e.into_error()))?
                 .sync_all()?;
 
+            
             let manifest = BackupManifest {
                 backup_id: backup_id.to_string(),
                 created_at: chrono::Utc::now().timestamp() as u64,
                 backup_type: BackupType::Incremental,
                 start_offset,
                 wal_offset: end_offset,
-                document_count: 0,
+                document_count,
                 record_count,
                 parent_backup_id: Some(parent_id),
             };
@@ -379,6 +391,7 @@ impl BackupManager {
                 self.last_backup_id = Some(backup_id.to_string());
                 self.save_state()?;
                 Ok(Some(manifest))
+                
             }
             Err(e) => {
                 let _ = fs::remove_dir_all(backup_path);
@@ -390,16 +403,17 @@ impl BackupManager {
         let mut current_id = from_id.to_string();
         loop {
             let manifest = self.load_manifest(&current_id);
-            
+
             match manifest {
                 Err(_) => {
                     break;
                 }
-                Ok(m) => match m.backup_type {
-                    BackupType::Full => {
-                        break;
-                    }
-                    
+                Ok(m) =>
+                    match m.backup_type {
+                        BackupType::Full => {
+                            break;
+                        }
+
                         BackupType::Incremental => {
                             let path = self.shard_backup_path(&current_id);
                             if let Err(e) = fs::remove_dir_all(&path) {
@@ -569,7 +583,7 @@ impl BackupManager {
         }
         Ok(())
     }
-    
+
     pub fn delete_backup(&self, backup_id: &str) -> Result<(), BackupError> {
         std::fs::remove_dir_all(self.shard_backup_path(backup_id))?;
         Ok(())
