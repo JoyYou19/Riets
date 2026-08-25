@@ -413,21 +413,23 @@ impl BackupManager {
                 Err(_) => {
                     break;
                 }
-                Ok(m) => match m.backup_type {
-                    BackupType::Full => {
-                        break;
-                    }
-                    BackupType::Incremental => {
-                        let path = self.shard_backup_path(&current_id);
-                        if let Err(e) = fs::remove_dir_all(&path) {
-                            error!(
-                                self.log,
-                                "failed to delete old incremental {current_id}: {e}"
-                            );
+                Ok(m) =>
+                    match m.backup_type {
+                        BackupType::Full => {
+                            break;
                         }
-                        match m.parent_backup_id {
-                            Some(parent_id) => current_id = parent_id,
-                            None => break,
+
+                        BackupType::Incremental => {
+                            let path = self.shard_backup_path(&current_id);
+                            if let Err(e) = fs::remove_dir_all(&path) {
+                                error!(
+                                    self.log,
+                                    "failed to delete old incremental {current_id}: {e}"
+                                );
+                            }
+                            None => {
+                                break;
+                            }
                         }
                     }
                 },
