@@ -2,9 +2,9 @@ use crate::ShardDb;
 use crate::metrics::DbStats;
 use crate::reindex::{ReindexJob, ReindexPool};
 use crate::shard_db::DatabaseStats;
-use crate::shard_worker::{self, ShardCmd, ShardHandle};
-use crate::{DatabaseOptions, shard_for};
-use core_backup::backup::BackupManifest;
+use crate::shard_worker::{ self, ShardCmd, ShardHandle };
+use crate::{ DatabaseOptions, shard_for };
+use core_backup::backup::{BackupManifest, BackupType};
 use core_backup::backup::compress_file;
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
@@ -548,7 +548,7 @@ impl ShardManager {
             let (handle, join) = shard_worker::spawn(
                 db,
                 Self::DEFAULT_QUEUE_DEPTH,
-                options.bootable && manual_load,
+                options.bootable && manual_load
             )?;
             shards.push(handle);
             joins.push(join);
@@ -1011,7 +1011,10 @@ impl ShardManager {
         Ok(manifests)
     }
 
-    pub async fn backup_incremental(&self,user: String) -> Result<Vec<Option<BackupManifest>>, CorelamoError> {
+    pub async fn backup_incremental(
+        &self,
+        user: String
+    ) -> Result<Vec<Option<BackupManifest>>, CorelamoError> {
         let backup_id = format!("incr_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
         let backup_root = self.backup_dir.join(&backup_id);
 
@@ -1022,8 +1025,8 @@ impl ShardManager {
             let handle = shard.clone();
             let shard_backup_path = backup_root.join(format!("shard-{i}"));
             let bid = backup_id.clone();
-            let user =user.clone();
-            set.spawn(async move { handle.backup_incremental(user,shard_backup_path, bid).await });
+            let user = user.clone();
+            set.spawn(async move { handle.backup_incremental(user, shard_backup_path, bid).await });
         }
 
         let mut manifests = Vec::with_capacity(self.shards.len());
@@ -1097,14 +1100,30 @@ impl ShardManager {
     }
 
     pub async fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
-        let shard = self
-            .shards
-            .first()
-            .ok_or_else(|| CorelamoError::Internal("no shards".into()))?;
-        shard.list_backups().await
+        let mut merged: HashMap<String, BackupManifest> = HashMap::new();
+
+        for shard in &self.shards {
+            for manifest in shard.list_backups().await? {
+                merged
+                    .entry(manifest.backup_id.clone())
+                    .and_modify(|m| {
+                        m.document_count += manifest.document_count;
+                        if manifest.backup_type == BackupType::Incremental {
+                            m.record_count += manifest.record_count;
+                        }
+                    })
+                    .or_insert(manifest);
+            }
+        }
+
+        Ok(merged.into_values().collect())
     }
 
-    pub async fn delete_backup(&self, backup_id: String, _user: String) -> Result<(), CorelamoError> {
+    pub async fn delete_backup(
+        &self,
+        backup_id: String,
+        _user: String
+    ) -> Result<(), CorelamoError> {
         let backup_root = self.backup_dir.join(backup_id);
         fs::remove_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
         Ok(())
