@@ -1660,7 +1660,7 @@ pub async fn list_backups_handler(
         }
     };
 
-    let backups = match handle.list_backups().await {
+    let backups = match handle.list_backups(){
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(
