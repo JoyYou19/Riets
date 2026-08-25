@@ -288,6 +288,7 @@ async fn main() -> io::Result<()> {
             "/api/users/{username}",
             delete(handlers::delete_user_handler),
         )
+        .route("/api/users/list-users", get(handlers::list_users_handler))
         .route(
             "/api/users/{username}/password",
             post(handlers::update_user_password_handler),
