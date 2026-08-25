@@ -27,7 +27,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
             Permission::ListDatabases,
-            Permission::RenameDatabse,
+            Permission::RenameDatabase,
             Permission::StartDB,
             Permission::StopDB,
             Permission::RestartDB,
@@ -42,6 +42,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::DeleteUser,
             Permission::UpdatePwd,
             Permission::UpdateRole,
+            Permission::ListUsers,
             //backup
             Permission::BackupFull,
             Permission::Restore,
@@ -62,7 +63,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
             Permission::ListDatabases,
-            Permission::RenameDatabse,
+            Permission::RenameDatabase,
             Permission::StartDB,
             Permission::StopDB,
             Permission::RestartDB,
@@ -72,6 +73,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::SetConfig,
             Permission::Reindex,
             Permission::AllFields,
+            Permission::ListUsers,
         ],
     );
 

@@ -128,9 +128,9 @@ pub async fn list_users_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    // if let Err(e) = check_permission(&state, &principal, Permission::ListUsers) {
-    //     return HttpError::from_corelamo(e, &ctx).into_response();
-    // }
+    if let Err(e) = check_permission(&state, &principal, Permission::ListUsers) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
 
     let auth = state.auth.read().unwrap_or_else(|e| e.into_inner());
     let usernames = auth.list_usernames(); // whatever method exists to get usernames
@@ -1738,7 +1738,7 @@ pub async fn rename_database_handler(
     Extension(principal): Extension<Principal>,
     body: String
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::RenameDatabse) {
+    if let Err(e) = check_permission(&state, &principal, Permission::RenameDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
