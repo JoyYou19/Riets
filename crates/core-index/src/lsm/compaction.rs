@@ -109,41 +109,41 @@ pub fn compact_segments_streaming(
 }
 
 // WARN: Compacts and merges segments together, this desperately needs to be udpated to a smarter system - Valtero Meero
-pub fn compact_segments(segments: &[ImmutableSegment], deleted: &DeleteSet) -> ImmutableSegment {
-    let mut merged: BTreeMap<TermKey, PostingList> = BTreeMap::new();
-    let mut merged_doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
-
-    for segment in segments {
-        for (&(doc_id, xpath), &len) in segment.doc_lengths() {
-            if deleted.contains(doc_id) {
-                continue;
-            }
-
-            merged_doc_lengths.insert((doc_id, xpath), len);
-        }
-        for (key, postings) in segment.terms() {
-            // First we check if the posting is not already deleted
-            let postings = deleted.filter(postings);
-
-            if postings.is_empty() {
-                continue;
-            }
-
-            // TODO: Once again, this might not be optimal
-            merged
-                .entry(key.clone())
-                .and_modify(|existing| {
-                    *existing = deleted.filter(&union(existing, &postings));
-                })
-                .or_insert_with(|| postings.clone());
-        }
-    }
-
-    let merged_field_stats = build_field_stats(&merged_doc_lengths);
-
-    ImmutableSegment::new(merged, merged_doc_lengths, merged_field_stats)
-}
-
+// pub fn compact_segments(segments: &[ImmutableSegment], deleted: &DeleteSet) -> ImmutableSegment {
+//     let mut merged: BTreeMap<TermKey, PostingList> = BTreeMap::new();
+//     let mut merged_doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
+//
+//     for segment in segments {
+//         for (&(doc_id, xpath), &len) in segment.doc_lengths() {
+//             if deleted.contains(doc_id) {
+//                 continue;
+//             }
+//
+//             merged_doc_lengths.insert((doc_id, xpath), len);
+//         }
+//         for (key, postings) in segment.terms() {
+//             // First we check if the posting is not already deleted
+//             let postings = deleted.filter(postings);
+//
+//             if postings.is_empty() {
+//                 continue;
+//             }
+//
+//             // TODO: Once again, this might not be optimal
+//             merged
+//                 .entry(key.clone())
+//                 .and_modify(|existing| {
+//                     *existing = deleted.filter(&union(existing, &postings));
+//                 })
+//                 .or_insert_with(|| postings.clone());
+//         }
+//     }
+//
+//     let merged_field_stats = build_field_stats(&merged_doc_lengths);
+//
+//     ImmutableSegment::new(merged, merged_doc_lengths, merged_field_stats)
+// }
+//
 fn build_field_stats(
     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
 ) -> BTreeMap<XPathId, FieldStats> {
