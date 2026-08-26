@@ -3,10 +3,15 @@ name = "core-runtime"
 version = "0.1.0"
 edition = "2024"
 
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
+
+
+[features]
+timing = ["core-timing/timing", "core-core/timing", "core-storage/timing"]
 
 [dependencies]
 core-index = { path = "../core-index" }
@@ -16,6 +21,7 @@ core-storage = { path = "../core-storage" }
 core-core = { path = "../core-core" }
 core-auth = {path = "../core-auth"}
 core-logs ={path ="../core-logs"}
+core-timing={path ="../core-timing"}
 uuid = { version = "1.23.4", features = ["v4"] }
 serde = { workspace = true,}
 tokio = { workspace = true }

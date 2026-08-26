@@ -564,6 +564,7 @@ dependencies = [
  "core-protocol",
  "core-query",
  "core-storage",
+ "core-timing",
  "crossbeam-channel",
  "dashmap",
  "indexmap",
@@ -677,6 +678,7 @@ dependencies = [
  "core-protocol",
  "core-query",
  "core-storage",
+ "core-timing",
  "crossbeam-channel",
  "governor",
  "http-body-util",
@@ -710,6 +712,7 @@ dependencies = [
  "core-logs",
  "core-protocol",
  "core-query",
+ "core-timing",
  "crc32fast",
  "criterion",
  "dashmap",
@@ -730,6 +733,22 @@ dependencies = [
  "criterion",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "core-timing"
+version = "0.1.0"
+dependencies = [
+ "core-timing-macros",
+]
+
+[[package]]
+name = "core-timing-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

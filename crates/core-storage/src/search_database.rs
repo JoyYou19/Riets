@@ -25,6 +25,7 @@ use core_protocol::{
     format::Format,
 };
 use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use core_timing::timed;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +237,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.store.for_each_document(f)
     }
 
+    #[timed]
     pub fn put_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -286,6 +288,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         })
     }
 
+    #[timed]
     pub fn put_documents_parallel(
         &mut self,
         inputs: Vec<DocumentInput>,
@@ -321,6 +324,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     // Update creates a new internal version, the old internal_id is tombstoned, while the
     // external_id points to the latest version
     // INFO: changed the name cuz upsert is more precise here
+    #[timed]
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let internal_id = self.allocate_internal_id()?;
 
@@ -351,6 +355,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(())
     }
 
+    #[timed]
     pub fn partial_replace_document(
         &mut self,
         external_id: &str,
@@ -401,6 +406,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(Some(new_doc))
     }
 
+    #[timed]
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
             self.index_worker
@@ -490,6 +496,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.resolve_document_hits(hits, None)
     }
 
+    #[timed]
     pub fn search_document_hits_all_fields_top_k(
         &self,
         query: &Query,
@@ -551,6 +558,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         LookupResponse::from_hits(found, not_found).map_err(io::Error::other)
     }
 
+    #[timed]
     pub fn search_document_hits_plan(
         &self,
         plan: &QueryPlan,
@@ -611,6 +619,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(results)
     }
 
+    #[timed]
     pub fn flush(&mut self) -> io::Result<()> {
         self.index_worker.flush_wait()
     }

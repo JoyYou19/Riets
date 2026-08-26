@@ -36,6 +36,7 @@ use core_protocol::{
     errors::{CorelamoError, DocFailure, FailReason},
 };
 use core_query::{Query, SearchHit, query_string_parser::parse_and_analyze};
+use core_timing::timed;
 
 use crate::{
     metrics::DatabaseMetrics,
@@ -387,6 +388,7 @@ impl ShardDb {
     }
 
     // ====== Read Operations ======
+    #[timed]
     pub fn search(&self, query: &Query, k: usize) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         let db = self
             .db_ref()
@@ -429,6 +431,7 @@ impl ShardDb {
         parse_and_analyze(input, db.get_analyzer())
     }
     // =========write operations =========
+    #[timed]
     fn wal_append_record(&mut self, record: &WalRecord) -> Result<u64, CorelamoError> {
         let encoded = bincode::encode_to_vec(record, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
@@ -892,6 +895,7 @@ impl ShardDb {
         Ok(InsertReport { inserted, failures })
     }
 
+    #[timed]
     pub fn flush(&mut self) -> Result<(), CorelamoError> {
         self.db_mut()
             .map_err(|e| CorelamoError::Internal(e.to_string()))?

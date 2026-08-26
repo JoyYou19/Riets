@@ -8,6 +8,8 @@ core-protocol = { path = "../core-protocol" }
 core-index = {path = "../core-index"}
 core-query = {path = "../core-query"}
 core-logs={path="../core-logs"}
+core-timing = { path = "../core-timing" }
+
 
 
 slog="2"
@@ -24,3 +26,6 @@ dashmap = "6.2.1"
 moka = { version = "0.12.16", features = ["sync"] }
 [dev-dependencies]
 criterion = { workspace = true }
+
+[features]
+timing = ["core-timing/timing"]

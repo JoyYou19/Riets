@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     disk::{reader::DiskSegment, writer::write_merged_segment},
-    posting::{DeleteSet, PostingList, ops::union},
+    posting::{DeleteSet, PostingList},
     segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{DocId, TermKey, XPathId},
 };
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
@@ -144,19 +144,19 @@ pub fn compact_segments_streaming(
 //     ImmutableSegment::new(merged, merged_doc_lengths, merged_field_stats)
 // }
 //
-fn build_field_stats(
-    doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
-) -> BTreeMap<XPathId, FieldStats> {
-    let mut stats = BTreeMap::<XPathId, FieldStats>::new();
-
-    for ((_, xpath), len) in doc_lengths {
-        let entry = stats.entry(*xpath).or_default();
-        entry.doc_count += 1;
-        entry.total_doc_len += *len as u64;
-    }
-
-    stats
-}
+// fn build_field_stats(
+//     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
+// ) -> BTreeMap<XPathId, FieldStats> {
+//     let mut stats = BTreeMap::<XPathId, FieldStats>::new();
+//
+//     for ((_, xpath), len) in doc_lengths {
+//         let entry = stats.entry(*xpath).or_default();
+//         entry.doc_count += 1;
+//         entry.total_doc_len += *len as u64;
+//     }
+//
+//     stats
+// }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CompactionConfig {

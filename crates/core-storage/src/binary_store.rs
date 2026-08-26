@@ -19,6 +19,7 @@ use std::{
 
 use core_index::types::DocId;
 use core_protocol::format::Format;
+use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
 
@@ -30,7 +31,7 @@ const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
 
 //TODO: make configurable per-database
-const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10;
+const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10000;
 
 #[derive(Debug)]
 pub struct BinaryDocumentStore {
@@ -155,6 +156,7 @@ impl BinaryDocumentStore {
         read_document_at_path(&self.path, offset)
     }
 
+    #[timed]
     fn append_put(&self, doc: &StoredDocument) -> io::Result<u64> {
         let file = OpenOptions::new().append(true).open(&self.path)?;
         let start = file.metadata()?.len();
@@ -168,6 +170,7 @@ impl BinaryDocumentStore {
         Ok(doc_offset)
     }
 
+    #[timed]
     fn append_delete(&self, external_id: &str) -> io::Result<()> {
         let file = OpenOptions::new().append(true).open(&self.path)?;
         let mut writer = BufWriter::new(file);
@@ -181,6 +184,7 @@ impl BinaryDocumentStore {
 }
 
 impl DocumentStore for BinaryDocumentStore {
+    #[timed]
     fn put(&mut self, doc: StoredDocument) -> io::Result<()> {
         let offset = self.append_put(&doc)?;
 
@@ -199,6 +203,7 @@ impl DocumentStore for BinaryDocumentStore {
         Ok(())
     }
 
+    #[timed]
     fn put_batch(&mut self, docs: Vec<StoredDocument>) -> io::Result<()> {
         let file = OpenOptions::new().append(true).open(&self.path)?;
         let start = file.metadata()?.len();
@@ -233,6 +238,7 @@ impl DocumentStore for BinaryDocumentStore {
     }
 
     //either read from ram else read the exact document from the file
+    #[timed]
     fn get(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         if let Some(doc) = self.docs.get(external_id) {
             return Ok(Some(doc));
@@ -247,6 +253,7 @@ impl DocumentStore for BinaryDocumentStore {
         Ok(Some(doc))
     }
 
+    #[timed]
     fn delete(&mut self, external_id: &str) -> io::Result<()> {
         self.append_delete(external_id)?;
         if let Some((_, loc)) = self.locations.remove(external_id) {
