@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use core_timing::timed;
 
 use crate::{
     mem::MemIndex,
@@ -88,6 +89,7 @@ impl IndexSnapshot {
         self.deleted.filter(&postings)
     }
 
+    #[timed(search)]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mut lists = Vec::new();
 
@@ -100,6 +102,7 @@ impl IndexSnapshot {
         self.apply_deletes(union_many(lists.iter()))
     }
 
+    #[timed(search)]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let mut lists = Vec::new();
 
@@ -112,6 +115,7 @@ impl IndexSnapshot {
         self.apply_deletes(union_many(lists.iter()))
     }
 
+    #[timed(search)]
     pub fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         let mut lists = Vec::new();
 

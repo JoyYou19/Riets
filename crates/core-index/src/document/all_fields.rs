@@ -1,3 +1,4 @@
+use core_timing::timed;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -24,6 +25,7 @@ impl AllFields {
         Self::default()
     }
 
+    #[timed(database_lifecycle)]
     pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
         let path = Self::path(root.as_ref());
         if !path.exists() {
@@ -34,6 +36,7 @@ impl AllFields {
         toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
+    #[timed(writing_files)]
     pub fn save(&self, root: impl AsRef<Path>) -> io::Result<()> {
         let path = Self::path(root.as_ref());
         let contents = toml::to_string_pretty(self)

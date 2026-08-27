@@ -10,6 +10,7 @@ core-storage = { path = "../core-storage" }
 core-protocol = {path = "../core-protocol" }
 core-logs={path="../core-logs"}
 core-backup ={path ="../core-backup"}
+core-timing = { path = "../core-timing" }
 slog="2"
 slog-async="2"
 bincode="2.0"
@@ -25,3 +26,14 @@ parking_lot = "0.12.5"
 dashmap = "6.2.1"
 moka = "0.12.16"
 slog-scope = "4.4.1"
+
+
+
+[features]
+timing = [
+  "core-timing/timing",
+  "core-index/timing",
+  "core-query/timing",
+  "core-storage/timing",
+  "core-backup/timing",
+]

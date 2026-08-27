@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use ahash::HashMapExt;
+use core_timing::timed;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
@@ -60,6 +61,7 @@ impl MemIndex {
         }
     }
 
+    #[timed(indexing_documents)]
     pub fn freeze(self) -> crate::segment::ImmutableSegment {
         let terms: BTreeMap<_, _> = self.terms.into_iter().collect();
         let doc_lengths: BTreeMap<_, _> = self.doc_lengths.into_iter().collect();
@@ -78,6 +80,7 @@ impl MemIndex {
         self.add_token_weighted(term, xpath, doc_id, position, 1);
     }
 
+    #[timed(indexing_documents)]
     pub fn add_token_weighted(
         &mut self,
         term: impl Into<String>,
@@ -94,6 +97,7 @@ impl MemIndex {
             .insert(doc_id, position, weight);
     }
 
+    #[timed(indexing_documents)]
     pub fn add_posting_weighted(
         &mut self,
         term: impl Into<String>,
@@ -114,6 +118,7 @@ impl MemIndex {
         self.terms.get(&TermKey::new(term, xpath))
     }
 
+    #[timed(search)]
     pub fn lookup_all_xpaths(&self, term: &str) -> PostingList {
         let mut items = Vec::new();
 
@@ -130,6 +135,7 @@ impl MemIndex {
         self.terms.len()
     }
 
+    #[timed(indexing_documents)]
     pub fn add_document(&mut self, analyzer: &Analyzer, doc_id: DocId, xpath: XPathId, text: &str) {
         for token in analyzer.analyze(text) {
             self.add_token(token.text, xpath, doc_id, token.position);
@@ -143,6 +149,7 @@ impl MemIndex {
     // the weighting this specific part or xml field in the document allows.
     // The postinglist stores all positions for phrase/proximity search while
     // the posting weight represents the terms importance in this document part.
+    #[timed(indexing_documents)]
     pub fn add_document_weighted(
         &mut self,
         analyzer: &Analyzer,
@@ -176,6 +183,7 @@ impl MemIndex {
         }
     }
 
+    #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
         for part in &document.parts {
             self.add_document_weighted(
@@ -193,6 +201,7 @@ impl MemIndex {
         self.lookup(term, xpath).cloned().unwrap_or_default()
     }
 
+    #[timed(search)]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let mut items = Vec::new();
 
@@ -205,6 +214,7 @@ impl MemIndex {
         PostingList::from_items(items)
     }
 
+    #[timed(search)]
     pub fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);

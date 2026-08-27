@@ -1,6 +1,7 @@
 //sis ir logging kas saglabajas pec crash WAL -Write ahead logging
 use crate::search_database::DocumentInput;
 use bincode::{Decode, Encode};
+use core_timing::timed;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -45,6 +46,7 @@ pub struct Wal {
 }
 
 impl Wal {
+    #[timed(wal)]
     pub fn open(path: impl AsRef<Path>, mode: SyncMode) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::create(&mut OpenOptions::new(), true)
@@ -74,6 +76,7 @@ impl Wal {
 
     /// Returns the byte offset of the record. In SyncEach mode the record is
     /// durable when this returns Ok. In Manual mode it is NOT durable until flush().
+    #[timed(wal)]
     pub fn append(&self, payload: &[u8]) -> io::Result<u64> {
         if (payload.len() as u64) > (MAX_ENTRY_SIZE as u64) {
             return Err(io::Error::new(
@@ -109,6 +112,7 @@ impl Wal {
     }
 
     /// Manual mode: make all pending appends durable (group commit point).
+    #[timed(wal)]
     pub fn flush(&self) -> io::Result<()> {
         let mut g = self.inner.lock().unwrap();
         if g.poisoned {
@@ -123,6 +127,7 @@ impl Wal {
     }
 
     /// Readers can never observe a record that was not confirmed durable.
+    #[timed(wal)]
     pub fn read_at(&self, offset: u64) -> io::Result<Vec<u8>> {
         let mut g = self.inner.lock().unwrap();
         if offset >= g.durable_offset {
@@ -186,6 +191,7 @@ impl Wal {
     //     }
     //     Ok(last_valid_end)
     // }
+    #[timed(wal)]
     fn scan_and_truncate(file: &mut File) -> io::Result<u64> {
         let file_len = file.seek(SeekFrom::End(0))?;
         let mut pos = 0u64;
@@ -224,6 +230,7 @@ impl Wal {
     }
 
     /// Ok(Some(end_offset)) if a valid record starts at `pos`, Ok(None) otherwise.
+    #[timed(wal)]
     fn read_record_at(file: &mut File, pos: u64, file_len: u64) -> io::Result<Option<u64>> {
         file.seek(SeekFrom::Start(pos))?;
         let mut header = [0u8; 8];
@@ -248,6 +255,7 @@ impl Wal {
         self.path.with_extension("checkpoint")
     }
 
+    #[timed(wal)]
     pub fn read_checkpoint(&self) -> io::Result<u64> {
         match std::fs::read(self.checkpoint_path()) {
             Ok(b) if b.len() == 8 => Ok(u64::from_le_bytes(b.try_into().unwrap())),
@@ -257,6 +265,7 @@ impl Wal {
         }
     }
 
+    #[timed(wal)]
     pub fn write_checkpoint(&self, offset: u64) -> io::Result<()> {
         let final_path = self.checkpoint_path();
         let tmp = final_path.with_extension("checkpoint.tmp");
@@ -272,6 +281,7 @@ impl Wal {
         Ok(())
     }
 
+    #[timed(wal)]
     pub fn replay_from(&self, from: u64) -> io::Result<Vec<(u64, Vec<u8>)>> {
         let mut g = self.inner.lock().unwrap();
         let end = g.durable_offset;
@@ -309,6 +319,7 @@ impl Wal {
         }
         Ok(out)
     }
+    #[timed(wal)]
     pub fn reset(&self) -> io::Result<()> {
         let mut g = self.inner.lock().unwrap();
         g.file.set_len(0)?;

@@ -5,6 +5,7 @@ use core_index::{
     search::SearchStats,
     types::{Position, XPathId},
 };
+use core_timing::timed;
 
 use crate::ScoredPosting;
 
@@ -20,6 +21,7 @@ const SCORE_SCALE: f32 = 1000.0;
 //     std::env::var_os("CORELAMO_TRACE_BM25").is_some()
 // }
 
+#[timed(search)]
 pub fn score_term_hybrid<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
@@ -108,6 +110,7 @@ pub fn score_term_hybrid<S: SearchStats>(
 //         .collect()
 // }
 
+#[timed(search)]
 pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPosting> {
     let mut result = Vec::new();
 
@@ -139,6 +142,7 @@ pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPost
 
 // WARN: Need to add a maximum window later down the road for large documents, might want to
 // specify in query the amount of positions to search for
+#[timed(search)]
 fn closest_window(left: &[Position], right: &[Position]) -> Option<(Position, Position, u32)> {
     let mut best: Option<(Position, Position, u32)> = None;
 

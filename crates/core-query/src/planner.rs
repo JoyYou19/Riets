@@ -1,3 +1,5 @@
+use core_timing::timed;
+
 use crate::Query;
 
 #[derive(Debug, Clone)]
@@ -21,6 +23,7 @@ pub struct QueryPlan {
 pub struct QueryPlanner;
 
 impl QueryPlanner {
+    #[timed(search)]
     pub fn plan(query: Query) -> QueryPlan {
         let mut signals = Vec::new();
         Self::collect_signals(&query, &mut signals);
@@ -31,6 +34,7 @@ impl QueryPlanner {
         }
     }
 
+    #[timed(search)]
     fn collect_signals(query: &Query, out: &mut Vec<QuerySignal>) {
         match query {
             Query::Term(term) => {

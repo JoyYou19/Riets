@@ -9,16 +9,14 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    disk::{reader::DiskSegment, writer::write_segment},
-    lsm::{
-        compact_segments,
-        compaction::{
-            CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
-        },
-        index_worker::IndexCommand,
+use core_timing::timed;
+
+use crate::lsm::{
+    //compact_segments,
+    compaction::{
+        CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
     },
-    segment::SegmentHandle,
+    index_worker::IndexCommand,
 };
 
 // Whenever started will wait for an interval before
@@ -114,6 +112,7 @@ impl CompactionWorker {
     }
 }
 
+#[timed(compaction)]
 fn run_compaction_job(job: CompactionJob) -> io::Result<CompletedCompaction> {
     compact_segments_streaming(&job.selected, &job.deleted, &job.output_path)?;
 

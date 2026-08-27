@@ -1,5 +1,7 @@
 use std::{io, path::PathBuf, sync::Arc};
 
+use core_timing::timed;
+
 use crate::{
     analyzer::analyzer::Analyzer,
     disk::{reader::DiskSegment, writer::write_segment},
@@ -33,14 +35,17 @@ pub struct LsmIndex {
 }
 
 impl SearchIndex for LsmIndex {
+    #[timed(search)]
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         self.snapshot().lookup(term, xpath)
     }
 
+    #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_prefix(prefix, xpath)
     }
 
+    #[timed(search)]
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_wildcard(pattern, xpath)
     }
@@ -74,6 +79,7 @@ impl LsmIndex {
         }
     }
 
+    #[timed(database_lifecycle)]
     pub fn persistent(root: impl Into<PathBuf>, flush_threshold: usize) -> io::Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
@@ -115,6 +121,7 @@ impl LsmIndex {
         })
     }
 
+    #[timed(indexing_documents)]
     pub fn add_document(
         &mut self,
         analyzer: &Analyzer,
@@ -131,6 +138,7 @@ impl LsmIndex {
         Ok(())
     }
 
+    #[timed(indexing_documents)]
     pub fn add_indexed_document(
         &mut self,
         analyzer: &Analyzer,
@@ -145,6 +153,7 @@ impl LsmIndex {
         Ok(())
     }
 
+    #[timed(indexing_documents)]
     pub fn add_immutable_segment(&mut self, segment: ImmutableSegment) -> io::Result<()> {
         let segment = Arc::new(segment);
 
@@ -186,6 +195,7 @@ impl LsmIndex {
 
     // Converts a mutable indexing state into a readonly segment
     // so we can query, share, serialize, compact the data
+    #[timed(flushing)]
     pub fn flush(&mut self) -> io::Result<()> {
         let old_mem = std::mem::take(&mut self.mem);
 
@@ -245,6 +255,7 @@ impl LsmIndex {
     }
 
     // Compacts all segments, probably not what we want
+    #[timed(compaction)]
     pub fn compact_all(&mut self) -> io::Result<()> {
         if self.segment_handles.len() <= 1 {
             return Ok(());
@@ -290,6 +301,7 @@ impl LsmIndex {
         Ok(())
     }
 
+    #[timed(compaction)]
     pub fn compact_some(&mut self, max_segments: usize) -> io::Result<bool> {
         if max_segments < 2 || self.segment_handles.len() < max_segments {
             return Ok(false);
@@ -348,6 +360,7 @@ impl LsmIndex {
         Ok(true)
     }
 
+    #[timed(compaction)]
     pub fn maybe_compact(&mut self, config: CompactionConfig) -> io::Result<bool> {
         if self.segment_count() < config.compact_when_segments_at_least {
             return Ok(false);
@@ -356,6 +369,7 @@ impl LsmIndex {
         self.compact_some(config.max_segments_per_compaction)
     }
 
+    #[timed(compaction)]
     pub fn plan_compaction(
         &mut self,
         config: CompactionConfig,
@@ -397,6 +411,7 @@ impl LsmIndex {
         }))
     }
 
+    #[timed(compaction)]
     pub fn install_compaction(&mut self, completed: CompletedCompaction) -> io::Result<bool> {
         let Some(root) = &self.root else {
             return Ok(false);
@@ -454,6 +469,7 @@ impl LsmIndex {
         Ok(true)
     }
 
+    #[timed(modifying_documents)]
     pub fn delete_document(&mut self, doc_id: DocId) -> io::Result<()> {
         self.deleted.delete(doc_id);
 

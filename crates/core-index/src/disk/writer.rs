@@ -4,6 +4,8 @@ use std::{
     path::Path,
 };
 
+use core_timing::timed;
+
 use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
@@ -90,6 +92,7 @@ fn write_dictionary(out: &mut impl Write, entries: &[TermEntry]) -> io::Result<(
     Ok(())
 }
 
+#[timed(writing_files)]
 pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::Result<()> {
     let file = File::create(path)?;
     let mut out = BufWriter::new(file);
@@ -97,6 +100,7 @@ pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::
     out.flush()
 }
 
+#[timed(writing_files)]
 pub fn write_segment_to<W: Write + Seek>(
     out: &mut W,
     segment: &ImmutableSegment,
@@ -196,6 +200,7 @@ pub fn write_segment_to<W: Write + Seek>(
     Ok(())
 }
 
+#[timed(writing_files)]
 fn write_doc_lengths(
     out: &mut impl Write,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
@@ -212,6 +217,7 @@ fn write_doc_lengths(
     Ok(())
 }
 
+#[timed(writing_files)]
 fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
     let mut last_doc_id = 0u64;
 
@@ -233,6 +239,7 @@ fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
     }
 }
 
+#[timed(writing_files)]
 pub fn write_merged_segment(
     path: impl AsRef<Path>,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
@@ -244,6 +251,7 @@ pub fn write_merged_segment(
     out.flush()
 }
 
+#[timed(writing_files)]
 pub fn write_merged_segment_to<W: Write + Seek>(
     out: &mut W,
     terms: impl Iterator<Item = (TermKey, PostingList)>,

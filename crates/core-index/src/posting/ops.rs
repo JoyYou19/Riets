@@ -1,5 +1,8 @@
+use core_timing::timed;
+
 use crate::posting::{Posting, PostingList};
 
+#[timed(search)]
 pub fn union(left: &PostingList, right: &PostingList) -> PostingList {
     let mut result = Vec::new();
     let mut i = 0;
@@ -42,6 +45,7 @@ pub fn union(left: &PostingList, right: &PostingList) -> PostingList {
     PostingList::from_items(result)
 }
 
+#[timed(search)]
 pub fn intersection(left: &PostingList, right: &PostingList) -> PostingList {
     let mut result = Vec::new();
     let mut i = 0;
@@ -65,6 +69,7 @@ pub fn intersection(left: &PostingList, right: &PostingList) -> PostingList {
     PostingList::from_items(result)
 }
 
+#[timed(search)]
 pub fn difference(left: &PostingList, right: &PostingList) -> PostingList {
     let mut result = Vec::new();
     let mut i = 0;
@@ -95,6 +100,7 @@ pub fn difference(left: &PostingList, right: &PostingList) -> PostingList {
     PostingList::from_items(result)
 }
 
+#[timed(search)]
 pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> PostingList {
     let mut items = Vec::new();
 

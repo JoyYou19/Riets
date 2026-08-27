@@ -1,6 +1,7 @@
 use crate::progress::BackupProgress;
 use core_logs::logger;
 use core_storage::wal::Wal;
+use core_timing::timed;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -92,6 +93,7 @@ impl std::fmt::Display for BackupError {
     }
 }
 
+#[timed(writing_files)]
 fn copy_with_progress<R: io::Read, W: io::Write>(
     mut reader: R,
     mut writer: W,
@@ -109,6 +111,7 @@ fn copy_with_progress<R: io::Read, W: io::Write>(
     Ok(())
 }
 
+#[timed(backup)]
 fn dir_size(path: &Path) -> io::Result<u64> {
     let mut total = 0u64;
     for entry in fs::read_dir(path)? {
@@ -123,6 +126,7 @@ fn dir_size(path: &Path) -> io::Result<u64> {
 }
 
 //directory zipping
+#[timed(writing_files)]
 fn tar_dir(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Result<()> {
     let enc = GzEncoder::new(File::create(dst)?, Compression::default());
     let mut builder = tar::Builder::new(enc);
@@ -134,6 +138,7 @@ fn tar_dir(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Res
     Ok(())
 }
 
+#[timed(writing_files)]
 pub fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::Result<()> {
     let reader = BufReader::new(File::open(src)?);
     let mut encoder = GzEncoder::new(File::create(dst)?, Compression::default());
@@ -142,6 +147,7 @@ pub fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::R
     Ok(())
 }
 
+#[timed(restore)]
 fn decompress_file(src: &Path, dst: &Path) -> io::Result<()> {
     let mut reader = BufReader::new(GzDecoder::new(File::open(src)?));
     let mut writer = BufWriter::new(File::create(dst)?);
@@ -152,6 +158,7 @@ fn decompress_file(src: &Path, dst: &Path) -> io::Result<()> {
 //Parses the (offset: u64 LE, len: u32 LE, payload) framing that
 // create_incremental_backup writes. Kept separate from restore() so it can
 // be unit-tested against a hand-built byte buffer without touching disk.
+#[timed(restore)]
 fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
     let mut records = Vec::new();
     let mut cursor = 0usize;
@@ -186,6 +193,7 @@ fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
 
     Ok(records)
 }
+#[timed(writing_files)]
 fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
     let tmp = backup_path.join("manifest.json.tmp");
     let dst = backup_path.join("manifest.json");
@@ -199,6 +207,7 @@ impl BackupManager {
     fn shard_backup_path(&self, backup_id: &str) -> PathBuf {
         self.backup_dir.join(backup_id).join(&self.shard_name)
     }
+    #[timed(database_lifecycle)]
     pub fn new(shard_root: &Path, backup_dir: PathBuf, shard_name: String) -> Self {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
         let name = shard_name.clone();
@@ -243,6 +252,7 @@ impl BackupManager {
             log,
         }
     }
+    #[timed(writing_files)]
     fn save_state(&self) -> Result<(), BackupError> {
         let dst = self.backup_dir.join(format!("backup_state_{}.json", self.shard_name));
         let tmp = dst.with_extension("json.tmp");
@@ -256,6 +266,7 @@ impl BackupManager {
         fs::rename(&tmp, &dst)?;
         Ok(())
     }
+    #[timed(backup)]
     pub fn create_full_backup(
         &mut self,
         shard_root: &Path,
@@ -319,6 +330,7 @@ impl BackupManager {
         }
     }
 
+    #[timed(backup)]
     pub fn create_incremental_backup(
         &mut self,
         backup_path: &Path, // pre-created by shard manager: backups/incr_123/shard-0/
@@ -396,6 +408,7 @@ impl BackupManager {
             }
         }
     }
+    #[timed(backup)]
     fn delete_incremental_chain(&self, from_id: &str) {
         let mut current_id = from_id.to_string();
         loop {
@@ -427,11 +440,13 @@ impl BackupManager {
             }
         }
     }
+    #[timed(backup)]
     fn load_manifest(&self, backup_id: &str) -> Result<BackupManifest, BackupError> {
         let path = self.shard_backup_path(backup_id).join("manifest.json");
         Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
     }
 
+    #[timed(restore)]
     pub fn restore(
         &self,
         backup_id: &str,
@@ -461,6 +476,7 @@ impl BackupManager {
 
         Ok(())
     }
+    #[timed(restore)]
     pub fn restore_chain(
         &mut self,
         backup_id: &str,
@@ -502,6 +518,7 @@ impl BackupManager {
     pub fn latest_backup_id(&self) -> Option<&str> {
         self.last_backup_id.as_deref()
     }
+    #[timed(restore)]
     pub fn cleanup_after_restore(
         &mut self,
         restored_backup_id: &str,
@@ -547,6 +564,7 @@ impl BackupManager {
 
         Ok(())
     }
+    #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, BackupError> {
         let mut all: Vec<BackupManifest> = fs
             ::read_dir(&self.backup_dir)?
@@ -561,6 +579,7 @@ impl BackupManager {
         all.sort_by_key(|m| m.created_at);
         Ok(all)
     }
+    #[timed(backup)]
     pub fn delete_backups_old(&self, cutoff: SystemTime) -> Result<(), BackupError> {
         let cutoff_ms = cutoff
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -575,6 +594,7 @@ impl BackupManager {
         Ok(())
     }
 
+    #[timed(backup)]
     pub fn delete_backup(&self, backup_id: &str) -> Result<(), BackupError> {
         std::fs::remove_dir_all(self.shard_backup_path(backup_id))?;
         Ok(())

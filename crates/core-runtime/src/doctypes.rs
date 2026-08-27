@@ -8,6 +8,7 @@ use core_storage::{
     document_store::{ExternalDocId, StoredDocument},
     search_database::DocumentInput,
 };
+use core_timing::timed;
 use rayon::prelude::*;
 use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
@@ -31,6 +32,8 @@ pub struct ParseOutcome {
     pub indices: Vec<usize>,
     pub failures: Vec<DocFailure>,
 }
+
+#[timed(json_parsing)]
 pub fn parse_documents(
     body: &str,
     format: Format,
@@ -42,6 +45,7 @@ pub fn parse_documents(
 }
 
 //INFO: a little porno to tell if we found the id and if not then if its auto
+#[timed(json_parsing)]
 fn extract_external_id(
     fields: &BTreeMap<String, String>,
     policy: &IndexPolicy,
@@ -60,11 +64,13 @@ fn extract_external_id(
     }
 }
 
+#[timed(json_parsing)]
 fn generate_routing_id(_fields: &BTreeMap<String, String>) -> String {
     Uuid::new_v4().simple().to_string()
 }
 
 impl<'a> DocumentConversion for Json<'a> {
+    #[timed(json_parsing)]
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError> {
         //If an array was given
         if let Ok(raw_items) = serde_json::from_str::<Vec<&RawValue>>(self.body) {
@@ -91,6 +97,7 @@ impl<'a> DocumentConversion for Json<'a> {
     }
 }
 
+#[timed(json_parsing)]
 fn parse_raw_items(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcome {
     if raw_items.len() > PARALLEL_PARSE_THRESHOLD {
         //DATABASE LOG
@@ -101,6 +108,7 @@ fn parse_raw_items(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcom
     }
 }
 
+#[timed(json_parsing)]
 fn parse_raw_items_sequential(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcome {
     let mut docs = Vec::with_capacity(raw_items.len());
     let mut indices = Vec::with_capacity(raw_items.len());
@@ -122,6 +130,7 @@ fn parse_raw_items_sequential(raw_items: &[&RawValue], policy: &IndexPolicy) -> 
     }
 }
 
+#[timed(json_parsing)]
 fn parse_raw_items_parallel(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcome {
     let results: Vec<Result<DocumentInput, DocFailure>> = raw_items
         .par_iter()
@@ -150,6 +159,7 @@ fn parse_raw_items_parallel(raw_items: &[&RawValue], policy: &IndexPolicy) -> Pa
     }
 }
 
+#[timed(json_parsing)]
 fn parse_one(
     index: usize,
     raw: &RawValue,
@@ -174,6 +184,7 @@ fn parse_one(
     })
 }
 
+#[timed(json_parsing)]
 fn json_value_to_document_input(
     value: Value,
     policy: &IndexPolicy,
@@ -194,6 +205,7 @@ fn json_value_to_document_input(
 }
 
 //retrieve byte-for-byte response + skipped for format
+#[timed(retrieve_opps)]
 pub fn convert_from_storage(
     docs: &[StoredDocument],
     format: Format,
@@ -210,6 +222,7 @@ pub fn convert_from_storage(
     (output, skipped)
 }
 
+#[timed(json_parsing)]
 pub fn parse_partial_replace_to_inputs(
     items: &[(String, serde_json::Value)],
     get_document: impl Fn(&str) -> Result<Option<StoredDocument>, CorelamoError>,

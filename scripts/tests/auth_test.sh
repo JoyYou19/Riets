@@ -485,6 +485,8 @@ check "viewer cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/r
 check "editor cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $EDITOR_TOKEN"
 check "architect cannot restore" 403 -X POST "$BASE_URL/api/databases/$SCRATCH_DB/restore-backup/$BACKUP_ID" -H "X-Corelamo-Key: $ARCHITECT_TOKEN"
 
+
+
 # ==================================================================
 # EXTRA — conflicts, not-found, malformed input
 # ==================================================================
@@ -547,6 +549,12 @@ check "multi-role user can insert (from editor)"    200 -X POST "$BASE_URL/api/d
 check "multi-role user still cannot list databases" 403 -X GET "$BASE_URL/api/list-databases" -H "X-Corelamo-Key: $MULTI_TOKEN"
 
 check "admin deletes multi-role test user" 200 -X DELETE "$BASE_URL/api/users/multi_$RUN_ID" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+
+# ==================================================================
+# EXTRA — list users test
+# ==================================================================
+
+check "list users" 200 -X GET "$BASE_URL/api/users/list-users" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 # ==================================================================

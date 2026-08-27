@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicU64;
 use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool};
 
 use core_storage::binary_store::{DocLocation, read_document_at_path};
+use core_timing::timed;
 use dashmap::DashMap;
 
 use core_index::lsm::snapshot::SharedIndexSnapshot;
@@ -42,6 +43,7 @@ impl SharedShardState {
         }
     }
 
+    #[timed(retrieve_opps)]
     pub async fn get_document(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         if let Some(doc) = self.docs.get(external_id) {
             return Ok(Some(doc));

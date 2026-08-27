@@ -1,3 +1,5 @@
+use core_timing::timed;
+
 use crate::{
     posting::Posting,
     types::{DocId, Position},
@@ -16,6 +18,7 @@ impl PostingList {
         Self { items: Vec::new() }
     }
 
+    #[timed(search)]
     pub fn from_items(mut items: Vec<Posting>) -> Self {
         items.sort_by_key(|p| p.doc_id);
 
@@ -40,6 +43,7 @@ impl PostingList {
         Self { items: merged }
     }
 
+    #[timed(indexing_documents)]
     pub fn insert(&mut self, doc_id: DocId, position: Position, weight: u16) {
         if let Some(last) = self.items.last_mut() {
             if last.doc_id == doc_id {
@@ -67,6 +71,7 @@ impl PostingList {
         }
     }
 
+    #[timed(indexing_documents)]
     pub fn insert_posting(&mut self, doc_id: DocId, mut positions: Vec<Position>, weight: u16) {
         if positions.is_empty() {
             return;

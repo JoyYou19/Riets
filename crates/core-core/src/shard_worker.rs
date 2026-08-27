@@ -10,6 +10,7 @@ use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_storage::document_store::StoredDocument;
+use core_timing::timed;
 use crossbeam_channel::{ Receiver, Sender, bounded };
 use indexmap::IndexMap;
 use tokio::sync::oneshot;
@@ -178,6 +179,7 @@ impl ShardHandle {
     // }
     //
 
+    #[timed(search)]
     pub fn rank_top_k(
         &self,
         query: Option<&Query>,
@@ -197,6 +199,7 @@ impl ShardHandle {
         Ok(executor.search_all_xpaths_top_k_restricted(query, xpaths, k, restrict.as_ref()))
     }
 
+    #[timed(retrieve_opps)]
     pub async fn get_document_direct(
         &self,
         ids: &[String]
@@ -271,6 +274,7 @@ impl ShardHandle {
         Ok(())
     }
 
+    #[timed(retrieve_opps)]
     pub async fn lookup_direct(
         &self,
         ids: &[String],
@@ -301,6 +305,7 @@ impl ShardHandle {
             .map_err(CorelamoError::from)
     }
 
+    #[timed(search)]
     pub async fn resolve_hits_direct(
         &self,
         hits: Vec<SearchHit>,
@@ -351,6 +356,7 @@ impl ShardHandle {
         rrx.await.map_err(|_| self.dead())
     }
 
+    #[timed(inserting)]
     pub async fn insert(
         &self,
         inputs: Vec<DocumentInput>,
@@ -358,9 +364,11 @@ impl ShardHandle {
     ) -> Result<InsertReport, CorelamoError> {
         self.call(|resp| ShardCmd::Insert { user, inputs, resp }).await?
     }
+    #[timed(flushing)]
     pub async fn flush(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Flush { resp }).await?
     }
+    #[timed(modifying_documents)]
     pub async fn upsert(
         &self,
         inputs: Vec<DocumentInput>,
@@ -368,6 +376,7 @@ impl ShardHandle {
     ) -> Result<InsertReport, CorelamoError> {
         self.call(|resp| ShardCmd::Upsert { user, inputs, resp }).await?
     }
+    #[timed(modifying_documents)]
     pub async fn replace(
         &self,
         inputs: Vec<DocumentInput>,
@@ -375,6 +384,7 @@ impl ShardHandle {
     ) -> Result<ReplaceReport, CorelamoError> {
         self.call(|resp| ShardCmd::Replace { user, inputs, resp }).await?
     }
+    #[timed(modifying_documents)]
     pub async fn delete(
         &self,
         ids: Vec<String>,
@@ -382,9 +392,11 @@ impl ShardHandle {
     ) -> Result<DeleteReport, CorelamoError> {
         self.call(|resp| ShardCmd::Delete { user, ids, resp }).await?
     }
+    #[timed(database_lifecycle)]
     pub async fn set_policy(&self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetPolicy { user, policy, resp }).await?
     }
+    #[timed(database_lifecycle)]
     pub async fn set_config(
         &self,
         options: DatabaseOptions,
@@ -396,15 +408,19 @@ impl ShardHandle {
             resp,
         }).await?
     }
+    #[timed(database_lifecycle)]
     pub async fn start(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Start { resp }).await?
     }
+    #[timed(database_lifecycle)]
     pub async fn stop(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Stop { resp }).await?
     }
+    #[timed(database_lifecycle)]
     pub async fn clear(&self) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Clear { resp }).await?
     }
+    #[timed(backup)]
     pub async fn backup_full(
         &self,
         shard_backup_path: PathBuf,
@@ -418,6 +434,7 @@ impl ShardHandle {
             user,
         }).await?
     }
+    #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
         let backup_dir = self.shared.root
             .parent() // .../movies/shards
@@ -444,6 +461,7 @@ impl ShardHandle {
         all.sort_by_key(|m| m.created_at);
         Ok(all)
     }
+    #[timed(backup)]
     pub async fn backup_incremental(
         &self,
         user: String,
@@ -458,6 +476,7 @@ impl ShardHandle {
         }).await?
     }
 
+    #[timed(backup)]
     pub async fn delete_backup(
         &self,
         backup_id: String,
@@ -466,10 +485,12 @@ impl ShardHandle {
         self.call(|resp| ShardCmd::DeleteBackup { backup_id, user, resp }).await?
     }
 
+    #[timed(backup)]
     pub async fn delete_backups_old(&self, cutoff: SystemTime) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::DeleteBackupAuto { cutoff, resp }).await?
     }
 
+    #[timed(restore)]
     pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
         self.call(move |resp| ShardCmd::Restore {
@@ -491,6 +512,7 @@ impl Drop for AliveGuard {
     }
 }
 
+#[timed(database_lifecycle)]
 pub fn spawn(
     mut shard: ShardDb,
     queue_depth: usize,

@@ -36,6 +36,7 @@ use core_protocol::{
     errors::{CorelamoError, DocFailure, FailReason},
 };
 use core_query::{Query, SearchHit, query_string_parser::parse_and_analyze};
+use core_timing::timed;
 
 use crate::{
     metrics::DatabaseMetrics,
@@ -77,6 +78,7 @@ impl ShardDb {
         self.shared.clone()
     }
 
+    #[timed(database_lifecycle)]
     pub fn create_shard(
         root: impl AsRef<Path>,
         db_root: impl AsRef<Path>,
@@ -121,6 +123,7 @@ impl ShardDb {
         })
     }
 
+    #[timed(database_lifecycle)]
     pub fn load(
         root: impl AsRef<Path>,
         db_root: impl AsRef<Path>,
@@ -171,6 +174,7 @@ impl ShardDb {
         })
     }
 
+    #[timed(database_lifecycle)]
     pub fn start(&mut self) -> Result<(), CorelamoError> {
         if self.db.is_some() {
             return Ok(());
@@ -284,6 +288,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(search)]
     pub fn resolve_hits(
         &self,
         hits: Vec<SearchHit>,
@@ -295,6 +300,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
+    #[timed(database_lifecycle)]
     pub fn stop(&mut self) -> Result<(), CorelamoError> {
         if self.db.is_none() {
             return Ok(());
@@ -322,11 +328,13 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(database_lifecycle)]
     pub fn shutdown(&mut self) -> io::Result<()> {
         self.stop()
             .map_err(|e| io::Error::other(format!("shutdown failed: {e}")))
     }
 
+    #[timed(database_lifecycle)]
     pub fn restart(&mut self) -> Result<(), CorelamoError> {
         self.stop()?;
         self.start()?;
@@ -362,6 +370,7 @@ impl ShardDb {
             .ok_or_else(|| io::Error::other("shard is not running"))
     }
 
+    #[timed(database_lifecycle)]
     pub fn set_policy(&mut self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
         policy.validate()?;
         if let Some(db) = &mut self.db {
@@ -372,6 +381,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(database_lifecycle)]
     pub fn set_options(
         &mut self,
         options: DatabaseOptions,
@@ -387,6 +397,7 @@ impl ShardDb {
     }
 
     // ====== Read Operations ======
+    #[timed(search)]
     pub fn search(&self, query: &Query, k: usize) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         let db = self
             .db_ref()
@@ -397,6 +408,7 @@ impl ShardDb {
             CorelamoError::Internal(e.to_string()))
     }
 
+    #[timed(retrieve_opps)]
     pub fn get_document(
         &self,
         ids: &[String],
@@ -414,6 +426,7 @@ impl ShardDb {
         Ok(out)
     }
 
+    #[timed(retrieve_opps)]
     pub fn lookup(&self, command: &LookupCommand) -> Result<LookupResponse, CorelamoError> {
         let db = self
             .db_ref()
@@ -422,6 +435,7 @@ impl ShardDb {
             .map_err(CorelamoError::from)
     }
 
+    #[timed(search)]
     pub fn build_query(&self, input: &str) -> Result<Option<Query>, CorelamoError> {
         let db = self
             .db_ref()
@@ -429,6 +443,7 @@ impl ShardDb {
         parse_and_analyze(input, db.get_analyzer())
     }
     // =========write operations =========
+    #[timed(wal)]
     fn wal_append_record(&mut self, record: &WalRecord) -> Result<u64, CorelamoError> {
         let encoded = bincode::encode_to_vec(record, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
@@ -437,6 +452,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))
     }
 
+    #[timed(inserting)]
     pub fn insert(
         &mut self,
         inputs: Vec<DocumentInput>,
@@ -554,6 +570,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(modifying_database_documents)]
     pub fn delete(
         &mut self,
         ids: Vec<String>,
@@ -630,6 +647,7 @@ impl ShardDb {
         Ok(DeleteReport { deleted, failures })
     }
 
+    #[timed(reindex)]
     pub fn prepare_reindex(&mut self) -> Result<ReindexParams, CorelamoError> {
         if !self.is_running() {
             return Err(CorelamoError::DatabaseNotRunning(format!(
@@ -659,6 +677,7 @@ impl ShardDb {
         })
     }
 
+    #[timed(reindex)]
     pub fn commit_reindex(&mut self, done: CompletedShardReindex) -> Result<(), CorelamoError> {
         if done.generation != self.generation {
             let _ = std::fs::remove_dir_all(&done.staging_root);
@@ -694,6 +713,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(modifying_database_documents)]
     pub fn partial_replace(
         &mut self,
         items: Vec<(String, serde_json::Value)>,
@@ -746,6 +766,7 @@ impl ShardDb {
         Ok(ReplaceReport { replaced, failures })
     }
 
+    #[timed(modifying_database_documents)]
     pub fn replace(
         &mut self,
         inputs: Vec<DocumentInput>,
@@ -830,6 +851,7 @@ impl ShardDb {
         Ok(ReplaceReport { replaced, failures })
     }
 
+    #[timed(modifying_database_documents)]
     pub fn upsert(
         &mut self,
         inputs: Vec<DocumentInput>,
@@ -907,6 +929,7 @@ impl ShardDb {
         Ok(InsertReport { inserted, failures })
     }
 
+    #[timed(flushing)]
     pub fn flush(&mut self) -> Result<(), CorelamoError> {
         self.db_mut()
             .map_err(|e| CorelamoError::Internal(e.to_string()))?
@@ -933,6 +956,7 @@ impl ShardDb {
         &self.root
     }
 
+    #[timed(database_lifecycle)]
     pub fn clear(&mut self) -> Result<(), CorelamoError> {
         let _offset = self
             .wal_append_record(&WalRecord::Clear)
@@ -996,6 +1020,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(backup)]
     pub fn backup_full(
         &mut self,
         user: String,
@@ -1008,16 +1033,19 @@ impl ShardDb {
                 .map_err(|e| CorelamoError::Internal(format!("failed to stop compaction: {e}")))?;
         }
         info!(self.log, "Full backup made"; "Backup id"=> backup_id.clone(), "User"=>user);
-        let checkpoint = self.wal
+        let checkpoint = self
+            .wal
             .read_checkpoint()
             .map_err(|e| CorelamoError::Internal(format!("failed to read WAL checkpoint: {e}")))?;
 
-        let record_count = self.wal
+        let record_count = self
+            .wal
             .replay_from(checkpoint)
             .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
 
         let progress = self.stats.backup_progress().clone();
-        let result = self.backup
+        let result = self
+            .backup
             .create_full_backup(
                 &self.root,
                 &shard_backup_path,
@@ -1025,7 +1053,7 @@ impl ShardDb {
                 &self.wal,
                 &progress,
                 self.document_count(),
-                record_count.len()
+                record_count.len(),
             )
             .map_err(|e| CorelamoError::Internal(e.to_string()));
 
@@ -1042,19 +1070,27 @@ impl ShardDb {
         result
     }
 
+    #[timed(backup)]
     pub fn backup_incremental(
         &mut self,
         shard_backup_path: PathBuf,
         backup_id: String,
-        user: String
+        user: String,
     ) -> Result<Option<BackupManifest>, CorelamoError> {
         info!(self.log, "Incremental backup made"; "user"=> user);
         let progress = self.stats.backup_progress().clone();
         self.backup
-            .create_incremental_backup(&shard_backup_path, &backup_id, &self.wal, self.document_count(), &progress)
+            .create_incremental_backup(
+                &shard_backup_path,
+                &backup_id,
+                &self.wal,
+                self.document_count(),
+                &progress,
+            )
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
+    #[timed(restore)]
     pub fn restore_backup(&mut self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let root = self.root.clone();
         info!(self.log, "Restore to backup"; "backup id"=> backup_id, "user"=>user);
@@ -1067,6 +1103,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(restore)]
     pub fn restore_from_backup(
         &mut self,
         backup_id: &str,
@@ -1088,17 +1125,22 @@ impl ShardDb {
         self.stats.publish(db.document_count(), &stats);
     }
 
+    #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
         self.backup
             .list_backups()
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
+    #[timed(backup)]
     pub fn delete_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
-        self.backup.delete_backup(backup_id).map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        self.backup
+            .delete_backup(backup_id)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         info!(self.log, "backup deleted"; "Backup id "=> backup_id, "User" =>user);
         Ok(())
     }
+    #[timed(backup)]
     pub fn delete_backups_old(&self, cutoff: SystemTime) -> Result<(), CorelamoError> {
         self.backup
             .delete_backups_old(cutoff)

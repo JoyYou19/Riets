@@ -13,6 +13,7 @@ use core_index::types::ShardId;
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::BinaryDocumentStore;
 use core_storage::search_database::SearchDatabase;
+use core_timing::timed;
 
 use crate::metrics::DbStats;
 use crate::{DatabaseOptions, shard_worker::ShardCmd};
@@ -66,6 +67,7 @@ impl ReindexPool {
         Self { tx, joins }
     }
 
+    #[timed(reindex)]
     pub fn submit(&self, job: ReindexJob) -> Result<(), CorelamoError> {
         self.tx
             .send(job)
@@ -109,6 +111,7 @@ fn worker_loop(rx: Receiver<ReindexJob>) {
 
 /// Builds a fresh index into index.new. Reads the shard's document store but
 /// touches nothing the shard thread owns.
+#[timed(reindex)]
 fn build_staging_index(
     params: &ReindexParams,
     progress: &ReindexProgress,

@@ -3,6 +3,8 @@
 * things like architect* to also return architecture and architects instead of just the plain
 * architect, so we create wildcard tokens to support those features
 */
+use core_timing::timed;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WildcardToken {
     Literal(String),
@@ -17,6 +19,7 @@ pub struct WildcardPattern {
 }
 
 impl WildcardPattern {
+    #[timed(search)]
     pub fn parse(input: &str) -> Self {
         let mut tokens = Vec::new();
         let mut literal = String::new();
@@ -78,6 +81,7 @@ impl WildcardPattern {
         )
     }
 
+    #[timed(search)]
     pub fn matches(&self, word: &str) -> bool {
         let chars: Vec<char> = word.chars().collect();
         self.matches_from(0, 0, &chars)

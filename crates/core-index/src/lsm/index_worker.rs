@@ -1,3 +1,4 @@
+use core_timing::timed;
 use rayon::prelude::*;
 use std::{
     io,
@@ -136,6 +137,7 @@ impl IndexWorker {
         self.send(IndexCommand::MaybeCompact { config, ack: None })
     }
 
+    #[timed(compaction)]
     pub fn plan_compaction(&self, config: CompactionConfig) -> io::Result<Option<CompactionJob>> {
         let (reply, rx) = mpsc::channel();
 
@@ -150,6 +152,7 @@ impl IndexWorker {
     }
 
     // Waiting functions
+    #[timed(indexing_documents)]
     pub fn add_indexed_document_wait(&self, document: IndexedDocument) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
@@ -161,6 +164,7 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
+    #[timed(flushing)]
     pub fn flush_wait(&self) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
@@ -169,6 +173,7 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
+    #[timed(compaction)]
     pub fn maybe_compact_wait(&self, config: CompactionConfig) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
@@ -180,6 +185,7 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
+    #[timed(modifying_documents)]
     pub fn delete_document_wait(&self, doc_id: DocId) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
@@ -191,6 +197,7 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
+    #[timed(indexing_documents)]
     pub fn add_segment_wait(&self, segment: ImmutableSegment, doc_count: u64) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
@@ -203,6 +210,7 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
+    #[timed(compaction)]
     pub fn install_compaction_wait(&self, completed: CompletedCompaction) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
@@ -435,6 +443,7 @@ fn send_acknowledgement(
     Ok(())
 }
 
+#[timed(indexing_documents)]
 pub fn build_segment_batch(
     analyzer: &Analyzer,
     documents: Vec<IndexedDocument>,
@@ -448,6 +457,7 @@ pub fn build_segment_batch(
     mem.freeze()
 }
 
+#[timed(indexing_documents)]
 pub fn index_batches_parallel(
     worker: &IndexWorker,
     analyzer: Analyzer,
@@ -466,6 +476,7 @@ pub fn index_batches_parallel(
     Ok(())
 }
 
+#[timed(indexing_documents)]
 pub fn make_batches<T>(items: Vec<T>, batch_size: usize) -> Vec<Vec<T>> {
     assert!(batch_size > 0, "batch_size must be greater than 0");
     let mut batches = Vec::new();
@@ -487,6 +498,7 @@ pub fn make_batches<T>(items: Vec<T>, batch_size: usize) -> Vec<Vec<T>> {
     batches
 }
 
+#[timed(indexing_documents)]
 pub fn build_segments_parallel(
     analyzer: Analyzer,
     batches: Vec<Vec<IndexedDocument>>,

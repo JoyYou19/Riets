@@ -591,14 +591,14 @@ check "backup database two" 200 -X POST "$BASE_URL/api/databases/$DB2/backup" -H
 
 sleep 2
 
-#section "Backup incremental"
+section "Backup incremental"
 
-#check "backup2 no database" 404 -X POST "$BASE_URL/api/databases/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "backup2 database empty" 404 -X POST "$BASE_URL/api/databases//backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "backup2 nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "backup2 database one" 200 -X POST "$BASE_URL/api/databases/$DB1/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup2 no database" 404 -X POST "$BASE_URL/api/databases/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup2 database empty" 404 -X POST "$BASE_URL/api/databases//backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup2 nonexistent database" 404 -X POST "$BASE_URL/api/databases/yo/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup2 database one" 200 -X POST "$BASE_URL/api/databases/$DB1/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 #check "backup2 database one again" 503 -X POST "$BASE_URL/api/databases/$DB1/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
-#check "backup2 database two" 200 -X POST "$BASE_URL/api/databases/$DB2/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
+check "backup2 database two" 200 -X POST "$BASE_URL/api/databases/$DB2/backup/incremental" -H "X-Corelamo-Key: $ADMIN_TOKEN"
 
 
 section "list backups"

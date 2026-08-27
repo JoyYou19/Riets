@@ -8,11 +8,13 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use core_timing::timed;
+
 use crate::{
     disk::{reader::DiskSegment, writer::write_merged_segment},
-    posting::{DeleteSet, PostingList, ops::union},
+    posting::{DeleteSet, PostingList},
     segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{DocId, TermKey, XPathId},
 };
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
@@ -75,6 +77,7 @@ impl<'a> Iterator for MergedTerms<'a> {
     }
 }
 
+#[timed(compaction)]
 pub fn compact_segments_streaming(
     handles: &[SegmentHandle],
     deleted: &DeleteSet,
@@ -109,54 +112,54 @@ pub fn compact_segments_streaming(
 }
 
 // WARN: Compacts and merges segments together, this desperately needs to be udpated to a smarter system - Valtero Meero
-pub fn compact_segments(segments: &[ImmutableSegment], deleted: &DeleteSet) -> ImmutableSegment {
-    let mut merged: BTreeMap<TermKey, PostingList> = BTreeMap::new();
-    let mut merged_doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
-
-    for segment in segments {
-        for (&(doc_id, xpath), &len) in segment.doc_lengths() {
-            if deleted.contains(doc_id) {
-                continue;
-            }
-
-            merged_doc_lengths.insert((doc_id, xpath), len);
-        }
-        for (key, postings) in segment.terms() {
-            // First we check if the posting is not already deleted
-            let postings = deleted.filter(postings);
-
-            if postings.is_empty() {
-                continue;
-            }
-
-            // TODO: Once again, this might not be optimal
-            merged
-                .entry(key.clone())
-                .and_modify(|existing| {
-                    *existing = deleted.filter(&union(existing, &postings));
-                })
-                .or_insert_with(|| postings.clone());
-        }
-    }
-
-    let merged_field_stats = build_field_stats(&merged_doc_lengths);
-
-    ImmutableSegment::new(merged, merged_doc_lengths, merged_field_stats)
-}
-
-fn build_field_stats(
-    doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
-) -> BTreeMap<XPathId, FieldStats> {
-    let mut stats = BTreeMap::<XPathId, FieldStats>::new();
-
-    for ((_, xpath), len) in doc_lengths {
-        let entry = stats.entry(*xpath).or_default();
-        entry.doc_count += 1;
-        entry.total_doc_len += *len as u64;
-    }
-
-    stats
-}
+// pub fn compact_segments(segments: &[ImmutableSegment], deleted: &DeleteSet) -> ImmutableSegment {
+//     let mut merged: BTreeMap<TermKey, PostingList> = BTreeMap::new();
+//     let mut merged_doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
+//
+//     for segment in segments {
+//         for (&(doc_id, xpath), &len) in segment.doc_lengths() {
+//             if deleted.contains(doc_id) {
+//                 continue;
+//             }
+//
+//             merged_doc_lengths.insert((doc_id, xpath), len);
+//         }
+//         for (key, postings) in segment.terms() {
+//             // First we check if the posting is not already deleted
+//             let postings = deleted.filter(postings);
+//
+//             if postings.is_empty() {
+//                 continue;
+//             }
+//
+//             // TODO: Once again, this might not be optimal
+//             merged
+//                 .entry(key.clone())
+//                 .and_modify(|existing| {
+//                     *existing = deleted.filter(&union(existing, &postings));
+//                 })
+//                 .or_insert_with(|| postings.clone());
+//         }
+//     }
+//
+//     let merged_field_stats = build_field_stats(&merged_doc_lengths);
+//
+//     ImmutableSegment::new(merged, merged_doc_lengths, merged_field_stats)
+// }
+//
+// fn build_field_stats(
+//     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
+// ) -> BTreeMap<XPathId, FieldStats> {
+//     let mut stats = BTreeMap::<XPathId, FieldStats>::new();
+//
+//     for ((_, xpath), len) in doc_lengths {
+//         let entry = stats.entry(*xpath).or_default();
+//         entry.doc_count += 1;
+//         entry.total_doc_len += *len as u64;
+//     }
+//
+//     stats
+// }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CompactionConfig {
