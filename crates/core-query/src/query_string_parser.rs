@@ -1,6 +1,8 @@
+use core_protocol::errors::CorelamoError;
+use core_timing::timed;
+
 use crate::ast::Query;
 use core_index::{analyzer::Analyzer, wildcard::WildcardPattern};
-use core_protocol::errors::CorelamoError;
 
 //TODO: pielikt search komandai kko lidzigu sim:
 //  "highlight": {
@@ -30,6 +32,7 @@ enum Token {
 // Turn the raw string into tokens.
 // `{ } ( ) "` are special. Everything else, including ? * [ ], is just word text.
 // Errors if a quote is opened but never closed.
+#[timed(search)]
 fn tokenize(input: &str) -> Result<Vec<Token>, CorelamoError> {
     let mut tokens = Vec::new();
     let mut chars = input.chars().peekable();
@@ -109,6 +112,7 @@ impl Parser {
         Self { tokens, pos: 0 }
     }
 
+    #[timed(search)]
     fn parse_sequence(&mut self, closer: Closer) -> Result<Vec<Query>, CorelamoError> {
         let mut items = Vec::new();
 
@@ -181,6 +185,7 @@ fn make_or(mut items: Vec<Query>) -> Query {
 }
 
 //decide between prefix (dat*), a wildcard (da?ab*e), or just a word
+#[timed(search)]
 fn classify_word(word: &str) -> Query {
     let pattern = WildcardPattern::parse(word);
     if pattern.is_prefix_only() {
@@ -197,6 +202,7 @@ fn has_wildcard(word: &str) -> bool {
     word.chars().any(|c| matches!(c, '*' | '?' | '['))
 }
 
+#[timed(search)]
 pub fn parse_query(input: &str) -> Result<Option<Query>, CorelamoError> {
     let tokens = tokenize(input)?;
     if tokens.is_empty() {
@@ -218,6 +224,7 @@ pub fn parse_query(input: &str) -> Result<Option<Query>, CorelamoError> {
 }
 
 //INFO: after string->ast we still need to analyze each word there the same way when indexing
+#[timed(search)]
 pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
     match query {
         Query::Term(word) => analyze_term(&word, analyzer),
@@ -232,6 +239,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
     }
 }
 
+#[timed(search)]
 fn analyze_term(word: &str, analyzer: &Analyzer) -> Option<Query> {
     let mut tokens = analyzer.analyze(word).into_iter().map(|t| t.text);
     //this is also the check for if returned nothing
@@ -252,6 +260,7 @@ fn non_empty(s: String) -> Option<String> {
 }
 
 //for and/or to do some recurcursion
+#[timed(search)]
 fn combine(subs: Vec<Query>, analyzer: &Analyzer, make: fn(Vec<Query>) -> Query) -> Option<Query> {
     let mut kept: Vec<Query> = subs
         .into_iter()
@@ -264,6 +273,7 @@ fn combine(subs: Vec<Query>, analyzer: &Analyzer, make: fn(Vec<Query>) -> Query)
     }
 }
 
+#[timed(search)]
 fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
     let text = words.join(" ");
     let tokens: Vec<String> = analyzer
@@ -279,6 +289,7 @@ fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
 }
 
 //INFO: main thing to go from string -> parsed+analyzed query
+#[timed(search)]
 pub fn parse_and_analyze(input: &str, analyzer: &Analyzer) -> Result<Option<Query>, CorelamoError> {
     match parse_query(input)? {
         Some(raw) => Ok(analyze_query(raw, analyzer)),

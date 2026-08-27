@@ -15,6 +15,7 @@ use core_index::{
     types::{DocId, XPathId},
 };
 use core_protocol::errors::CorelamoError;
+use core_timing::timed;
 
 use crate::{
     ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan,
@@ -42,6 +43,7 @@ where
         Self { index, analyzer }
     }
 
+    #[timed(search)]
     fn execute_optional(&self, query: &Query, xpath: XPathId) -> Option<PostingList> {
         match query {
             Query::Term(term) => self.execute_term(term, xpath),
@@ -53,11 +55,13 @@ where
         }
     }
 
+    #[timed(search)]
     pub fn execute(&self, query: &Query, xpath: XPathId) -> PostingList {
         self.execute_optional(query, xpath).unwrap_or_default()
     }
 
     // Query a term
+    #[timed(search)]
     fn execute_term(&self, term: &str, xpath: XPathId) -> Option<PostingList> {
         let analyzed = self.analyzer.analyze(term);
         let token = analyzed.first()?;
@@ -66,6 +70,7 @@ where
     }
 
     // Prefix query, so for example if we do dat* would find database etc.
+    #[timed(search)]
     fn execute_prefix(&self, prefix: &str, xpath: XPathId) -> Option<PostingList> {
         let analyzed = self.analyzer.analyze(prefix);
         let token = analyzed.first()?;
@@ -74,6 +79,7 @@ where
     }
 
     // Wildcard query, for now, we are not analyzing this, might change later
+    #[timed(search)]
     fn execute_wildcard(&self, pattern: &str, xpath: XPathId) -> PostingList {
         let pattern = core_index::wildcard::WildcardPattern::parse(pattern);
         self.index.lookup_wildcard(&pattern, xpath)
@@ -84,6 +90,7 @@ where
     // 2. if any query returns nothing it drops entire search
     // 3. sorts the posting lists by shortest first
     // 4. Intersects progressively
+    #[timed(search)]
     fn execute_and(&self, parts: &[Query], xpath: XPathId) -> Option<PostingList> {
         let mut lists = Vec::new();
 
@@ -117,6 +124,7 @@ where
 
     // Boolean OR
     // Executes every child and unions that into a response
+    #[timed(search)]
     fn execute_or(&self, parts: &[Query], xpath: XPathId) -> Option<PostingList> {
         let mut result: Option<PostingList> = None;
 
@@ -140,6 +148,7 @@ where
     // A document matches only if rust and database appear in it in order rust + database so
     // position and position + 1
     //
+    #[timed(search)]
     fn execute_phrase(&self, terms: &[String], xpath: XPathId) -> PostingList {
         use core_index::posting::Posting;
 
@@ -194,6 +203,7 @@ where
         PostingList::from_items(result)
     }
 
+    #[timed(search)]
     fn execute_phrase_optional(&self, terms: &[String], xpath: XPathId) -> Option<PostingList> {
         if terms.is_empty() {
             return None;
@@ -203,6 +213,7 @@ where
     }
 
     // Full search in the entire database
+    #[timed(search)]
     pub fn search(&self, query: &Query, xpath: XPathId) -> Vec<SearchHit> {
         let scored = self.execute_scored(query, xpath);
 
@@ -232,6 +243,7 @@ where
     }
 
     // Most basic top K search, searches a single Xpath
+    #[timed(search)]
     pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -270,6 +282,7 @@ where
         hits
     }
 
+    #[timed(search)]
     pub fn search_plan_top_k(&self, plan: &QueryPlan, xpath: XPathId, k: usize) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -325,6 +338,7 @@ where
         top_k_from_hits(by_doc.into_values(), k)
     }
 
+    #[timed(search)]
     pub fn search_plan_all_xpaths_top_k(
         &self,
         plan: &QueryPlan,
@@ -403,6 +417,7 @@ where
 
     // INFO: Currently we might want to think about other ways of implementing the idea
     // of searching within all xpaths, cause it still happens independently.
+    #[timed(search)]
     pub fn search_all_xpaths_top_k(
         &self,
         query: &Query,
@@ -452,6 +467,7 @@ where
         hits
     }
 
+    #[timed(search)]
     pub fn resolve_filters(
         &self,
         filters: &HashMap<String, String>,
@@ -498,6 +514,7 @@ where
         Ok(restrict)
     }
 
+    #[timed(search)]
     pub fn search_top_k_restricted(
         &self,
         query: &Query,
@@ -547,6 +564,7 @@ where
         hits
     }
 
+    #[timed(search)]
     pub fn search_all_xpaths_top_k_restricted(
         &self,
         query: Option<&Query>,
@@ -602,6 +620,7 @@ where
     }
 
     // Search the entire database all xpaths
+    #[timed(search)]
     pub fn search_all_xpaths(
         &self,
         query: &Query,
@@ -630,6 +649,7 @@ where
     }
 
     // Converts a query
+    #[timed(search)]
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
         match query {
             Query::Term(term) => {
@@ -644,6 +664,7 @@ where
         }
     }
 
+    #[timed(search)]
     fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
         let mut lists = Vec::new();
 
@@ -678,6 +699,7 @@ where
     }
 }
 
+#[timed(search)]
 fn phrase_matches(position_lists: &[&[u32]]) -> bool {
     if position_lists.is_empty() {
         return false;
@@ -702,6 +724,7 @@ fn phrase_matches(position_lists: &[&[u32]]) -> bool {
     false
 }
 
+#[timed(search)]
 fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<SearchHit> {
     let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
 

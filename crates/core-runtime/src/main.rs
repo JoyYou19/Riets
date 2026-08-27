@@ -332,7 +332,9 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/restore-backup/{backup_id}",
             post(handlers::backup_restore_handler),
-        );
+        )
+        .route("/api/timings", post(handlers::timings_handler));
+
     let protected_routes = if enable_auth {
         protected_routes.layer(from_fn_with_state(
             state.clone(),

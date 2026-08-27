@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use core_timing::timed;
 use crate::types::XPathId;
 use serde::{Deserialize, Serialize};
 
@@ -194,6 +195,7 @@ impl IndexPolicy {
         Ok(())
     }
 
+    #[timed(database_lifecycle)]
     pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
         let root = root.as_ref();
         let contents = fs::read_to_string(Self::policy_path(root))?;
@@ -204,6 +206,7 @@ impl IndexPolicy {
         Ok(policy)
     }
 
+    #[timed(writing_files)]
     pub fn save(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
         let root = root.as_ref();
         self.validate()?;

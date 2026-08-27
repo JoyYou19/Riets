@@ -541,6 +541,7 @@ dependencies = [
  "chrono",
  "core-logs",
  "core-storage",
+ "core-timing",
  "flate2",
  "serde",
  "serde_json",
@@ -564,6 +565,7 @@ dependencies = [
  "core-protocol",
  "core-query",
  "core-storage",
+ "core-timing",
  "crossbeam-channel",
  "dashmap",
  "indexmap",
@@ -613,6 +615,7 @@ dependencies = [
  "arc-swap",
  "bincode 1.3.3",
  "core-logs",
+ "core-timing",
  "criterion",
  "lz4_flex",
  "memmap2",
@@ -646,6 +649,7 @@ name = "core-protocol"
 version = "0.1.0"
 dependencies = [
  "bincode 2.0.1",
+ "core-timing",
  "indexmap",
  "serde",
  "serde_json",
@@ -661,6 +665,7 @@ dependencies = [
  "core-index",
  "core-protocol",
  "core-testkit",
+ "core-timing",
  "criterion",
  "tracing",
 ]
@@ -677,6 +682,7 @@ dependencies = [
  "core-protocol",
  "core-query",
  "core-storage",
+ "core-timing",
  "crossbeam-channel",
  "governor",
  "http-body-util",
@@ -710,6 +716,7 @@ dependencies = [
  "core-logs",
  "core-protocol",
  "core-query",
+ "core-timing",
  "crc32fast",
  "criterion",
  "dashmap",
@@ -730,6 +737,22 @@ dependencies = [
  "criterion",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "core-timing"
+version = "0.1.0"
+dependencies = [
+ "core-timing-macros",
+]
+
+[[package]]
+name = "core-timing-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

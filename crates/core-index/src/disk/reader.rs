@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, io, path::Path};
 
+use core_timing::timed;
 use memmap2::Mmap;
 
 use crate::{
@@ -55,6 +56,7 @@ impl DiskSegment {
     // just mmaps, validates, reads the dictionary, so we can use this
     // even if we don't need to use the data inside of it
     // in the case of just checking if we even want to read this segment
+    #[timed(disk_io)]
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -129,6 +131,7 @@ impl DiskSegment {
     }
 
     // Love this function, amazing, beautiful, great, lovely.
+    #[timed(disk_io)]
     pub fn to_immutable_segment(&self) -> crate::segment::ImmutableSegment {
         let mut terms = std::collections::BTreeMap::new();
 
@@ -187,6 +190,7 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
 
 // We need to search this segment for sure
 impl SearchIndex for DiskSegment {
+    #[timed(search)]
     fn lookup(&self, term: &str, xpath: crate::types::XPathId) -> PostingList {
         match self
             .dictionary
@@ -197,6 +201,7 @@ impl SearchIndex for DiskSegment {
         }
     }
 
+    #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: crate::types::XPathId) -> PostingList {
         let start = self.lower_bound_term(prefix, xpath);
         let mut postings = Vec::new();
@@ -212,6 +217,7 @@ impl SearchIndex for DiskSegment {
         PostingList::from_items(postings)
     }
 
+    #[timed(search)]
     fn lookup_wildcard(
         &self,
         pattern: &crate::wildcard::WildcardPattern,

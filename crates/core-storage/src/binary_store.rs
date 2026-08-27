@@ -19,6 +19,7 @@ use std::{
 
 use core_index::types::DocId;
 use core_protocol::format::Format;
+use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
 
@@ -30,7 +31,7 @@ const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
 
 //TODO: make configurable per-database
-const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10;
+const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10000;
 
 #[derive(Debug)]
 pub struct BinaryDocumentStore {
@@ -41,6 +42,7 @@ pub struct BinaryDocumentStore {
 }
 
 impl BinaryDocumentStore {
+    #[timed(database_lifecycle)]
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
 
@@ -67,6 +69,7 @@ impl BinaryDocumentStore {
         Ok(store)
     }
 
+    #[timed(database_lifecycle)]
     pub fn open_with_maps(
         path: impl AsRef<Path>,
         docs: Cache<String, StoredDocument>,
@@ -97,6 +100,7 @@ impl BinaryDocumentStore {
         Ok(store)
     }
 
+    #[timed(database_lifecycle)]
     fn load(&mut self) -> io::Result<()> {
         let file = File::open(&self.path)?;
         let mut reader = CountingReader::new(BufReader::new(file));
@@ -155,6 +159,7 @@ impl BinaryDocumentStore {
         read_document_at_path(&self.path, offset)
     }
 
+    #[timed(writing_files)]
     fn append_put(&self, doc: &StoredDocument) -> io::Result<u64> {
         let file = OpenOptions::new().append(true).open(&self.path)?;
         let start = file.metadata()?.len();
@@ -168,6 +173,7 @@ impl BinaryDocumentStore {
         Ok(doc_offset)
     }
 
+    #[timed(writing_files)]
     fn append_delete(&self, external_id: &str) -> io::Result<()> {
         let file = OpenOptions::new().append(true).open(&self.path)?;
         let mut writer = BufWriter::new(file);
@@ -181,6 +187,7 @@ impl BinaryDocumentStore {
 }
 
 impl DocumentStore for BinaryDocumentStore {
+    #[timed(inserting)]
     fn put(&mut self, doc: StoredDocument) -> io::Result<()> {
         let offset = self.append_put(&doc)?;
 
@@ -199,6 +206,7 @@ impl DocumentStore for BinaryDocumentStore {
         Ok(())
     }
 
+    #[timed(inserting)]
     fn put_batch(&mut self, docs: Vec<StoredDocument>) -> io::Result<()> {
         let file = OpenOptions::new().append(true).open(&self.path)?;
         let start = file.metadata()?.len();
@@ -233,6 +241,7 @@ impl DocumentStore for BinaryDocumentStore {
     }
 
     //either read from ram else read the exact document from the file
+    #[timed(retrieve_opps)]
     fn get(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         if let Some(doc) = self.docs.get(external_id) {
             return Ok(Some(doc));
@@ -247,6 +256,7 @@ impl DocumentStore for BinaryDocumentStore {
         Ok(Some(doc))
     }
 
+    #[timed(modifying_documents)]
     fn delete(&mut self, external_id: &str) -> io::Result<()> {
         self.append_delete(external_id)?;
         if let Some((_, loc)) = self.locations.remove(external_id) {
@@ -266,6 +276,7 @@ impl DocumentStore for BinaryDocumentStore {
             .unwrap_or(0)
     }
 
+    #[timed(retrieve_opps)]
     fn get_by_internal_id(&self, internal_id: DocId) -> io::Result<Option<StoredDocument>> {
         let Some(external_id) = self
             .internal_to_external
@@ -283,6 +294,7 @@ impl DocumentStore for BinaryDocumentStore {
 
     //INFO: karoc sis ir jauns foreach ko chatins rakstija no clue, bet nu taa kaa vairs viss nestaav
     //ramaa sii funkcija sanaak daudz kompleksaaka, nav ko dariit
+    #[timed(reindex)]
     fn for_each_document(
         &self,
         f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
@@ -333,6 +345,7 @@ impl DocumentStore for BinaryDocumentStore {
     }
 
     //WARN: reindex uses this, fills up the RAM again
+    #[timed(reindex)]
     fn all_documents(&self) -> io::Result<Vec<StoredDocument>> {
         let mut docs = Vec::new();
 
@@ -449,6 +462,7 @@ fn read_u64(reader: &mut impl Read) -> io::Result<u64> {
 
 //helper so that rust compiler isnt angry at me cause this will be called from the ShardHandle not
 //ShardDb
+#[timed(disk_io)]
 pub fn read_document_at_path(path: &Path, offset: u64) -> io::Result<StoredDocument> {
     let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(offset))?;

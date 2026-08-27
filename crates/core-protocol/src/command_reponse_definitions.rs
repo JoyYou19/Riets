@@ -1,4 +1,5 @@
 //from abstract http text to our commands, useful for complex commands like search, retrieve....
+use core_timing::timed;
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -15,6 +16,7 @@ pub trait Command: Sized {
     fn from_json(body: &str) -> Result<Self, CorelamoError>;
     //fn from_xml(body: &str) -> Result<Self, CorelamoError>;
 
+    #[timed(command_parsing)]
     fn parse(body: &str, format: Format) -> Result<Self, CorelamoError> {
         match format {
             Format::JSON => Self::from_json(body),
@@ -71,6 +73,7 @@ impl ResponseData for SearchResponse {
 }
 
 impl Command for SearchCommand {
+    #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
         serde_json::from_str(body).map_err(CorelamoError::from)
     }
@@ -87,6 +90,7 @@ pub struct RetrieveCommand {
 
 impl Command for RetrieveCommand {
     // TODO: accept more shapes later, e.g. {"ids": [...]}
+    #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
         let ids: Vec<String> = serde_json::from_str(body)
             .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
@@ -160,6 +164,7 @@ pub struct LookupCommand {
 }
 
 impl Command for LookupCommand {
+    #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
         serde_json::from_str(body).map_err(CorelamoError::from)
     }
@@ -206,6 +211,7 @@ pub struct GetLogsRequest {
 }
 
 impl Command for DeleteCommand {
+    #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
         let ids: Vec<String> = serde_json::from_str(body)
             .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
@@ -243,6 +249,7 @@ pub struct ParsedPartialReplace {
 }
 
 impl Command for PartialReplaceCommand {
+    #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
         let items: Vec<PartialReplaceItem> = serde_json::from_str(body).map_err(|e| {
             CorelamoError::InvalidData(format!("invalid partial-replace request: {e}"))
@@ -261,4 +268,9 @@ impl Command for PartialReplaceCommand {
 #[derive(Deserialize)]
 pub struct RenameDatabaseRequest {
     pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct TimingsRequest {
+    pub categories: Option<Vec<String>>,
 }

@@ -1,3 +1,5 @@
+use core_timing::timed;
+
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -9,6 +11,7 @@ pub fn manifest_path(root: &Path) -> PathBuf {
     root.join(MANIFEST_FILE)
 }
 
+#[timed(database_lifecycle)]
 pub fn read_manifest(root: &Path) -> io::Result<Vec<PathBuf>> {
     let path = manifest_path(root);
 
@@ -25,6 +28,7 @@ pub fn read_manifest(root: &Path) -> io::Result<Vec<PathBuf>> {
         .collect())
 }
 
+#[timed(writing_files)]
 pub fn write_manifest(root: &Path, segments: &[PathBuf]) -> io::Result<()> {
     let mut text = String::new();
 
