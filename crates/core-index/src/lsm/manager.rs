@@ -4,8 +4,10 @@ use crate::{
     analyzer::analyzer::Analyzer,
     disk::{reader::DiskSegment, writer::write_segment},
     lsm::{
-        IndexSnapshot, compact_segments,
-        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
+        IndexSnapshot,
+        compaction::{
+            CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
+        },
         manifest,
     },
     mem::MemIndex,
@@ -252,28 +254,19 @@ impl LsmIndex {
             return Ok(());
         };
 
-        let mut segments = Vec::new();
-        let mut old_paths = Vec::new();
-
-        for handle in &self.segment_handles {
-            match handle {
-                SegmentHandle::Disk(path) => {
-                    let disk = DiskSegment::open(path)?;
-                    segments.push(disk.to_immutable_segment());
-                    old_paths.push(path.clone());
-                }
-                SegmentHandle::Memory(segment) => {
-                    segments.push((**segment).clone());
-                }
-            }
-        }
-
-        let compacted = compact_segments(&segments, &self.deleted);
+        let old_paths: Vec<PathBuf> = self
+            .segment_handles
+            .iter()
+            .filter_map(|handle| match handle {
+                SegmentHandle::Disk(path) => Some(path.clone()),
+                SegmentHandle::Memory(_) => None,
+            })
+            .collect();
 
         let compacted_path = root.join(format!("segment-{}.idx", self.next_segment_id));
         self.next_segment_id += 1;
 
-        write_segment(&compacted_path, &compacted)?;
+        compact_segments_streaming(&self.segment_handles, &self.deleted, &compacted_path)?;
 
         let disk = DiskSegment::open(&compacted_path)?;
 
@@ -313,28 +306,19 @@ impl LsmIndex {
             .cloned()
             .collect();
 
-        let mut segments = Vec::new();
-        let mut old_paths = Vec::new();
-
-        for handle in &selected {
-            match handle {
-                SegmentHandle::Disk(path) => {
-                    let disk = DiskSegment::open(path)?;
-                    segments.push(disk.to_immutable_segment());
-                    old_paths.push(path.clone());
-                }
-                SegmentHandle::Memory(segment) => {
-                    segments.push((**segment).clone());
-                }
-            }
-        }
-
-        let compacted = compact_segments(&segments, &self.deleted);
+        let old_paths: Vec<PathBuf> = selected
+            .iter()
+            .filter_map(|handle| match handle {
+                SegmentHandle::Disk(path) => Some(path.clone()),
+                SegmentHandle::Memory(_) => None,
+            })
+            .collect();
 
         let compacted_path = root.join(format!("segment-{}.idx", self.next_segment_id));
         self.next_segment_id += 1;
 
-        write_segment(&compacted_path, &compacted)?;
+        compact_segments_streaming(&selected, &self.deleted, &compacted_path)?;
+
         let disk = DiskSegment::open(&compacted_path)?;
 
         self.segment_handles.drain(0..max_segments);
