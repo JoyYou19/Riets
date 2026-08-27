@@ -1,3 +1,4 @@
+use core_timing::timed;
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -11,6 +12,7 @@ pub enum FieldNode {
     Branch(IndexMap<String, FieldNode>),
 }
 
+#[timed(command_parsing)]
 pub fn unflatten(fields: BTreeMap<String, String>) -> Result<FieldNode, CorelamoError> {
     let mut root = IndexMap::new();
     for (path, value) in fields {
@@ -68,6 +70,7 @@ pub fn tree_to_json(node: &FieldNode) -> Value {
     Value::Object(obj)
 }
 
+#[timed(json_parsing)]
 pub fn traverse_json(value: &Value, path: &mut String, fields: &mut BTreeMap<String, String>) {
     match value {
         Value::Object(map) => {
@@ -104,6 +107,7 @@ fn value_to_string(value: &Value) -> String {
     }
 }
 
+#[timed(json_parsing)]
 pub fn apply_merge_patch(target: &mut Value, patch: &Value) {
     match patch {
         Value::Object(patch_obj) => {

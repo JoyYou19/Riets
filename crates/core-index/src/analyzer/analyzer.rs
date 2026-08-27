@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+
+use core_timing::timed;
 use tantivy::tokenizer::{
     Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer,
     TokenStream,
@@ -46,6 +48,7 @@ impl Analyzer {
         Self { analyzer }
     }
 
+    #[timed(indexing_documents)]
     pub fn analyze(&self, input: &str) -> Vec<Token> {
         let mut analyzer = self.analyzer.clone();
         let mut stream = analyzer.token_stream(input);

@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use core_timing::timed;
+
 use crate::{
     posting::{Posting, PostingList},
     types::DocId,
@@ -26,6 +28,7 @@ impl DeleteSet {
         self.deleted.contains(&doc_id)
     }
 
+    #[timed(search)]
     pub fn filter(&self, list: &PostingList) -> PostingList {
         let items: Vec<Posting> = list
             .items()

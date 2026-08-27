@@ -28,4 +28,4 @@ moka = { version = "0.12.16", features = ["sync"] }
 criterion = { workspace = true }
 
 [features]
-timing = ["core-timing/timing"]
+timing = ["core-timing/timing", "core-index/timing", "core-query/timing", "core-protocol/timing"]

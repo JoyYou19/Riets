@@ -11,7 +11,14 @@ hyper = { version = "1", features = ["full"] }
 
 
 [features]
-timing = ["core-timing/timing", "core-core/timing", "core-storage/timing"]
+timing = [
+  "core-timing/timing",
+  "core-core/timing",
+  "core-storage/timing",
+  "core-index/timing",
+  "core-query/timing",
+  "core-protocol/timing",
+]
 
 [dependencies]
 core-index = { path = "../core-index" }

@@ -11,3 +11,7 @@ thiserror = "2"
 toml = "1.1.2"
 bincode="2.0"
 indexmap = { version = "2", features = ["serde"] }
+core-timing = { path = "../core-timing" }
+
+[features]
+timing = ["core-timing/timing"]

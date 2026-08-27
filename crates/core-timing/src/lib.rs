@@ -22,7 +22,7 @@ pub use core_timing_macros::timed;
 /// point is frozen as the "baseline" for that function — later reports
 /// show the current average's drift from it. Tune this if your call
 /// volumes are much lower/higher than a few dozen per run.
-pub const BASELINE_SAMPLE_SIZE: u64 = 10;
+pub const BASELINE_SAMPLE_SIZE: u64 = 20;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FnStats {
@@ -116,6 +116,21 @@ pub fn snapshot() -> Vec<(&'static str, Vec<(&'static str, FnStats)>)> {
     categories
 }
 
+/// Same as [`snapshot`], but only the categories named in `categories`
+/// (matched by exact string equality). An empty slice returns everything,
+/// same as calling [`snapshot`] directly.
+pub fn snapshot_filtered<S: AsRef<str>>(
+    categories: &[S],
+) -> Vec<(&'static str, Vec<(&'static str, FnStats)>)> {
+    if categories.is_empty() {
+        return snapshot();
+    }
+    snapshot()
+        .into_iter()
+        .filter(|(category, _)| categories.iter().any(|c| c.as_ref() == *category))
+        .collect()
+}
+
 /// Clear all recorded stats (including baselines) — useful between
 /// benchmark runs.
 pub fn reset() {
@@ -125,7 +140,30 @@ pub fn reset() {
 /// Human-readable table, grouped by category, e.g. to return from a
 /// debug command/endpoint.
 pub fn report() -> String {
-    let categories = snapshot();
+    format_report(snapshot())
+}
+
+/// Same as [`report`], but restricted to the given categories. An empty
+/// slice behaves like [`report`] (everything). If none of the requested
+/// categories have any data, says so explicitly instead of printing an
+/// empty report.
+pub fn report_filtered<S: AsRef<str>>(categories: &[S]) -> String {
+    if categories.is_empty() {
+        return report();
+    }
+    let filtered = snapshot_filtered(categories);
+    if filtered.is_empty() {
+        let names: Vec<&str> = categories.iter().map(|c| c.as_ref()).collect();
+        return format!(
+            "No timing data recorded for categor{}: {}",
+            if names.len() == 1 { "y" } else { "ies" },
+            names.join(", ")
+        );
+    }
+    format_report(filtered)
+}
+
+fn format_report(categories: Vec<(&'static str, Vec<(&'static str, FnStats)>)>) -> String {
     if categories.is_empty() {
         return "No timing data recorded (is the `timing` feature enabled for this build?)"
             .to_string();

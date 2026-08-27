@@ -4,10 +4,13 @@ use std::{
     path::Path,
 };
 
+use core_timing::timed;
+
 use crate::{posting::DeleteSet, types::DocId};
 
 const DELETES_FILE: &str = "deletes.txt";
 
+#[timed(database_lifecycle)]
 pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
     let path = root.as_ref().join(DELETES_FILE);
 
@@ -38,6 +41,7 @@ pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
     Ok(deleted)
 }
 
+#[timed(modifying_documents)]
 pub fn append_delete(root: impl AsRef<Path>, doc_id: DocId) -> io::Result<()> {
     let path = root.as_ref().join(DELETES_FILE);
 
@@ -48,6 +52,7 @@ pub fn append_delete(root: impl AsRef<Path>, doc_id: DocId) -> io::Result<()> {
     Ok(())
 }
 
+#[timed(compaction)]
 pub fn clear_deletes(root: impl AsRef<Path>) -> io::Result<()> {
     let path = root.as_ref().join(DELETES_FILE);
 

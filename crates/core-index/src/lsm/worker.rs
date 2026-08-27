@@ -9,6 +9,8 @@ use std::{
     time::Duration,
 };
 
+use core_timing::timed;
+
 use crate::lsm::{
     //compact_segments,
     compaction::{
@@ -110,6 +112,7 @@ impl CompactionWorker {
     }
 }
 
+#[timed(compaction)]
 fn run_compaction_job(job: CompactionJob) -> io::Result<CompletedCompaction> {
     compact_segments_streaming(&job.selected, &job.deleted, &job.output_path)?;
 

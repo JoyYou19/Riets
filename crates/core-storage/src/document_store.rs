@@ -1,5 +1,6 @@
 use core_index::types::DocId;
 use core_protocol::format::Format;
+use core_timing::timed;
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,7 @@ impl MemoryDocumentStore {
 }
 
 impl DocumentStore for MemoryDocumentStore {
+    #[timed(inserting)]
     fn put(&mut self, doc: StoredDocument) -> std::io::Result<()> {
         self.internal_to_external
             .insert(doc.internal_id, doc.external_id.clone());
@@ -71,6 +73,7 @@ impl DocumentStore for MemoryDocumentStore {
         Ok(())
     }
 
+    #[timed(inserting)]
     fn put_batch(&mut self, docs: Vec<StoredDocument>) -> std::io::Result<()> {
         for doc in docs {
             self.internal_to_external
@@ -82,6 +85,7 @@ impl DocumentStore for MemoryDocumentStore {
         Ok(())
     }
 
+    #[timed(retrieve_opps)]
     fn get(&self, external_id: &str) -> std::io::Result<Option<StoredDocument>> {
         Ok(self.docs.get(external_id).cloned())
     }
@@ -90,6 +94,7 @@ impl DocumentStore for MemoryDocumentStore {
         Ok(self.docs.contains_key(external_id))
     }
 
+    #[timed(modifying_documents)]
     fn delete(&mut self, external_id: &str) -> std::io::Result<()> {
         if let Some(doc) = self.docs.remove(external_id) {
             self.internal_to_external.remove(&doc.internal_id);
@@ -106,6 +111,7 @@ impl DocumentStore for MemoryDocumentStore {
             .unwrap_or(0)
     }
 
+    #[timed(retrieve_opps)]
     fn get_by_internal_id(&self, internal_id: DocId) -> std::io::Result<Option<StoredDocument>> {
         let Some(external_id) = self.internal_to_external.get(&internal_id) else {
             return Ok(None);
@@ -118,6 +124,7 @@ impl DocumentStore for MemoryDocumentStore {
         self.docs.len()
     }
 
+    #[timed(reindex)]
     fn all_documents(&self) -> io::Result<Vec<StoredDocument>> {
         let mut docs = Vec::new();
 
@@ -129,6 +136,7 @@ impl DocumentStore for MemoryDocumentStore {
         Ok(docs)
     }
 
+    #[timed(reindex)]
     fn for_each_document(
         &self,
         f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,

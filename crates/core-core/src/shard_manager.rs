@@ -55,6 +55,7 @@ impl ShardManager {
         self.db_stats.record_search(failed, elapsed);
     }
 
+    #[timed(database_lifecycle)]
     pub fn create(root: PathBuf, options: DatabaseOptions) -> Result<Self, CorelamoError> {
         if options.shard_count == 0 {
             return Err(CorelamoError::InvalidData(
@@ -195,6 +196,7 @@ impl ShardManager {
         Ok(())
     }
 
+    #[timed(database_lifecycle)]
     pub async fn start(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -235,6 +237,7 @@ impl ShardManager {
         self.shards.iter().all(|h| h.is_running())
     }
 
+    #[timed(database_lifecycle)]
     pub async fn stop(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -266,6 +269,7 @@ impl ShardManager {
         }
     }
 
+    #[timed(database_lifecycle)]
     pub async fn restart(&self) -> Result<(), CorelamoError> {
         self.stop().await?;
         self.start().await
@@ -330,6 +334,7 @@ impl ShardManager {
         Ok(report)
     }
 
+    #[timed(retrieve_opps)]
     pub async fn retrieve_one(&self, id: &str) -> Result<Option<StoredDocument>, CorelamoError> {
         let shard_idx = self.shard_index_for(id);
         let docs = self.shards[shard_idx]
@@ -466,6 +471,7 @@ impl ShardManager {
         Ok(report)
     }
 
+    #[timed(database_lifecycle)]
     pub async fn clear_all(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
         let all_fields = AllFields::new();
@@ -503,6 +509,7 @@ impl ShardManager {
 
     //INFO: manual load is basically only used for rename_database so that it doesnt start based on
     //boot : bool
+    #[timed(database_lifecycle)]
     pub fn load(root: PathBuf, manual_load: bool) -> Result<Self, CorelamoError> {
         let shards_dir = root.join("shards");
 
@@ -570,6 +577,7 @@ impl ShardManager {
         self.shards.len()
     }
 
+    #[timed(database_lifecycle)]
     pub fn shutdown(self) -> Result<(), CorelamoError> {
         let pending: Vec<_> = self
             .shards
@@ -607,6 +615,7 @@ impl ShardManager {
         self.options.read().clone()
     }
 
+    #[timed(database_lifecycle)]
     pub async fn set_policy_all(
         &self,
         mut policy: IndexPolicy,
@@ -652,6 +661,7 @@ impl ShardManager {
         Ok(())
     }
 
+    #[timed(database_lifecycle)]
     pub async fn set_options_all(
         &self,
         options: DatabaseOptions,
@@ -932,6 +942,7 @@ impl ShardManager {
     }
 
     //viss ar backups
+    #[timed(backup)]
     pub fn try_start_backup(&self) -> Result<(), CorelamoError> {
         if self.db_stats.restore_progress().is_running() {
             return Err(CorelamoError::Busy("restore in progress".into()));
@@ -942,6 +953,7 @@ impl ShardManager {
         Ok(())
     }
 
+    #[timed(restore)]
     pub fn try_start_restore(&self) -> Result<(), CorelamoError> {
         if self.db_stats.backup_progress().is_running() {
             return Err(CorelamoError::Busy("backup in progress".into()));
@@ -952,6 +964,7 @@ impl ShardManager {
         Ok(())
     }
 
+    #[timed(backup)]
     pub async fn backup_full(&self, user: String) -> Result<Vec<BackupManifest>, CorelamoError> {
         let backup_id = format!("full_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
         let backup_root = self.backup_dir.join(&backup_id);
@@ -1014,6 +1027,7 @@ impl ShardManager {
         Ok(manifests)
     }
 
+    #[timed(backup)]
     pub async fn backup_incremental(
         &self,
         user: String,
@@ -1069,6 +1083,7 @@ impl ShardManager {
         Ok(manifests)
     }
 
+    #[timed(restore)]
     pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();
 
@@ -1106,6 +1121,7 @@ impl ShardManager {
         self.backup_dir.join(backup_id).is_dir()
     }
 
+    #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
         let mut merged: HashMap<String, BackupManifest> = HashMap::new();
 
@@ -1126,6 +1142,7 @@ impl ShardManager {
         Ok(merged.into_values().collect())
     }
 
+    #[timed(backup)]
     pub async fn delete_backup(
         &self,
         backup_id: String,
@@ -1136,6 +1153,7 @@ impl ShardManager {
         Ok(())
     }
 
+    #[timed(backup)]
     pub fn delete_backups_old(&self, lifetime: Duration) -> Result<(), CorelamoError> {
         let cutoff = SystemTime::now() - lifetime;
         let entries =
@@ -1157,6 +1175,7 @@ impl ShardManager {
         Ok(())
     }
 
+    #[timed(backup)]
     pub fn start_backup_scheduler(self: &Arc<Self>) {
         let (inc_period, full_period) = {
             let o = self.options.read();

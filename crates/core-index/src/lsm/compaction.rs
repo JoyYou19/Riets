@@ -8,6 +8,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use core_timing::timed;
+
 use crate::{
     disk::{reader::DiskSegment, writer::write_merged_segment},
     posting::{DeleteSet, PostingList},
@@ -75,6 +77,7 @@ impl<'a> Iterator for MergedTerms<'a> {
     }
 }
 
+#[timed(compaction)]
 pub fn compact_segments_streaming(
     handles: &[SegmentHandle],
     deleted: &DeleteSet,

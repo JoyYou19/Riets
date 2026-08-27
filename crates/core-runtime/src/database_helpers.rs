@@ -2,8 +2,10 @@ use std::{collections::HashMap, io, path::Path};
 
 use core_core::shard_manager::ShardManager;
 use core_protocol::errors::CorelamoError;
+use core_timing::timed;
 use slog::error;
 
+#[timed(database_lifecycle)]
 pub fn load_saved_shard_managers(
     databases_dir: &Path,
 ) -> io::Result<HashMap<String, ShardManager>> {

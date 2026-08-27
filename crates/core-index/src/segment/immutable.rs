@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use core_timing::timed;
+
 use crate::{
     posting::PostingList,
     search::{SearchIndex, SearchStats},
@@ -80,6 +82,7 @@ impl ImmutableSegment {
         self.lookup(term, xpath).cloned().unwrap_or_default()
     }
 
+    #[timed(search)]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let mut items = Vec::new();
 
@@ -94,6 +97,7 @@ impl ImmutableSegment {
         PostingList::from_items(items)
     }
 
+    #[timed(search)]
     pub fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);

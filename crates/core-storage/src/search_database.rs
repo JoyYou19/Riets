@@ -127,6 +127,7 @@ pub struct SearchDocumentResults {
 }
 
 impl<S: DocumentStore> SearchDatabase<S> {
+    #[timed(database_lifecycle)]
     pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> io::Result<Self> {
         Self::with_policy(store, index, analyzer, IndexPolicy::default_document())
     }
@@ -152,6 +153,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     // WARN: This is old, must be changed, backwards compatibility here is 0
+    #[timed(database_lifecycle)]
     pub fn with_policy(
         store: S,
         index: LsmIndex,
@@ -163,6 +165,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     /* Each shard must receive a distinct shardId
     The shard allocates only local sequences and packs them into globally unique document IDs.*/
+    #[timed(database_lifecycle)]
     pub fn with_shard_policy(
         store: S,
         index: LsmIndex,
@@ -186,6 +189,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         })
     }
 
+    #[timed(database_lifecycle)]
     pub fn with_shard_policy_and_snapshot(
         store: S,
         index: LsmIndex,
@@ -237,7 +241,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.store.for_each_document(f)
     }
 
-    #[timed]
+    #[timed(inserting)]
     pub fn put_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -288,7 +292,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         })
     }
 
-    #[timed]
+    #[timed(inserting)]
     pub fn put_documents_parallel(
         &mut self,
         inputs: Vec<DocumentInput>,
@@ -304,6 +308,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         pipeline.finish()
     }
 
+    #[timed(inserting)]
     pub fn put_document_store_only_return_indexed(
         &mut self,
         input: DocumentInput,
@@ -324,7 +329,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     // Update creates a new internal version, the old internal_id is tombstoned, while the
     // external_id points to the latest version
     // INFO: changed the name cuz upsert is more precise here
-    #[timed]
+    #[timed(modifying_documents)]
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let internal_id = self.allocate_internal_id()?;
 
@@ -355,7 +360,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(())
     }
 
-    #[timed]
+    #[timed(modifying_documents)]
     pub fn partial_replace_document(
         &mut self,
         external_id: &str,
@@ -406,7 +411,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(Some(new_doc))
     }
 
-    #[timed]
+    #[timed(modifying_documents)]
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
             self.index_worker
@@ -416,6 +421,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.store.delete(external_id)
     }
 
+    #[timed(modifying_documents)]
     pub fn delete_internal_document(&mut self, doc_id: DocId) -> io::Result<()> {
         if !self.owns_doc_id(doc_id) {
             return Err(io::Error::new(
@@ -435,6 +441,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.store.get(external_id)
     }
 
+    #[timed(search)]
     pub fn search(&self, query: &Query, xpath: u32) -> Vec<SearchHit> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
@@ -442,6 +449,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     // WARN: MIght not be used
+    #[timed(search)]
     pub fn search_documents(
         &mut self,
         query: &Query,
@@ -460,6 +468,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(docs)
     }
 
+    #[timed(search)]
     pub fn search_document_hits(
         &mut self,
         query: &Query,
@@ -483,6 +492,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(results)
     }
 
+    #[timed(search)]
     pub fn search_document_hits_top_k(
         &mut self,
         query: &Query,
@@ -496,7 +506,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.resolve_document_hits(hits, None)
     }
 
-    #[timed]
+    #[timed(search)]
     pub fn search_document_hits_all_fields_top_k(
         &self,
         query: &Query,
@@ -511,6 +521,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.resolve_document_hits(hits, None)
     }
 
+    #[timed(search)]
     pub fn search_document_results_all_fields_top_k(
         &mut self,
         query: &Query,
@@ -539,6 +550,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     //lookup-retrieves+filters document based on request
+    #[timed(retrieve_opps)]
     pub fn lookup_documents(
         &self,
         ids: &[String],
@@ -558,7 +570,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         LookupResponse::from_hits(found, not_found).map_err(io::Error::other)
     }
 
-    #[timed]
+    #[timed(search)]
     pub fn search_document_hits_plan(
         &self,
         plan: &QueryPlan,
@@ -598,6 +610,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.resolve_document_hits(hits, return_fields)
     }
 
+    #[timed(search)]
     pub fn resolve_document_hits(
         &self,
         hits: Vec<SearchHit>,
@@ -619,7 +632,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(results)
     }
 
-    #[timed]
+    #[timed(flushing)]
     pub fn flush(&mut self) -> io::Result<()> {
         self.index_worker.flush_wait()
     }
@@ -632,6 +645,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     //     self.index.segment_count()
     // }
     //
+    #[timed(database_lifecycle)]
     pub fn shutdown(self) -> io::Result<LsmIndex> {
         self.index_worker.shutdown()
     }
@@ -661,17 +675,20 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &self.policy
     }
 
+    #[timed(reindex)]
     pub fn reindex(&mut self) -> io::Result<()> {
         let _docs = self.store.all_documents()?; // jauzliek _ ?
 
         todo!("needs LsmINdex reset/clear before rebuilding")
     }
 
+    #[timed(database_lifecycle)]
     pub fn shutdown_into_store(self) -> io::Result<S> {
         let _inex = self.index_worker.shutdown()?;
         Ok(self.store)
     }
 
+    #[timed(reindex)]
     pub fn reindex_existing_documents(
         &mut self,
         batch_size: usize,
@@ -724,6 +741,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 }
 
+#[timed(indexing_documents)]
 fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> IndexedDocument {
     let mut indexed = IndexedDocument::new(doc.internal_id);
 
@@ -744,6 +762,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
 
     indexed
 }
+#[timed(reindex)]
 fn publish_window(
     worker: &IndexWorker,
     analyzer: &Analyzer,
@@ -809,6 +828,7 @@ fn should_include(
 }
 
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
+    #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
         let internal_id = self.db.allocate_internal_id()?;
 
@@ -847,6 +867,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     }
 
     // Checks both persisted documents and IDs
+    #[timed(inserting)]
     fn external_id_exists(&self, external_id: &str) -> io::Result<bool> {
         if self.seen.contains(external_id) {
             return Ok(true);
@@ -872,6 +893,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     //     }
     // }
 
+    #[timed(inserting)]
     pub fn finish(mut self) -> io::Result<InsertReport> {
         self.flush_batch()?;
         self.flush_window()?;
@@ -888,6 +910,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     // publishes them to the index
     //
     //
+    #[timed(inserting)]
     fn flush_window(&mut self) -> io::Result<()> {
         if self.pending_batches.is_empty() {
             return Ok(());
@@ -907,6 +930,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     }
 
     // Flushes on completed document batch
+    #[timed(inserting)]
     fn flush_batch(&mut self) -> io::Result<()> {
         if self.current_batch.is_empty() {
             return Ok(());
@@ -930,6 +954,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     }
 }
 
+#[timed(database_lifecycle)]
 fn next_local_id_for_shard<S: DocumentStore>(
     store: &S,
     shard_id: ShardId,

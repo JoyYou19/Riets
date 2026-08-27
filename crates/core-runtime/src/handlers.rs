@@ -7,6 +7,7 @@ use axum::{
 use core_auth::{Permission, Principal};
 
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
+use core_timing::timed;
 use slog::{error, info, o};
 
 use crate::{
@@ -20,7 +21,7 @@ use core_protocol::{
     command_reponse_definitions::{
         Command, DeleteCommand, GetLogsRequest, LoginResponse, LookupCommand,
         PartialReplaceCommand, RenameDatabaseRequest, RetrieveCommand, RetrieveResponse,
-        SearchCommand, SearchResponse,
+        SearchCommand, SearchResponse, TimingsRequest,
     },
     errors::CorelamoError,
 };
@@ -266,6 +267,7 @@ pub async fn update_user_roles_handler(
 }
 
 // //TODO: total_hits: xxx kkadu
+#[timed(search)]
 pub async fn search_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -366,6 +368,7 @@ pub async fn get_all_fields_handler(
     .into_response()
 }
 
+#[timed(retrieve_opps)]
 pub async fn lookup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -411,6 +414,7 @@ pub async fn lookup_handler(
     HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
 }
 
+#[timed(inserting)]
 pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -494,6 +498,7 @@ pub async fn insert_handler(
         .into_response()
 }
 
+#[timed(retrieve_opps)]
 pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -570,6 +575,7 @@ pub async fn retrieve_handler(
     HttpOk::with_response(title, resp, &ctx).into_response()
 }
 
+#[timed(database_lifecycle)]
 pub async fn start_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -593,6 +599,7 @@ pub async fn start_database_handler(
     }
 }
 
+#[timed(database_lifecycle)]
 pub async fn stop_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -616,6 +623,7 @@ pub async fn stop_database_handler(
     }
 }
 
+#[timed(database_lifecycle)]
 pub async fn restart_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -641,6 +649,7 @@ pub async fn restart_database_handler(
     }
 }
 
+#[timed(database_lifecycle)]
 pub async fn clear_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -732,6 +741,7 @@ pub async fn clear_logs_handler(
     }
 }
 
+#[timed(modifying_documents)]
 pub async fn delete_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -800,6 +810,7 @@ pub async fn delete_document_handler(
         .into_response()
 }
 
+#[timed(modifying_documents)]
 pub async fn partial_replace_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -917,6 +928,7 @@ pub async fn partial_replace_handler(
         .into_response()
 }
 
+#[timed(modifying_documents)]
 pub async fn replace_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1004,6 +1016,7 @@ pub async fn replace_document_handler(
         .into_response()
 }
 
+#[timed(modifying_documents)]
 pub async fn upsert_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1091,6 +1104,7 @@ pub async fn upsert_document_handler(
         .into_response()
 }
 
+#[timed(database_lifecycle)]
 pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1181,6 +1195,7 @@ pub async fn create_database_handler(
     .into_response()
 }
 
+#[timed(database_lifecycle)]
 pub async fn delete_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1337,6 +1352,7 @@ pub async fn stats_handler(
     .into_response()
 }
 
+#[timed(reindex)]
 pub async fn reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1569,6 +1585,7 @@ pub async fn list_databases_handler(
     .into_response()
 }
 
+#[timed(backup)]
 pub async fn backup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1610,6 +1627,7 @@ pub async fn backup_handler(
     HttpOk::new(format!("backup started for '{db_name}'"), &ctx).into_response()
 }
 
+#[timed(restore)]
 pub async fn backup_restore_handler(
     State(state): State<AppState>,
     Path((db_name, backup_id)): Path<(String, String)>,
@@ -1668,6 +1686,7 @@ pub async fn backup_restore_handler(
     .into_response()
 }
 
+#[timed(backup)]
 pub async fn backup_incremental_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1720,6 +1739,7 @@ pub async fn backup_incremental_handler(
     HttpOk::new(format!("incremental backup started for '{db_name}'"), &ctx).into_response()
 }
 
+#[timed(backup)]
 pub async fn list_backups_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1753,6 +1773,7 @@ pub async fn list_backups_handler(
     .into_response()
 }
 
+#[timed(backup)]
 pub async fn backup_delete_handler(
     State(state): State<AppState>,
     Path((db_name, backup_id)): Path<(String, String)>,
@@ -1792,6 +1813,7 @@ pub async fn backup_delete_handler(
     .into_response()
 }
 
+#[timed(database_lifecycle)]
 pub async fn rename_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1977,9 +1999,31 @@ pub async fn timings_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Status) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    HttpOk::raw(StatusCode::OK, "text/plain", core_timing::report(), &ctx)
+
+    let categories = if body.trim().is_empty() {
+        None
+    } else {
+        match serde_json::from_str::<TimingsRequest>(body.trim()) {
+            Ok(req) => req.categories,
+            Err(e) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::InvalidData(format!("invalid timings request: {e}")),
+                    &ctx,
+                )
+                .into_response();
+            }
+        }
+    };
+
+    let report = match categories {
+        Some(cats) if !cats.is_empty() => core_timing::report_filtered(&cats),
+        _ => core_timing::report(),
+    };
+
+    HttpOk::raw(StatusCode::OK, "text/plain", report, &ctx)
 }

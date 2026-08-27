@@ -6,6 +6,11 @@ edition = "2024"
 [dependencies]
 core-index = { path = "../core-index" }
 core-protocol = {path = "../core-protocol"}
+core-timing = { path = "../core-timing" }
+
+[features]
+timing = ["core-timing/timing", "core-index/timing"]
+
 [dev-dependencies]
 criterion = { workspace = true }
 core-testkit = { path = "../core-testkit" }
