@@ -12,7 +12,7 @@ use slog::{error, info, o};
 
 use crate::{
     AppState,
-    database_helpers::validate_db_name,
+    database_helpers::{compute_disk_usage, validate_db_name},
     doctypes,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
@@ -2005,11 +2005,11 @@ pub async fn timings_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let categories = if body.trim().is_empty() {
-        None
+    let (categories, file) = if body.trim().is_empty() {
+        (None, None)
     } else {
         match serde_json::from_str::<TimingsRequest>(body.trim()) {
-            Ok(req) => req.categories,
+            Ok(req) => (req.categories, req.file),
             Err(e) => {
                 return HttpError::from_corelamo(
                     CorelamoError::InvalidData(format!("invalid timings request: {e}")),
@@ -2020,10 +2020,62 @@ pub async fn timings_handler(
         }
     };
 
-    let report = match categories {
-        Some(cats) if !cats.is_empty() => core_timing::report_filtered(&cats),
-        _ => core_timing::report(),
-    };
+    let categories = categories.unwrap_or_default();
+    let report = core_timing::report_filtered(&categories, file.as_deref());
 
     HttpOk::raw(StatusCode::OK, "text/plain", report, &ctx)
+}
+
+#[timed(disk_usage)]
+pub async fn disk_usage_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Status) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    {
+        let dbs = match state.databases.read() {
+            Ok(g) => g,
+            Err(_) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::Internal("databases lock poisoned".into()),
+                    &ctx,
+                )
+                .into_response();
+            }
+        };
+        if !dbs.contains_key(&db_name) {
+            return HttpError::from_corelamo(
+                CorelamoError::NotFound(format!("database '{db_name}' not found")),
+                &ctx,
+            )
+            .into_response();
+        }
+    }
+
+    let db_root = state.databases_dir.join(&db_name);
+    let name_for_task = db_name.clone();
+
+    let result =
+        tokio::task::spawn_blocking(move || compute_disk_usage(&db_root, &name_for_task)).await;
+
+    let usage = match result {
+        Ok(Ok(u)) => u,
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("disk usage task panicked: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    HttpOk::with_data(format!("disk usage for '{db_name}'"), usage, &ctx).into_response()
 }

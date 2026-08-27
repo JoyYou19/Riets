@@ -117,7 +117,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
             {
                 let __perf_start = ::std::time::Instant::now();
                 let __perf_result: #ret_ty = (async move #body_tokens).await;
-                ::core_timing::record(#category, #label, __perf_start.elapsed());
+                ::core_timing::record(#category, #label, file!(), __perf_start.elapsed());
                 __perf_result
             }
         }
@@ -126,7 +126,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
             {
                 let __perf_start = ::std::time::Instant::now();
                 let __perf_result: #ret_ty = (move || -> #ret_ty #body_tokens)();
-                ::core_timing::record(#category, #label, __perf_start.elapsed());
+                ::core_timing::record(#category, #label, file!(), __perf_start.elapsed());
                 __perf_result
             }
         }

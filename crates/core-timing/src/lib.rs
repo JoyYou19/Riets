@@ -4,8 +4,11 @@
 //! method). When the crate's `timing` feature is off, the instrumentation
 //! compiles to nothing. When it's on, each call updates an in-memory
 //! aggregate (count / total / min / max / baseline) keyed by
-//! `(category, function name)`. Call [`report`] from a debug command,
-//! admin endpoint, or test to see the results, grouped by category.
+//! `(category, function name, source file)` — the file is included so two
+//! functions with the same name in different files (e.g. two `load`s)
+//! show up as separate rows instead of merging into one. Call [`report`]
+//! from a debug command, admin endpoint, or test to see the results,
+//! grouped by category.
 //!
 //! This is intentionally decoupled from `tracing` — it doesn't need a
 //! subscriber installed, and it aggregates instead of emitting one
@@ -55,25 +58,37 @@ impl FnStats {
     }
 }
 
-type Key = (&'static str, &'static str); // (category, function name)
+// (category, function name, source filename — no directories)
+type Key = (&'static str, &'static str, &'static str);
 
 fn registry() -> &'static Mutex<HashMap<Key, FnStats>> {
     static REGISTRY: OnceLock<Mutex<HashMap<Key, FnStats>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Strips a `file!()`-style path (e.g. `crates/core-core/src/shard_db.rs`,
+/// or `src\shard_db.rs` on Windows) down to just the filename. Slicing a
+/// `&'static str` yields another `&'static str`, so no allocation.
+fn filename_only(file: &'static str) -> &'static str {
+    file.rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(file)
+}
+
 /// Called by the `#[timed]` macro / `timed_block!`. Not usually called
-/// directly.
+/// directly. `file` is expected to be the output of the builtin `file!()`
+/// macro at the call site — full path in, only the filename is kept.
 ///
 /// Note: this takes a plain `Mutex<HashMap<..>>` lock per call, which is
 /// fine for dev-time profiling. If you end up applying `#[timed]` to a
 /// function called millions of times per second across many shard
 /// threads and see contention, prefer timing the boundary functions
 /// (parse, index-write, disk-write) rather than every inner helper.
-pub fn record(category: &'static str, name: &'static str, elapsed: Duration) {
+pub fn record(category: &'static str, name: &'static str, file: &'static str, elapsed: Duration) {
+    let file = filename_only(file);
     let ns = elapsed.as_nanos() as u64;
     let mut map = registry().lock().unwrap();
-    let entry = map.entry((category, name)).or_insert(FnStats {
+    let entry = map.entry((category, name, file)).or_insert(FnStats {
         count: 0,
         total_ns: 0,
         min_ns: u64::MAX,
@@ -93,41 +108,63 @@ pub fn record(category: &'static str, name: &'static str, elapsed: Duration) {
     }
 }
 
-/// Snapshot grouped by category, each category's functions sorted by
-/// total time descending, categories themselves sorted by their summed
-/// total time descending (biggest time-sink category first).
-pub fn snapshot() -> Vec<(&'static str, Vec<(&'static str, FnStats)>)> {
+type CategoryEntries = Vec<(&'static str, &'static str, FnStats)>; // (name, file, stats)
+
+/// Snapshot grouped by category, each category's entries sorted by total
+/// time descending, categories themselves sorted by their summed total
+/// time descending (biggest time-sink category first).
+pub fn snapshot() -> Vec<(&'static str, CategoryEntries)> {
     let map = registry().lock().unwrap();
-    let mut by_category: HashMap<&'static str, Vec<(&'static str, FnStats)>> = HashMap::new();
-    for (&(category, name), &stats) in map.iter() {
-        by_category.entry(category).or_default().push((name, stats));
+    let mut by_category: HashMap<&'static str, CategoryEntries> = HashMap::new();
+    for (&(category, name, file), &stats) in map.iter() {
+        by_category
+            .entry(category)
+            .or_default()
+            .push((name, file, stats));
     }
 
-    let mut categories: Vec<(&'static str, Vec<(&'static str, FnStats)>)> =
-        by_category.into_iter().collect();
-    for (_, fns) in categories.iter_mut() {
-        fns.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
+    let mut categories: Vec<(&'static str, CategoryEntries)> = by_category.into_iter().collect();
+    for (_, entries) in categories.iter_mut() {
+        entries.sort_by(|a, b| b.2.total_ns.cmp(&a.2.total_ns));
     }
     categories.sort_by(|a, b| {
-        let a_total: u64 = a.1.iter().map(|(_, s)| s.total_ns).sum();
-        let b_total: u64 = b.1.iter().map(|(_, s)| s.total_ns).sum();
+        let a_total: u64 = a.1.iter().map(|(_, _, s)| s.total_ns).sum();
+        let b_total: u64 = b.1.iter().map(|(_, _, s)| s.total_ns).sum();
         b_total.cmp(&a_total)
     });
     categories
 }
 
-/// Same as [`snapshot`], but only the categories named in `categories`
-/// (matched by exact string equality). An empty slice returns everything,
-/// same as calling [`snapshot`] directly.
+/// Same as [`snapshot`], but restricted to the given categories and/or a
+/// specific source file (exact filename match, e.g. `"shard_db.rs"` — not
+/// a path). An empty `categories` slice means "any category"; `file =
+/// None` means "any file". Passing both narrows to their intersection.
 pub fn snapshot_filtered<S: AsRef<str>>(
     categories: &[S],
-) -> Vec<(&'static str, Vec<(&'static str, FnStats)>)> {
-    if categories.is_empty() {
-        return snapshot();
-    }
-    snapshot()
+    file: Option<&str>,
+) -> Vec<(&'static str, CategoryEntries)> {
+    let by_category = if categories.is_empty() {
+        snapshot()
+    } else {
+        snapshot()
+            .into_iter()
+            .filter(|(category, _)| categories.iter().any(|c| c.as_ref() == *category))
+            .collect()
+    };
+
+    let Some(file) = file else {
+        return by_category;
+    };
+    by_category
         .into_iter()
-        .filter(|(category, _)| categories.iter().any(|c| c.as_ref() == *category))
+        .map(|(category, entries)| {
+            let entries: CategoryEntries = entries
+                .into_iter()
+                .filter(|(_, entry_file, _)| *entry_file == file)
+                .collect();
+            (category, entries)
+        })
+        .filter(|(_, entries)| !entries.is_empty())
         .collect()
 }
 
@@ -138,45 +175,71 @@ pub fn reset() {
 }
 
 /// Human-readable table, grouped by category, e.g. to return from a
-/// debug command/endpoint.
+/// debug command/endpoint. Each row is labeled `name (file.rs)` so
+/// same-named functions in different files don't collide.
 pub fn report() -> String {
     format_report(snapshot())
 }
 
-/// Same as [`report`], but restricted to the given categories. An empty
-/// slice behaves like [`report`] (everything). If none of the requested
-/// categories have any data, says so explicitly instead of printing an
+/// Same as [`report`], but restricted to the given categories and/or a
+/// specific source file — see [`snapshot_filtered`] for exact matching
+/// rules. Empty categories + `None` file behaves like [`report`]. If the
+/// filters match nothing, says so explicitly instead of printing an
 /// empty report.
-pub fn report_filtered<S: AsRef<str>>(categories: &[S]) -> String {
-    if categories.is_empty() {
+pub fn report_filtered<S: AsRef<str>>(categories: &[S], file: Option<&str>) -> String {
+    if categories.is_empty() && file.is_none() {
         return report();
     }
-    let filtered = snapshot_filtered(categories);
+    let filtered = snapshot_filtered(categories, file);
     if filtered.is_empty() {
-        let names: Vec<&str> = categories.iter().map(|c| c.as_ref()).collect();
-        return format!(
-            "No timing data recorded for categor{}: {}",
-            if names.len() == 1 { "y" } else { "ies" },
-            names.join(", ")
-        );
+        let mut parts = Vec::new();
+        if !categories.is_empty() {
+            let names: Vec<&str> = categories.iter().map(|c| c.as_ref()).collect();
+            parts.push(format!(
+                "categor{} {}",
+                if names.len() == 1 { "y" } else { "ies" },
+                names.join(", ")
+            ));
+        }
+        if let Some(f) = file {
+            parts.push(format!("file {f}"));
+        }
+        return format!("No timing data recorded for {}", parts.join(" and "));
     }
     format_report(filtered)
 }
 
-fn format_report(categories: Vec<(&'static str, Vec<(&'static str, FnStats)>)>) -> String {
+fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
     if categories.is_empty() {
         return "No timing data recorded (is the `timing` feature enabled for this build?)"
             .to_string();
     }
 
     let mut out = String::new();
-    for (category, fns) in categories {
+    for (category, entries) in categories {
         out.push_str(&format!("== {category} ==\n"));
+
+        // Column widths sized to this category's actual content, so a
+        // long function or file name widens the column instead of
+        // wrecking alignment for the whole table.
+        let name_width = entries
+            .iter()
+            .map(|(name, _, _)| name.len())
+            .max()
+            .unwrap_or(0)
+            .max("function".len());
+        let file_width = entries
+            .iter()
+            .map(|(_, file, _)| file.len())
+            .max()
+            .unwrap_or(0)
+            .max("file".len());
+
         out.push_str(&format!(
-            "{:<32} {:>8} {:>12} {:>12} {:>12} {:>12} {:>24}\n",
-            "function", "calls", "total", "avg", "min", "max", "vs baseline"
+            "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>24}\n",
+            "function", "file", "calls", "total", "avg", "min", "max", "vs baseline",
         ));
-        for (name, s) in fns {
+        for (name, file, s) in entries {
             let drift = match (s.drift_pct(), s.baseline_avg_ns) {
                 (Some(pct), Some(baseline)) => {
                     format!("{:+.1}% (was {})", pct, fmt_duration(baseline as u64))
@@ -184,8 +247,9 @@ fn format_report(categories: Vec<(&'static str, Vec<(&'static str, FnStats)>)>) 
                 _ => format!("(<{BASELINE_SAMPLE_SIZE} calls)"),
             };
             out.push_str(&format!(
-                "{:<32} {:>8} {:>12} {:>12} {:>12} {:>12} {:>24}\n",
+                "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>24}\n",
                 name,
+                file,
                 s.count,
                 fmt_duration(s.total_ns),
                 fmt_duration(s.avg_ns() as u64),
@@ -219,6 +283,8 @@ fn format_report(categories: Vec<(&'static str, Vec<(&'static str, FnStats)>)>) 
 ///
 /// Same zero-cost-when-off behavior as `#[timed]`: requires the *calling*
 /// crate to declare its own `timing` feature (see the crate docs / README).
+/// The source file is captured automatically via `file!()` at the call
+/// site — nothing to pass for that part.
 #[macro_export]
 macro_rules! timed_block {
     ($label:expr, $body:expr) => {
@@ -228,7 +294,7 @@ macro_rules! timed_block {
         if cfg!(feature = "timing") {
             let __perf_start = ::std::time::Instant::now();
             let __perf_result = $body;
-            $crate::record($category, $label, __perf_start.elapsed());
+            $crate::record($category, $label, file!(), __perf_start.elapsed());
             __perf_result
         } else {
             $body

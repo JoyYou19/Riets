@@ -273,4 +273,5 @@ pub struct RenameDatabaseRequest {
 #[derive(Deserialize)]
 pub struct TimingsRequest {
     pub categories: Option<Vec<String>>,
+    pub file: Option<String>,
 }
