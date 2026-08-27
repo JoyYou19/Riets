@@ -6,7 +6,42 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ItemFn, LitStr, ReturnType, parse_macro_input};
+use syn::{
+    Ident, ItemFn, LitStr, ReturnType, Token,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+};
+
+/// Parses the optional `#[timed(...)]` argument list:
+///   #[timed]                          -> category = None, label = None
+///   #[timed(category)]                -> category = Some(category), label = None
+///   #[timed(category, "custom label")] -> both
+struct TimedArgs {
+    category: Option<Ident>,
+    label: Option<LitStr>,
+}
+
+impl Parse for TimedArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(TimedArgs {
+                category: None,
+                label: None,
+            });
+        }
+        let category: Ident = input.parse()?;
+        let label = if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            Some(input.parse::<LitStr>()?)
+        } else {
+            None
+        };
+        Ok(TimedArgs {
+            category: Some(category),
+            label,
+        })
+    }
+}
 
 /// Wrap a function so its wall-clock execution time is recorded into the
 /// global `core_timing` registry, gated entirely behind the `timing`
@@ -16,14 +51,19 @@ use syn::{ItemFn, LitStr, ReturnType, parse_macro_input};
 /// ```ignore
 /// use core_timing::timed;
 ///
+/// // No category -> grouped under "uncategorized" in the report.
 /// #[timed]
 /// fn parse_document(raw: &str) -> Document { ... }
 ///
-/// #[timed]
+/// // Bare identifier -> category for grouping in the report.
+/// #[timed(json_parsing)]
+/// fn parse_documents(body: &str) -> Result<ParseOutcome, Error> { ... }
+///
+/// #[timed(inserting_documents)]
 /// async fn write_shard_to_disk(shard: &Shard) -> std::io::Result<()> { ... }
 ///
-/// // Optional custom label instead of the function name:
-/// #[timed("shard_flush")]
+/// // Category + a custom label overriding the function name:
+/// #[timed(disk_io, "shard_flush")]
 /// fn flush(&mut self) { ... }
 /// ```
 ///
@@ -38,6 +78,8 @@ use syn::{ItemFn, LitStr, ReturnType, parse_macro_input};
 #[proc_macro_attribute]
 pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
+    let args = parse_macro_input!(attr as TimedArgs);
+
     let ItemFn {
         attrs,
         vis,
@@ -50,13 +92,11 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let is_unsafe = sig.unsafety.is_some();
     let fn_name = sig.ident.to_string();
 
-    // #[timed] uses the function name; #[timed("label")] overrides it.
-    let label = if attr.is_empty() {
-        fn_name
-    } else {
-        let lit = parse_macro_input!(attr as LitStr);
-        lit.value()
-    };
+    let category = args
+        .category
+        .map(|ident| ident.to_string())
+        .unwrap_or_else(|| "uncategorized".to_string());
+    let label = args.label.map(|lit| lit.value()).unwrap_or(fn_name);
 
     let ret_ty = match &sig.output {
         ReturnType::Default => quote! { () },
@@ -77,7 +117,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
             {
                 let __perf_start = ::std::time::Instant::now();
                 let __perf_result: #ret_ty = (async move #body_tokens).await;
-                ::core_timing::record(#label, __perf_start.elapsed());
+                ::core_timing::record(#category, #label, __perf_start.elapsed());
                 __perf_result
             }
         }
@@ -86,7 +126,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
             {
                 let __perf_start = ::std::time::Instant::now();
                 let __perf_result: #ret_ty = (move || -> #ret_ty #body_tokens)();
-                ::core_timing::record(#label, __perf_start.elapsed());
+                ::core_timing::record(#category, #label, __perf_start.elapsed());
                 __perf_result
             }
         }

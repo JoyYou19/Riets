@@ -388,7 +388,7 @@ impl ShardDb {
     }
 
     // ====== Read Operations ======
-    #[timed]
+    #[timed(search)]
     pub fn search(&self, query: &Query, k: usize) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
         let db = self
             .db_ref()
@@ -399,6 +399,7 @@ impl ShardDb {
             CorelamoError::Internal(e.to_string()))
     }
 
+    #[timed(retrieve_opps)]
     pub fn get_document(
         &self,
         ids: &[String],
@@ -416,6 +417,7 @@ impl ShardDb {
         Ok(out)
     }
 
+    #[timed(retrieve_opps)]
     pub fn lookup(&self, command: &LookupCommand) -> Result<LookupResponse, CorelamoError> {
         let db = self
             .db_ref()
@@ -431,7 +433,7 @@ impl ShardDb {
         parse_and_analyze(input, db.get_analyzer())
     }
     // =========write operations =========
-    #[timed]
+    #[timed(wal)]
     fn wal_append_record(&mut self, record: &WalRecord) -> Result<u64, CorelamoError> {
         let encoded = bincode::encode_to_vec(record, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
@@ -440,6 +442,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))
     }
 
+    #[timed(inserting)]
     pub fn insert(
         &mut self,
         inputs: Vec<DocumentInput>,
@@ -557,6 +560,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(modifying_database_documents)]
     pub fn delete(
         &mut self,
         ids: Vec<String>,
@@ -694,6 +698,7 @@ impl ShardDb {
         Ok(())
     }
 
+    #[timed(modifying_database_documents)]
     pub fn partial_replace(
         &mut self,
         items: Vec<(String, serde_json::Value)>,
@@ -746,6 +751,7 @@ impl ShardDb {
         Ok(ReplaceReport { replaced, failures })
     }
 
+    #[timed(modifying_database_documents)]
     pub fn replace(
         &mut self,
         inputs: Vec<DocumentInput>,
@@ -824,6 +830,7 @@ impl ShardDb {
         Ok(ReplaceReport { replaced, failures })
     }
 
+    #[timed(modifying_database_documents)]
     pub fn upsert(
         &mut self,
         inputs: Vec<DocumentInput>,

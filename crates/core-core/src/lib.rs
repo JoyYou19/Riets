@@ -5,9 +5,11 @@ mod shard_db;
 pub mod shard_manager;
 pub mod shard_worker;
 pub mod shared_state;
+use core_timing::timed;
 pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;
 
+#[timed(shard_manager)]
 pub fn shard_for(external_id: &str, num_shards: u16) -> u16 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
