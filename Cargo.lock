@@ -573,6 +573,7 @@ dependencies = [
  "serde_json",
  "slog",
  "slog-async",
+ "slog-scope",
  "thiserror 2.0.18",
  "tokio",
  "toml",

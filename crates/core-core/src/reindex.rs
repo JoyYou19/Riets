@@ -50,7 +50,7 @@ pub struct ReindexPool {
 
 impl ReindexPool {
     pub fn start(workers: usize) -> Self {
-        let workers = workers.max(1);
+        // let workers = workers.max(workers);
         let (tx, rx) = bounded::<ReindexJob>(64);
         let mut joins = Vec::with_capacity(workers);
 
@@ -120,7 +120,7 @@ fn build_staging_index(
     }
     std::fs::create_dir_all(&staging_root)?;
 
-    let store = BinaryDocumentStore::open(params.shard_root.join("documents.bin"))?;
+    let store = BinaryDocumentStore::open(params.shard_root.join("documents.bin"))?; //need to change to 
     let index = LsmIndex::persistent(&staging_root, params.options.runtime.flush_threshold)?;
     let mut staging = SearchDatabase::with_shard_policy(
         store,
