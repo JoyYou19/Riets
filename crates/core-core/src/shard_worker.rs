@@ -543,8 +543,8 @@ impl Drop for AliveGuard {
 pub fn spawn(
     mut shard: ShardDb,
     queue_depth: usize,
-    bootable: bool,
-) -> Result<(ShardHandle, JoinHandle<()>), CorelamoError> {
+    bootable: bool
+) -> Result<(ShardHandle, JoinHandle<()>, Receiver<Result<(), CorelamoError>>), CorelamoError> {
     let id = shard.shard_id();
     let progress = shard.progress();
     let alive = Arc::new(AtomicBool::new(true));
@@ -564,9 +564,7 @@ pub fn spawn(
             let started = if bootable { shard.start() } else { Ok(()) };
 
             let ok = started.is_ok();
-            shared_worker
-                .is_running
-                .store(bootable && ok, Ordering::Release);
+            shared_worker.is_running.store(bootable && ok, Ordering::Release);
             let _ = boot_tx.send(started);
             if ok {
                 run(shard, rx, shared_worker);
@@ -574,23 +572,12 @@ pub fn spawn(
         })
         .map_err(|e| CorelamoError::Internal(format!("failed to spawn shard {id}: {e}")))?;
 
-    boot_rx
-        .recv()
-        .map_err(|_| CorelamoError::Internal(format!("shard {id} thread died during start")))??;
-
     Ok((
-        ShardHandle {
-            id,
-            tx,
-            alive,
-            progress,
-            analyzer,
-            shared,
-        },
+        ShardHandle { id, tx, alive, progress, analyzer, shared },
         join,
+        boot_rx,
     ))
 }
-
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
     const MAX_BATCH: usize = 32;
     let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
