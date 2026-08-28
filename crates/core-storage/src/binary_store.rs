@@ -11,9 +11,9 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{ File, OpenOptions },
-    io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write },
-    path::{ Path, PathBuf },
+    fs::{File, OpenOptions},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -22,9 +22,8 @@ use core_protocol::format::Format;
 use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
-use serde::{ Deserialize, Serialize };
 
-use crate::document_store::{ DocumentStore, StoredDocument };
+use crate::document_store::{DocumentStore, StoredDocument};
 
 const MAGIC: &[u8; 8] = b"CDOCLOG4";
 
@@ -58,7 +57,9 @@ impl BinaryDocumentStore {
 
         let mut store = Self {
             path,
-            docs: Cache::builder().max_capacity(DEFAULT_DOC_CACHE_CAPACITY).build(),
+            docs: Cache::builder()
+                .max_capacity(DEFAULT_DOC_CACHE_CAPACITY)
+                .build(),
             internal_to_external: Arc::new(DashMap::new()),
             locations: Arc::new(DashMap::new()),
         };
@@ -73,7 +74,7 @@ impl BinaryDocumentStore {
         path: impl AsRef<Path>,
         docs: Cache<String, StoredDocument>,
         internal_to_external: Arc<DashMap<DocId, String>>,
-        locations: Arc<DashMap<String, DocLocation>>
+        locations: Arc<DashMap<String, DocLocation>>,
     ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
 
@@ -110,7 +111,10 @@ impl BinaryDocumentStore {
         reader.read_exact(&mut magic)?;
 
         if &magic != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad document store magic"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad document store magic",
+            ));
         }
 
         loop {
@@ -119,11 +123,15 @@ impl BinaryDocumentStore {
                     let doc_offset = reader.position();
                     let doc = read_document(&mut reader)?;
 
-                    self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
-                    self.locations.insert(doc.external_id.clone(), DocLocation {
-                        internal_id: doc.internal_id,
-                        offset: doc_offset,
-                    });
+                    self.internal_to_external
+                        .insert(doc.internal_id, doc.external_id.clone());
+                    self.locations.insert(
+                        doc.external_id.clone(),
+                        DocLocation {
+                            internal_id: doc.internal_id,
+                            offset: doc_offset,
+                        },
+                    );
                     //IET?
                     //self.docs.insert(doc.external_id.clone(), doc);
                 }
@@ -136,12 +144,10 @@ impl BinaryDocumentStore {
                     self.docs.invalidate(&external_id);
                 }
                 Ok(other) => {
-                    return Err(
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("unknown document op {other}")
-                        )
-                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown document op {other}"),
+                    ));
                 }
                 Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
@@ -191,12 +197,16 @@ impl DocumentStore for BinaryDocumentStore {
     fn put(&mut self, doc: StoredDocument) -> io::Result<()> {
         let offset = self.append_put(&doc)?;
 
-        self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
+        self.internal_to_external
+            .insert(doc.internal_id, doc.external_id.clone());
 
-        self.locations.insert(doc.external_id.clone(), DocLocation {
-            internal_id: doc.internal_id,
-            offset,
-        });
+        self.locations.insert(
+            doc.external_id.clone(),
+            DocLocation {
+                internal_id: doc.internal_id,
+                offset,
+            },
+        );
         self.docs.insert(doc.external_id.clone(), doc);
 
         Ok(())
@@ -213,12 +223,16 @@ impl DocumentStore for BinaryDocumentStore {
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
 
-            self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
+            self.internal_to_external
+                .insert(doc.internal_id, doc.external_id.clone());
 
-            self.locations.insert(doc.external_id.clone(), DocLocation {
-                internal_id: doc.internal_id,
-                offset: doc_offset,
-            });
+            self.locations.insert(
+                doc.external_id.clone(),
+                DocLocation {
+                    internal_id: doc.internal_id,
+                    offset: doc_offset,
+                },
+            );
 
             self.docs.insert(doc.external_id.clone(), doc);
         }
@@ -270,9 +284,11 @@ impl DocumentStore for BinaryDocumentStore {
 
     #[timed(retrieve_opps)]
     fn get_by_internal_id(&self, internal_id: DocId) -> io::Result<Option<StoredDocument>> {
-        let Some(external_id) = self.internal_to_external
+        let Some(external_id) = self
+            .internal_to_external
             .get(&internal_id)
-            .map(|r| r.value().clone()) else {
+            .map(|r| r.value().clone())
+        else {
             return Ok(None);
         };
         self.get(&external_id)
@@ -287,7 +303,7 @@ impl DocumentStore for BinaryDocumentStore {
     #[timed(reindex)]
     fn for_each_document(
         &self,
-        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>
+        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
     ) -> io::Result<()> {
         let file = File::open(&self.path)?;
         let mut reader = CountingReader::new(BufReader::new(file));
@@ -295,7 +311,10 @@ impl DocumentStore for BinaryDocumentStore {
         let mut magic = [0u8; 8];
         reader.read_exact(&mut magic)?;
         if &magic != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad document store magic"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad document store magic",
+            ));
         }
 
         loop {
@@ -304,7 +323,8 @@ impl DocumentStore for BinaryDocumentStore {
                     let doc_offset = reader.position();
                     let doc = read_document(&mut reader)?;
 
-                    let is_current = self.locations
+                    let is_current = self
+                        .locations
                         .get(&doc.external_id)
                         .map(|loc| loc.offset == doc_offset)
                         .unwrap_or(false);
@@ -317,12 +337,10 @@ impl DocumentStore for BinaryDocumentStore {
                     let _external_id = read_string(&mut reader)?;
                 }
                 Ok(other) => {
-                    return Err(
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("unknown document op {other}")
-                        )
-                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown document op {other}"),
+                    ));
                 }
                 Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
@@ -345,7 +363,7 @@ impl DocumentStore for BinaryDocumentStore {
             &mut (|doc| {
                 docs.push(doc.clone());
                 Ok(())
-            })
+            }),
         )?;
 
         Ok(docs)
@@ -420,9 +438,8 @@ fn read_string(reader: &mut impl Read) -> io::Result<String> {
     let mut bytes = vec![0u8; len];
     reader.read_exact(&mut bytes)?;
 
-    String::from_utf8(bytes).map_err(|_|
-        io::Error::new(io::ErrorKind::InvalidData, "invalid utf8 string")
-    )
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8 string"))
 }
 
 fn write_u8(writer: &mut impl Write, value: u8) -> io::Result<()> {
@@ -466,19 +483,14 @@ pub fn read_document_at_path(path: &Path, offset: u64) -> io::Result<StoredDocum
 }
 
 #[timed(database_lifecycle)]
-pub fn save_maps(
-    path: &Path,
-    locations: &DashMap<String, DocLocation>,
-    internal_to_external: &DashMap<DocId, String>
-) -> io::Result<()> {
+pub fn save_maps(path: &Path, locations: &DashMap<String, DocLocation>) -> io::Result<()> {
     let locations_snapshot: Vec<(String, DocLocation)> = locations
         .iter()
         .map(|e| (e.key().clone(), *e.value()))
         .collect();
     let map_tmp = path.with_extension("maps.bin.tmp");
     let map_dst = path.with_extension("maps.bin");
-    let bytes = bincode
-        ::encode_to_vec(&locations_snapshot, bincode::config::standard())
+    let bytes = bincode::encode_to_vec(&locations_snapshot, bincode::config::standard())
         .map_err(|e| io::Error::other(format!("failed to encode maps: {e}")))?;
     std::fs::write(&map_tmp, bytes)?;
     std::fs::rename(&map_tmp, &map_dst)?;
@@ -488,16 +500,15 @@ pub fn save_maps(
 fn try_load_maps(
     path: &Path,
     internal_to_external: &DashMap<DocId, String>,
-    locations: &DashMap<String, DocLocation>
+    locations: &DashMap<String, DocLocation>,
 ) -> bool {
     let map_path = path.with_extension("maps.bin");
     let Ok(bytes) = std::fs::read(&map_path) else {
         return false;
     };
-    let Ok((entries, _)): Result<
-        (Vec<(String, DocLocation)>, usize),
-        _
-    > = bincode::decode_from_slice(&bytes, bincode::config::standard()) else {
+    let Ok((entries, _)): Result<(Vec<(String, DocLocation)>, usize), _> =
+        bincode::decode_from_slice(&bytes, bincode::config::standard())
+    else {
         return false;
     };
     for (external_id, loc) in entries {
