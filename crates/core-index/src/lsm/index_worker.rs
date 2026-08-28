@@ -46,10 +46,7 @@ pub enum IndexCommand {
     Flush {
         ack: Option<Acknowledgement>,
     },
-    MaybeCompact {
-        config: CompactionConfig,
-        ack: Option<Acknowledgement>,
-    },
+
     PlanCompaction {
         config: CompactionConfig,
         reply: CompactionPlanReply,
@@ -133,10 +130,6 @@ impl IndexWorker {
         self.send(IndexCommand::Flush { ack: None })
     }
 
-    pub fn maybe_compact(&self, config: CompactionConfig) -> io::Result<()> {
-        self.send(IndexCommand::MaybeCompact { config, ack: None })
-    }
-
     #[timed(compaction)]
     pub fn plan_compaction(&self, config: CompactionConfig) -> io::Result<Option<CompactionJob>> {
         let (reply, rx) = mpsc::channel();
@@ -169,18 +162,6 @@ impl IndexWorker {
         let (ack, rx) = mpsc::channel();
 
         self.send(IndexCommand::Flush { ack: Some(ack) })?;
-
-        wait_for_acknowledgement(rx)
-    }
-
-    #[timed(compaction)]
-    pub fn maybe_compact_wait(&self, config: CompactionConfig) -> io::Result<()> {
-        let (ack, rx) = mpsc::channel();
-
-        self.send(IndexCommand::MaybeCompact {
-            config,
-            ack: Some(ack),
-        })?;
 
         wait_for_acknowledgement(rx)
     }
@@ -332,17 +313,6 @@ fn run_index_worker(
                         &mut docs_since_publish,
                         &mut last_publish,
                     );
-                }
-            }
-            IndexCommand::MaybeCompact { config, ack } => {
-                let outcome = index.maybe_compact(config);
-                let compacted = matches!(&outcome, Ok(true));
-                let result = outcome.map(|_| ());
-                send_acknowledgement(ack, result)?;
-                if compacted {
-                    shared.publish(index.snapshot());
-                    docs_since_publish = 0;
-                    last_publish = Instant::now();
                 }
             }
             IndexCommand::PlanCompaction { config, reply } => {

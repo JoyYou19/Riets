@@ -898,7 +898,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         self.flush_batch()?;
         self.flush_window()?;
 
-        self.db.flush()?;
+        //self.db.flush()?;
 
         Ok(InsertReport {
             inserted: self.inserted,

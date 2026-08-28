@@ -7,9 +7,7 @@ use crate::{
     disk::{reader::DiskSegment, writer::write_segment},
     lsm::{
         IndexSnapshot,
-        compaction::{
-            CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
-        },
+        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
         manifest,
     },
     mem::MemIndex,
@@ -255,118 +253,59 @@ impl LsmIndex {
     }
 
     // Compacts all segments, probably not what we want
-    #[timed(compaction)]
-    pub fn compact_all(&mut self) -> io::Result<()> {
-        if self.segment_handles.len() <= 1 {
-            return Ok(());
-        }
-
-        let Some(root) = &self.root else {
-            return Ok(());
-        };
-
-        let old_paths: Vec<PathBuf> = self
-            .segment_handles
-            .iter()
-            .filter_map(|handle| match handle {
-                SegmentHandle::Disk(path) => Some(path.clone()),
-                SegmentHandle::Memory(_) => None,
-            })
-            .collect();
-
-        let compacted_path = root.join(format!("segment-{}.idx", self.next_segment_id));
-        self.next_segment_id += 1;
-
-        compact_segments_streaming(&self.segment_handles, &self.deleted, &compacted_path)?;
-
-        let disk = DiskSegment::open(&compacted_path)?;
-
-        self.segment_handles.clear();
-        self.query_segments.clear();
-
-        self.segment_handles
-            .push(SegmentHandle::Disk(compacted_path.clone()));
-        let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
-        self.query_segments.push(disk);
-
-        manifest::write_manifest(root, &[compacted_path])?;
-
-        for path in old_paths {
-            std::fs::remove_file(path).ok();
-        }
-
-        self.deleted = DeleteSet::new();
-        crate::lsm::deletes::clear_deletes(root)?;
-
-        Ok(())
-    }
-
-    #[timed(compaction)]
-    pub fn compact_some(&mut self, max_segments: usize) -> io::Result<bool> {
-        if max_segments < 2 || self.segment_handles.len() < max_segments {
-            return Ok(false);
-        }
-
-        let Some(root) = &self.root else {
-            return Ok(false);
-        };
-
-        let selected: Vec<_> = self
-            .segment_handles
-            .iter()
-            .take(max_segments)
-            .cloned()
-            .collect();
-
-        let old_paths: Vec<PathBuf> = selected
-            .iter()
-            .filter_map(|handle| match handle {
-                SegmentHandle::Disk(path) => Some(path.clone()),
-                SegmentHandle::Memory(_) => None,
-            })
-            .collect();
-
-        let compacted_path = root.join(format!("segment-{}.idx", self.next_segment_id));
-        self.next_segment_id += 1;
-
-        compact_segments_streaming(&selected, &self.deleted, &compacted_path)?;
-
-        let disk = DiskSegment::open(&compacted_path)?;
-
-        self.segment_handles.drain(0..max_segments);
-        self.query_segments.drain(0..max_segments);
-
-        self.segment_handles
-            .insert(0, SegmentHandle::Disk(compacted_path.clone()));
-
-        let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
-        self.query_segments.insert(0, disk);
-
-        let disk_paths: Vec<PathBuf> = self
-            .segment_handles
-            .iter()
-            .filter_map(|handle| match handle {
-                SegmentHandle::Disk(path) => Some(path.clone()),
-                SegmentHandle::Memory(_) => None,
-            })
-            .collect();
-
-        manifest::write_manifest(root, &disk_paths)?;
-
-        for path in old_paths {
-            std::fs::remove_file(path).ok();
-        }
-
-        Ok(true)
-    }
+    // #[timed(compaction)]
+    // pub fn compact_all(&mut self) -> io::Result<()> {
+    //     if self.segment_handles.len() <= 1 {
+    //         return Ok(());
+    //     }
+    //
+    //     let Some(root) = &self.root else {
+    //         return Ok(());
+    //     };
+    //
+    //     let old_paths: Vec<PathBuf> = self
+    //         .segment_handles
+    //         .iter()
+    //         .filter_map(|handle| match handle {
+    //             SegmentHandle::Disk(path) => Some(path.clone()),
+    //             SegmentHandle::Memory(_) => None,
+    //         })
+    //         .collect();
+    //
+    //     let compacted_path = root.join(format!("segment-{}.idx", self.next_segment_id));
+    //     self.next_segment_id += 1;
+    //
+    //     compact_segments_streaming(&self.segment_handles, &self.deleted, &compacted_path)?;
+    //
+    //     let disk = DiskSegment::open(&compacted_path)?;
+    //
+    //     self.segment_handles.clear();
+    //     self.query_segments.clear();
+    //
+    //     self.segment_handles
+    //         .push(SegmentHandle::Disk(compacted_path.clone()));
+    //     let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
+    //     self.query_segments.push(disk);
+    //
+    //     manifest::write_manifest(root, &[compacted_path])?;
+    //
+    //     for path in old_paths {
+    //         std::fs::remove_file(path).ok();
+    //     }
+    //
+    //     self.deleted = DeleteSet::new();
+    //     crate::lsm::deletes::clear_deletes(root)?;
+    //
+    //     Ok(())
+    // }
 
     #[timed(compaction)]
-    pub fn maybe_compact(&mut self, config: CompactionConfig) -> io::Result<bool> {
-        if self.segment_count() < config.compact_when_segments_at_least {
-            return Ok(false);
+    fn segment_size_bytes(handle: &SegmentHandle) -> u64 {
+        match handle {
+            SegmentHandle::Disk(path) => std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+            //migh need a smarter way but still this is ok for aproximating the segment size
+            SegmentHandle::Memory(segment) => segment.terms().len() as u64,
         }
-
-        self.compact_some(config.max_segments_per_compaction)
     }
 
     #[timed(compaction)]
@@ -386,11 +325,19 @@ impl LsmIndex {
             return Ok(None);
         };
 
-        let selected: Vec<_> = self
+        let mut by_size: Vec<(u64, usize, SegmentHandle)> = self
             .segment_handles
             .iter()
+            .enumerate()
+            .map(|(index, handle)| (Self::segment_size_bytes(handle), index, handle.clone()))
+            .collect();
+
+        by_size.sort_by_key(|(size, index, _)| (*size, *index));
+
+        let selected: Vec<SegmentHandle> = by_size
+            .iter()
             .take(config.max_segments_per_compaction)
-            .cloned()
+            .map(|(_, _, handle)| handle.clone())
             .collect();
 
         if selected.len() < 2 {
@@ -417,35 +364,34 @@ impl LsmIndex {
             return Ok(false);
         };
 
-        let selected_len = completed.selected.len();
-
-        if selected_len < 2 || self.segment_handles.len() < selected_len {
-            return Ok(false);
-        }
-
-        // Conservative first version: only install if the selected handles
-        // are still exactly the prefix of the live segment list.
-        let still_valid = self
-            .segment_handles
+        // Locate the selected segments wherever they are in the live list.
+        let mut positions: Vec<usize> = completed
+            .selected
             .iter()
-            .take(selected_len)
-            .zip(completed.selected.iter())
-            .all(|(live, selected)| live == selected);
+            .filter_map(|handle| self.segment_handles.iter().position(|live| live == handle))
+            .collect();
 
-        if !still_valid {
-            // Job is stale. Do not install. Remove output file.
+        if positions.len() != completed.selected.len() {
+            // Stale job — some input was already merged away. Drop the output.
             std::fs::remove_file(&completed.output_path).ok();
             return Ok(false);
         }
 
+        // If every live segment was part of this merge, the new segment is
+        // delete-free, so tombstones can be dropped (same as compact_all did).
+        let merged_all = positions.len() == self.segment_handles.len();
+
         let disk = DiskSegment::open(&completed.output_path)?;
 
-        let old_handles: Vec<_> = self.segment_handles.drain(0..selected_len).collect();
-        self.query_segments.drain(0..selected_len);
+        positions.sort_unstable();
+        positions.dedup();
+        for pos in positions.into_iter().rev() {
+            self.segment_handles.remove(pos);
+            self.query_segments.remove(pos);
+        }
 
         self.segment_handles
             .insert(0, SegmentHandle::Disk(completed.output_path.clone()));
-
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
         self.query_segments.insert(0, disk);
 
@@ -460,10 +406,15 @@ impl LsmIndex {
 
         manifest::write_manifest(root, &disk_paths)?;
 
-        for handle in old_handles {
+        for handle in completed.selected {
             if let SegmentHandle::Disk(path) = handle {
                 std::fs::remove_file(path).ok();
             }
+        }
+
+        if merged_all {
+            self.deleted = DeleteSet::new();
+            crate::lsm::deletes::clear_deletes(root)?;
         }
 
         Ok(true)
