@@ -9,7 +9,6 @@ use crate::{
 
 // Whenever a document gets deleted, a tombstone is created for it
 // this means it won't apear in any queries, and won't be saved to the disk
-//
 #[derive(Debug, Default, Clone)]
 pub struct DeleteSet {
     deleted: BTreeSet<DocId>,
@@ -18,6 +17,10 @@ pub struct DeleteSet {
 impl DeleteSet {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.deleted.is_empty()
     }
 
     pub fn delete(&mut self, doc_id: DocId) {

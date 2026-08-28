@@ -23,6 +23,12 @@ use core_timing::timed;
 use crossbeam_channel::bounded;
 use parking_lot::RwLock;
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime};
+use std::{fs, u8};
 use std::collections::{ BTreeMap, HashMap };
 use std::fs;
 use std::path::PathBuf;
@@ -530,7 +536,14 @@ impl ShardManager {
                 shard_paths.push(entry.path());
             }
         }
-        shard_paths.sort();
+
+        shard_paths.sort_by_key(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|s| s.strip_prefix("shard-"))
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(u8::MAX)
+        });
 
         let policy_path = root.join(IndexPolicy::POLICY_FILE_NAME);
 
@@ -551,6 +564,7 @@ impl ShardManager {
         let mut boot_rxs = Vec::new();
         let all_fields = AllFields::load(&root)?;
 
+        //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
             let (handle, join, boot_rx) = shard_worker::spawn(

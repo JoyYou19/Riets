@@ -86,7 +86,12 @@ impl IndexSnapshot {
     }
 
     fn apply_deletes(&self, postings: PostingList) -> PostingList {
-        self.deleted.filter(&postings)
+        //small optimization
+        if self.deleted.is_empty() {
+            postings
+        } else {
+            self.deleted.filter(&postings)
+        }
     }
 
     #[timed(search)]

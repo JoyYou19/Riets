@@ -461,7 +461,9 @@ impl ShardDb {
             let report = db
                 .put_documents_parallel(inputs, batch_size, window_size)
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            //db.flush()
+            //  .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
             if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
                 warn!(self.log, "checkpoint write failed"; "error" => %e);
@@ -594,21 +596,19 @@ impl ShardDb {
                         deleted += 1;
                     }
                     Err(e) => {
-                        failures.push(
-                            DocFailure::new(
-                                None,
-                                Some(id.clone()),
-                                FailReason::Internal(e.to_string())
-                            )
-                        );
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(id.clone()),
+                            FailReason::Internal(e.to_string()),
+                        ));
                     }
                 }
             }
 
-            db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            if let Err(e) = self.wal.reset() {
-                warn!(self.log, "wal reset failed"; "error" => %e);
-            } else if let Err(e) = self.wal.write_checkpoint(0) {
+            // db.flush()
+            //     .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            if let Err(e) = self.wal.write_checkpoint(0) {
                 warn!(self.log, "checkpoint write failed"; "error" => %e);
             }
         }
@@ -720,7 +720,8 @@ impl ShardDb {
             }
         }
 
-        db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        // db.flush()
+        //     .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
         let elapsed = started.elapsed();
         info!(self.log, "partial replace batch";
@@ -785,21 +786,19 @@ impl ShardDb {
                         written_ids.push(external_id);
                     }
                     Err(e) => {
-                        failures.push(
-                            DocFailure::new(
-                                None,
-                                Some(external_id),
-                                FailReason::Internal(e.to_string())
-                            )
-                        );
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(external_id),
+                            FailReason::Internal(e.to_string()),
+                        ));
                     }
                 }
             }
 
-            db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            if let Err(e) = self.wal.reset() {
-                warn!(self.log, "wal reset failed"; "error" => %e);
-            } else if let Err(e) = self.wal.write_checkpoint(0) {
+            // db.flush()
+            //     .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            if let Err(e) = self.wal.write_checkpoint(0) {
                 warn!(self.log, "checkpoint write failed"; "error" => %e);
             }
         }
@@ -863,21 +862,19 @@ impl ShardDb {
                         written_ids.push(external_id);
                     }
                     Err(e) => {
-                        failures.push(
-                            DocFailure::new(
-                                None,
-                                Some(external_id),
-                                FailReason::Internal(e.to_string())
-                            )
-                        );
+                        failures.push(DocFailure::new(
+                            None,
+                            Some(external_id),
+                            FailReason::Internal(e.to_string()),
+                        ));
                     }
                 }
             }
 
-            db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            if let Err(e) = self.wal.reset() {
-                warn!(self.log, "wal reset failed"; "error" => %e);
-            } else if let Err(e) = self.wal.write_checkpoint(0) {
+            // db.flush()
+            //     .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            if let Err(e) = self.wal.write_checkpoint(0) {
                 warn!(self.log, "checkpoint write failed"; "error" => %e);
             }
         }
