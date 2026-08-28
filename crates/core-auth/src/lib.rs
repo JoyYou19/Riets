@@ -129,7 +129,7 @@ impl AuthService {
             )
         }
     }
-    pub fn list_usernames(&self) -> Vec<String> {
-        self.users.all_usernames() 
+    pub fn list_users(&self) -> Vec<(String, Vec<String>)> {
+        self.users.all_users_with_roles()
     }
 }
