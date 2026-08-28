@@ -51,7 +51,7 @@ def build_policy():
         '[[fields]]\n'
         'name = "id"\n'
         f'xpath = {len(FIELDS)}\n'
-        'index = "IdAutoIncrement"\n'
+        'index = "IdAuto"\n'
         'list = true\n'
         '[fields.weight]\nmin = 90\nmax = 95\n'
     ]
