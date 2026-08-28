@@ -128,4 +128,13 @@ impl<S: DocumentStore> UserDatabase<S> {
             )
             .unwrap_or_default()
     }
+    pub fn all_users_with_roles(&self) -> Vec<(String, Vec<String>)> {
+        self.all_usernames()
+            .into_iter()
+            .filter_map(|username| {
+                let principal = self.load_principal(&username)?;
+                Some((username, principal.roles.into_iter().collect()))
+            })
+            .collect()
+    }
 }
