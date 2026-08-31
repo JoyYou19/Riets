@@ -910,6 +910,21 @@ impl ShardManager {
         Ok(out)
     }
 
+    //policy fields parse before shards
+    //filters resolve filters before shards
+    //paralel rank_top_k
+    //order once
+    //paralel resolve_hits_direct
+    //japachecko to BM25
+
+    #[timed(search)]
+    pub fn hits_cmp(a: &SearchHit, b: &SearchHit) -> Ordering {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
+    }
+
     #[timed(search)]
     pub async fn search(
         &self,
@@ -918,48 +933,112 @@ impl ShardManager {
         let limit = command.docs.unwrap_or(10);
         let offset = command.offset.unwrap_or(0);
         let fetch = offset.saturating_add(limit);
+        if fetch == 0 {
+            return Ok(Vec::new());
+        }
 
-        let query = parse_and_analyze(&command.query, &self.analyzer)?;
+        let query = Arc::new(parse_and_analyze(&command.query, &self.analyzer)?);
+        let filters = command.filters.clone();
         let policy = self.policy.read().clone();
 
-        let mut all_hits: Vec<SearchHit> = Vec::new();
-        for h in &self.shards {
-            let hits = h.rank_top_k(query.as_ref(), command.filters.as_ref(), fetch, &policy)?;
-            all_hits.extend(hits);
+        let mut set = JoinSet::new();
+        for handle in &self.shards {
+            let handle = handle.clone();
+            let query = Arc::clone(&query);
+            let filters = filters.clone();
+            let policy = policy.clone();
+            set.spawn_blocking(move || {
+                handle.rank_top_k((*query).as_ref(), filters.as_ref(), fetch, &policy)
+            });
         }
-        all_hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.doc_id.cmp(&b.doc_id))
-        });
-        let page: Vec<SearchHit> = all_hits.into_iter().skip(offset).take(limit).collect();
 
-        let mut by_shard: HashMap<usize, Vec<SearchHit>> = HashMap::new();
-        for hit in page {
+        let mut candidates: Vec<SearchHit> = Vec::new();
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Ok(hits)) => candidates.extend(hits),
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Err(je) if first_err.is_none() => {
+                    first_err = Some(CorelamoError::Internal(format!(
+                        "shard search panicked: {je}"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+
+        if candidates.len() > fetch {
+            candidates.select_nth_unstable_by(fetch - 1, Self::hits_cmp);
+            candidates.truncate(fetch);
+        }
+        candidates.sort_unstable_by(Self::hits_cmp);
+
+        if offset >= candidates.len() {
+            return Ok(Vec::new());
+        }
+
+        //for the resolve hit to save position
+        let page: Vec<(usize, SearchHit)> = candidates
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .enumerate()
+            .collect();
+        let page_len = page.len();
+
+        let mut by_shard: HashMap<usize, Vec<(usize, SearchHit)>> = HashMap::new();
+        for (pos, hit) in page {
             by_shard
                 .entry(shard_of(hit.doc_id).0 as usize)
                 .or_default()
-                .push(hit);
+                .push((pos, hit));
         }
 
-        let mut resolved: Vec<SearchDocumentHit> = Vec::new();
+        //resolve in paralel
+        let mut set = JoinSet::new();
         for (idx, hits) in by_shard {
-            resolved.extend(
-                self.shards[idx]
-                    .resolve_hits_direct(hits, command.return_fields.as_ref(), &policy)
-                    .await?,
-            );
+            let handle = self.shards[idx].clone();
+            let return_fields = command.return_fields.clone();
+            let policy = policy.clone();
+            let positions: Vec<usize> = hits.iter().map(|(pos, _)| *pos).collect();
+            let bare_hits: Vec<SearchHit> = hits.into_iter().map(|(_, h)| h).collect();
+            set.spawn(async move {
+                (
+                    positions,
+                    handle
+                        .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
+                        .await,
+                )
+            });
         }
 
-        resolved.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.internal_id.cmp(&b.internal_id))
-        });
-
-        Ok(resolved)
+        let mut resolved: Vec<Option<SearchDocumentHit>> = vec![None; page_len];
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((positions, Ok(hits))) => {
+                    for (pos, hit) in positions.into_iter().zip(hits) {
+                        resolved[pos] = hit;
+                    }
+                }
+                Ok((_, Err(e))) if first_err.is_none() => {
+                    first_err = Some(e);
+                }
+                Err(je) if first_err.is_none() => {
+                    first_err = Some(CorelamoError::Internal(format!(
+                        "shard resolve panicked: {je}"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+        Ok(resolved.into_iter().flatten().collect())
     }
 
     //viss ar backups

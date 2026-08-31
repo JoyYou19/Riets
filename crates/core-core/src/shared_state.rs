@@ -2,7 +2,7 @@ use std::io;
 use std::sync::atomic::AtomicU64;
 use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool};
 
-use core_storage::binary_store::{DocLocation, read_document_at_path};
+use core_storage::binary_store::{DEFAULT_DOC_CACHE_CAPACITY, DocLocation, read_document_at_path};
 use core_timing::timed;
 use dashmap::DashMap;
 
@@ -30,7 +30,9 @@ impl SharedShardState {
     pub fn new(root: PathBuf) -> Self {
         Self {
             snapshot: SharedIndexSnapshot::empty(),
-            docs: Cache::builder().max_capacity(10).build(),
+            docs: Cache::builder()
+                .max_capacity(DEFAULT_DOC_CACHE_CAPACITY)
+                .build(),
             locations: Arc::new(DashMap::new()),
             internal_to_external: Arc::new(DashMap::new()),
             is_running: AtomicBool::new(false),
