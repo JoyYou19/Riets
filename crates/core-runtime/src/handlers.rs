@@ -1351,7 +1351,23 @@ pub async fn reindex_handler(
         &ctx
     ).into_response()
 }
-
+#[timed(reindex)]
+pub async fn abort_reindex_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    manager.abort_reindex();
+    HttpOk::new(format!("reindex aborted for '{db_name}'"), &ctx).into_response()
+}
 pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,

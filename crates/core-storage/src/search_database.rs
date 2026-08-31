@@ -720,9 +720,10 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     publish_window(worker, analyzer, &mut pending, progress)?;
                 }
             }
+            
             Ok(())
+            
         })?;
-
         if !current.is_empty() {
             pending.push(current);
         }
@@ -777,6 +778,9 @@ fn publish_window(
     let segments = build_segments_parallel(analyzer.clone(), batches);
 
     for (segment, count) in segments.into_iter().zip(counts) {
+        if progress.is_cancelled() {
+            return Err(io::Error::other("reindex cancelled"));
+        }
         worker.add_segment_wait(segment, count)?;
         progress.add(count);
     }
