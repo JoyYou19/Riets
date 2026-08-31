@@ -14,8 +14,8 @@ use core_index::document::policy::IndexKind;
 use core_index::types::{ShardId, shard_of};
 use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
-use core_query::SearchHit;
 use core_query::query_string_parser::parse_and_analyze;
+use core_query::{Query, SearchHit};
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -911,10 +911,6 @@ impl ShardManager {
     }
 
     //policy fields parse before shards
-    //filters resolve filters before shards
-    //paralel rank_top_k
-    //order once
-    //paralel resolve_hits_direct
     //japachecko to BM25
 
     #[timed(search)]
@@ -938,7 +934,21 @@ impl ShardManager {
         }
 
         let query = Arc::new(parse_and_analyze(&command.query, &self.analyzer)?);
-        let filters = command.filters.clone();
+
+        let filters: Option<HashMap<String, Option<Query>>> = match command.filters.as_ref() {
+            Some(fs) => {
+                let mut analyzed = HashMap::with_capacity(fs.len());
+                for (field, term) in fs {
+                    if term.trim().is_empty() {
+                        continue;
+                    }
+                    analyzed.insert(field.clone(), parse_and_analyze(term, &self.analyzer)?);
+                }
+                Some(analyzed)
+            }
+            None => None,
+        };
+
         let policy = self.policy.read().clone();
 
         let mut set = JoinSet::new();

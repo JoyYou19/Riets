@@ -174,19 +174,11 @@ impl ShardHandle {
         self.shared.is_clearing.load(Ordering::Acquire)
     }
 
-    // pub fn rank_top_k(&self, query: &Query, k: usize, policy: &IndexPolicy) -> Vec<SearchHit> {
-    //     let snapshot = self.shared.snapshot.get();
-    //     let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-    //     let xpaths: Vec<_> = policy.searchable_xpaths().collect();
-    //     executor.search_all_xpaths_top_k(query, xpaths, k)
-    // }
-    //
-
     #[timed(search)]
     pub fn rank_top_k(
         &self,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, String>>,
+        filters: Option<&HashMap<String, Option<Query>>>,
         k: usize,
         policy: &IndexPolicy,
     ) -> Result<Vec<SearchHit>, CorelamoError> {
@@ -194,7 +186,7 @@ impl ShardHandle {
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let restrict = match filters {
-            Some(f) => executor.resolve_filters(f, policy)?,
+            Some(filtrs) => executor.resolve_filters(filtrs, policy)?,
             None => None,
         };
 

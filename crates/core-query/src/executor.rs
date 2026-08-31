@@ -17,10 +17,7 @@ use core_index::{
 use core_protocol::errors::CorelamoError;
 use core_timing::timed;
 
-use crate::{
-    ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan,
-    query_string_parser::parse_and_analyze,
-};
+use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan};
 
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
@@ -470,7 +467,7 @@ where
     #[timed(search)]
     pub fn resolve_filters(
         &self,
-        filters: &HashMap<String, String>,
+        filters: &HashMap<String, Option<Query>>,
         policy: &IndexPolicy,
     ) -> Result<Option<HashSet<DocId>>, CorelamoError> {
         if filters.is_empty() {
@@ -479,11 +476,7 @@ where
 
         let mut restrict: Option<HashSet<DocId>> = None;
 
-        for (field_name, term) in filters {
-            if term.trim().is_empty() {
-                continue;
-            }
-
+        for (field_name, query) in filters {
             let field = policy
                 .fields
                 .iter()
@@ -491,9 +484,9 @@ where
                 .filter(|f| f.index == IndexKind::Text)
                 .ok_or_else(|| CorelamoError::PathNotIndexed(field_name.clone()))?;
 
-            let matched: HashSet<DocId> = match parse_and_analyze(term, self.analyzer)? {
+            let matched: HashSet<DocId> = match query {
                 Some(query) => self
-                    .execute(&query, field.xpath(policy))
+                    .execute(query, field.xpath(policy))
                     .items()
                     .iter()
                     .map(|p| p.doc_id)
