@@ -23,7 +23,7 @@ use crate::shared_state::SharedShardState;
 
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
-use core_index::types::ShardId;
+use core_index::types::{ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
 use core_query::{Query, QueryExecutor, SearchHit};
 use core_storage::search_database::{
@@ -178,20 +178,24 @@ impl ShardHandle {
     pub fn rank_top_k(
         &self,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, Option<Query>>>,
+        filters: Option<&HashMap<String, (Option<Query>, XPathId)>>,
+        xpaths: &[XPathId],
         k: usize,
-        policy: &IndexPolicy,
     ) -> Result<Vec<SearchHit>, CorelamoError> {
         let snapshot = self.shared.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let restrict = match filters {
-            Some(filtrs) => executor.resolve_filters(filtrs, policy)?,
+            Some(filtr) => executor.resolve_filters(filtr),
             None => None,
         };
 
-        let xpaths: Vec<_> = policy.searchable_xpaths().collect();
-        Ok(executor.search_all_xpaths_top_k_restricted(query, xpaths, k, restrict.as_ref()))
+        Ok(executor.search_all_xpaths_top_k_restricted(
+            query,
+            xpaths.iter().copied(),
+            k,
+            restrict.as_ref(),
+        ))
     }
 
     #[timed(retrieve_opps)]

@@ -11,7 +11,7 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
-use core_index::types::{ShardId, shard_of};
+use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
@@ -934,31 +934,40 @@ impl ShardManager {
         }
 
         let query = Arc::new(parse_and_analyze(&command.query, &self.analyzer)?);
-
-        let filters: Option<HashMap<String, Option<Query>>> = match command.filters.as_ref() {
-            Some(fs) => {
-                let mut analyzed = HashMap::with_capacity(fs.len());
-                for (field, term) in fs {
-                    if term.trim().is_empty() {
-                        continue;
-                    }
-                    analyzed.insert(field.clone(), parse_and_analyze(term, &self.analyzer)?);
-                }
-                Some(analyzed)
-            }
-            None => None,
-        };
-
         let policy = self.policy.read().clone();
+
+        let filters: Option<Arc<HashMap<String, (Option<Query>, XPathId)>>> =
+            match command.filters.as_ref() {
+                Some(fs) => {
+                    let mut analyzed = HashMap::with_capacity(fs.len());
+                    for (field, term) in fs {
+                        if term.trim().is_empty() {
+                            continue;
+                        }
+                        let field_pol = policy
+                            .fields
+                            .iter()
+                            .find(|f| &f.name == field)
+                            .filter(|f| f.index == IndexKind::Text)
+                            .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
+                        let query = parse_and_analyze(term, &self.analyzer)?;
+                        analyzed.insert(field.clone(), (query, field_pol.xpath(&policy)));
+                    }
+                    Some(Arc::new(analyzed))
+                }
+                None => None,
+            };
+
+        let xpaths = Arc::new(policy.searchable_xpaths().collect::<Vec<_>>());
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
             let handle = handle.clone();
             let query = Arc::clone(&query);
             let filters = filters.clone();
-            let policy = policy.clone();
+            let xpaths = Arc::clone(&xpaths);
             set.spawn_blocking(move || {
-                handle.rank_top_k((*query).as_ref(), filters.as_ref(), fetch, &policy)
+                handle.rank_top_k((*query).as_ref(), filters.as_deref(), &xpaths, fetch)
             });
         }
 
