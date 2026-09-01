@@ -13,10 +13,10 @@ use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
 use core_index::lsm::index_worker::Phase;
 use core_protocol::command_reponse_definitions::{ LookupCommand, LookupResponse, SearchCommand };
-use core_index::types::{ShardId, XPathId, shard_of};
+use core_index::types::{ ShardId, XPathId, shard_of };
 use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
-use core_query::{Query, SearchHit};
+use core_query::{ Query, SearchHit };
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{ DeleteReport, InsertReport, ReplaceReport };
 use core_storage::search_database::{ DocumentInput, SearchDocumentHit };
@@ -758,7 +758,6 @@ impl ShardManager {
         for h in &self.shards {
             h.progress().cancel();
             // in ShardManager::abort_reindex, inside the loop
-        
         }
         self.db_stats.reindex_progress().set_phase(Phase::Cancelled);
     }
@@ -866,18 +865,27 @@ impl ShardManager {
         let by_shard = self.group_by_shard(&command.ids);
         let policy = self.policy.read().clone();
 
-        let mut all_docs = Vec::new();
-        let mut all_not_found = Vec::new();
+        let mut handles = Vec::new();
         for (idx, shard_ids) in by_shard {
             let ids: Vec<String> = shard_ids
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
-            let response = self.shards[idx].lookup_direct(
-                &ids,
-                command.return_fields.as_ref(),
-                &policy
-            ).await?;
+            let return_fields = command.return_fields.clone();
+            let policy = policy.clone();
+            let shard = self.shards[idx].clone();
+
+            handles.push(
+                tokio::spawn(async move {
+                    shard.lookup_direct(&ids, return_fields.as_ref(), &policy).await
+                })
+            );
+        }
+
+        let mut all_docs = Vec::new();
+        let mut all_not_found = Vec::new();
+        for handle in handles {
+            let response = handle.await.unwrap()?;
             all_docs.extend(response.docs);
             all_not_found.extend(response.not_found);
         }
@@ -938,27 +946,27 @@ impl ShardManager {
         let query = Arc::new(parse_and_analyze(&command.query, &self.analyzer)?);
         let policy = self.policy.read().clone();
 
-        let filters: Option<Arc<HashMap<String, (Option<Query>, XPathId)>>> =
-            match command.filters.as_ref() {
-                Some(fs) => {
-                    let mut analyzed = HashMap::with_capacity(fs.len());
-                    for (field, term) in fs {
-                        if term.trim().is_empty() {
-                            continue;
-                        }
-                        let field_pol = policy
-                            .fields
-                            .iter()
-                            .find(|f| &f.name == field)
-                            .filter(|f| f.index == IndexKind::Text)
-                            .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
-                        let query = parse_and_analyze(term, &self.analyzer)?;
-                        analyzed.insert(field.clone(), (query, field_pol.xpath(&policy)));
+        let filters: Option<Arc<HashMap<String, (Option<Query>, XPathId)>>> = match
+            command.filters.as_ref()
+        {
+            Some(fs) => {
+                let mut analyzed = HashMap::with_capacity(fs.len());
+                for (field, term) in fs {
+                    if term.trim().is_empty() {
+                        continue;
                     }
-                    Some(Arc::new(analyzed))
+                    let field_pol = policy.fields
+                        .iter()
+                        .find(|f| &f.name == field)
+                        .filter(|f| f.index == IndexKind::Text)
+                        .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
+                    let query = parse_and_analyze(term, &self.analyzer)?;
+                    analyzed.insert(field.clone(), (query, field_pol.xpath(&policy)));
                 }
-                None => None,
-            };
+                Some(Arc::new(analyzed))
+            }
+            None => None,
+        };
 
         let xpaths = Arc::new(policy.searchable_xpaths().collect::<Vec<_>>());
 
@@ -978,11 +986,13 @@ impl ShardManager {
         while let Some(res) = set.join_next().await {
             match res {
                 Ok(Ok(hits)) => candidates.extend(hits),
-                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Ok(Err(e)) if first_err.is_none() => {
+                    first_err = Some(e);
+                }
                 Err(je) if first_err.is_none() => {
-                    first_err = Some(CorelamoError::Internal(format!(
-                        "shard search panicked: {je}"
-                    )));
+                    first_err = Some(
+                        CorelamoError::Internal(format!("shard search panicked: {je}"))
+                    );
                 }
                 _ => {}
             }
@@ -1024,14 +1034,18 @@ impl ShardManager {
             let handle = self.shards[idx].clone();
             let return_fields = command.return_fields.clone();
             let policy = policy.clone();
-            let positions: Vec<usize> = hits.iter().map(|(pos, _)| *pos).collect();
-            let bare_hits: Vec<SearchHit> = hits.into_iter().map(|(_, h)| h).collect();
+            let positions: Vec<usize> = hits
+                .iter()
+                .map(|(pos, _)| *pos)
+                .collect();
+            let bare_hits: Vec<SearchHit> = hits
+                .into_iter()
+                .map(|(_, h)| h)
+                .collect();
             set.spawn(async move {
                 (
                     positions,
-                    handle
-                        .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
-                        .await,
+                    handle.resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy).await,
                 )
             });
         }
@@ -1049,9 +1063,9 @@ impl ShardManager {
                     first_err = Some(e);
                 }
                 Err(je) if first_err.is_none() => {
-                    first_err = Some(CorelamoError::Internal(format!(
-                        "shard resolve panicked: {je}"
-                    )));
+                    first_err = Some(
+                        CorelamoError::Internal(format!("shard resolve panicked: {je}"))
+                    );
                 }
                 _ => {}
             }
