@@ -752,12 +752,11 @@ impl ShardManager {
         Ok(())
     }
 
-    //#[timed(reindex)]
     #[timed(reindex)]
     pub fn abort_reindex(&self) {
         for h in &self.shards {
             h.progress().cancel();
-            // in ShardManager::abort_reindex, inside the loop
+            let _ = fs::remove_dir_all(self.root.join("index.new"));
         }
         self.db_stats.reindex_progress().set_phase(Phase::Cancelled);
     }

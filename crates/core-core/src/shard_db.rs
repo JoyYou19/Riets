@@ -942,11 +942,22 @@ impl ShardDb {
         }
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents.bin");
+        
 
-        std::fs::remove_dir_all(&index_root).ok();
-        std::fs::remove_dir_all(self.root.join("index.new")).ok();
-        std::fs::remove_dir_all(self.root.join("index.old")).ok();
-        std::fs::remove_file(&store_path).ok();
+        if index_root.exists() {
+            let _ = std::fs::remove_dir_all(&index_root);
+        }
+        if store_path.exists() {
+            let _ = std::fs::remove_file(&store_path);
+        }
+        if self.root.join("index.new").exists() {
+            let _ = std::fs::remove_dir_all(self.root.join("index.new"));
+        }
+        if self.root.join("index.old").exists() {
+            let _ = std::fs::remove_dir_all(self.root.join("index.old"));
+        }
+      
+
         // outright WAL reset
         self.wal.reset().map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
         self.wal
