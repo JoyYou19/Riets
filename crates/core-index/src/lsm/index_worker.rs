@@ -3,12 +3,13 @@ use rayon::prelude::*;
 use std::{
     io,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender},
+        Arc,
+        Mutex,
+        atomic::{ AtomicBool, AtomicU8, AtomicU64, Ordering },
+        mpsc::{ self, Receiver, Sender },
     },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    thread::{ self, JoinHandle },
+    time::{ Duration, Instant },
 };
 
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
     document::IndexedDocument,
     lsm::{
         LsmIndex,
-        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
+        compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
         snapshot::SharedIndexSnapshot,
     },
     mem::MemIndex,
@@ -97,13 +98,10 @@ impl IndexWorker {
     pub fn shutdown(mut self) -> io::Result<LsmIndex> {
         self.send(IndexCommand::Shutdown)?;
 
-        let handle = self
-            .handle
+        let handle = self.handle
             .take()
             .ok_or_else(|| io::Error::other("index worker already joined"))?;
-        handle
-            .join()
-            .map_err(|_| io::Error::other("index worker panicked"))?
+        handle.join().map_err(|_| io::Error::other("index worker panicked"))?
     }
 
     // Fire and forget functions
@@ -136,12 +134,14 @@ impl IndexWorker {
 
         self.send(IndexCommand::PlanCompaction { config, reply })?;
 
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped compaction plan reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "index worker dropped compaction plan reply"
+                )
+            })?
     }
 
     // Waiting functions
@@ -218,19 +218,20 @@ impl IndexWorker {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::SegmentCount { reply })?;
 
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped segment count reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "index worker dropped segment count reply"
+                )
+            })?
     }
     //stats
     pub fn get_stats(&self) -> io::Result<IndexingStats> {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::GetStats { reply })?;
-        rx.recv()
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped"))?
+        rx.recv().map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped"))?
     }
 }
 
@@ -241,7 +242,7 @@ fn run_index_worker(
     mut index: LsmIndex,
     analyzer: Analyzer,
     shared: SharedIndexSnapshot,
-    receiver: Receiver<IndexCommand>,
+    receiver: Receiver<IndexCommand>
 ) -> io::Result<LsmIndex> {
     let mut stats = IndexingStats::default();
     let mut docs_since_publish: u64 = 0;
@@ -259,7 +260,9 @@ fn run_index_worker(
                 }
                 continue;
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
         };
 
         match command {
@@ -276,7 +279,7 @@ fn run_index_worker(
                         &shared,
                         &index,
                         &mut docs_since_publish,
-                        &mut last_publish,
+                        &mut last_publish
                     );
                 }
             }
@@ -293,11 +296,7 @@ fn run_index_worker(
                     last_publish = Instant::now();
                 }
             }
-            IndexCommand::AddSegment {
-                segment,
-                doc_count,
-                ack,
-            } => {
+            IndexCommand::AddSegment { segment, doc_count, ack } => {
                 let outcome = index.add_immutable_segment(segment);
                 let ok = outcome.is_ok();
                 if ok {
@@ -311,19 +310,21 @@ fn run_index_worker(
                         &shared,
                         &index,
                         &mut docs_since_publish,
-                        &mut last_publish,
+                        &mut last_publish
                     );
                 }
             }
             IndexCommand::PlanCompaction { config, reply } => {
                 let result = index.plan_compaction(config);
 
-                reply.send(result).map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "compaction plan receiver dropped",
-                    )
-                })?;
+                reply
+                    .send(result)
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "compaction plan receiver dropped"
+                        )
+                    })?;
             }
 
             IndexCommand::InstallCompaction { completed, ack } => {
@@ -339,9 +340,11 @@ fn run_index_worker(
                 }
             }
             IndexCommand::SegmentCount { reply } => {
-                reply.send(Ok(index.segment_count())).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "segment count receiver dropped")
-                })?;
+                reply
+                    .send(Ok(index.segment_count()))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "segment count receiver dropped")
+                    })?;
             }
             IndexCommand::Flush { ack } => {
                 let outcome = index.flush();
@@ -364,9 +367,11 @@ fn run_index_worker(
             IndexCommand::GetStats { reply } => {
                 stats.segment_count = index.segment_count();
                 stats.memtable_term_count = index.memtable_term_count();
-                reply.send(Ok(stats.clone())).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
-                })?;
+                reply
+                    .send(Ok(stats.clone()))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
+                    })?;
             }
         }
     }
@@ -379,7 +384,7 @@ fn maybe_publish_on_threshold(
     shared: &SharedIndexSnapshot,
     index: &LsmIndex,
     docs_since_publish: &mut u64,
-    last_publish: &mut Instant,
+    last_publish: &mut Instant
 ) {
     if *docs_since_publish >= PUBLISH_DOC_THRESHOLD {
         shared.publish(index.snapshot());
@@ -389,25 +394,23 @@ fn maybe_publish_on_threshold(
 }
 
 fn wait_for_acknowledgement(rx: Receiver<io::Result<()>>) -> io::Result<()> {
-    rx.recv().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "index worker dropped acknowledgement",
-        )
-    })?
+    rx
+        .recv()
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "index worker dropped acknowledgement")
+        })?
 }
 
 fn send_acknowledgement(
     acknowledgement: Option<Acknowledgement>,
-    result: io::Result<()>,
+    result: io::Result<()>
 ) -> io::Result<()> {
     if let Some(acknowledgement) = acknowledgement {
-        acknowledgement.send(result).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "acknowledgement receiver dropped",
-            )
-        })?;
+        acknowledgement
+            .send(result)
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "acknowledgement receiver dropped")
+            })?;
     }
 
     Ok(())
@@ -416,7 +419,7 @@ fn send_acknowledgement(
 #[timed(indexing_documents)]
 pub fn build_segment_batch(
     analyzer: &Analyzer,
-    documents: Vec<IndexedDocument>,
+    documents: Vec<IndexedDocument>
 ) -> ImmutableSegment {
     let mut mem = MemIndex::new();
 
@@ -431,9 +434,12 @@ pub fn build_segment_batch(
 pub fn index_batches_parallel(
     worker: &IndexWorker,
     analyzer: Analyzer,
-    batches: Vec<Vec<IndexedDocument>>,
+    batches: Vec<Vec<IndexedDocument>>
 ) -> io::Result<()> {
-    let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+    let doc_counts: Vec<u64> = batches
+        .iter()
+        .map(|batch| batch.len() as u64)
+        .collect();
     let segments: Vec<ImmutableSegment> = batches
         .into_par_iter()
         .map(|batch| build_segment_batch(&analyzer, batch))
@@ -471,7 +477,7 @@ pub fn make_batches<T>(items: Vec<T>, batch_size: usize) -> Vec<Vec<T>> {
 #[timed(indexing_documents)]
 pub fn build_segments_parallel(
     analyzer: Analyzer,
-    batches: Vec<Vec<IndexedDocument>>,
+    batches: Vec<Vec<IndexedDocument>>
 ) -> Vec<ImmutableSegment> {
     batches
         .into_par_iter()
@@ -492,11 +498,13 @@ pub struct IndexingStats {
 pub enum ReindexStatus {
     #[default]
     Idle,
+    Preparing,
     Reindexing,
     Swapping,
     CatchUp,
     Complete,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
@@ -517,6 +525,8 @@ pub enum Phase {
     CatchUp = 3,
     Complete = 4,
     Failed = 5,
+    Cancelled = 6,
+    Preparing = 7,
 }
 
 impl Phase {
@@ -527,6 +537,8 @@ impl Phase {
             3 => Phase::CatchUp,
             4 => Phase::Complete,
             5 => Phase::Failed,
+            6 => Phase::Cancelled,
+            7 => Phase::Preparing,
             _ => Phase::Idle,
         }
     }
@@ -534,16 +546,18 @@ impl Phase {
     pub fn as_str(self) -> &'static str {
         match self {
             Phase::Idle => "idle",
+            Phase::Preparing => "preparing",
             Phase::Reindexing => "reindexing",
             Phase::Swapping => "swapping",
             Phase::CatchUp => "catch_up",
             Phase::Complete => "complete",
             Phase::Failed => "failed",
+            Phase::Cancelled => "cancelled",
         }
     }
 
     pub fn is_running(self) -> bool {
-        matches!(self, Phase::Reindexing | Phase::Swapping | Phase::CatchUp)
+        matches!(self, Phase::Preparing | Phase::Reindexing | Phase::Swapping | Phase::CatchUp)
     }
 }
 
@@ -561,11 +575,13 @@ impl From<ProgressSnapshot> for ReindexingStats {
         ReindexingStats {
             status: match s.phase {
                 Phase::Idle => ReindexStatus::Idle,
+                Phase::Preparing => ReindexStatus::Preparing,
                 Phase::Reindexing => ReindexStatus::Reindexing,
                 Phase::Swapping => ReindexStatus::Swapping,
                 Phase::CatchUp => ReindexStatus::CatchUp,
                 Phase::Complete => ReindexStatus::Complete,
                 Phase::Failed => ReindexStatus::Failed,
+                Phase::Cancelled => ReindexStatus::Cancelled,
             },
             progress: s.percent,
             documents_indexed: s.done,
@@ -601,14 +617,20 @@ impl ReindexProgress {
             if Phase::from_u8(current).is_running() {
                 return false;
             }
-            match self.phase.compare_exchange_weak(
-                current,
-                Phase::Reindexing as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(_) => continue,
+            match
+                self.phase.compare_exchange_weak(
+                    current,
+                    Phase::Preparing as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                )
+            {
+                Ok(_) => {
+                    break;
+                }
+                Err(_) => {
+                    continue;
+                }
             }
         }
         self.total.store(total, Ordering::Relaxed);
@@ -620,10 +642,17 @@ impl ReindexProgress {
     }
 
     pub fn add(&self, docs: u64) {
-        if self.done.fetch_add(docs, Ordering::Relaxed) == 0
-            && let Ok(mut t) = self.first_add.lock()
-        {
-            t.get_or_insert_with(Instant::now);
+        let was_zero = self.done.fetch_add(docs, Ordering::Relaxed) == 0;
+        if was_zero {
+            let _ = self.phase.compare_exchange(
+                Phase::Preparing as u8,
+                Phase::Reindexing as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if let Ok(mut t) = self.first_add.lock() {
+                t.get_or_insert_with(Instant::now);
+            }
         }
     }
 
@@ -645,6 +674,16 @@ impl ReindexProgress {
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+    pub fn reset(&self) {
+        self.phase.store(Phase::Idle as u8, Ordering::Relaxed);
+        self.total.store(0, Ordering::Relaxed);
+        self.done.store(0, Ordering::Relaxed);
+        self.cancel.store(false, Ordering::Relaxed);
+        *self.first_add.lock().unwrap() = None;
+    }
 
     pub fn phase(&self) -> Phase {
         Phase::from_u8(self.phase.load(Ordering::Acquire))
@@ -654,11 +693,7 @@ impl ReindexProgress {
         let phase = self.phase();
         let total = self.total.load(Ordering::Relaxed);
         let raw_done = self.done.load(Ordering::Relaxed);
-        let done = if total > 0 {
-            raw_done.min(total)
-        } else {
-            raw_done
-        };
+        let done = if total > 0 { raw_done.min(total) } else { raw_done };
 
         let percent = if phase == Phase::Complete {
             100
@@ -690,16 +725,16 @@ impl ReindexProgress {
             return None;
         }
 
-        let started = (*self.first_add.lock().ok()?)?;
+       let started = (*self.first_add.lock().ok()?)?;
         let elapsed = started.elapsed().as_secs_f64();
         if elapsed < 2.0 {
             return None;
         }
-        let rate = done as f64 / elapsed;
+        let rate = (done as f64) / elapsed;
         if rate <= f64::EPSILON {
             return None;
         }
-        let remaining = (total - done) as f64 / rate;
+        let remaining = ((total - done) as f64) / rate;
         if !remaining.is_finite() {
             return None;
         }

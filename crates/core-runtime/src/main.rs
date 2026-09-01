@@ -276,6 +276,9 @@ async fn main() -> io::Result<()> {
             post(handlers::reindex_handler),
         )
         .route(
+           "/api/databases/{db_name}/reindex/cancel" ,
+            post(handlers::abort_reindex_handler))
+        .route(
             "/api/databases/{db_name}/get-policy",
             get(handlers::get_policy_handler),
         )

@@ -22,7 +22,6 @@ use core_protocol::format::Format;
 use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
-
 use crate::document_store::{DocumentStore, StoredDocument};
 
 const MAGIC: &[u8; 8] = b"CDOCLOG4";

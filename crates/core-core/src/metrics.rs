@@ -113,8 +113,8 @@ impl DbStats {
     pub fn finish_restore(&self, ok: bool) {
         self.restore.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
-    pub fn finish_backup(&self, ok: bool){
-        self.backup.set_phase(if ok {BackupPhase::Complete} else{BackupPhase::Failed});
+    pub fn finish_backup(&self, ok: bool) {
+        self.backup.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
 
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
@@ -185,20 +185,18 @@ impl DbStats {
             self.reindex_failed.store(true, Relaxed);
         }
         if self.reindex_outstanding.fetch_sub(1, Relaxed) == 1 {
-            self.reindex.set_phase(
-                if self.reindex_failed.load(Relaxed) {
-                    Phase::Failed
-                } else {
-                    Phase::Complete
-                }
-            );
+            if self.reindex.is_cancelled() {
+                self.reindex.reset();
+            } else {
+                self.reindex.set_phase(
+                    if self.reindex_failed.load(Relaxed) {
+                        Phase::Failed
+                    } else {
+                        Phase::Complete
+                    }
+                );
+            }
         }
-    }
-
-    pub fn abort_reindex(&self) {
-        self.reindex_outstanding.store(0, Relaxed);
-        self.counters.reindex_errors.fetch_add(1, Relaxed);
-        self.reindex.set_phase(Phase::Failed);
     }
 
     //backup related shit
