@@ -72,8 +72,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::GetConfig,
             Permission::SetConfig,
             Permission::Reindex,
-            Permission::AllFields,
-            Permission::ListUsers,
+            Permission::AllFields         
         ],
     );
 
