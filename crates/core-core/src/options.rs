@@ -10,7 +10,6 @@ pub struct DatabaseOptions {
     pub enable_background_compaction: bool,
     pub compaction_interval: Duration,
     pub bootable: bool,
-    pub shard_count: u16,
     pub incremental_backup_interval: Duration,
     pub full_backup_interval: Duration,
     pub backup_lifetime: Duration,
@@ -51,7 +50,6 @@ impl Default for DatabaseOptions {
             incremental_backup_interval: Duration::from_secs(3600),
             full_backup_interval: Duration::from_hours(24),
             backup_lifetime: Duration::from_hours(24 * 7),
-            shard_count: 4,
             bootable: true,
         }
     }

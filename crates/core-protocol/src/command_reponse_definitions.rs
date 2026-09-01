@@ -270,6 +270,11 @@ pub struct RenameDatabaseRequest {
     pub name: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateDatabaseRequest {
+    pub shard_count: Option<u16>,
+}
+
 #[derive(Deserialize)]
 pub struct TimingsRequest {
     pub categories: Option<Vec<String>>,
