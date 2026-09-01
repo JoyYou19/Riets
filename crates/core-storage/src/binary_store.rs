@@ -30,7 +30,7 @@ const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
 
 //TODO: make configurable per-database
-const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10000;
+pub const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10000;
 
 #[derive(Debug)]
 pub struct BinaryDocumentStore {

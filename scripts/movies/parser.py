@@ -45,7 +45,7 @@ def main():
         chunk = docs[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
         out_file = os.path.join(OUTPUT_DIR, f"movies_{i + 1:04d}.json")
         with open(out_file, "w", encoding="utf-8") as f:
-            json.dump(chunk*10, f, indent=2, ensure_ascii=False)
+            json.dump(chunk, f, indent=2, ensure_ascii=False)
 
     duration = time.time() - start_time
     print(

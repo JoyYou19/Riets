@@ -14,6 +14,7 @@ use core_timing::timed;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use indexmap::IndexMap;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use crate::DatabaseOptions;
 use crate::reindex::{CompletedShardReindex, ReindexParams};
@@ -22,7 +23,7 @@ use crate::shared_state::SharedShardState;
 
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
-use core_index::types::ShardId;
+use core_index::types::{ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
 use core_query::{Query, QueryExecutor, SearchHit};
 use core_storage::search_database::{
@@ -173,32 +174,28 @@ impl ShardHandle {
         self.shared.is_clearing.load(Ordering::Acquire)
     }
 
-    // pub fn rank_top_k(&self, query: &Query, k: usize, policy: &IndexPolicy) -> Vec<SearchHit> {
-    //     let snapshot = self.shared.snapshot.get();
-    //     let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-    //     let xpaths: Vec<_> = policy.searchable_xpaths().collect();
-    //     executor.search_all_xpaths_top_k(query, xpaths, k)
-    // }
-    //
-
     #[timed(search)]
     pub fn rank_top_k(
         &self,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, String>>,
+        filters: Option<&HashMap<String, (Option<Query>, XPathId)>>,
+        xpaths: &[XPathId],
         k: usize,
-        policy: &IndexPolicy,
     ) -> Result<Vec<SearchHit>, CorelamoError> {
         let snapshot = self.shared.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let restrict = match filters {
-            Some(f) => executor.resolve_filters(f, policy)?,
+            Some(filtr) => executor.resolve_filters(filtr),
             None => None,
         };
 
-        let xpaths: Vec<_> = policy.searchable_xpaths().collect();
-        Ok(executor.search_all_xpaths_top_k_restricted(query, xpaths, k, restrict.as_ref()))
+        Ok(executor.search_all_xpaths_top_k_restricted(
+            query,
+            xpaths.iter().copied(),
+            k,
+            restrict.as_ref(),
+        ))
     }
 
     #[timed(retrieve_opps)]
@@ -315,33 +312,39 @@ impl ShardHandle {
         hits: Vec<SearchHit>,
         return_fields: Option<&IndexMap<String, bool>>,
         policy: &IndexPolicy,
-    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+    ) -> Result<Vec<Option<SearchDocumentHit>>, CorelamoError> {
         self.ensure_readable()?;
-        let mut results = Vec::with_capacity(hits.len());
 
-        for hit in hits {
-            let Some(external_id) = self
-                .shared
-                .internal_to_external
-                .get(&hit.doc_id)
-                .map(|r| r.value().clone())
-            else {
+        let external_ids: Vec<Option<String>> = hits
+            .iter()
+            .map(|hit| {
+                self.shared
+                    .internal_to_external
+                    .get(&hit.doc_id)
+                    .map(|r| r.value().clone())
+            })
+            .collect();
+
+        let mut set = JoinSet::new();
+        for (i, external_id) in external_ids.into_iter().enumerate() {
+            let Some(external_id) = external_id else {
                 continue;
             };
+            let shared = Arc::clone(&self.shared);
+            set.spawn(async move { (i, shared.get_document(&external_id).await) });
+        }
 
-            let Some(doc) = self
-                .shared
-                .get_document(&external_id)
-                .await
-                .map_err(|e| CorelamoError::Internal(e.to_string()))?
-            else {
+        let mut results: Vec<Option<SearchDocumentHit>> = vec![None; hits.len()];
+        while let Some(outcome) = set.join_next().await {
+            let (i, res) = outcome
+                .map_err(|e| CorelamoError::Internal(format!("resolve task panicked: {e}")))?;
+            let Some(doc) = res.map_err(|e| CorelamoError::Internal(e.to_string()))? else {
                 continue;
             };
-
-            results.push(SearchDocumentHit {
+            results[i] = Some(SearchDocumentHit {
                 external_id: doc.external_id.clone(),
                 internal_id: doc.internal_id,
-                score: hit.score,
+                score: hits[i].score,
                 fields: visible_fields(&doc.fields, policy, return_fields),
             });
         }
@@ -543,8 +546,15 @@ impl Drop for AliveGuard {
 pub fn spawn(
     mut shard: ShardDb,
     queue_depth: usize,
-    bootable: bool
-) -> Result<(ShardHandle, JoinHandle<()>, Receiver<Result<(), CorelamoError>>), CorelamoError> {
+    bootable: bool,
+) -> Result<
+    (
+        ShardHandle,
+        JoinHandle<()>,
+        Receiver<Result<(), CorelamoError>>,
+    ),
+    CorelamoError,
+> {
     let id = shard.shard_id();
     let progress = shard.progress();
     let alive = Arc::new(AtomicBool::new(true));
@@ -564,7 +574,9 @@ pub fn spawn(
             let started = if bootable { shard.start() } else { Ok(()) };
 
             let ok = started.is_ok();
-            shared_worker.is_running.store(bootable && ok, Ordering::Release);
+            shared_worker
+                .is_running
+                .store(bootable && ok, Ordering::Release);
             let _ = boot_tx.send(started);
             if ok {
                 run(shard, rx, shared_worker);
@@ -573,7 +585,14 @@ pub fn spawn(
         .map_err(|e| CorelamoError::Internal(format!("failed to spawn shard {id}: {e}")))?;
 
     Ok((
-        ShardHandle { id, tx, alive, progress, analyzer, shared },
+        ShardHandle {
+            id,
+            tx,
+            alive,
+            progress,
+            analyzer,
+            shared,
+        },
         join,
         boot_rx,
     ))

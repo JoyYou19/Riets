@@ -448,26 +448,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         executor.search(query, xpath)
     }
 
-    // WARN: MIght not be used
-    #[timed(search)]
-    pub fn search_documents(
-        &mut self,
-        query: &Query,
-        xpath: u32,
-    ) -> io::Result<Vec<StoredDocument>> {
-        let hits = self.search(query, xpath);
-
-        let mut docs = Vec::new();
-
-        for hit in hits {
-            if let Some(doc) = self.store.get_by_internal_id(hit.doc_id)? {
-                docs.push(doc);
-            }
-        }
-
-        Ok(docs)
-    }
-
     #[timed(search)]
     pub fn search_document_hits(
         &mut self,
