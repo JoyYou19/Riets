@@ -106,7 +106,7 @@ impl ShardDb {
         BinaryDocumentStore::open(&store_path)?;
         let backup_dir = db_root.as_ref().join("backups");
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(&root, backup_dir, name.clone()); // see note below
+        let backup = BackupManager::new(&root, backup_dir, name.clone());
         Ok(Self {
             shard_id,
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -191,6 +191,7 @@ impl ShardDb {
             self.shared.internal_to_external.clone(),
             self.shared.locations.clone(),
         )?;
+
         let mut db = SearchDatabase::with_shard_policy_and_snapshot(
             store,
             index,
@@ -401,16 +402,6 @@ impl ShardDb {
     }
 
     // ====== Read Operations ======
-    #[timed(search)]
-    pub fn search(&self, query: &Query, k: usize) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
-        let db = self
-            .db_ref()
-            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        db.search_document_hits_all_fields_top_k(query, k)
-            .map_err(|e|
-            //fake search
-            CorelamoError::Internal(e.to_string()))
-    }
 
     #[timed(retrieve_opps)]
     pub fn get_document(

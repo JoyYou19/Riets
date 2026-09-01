@@ -6,7 +6,6 @@ use std::{
 
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, policy::IndexKind},
     posting::{
         PostingList,
         ops::{intersection, union},
@@ -14,13 +13,9 @@ use core_index::{
     search::{SearchIndex, SearchStats},
     types::{DocId, XPathId},
 };
-use core_protocol::errors::CorelamoError;
 use core_timing::timed;
 
-use crate::{
-    ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan,
-    query_string_parser::parse_and_analyze,
-};
+use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan};
 
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
@@ -470,30 +465,18 @@ where
     #[timed(search)]
     pub fn resolve_filters(
         &self,
-        filters: &HashMap<String, String>,
-        policy: &IndexPolicy,
-    ) -> Result<Option<HashSet<DocId>>, CorelamoError> {
+        filters: &HashMap<String, (Option<Query>, XPathId)>,
+    ) -> Option<HashSet<DocId>> {
         if filters.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         let mut restrict: Option<HashSet<DocId>> = None;
 
-        for (field_name, term) in filters {
-            if term.trim().is_empty() {
-                continue;
-            }
-
-            let field = policy
-                .fields
-                .iter()
-                .find(|f| &f.name == field_name)
-                .filter(|f| f.index == IndexKind::Text)
-                .ok_or_else(|| CorelamoError::PathNotIndexed(field_name.clone()))?;
-
-            let matched: HashSet<DocId> = match parse_and_analyze(term, self.analyzer)? {
+        for (query, xpath) in filters.values() {
+            let matched: HashSet<DocId> = match query {
                 Some(query) => self
-                    .execute(&query, field.xpath(policy))
+                    .execute(query, *xpath)
                     .items()
                     .iter()
                     .map(|p| p.doc_id)
@@ -507,11 +490,11 @@ where
             });
 
             if restrict.as_ref().is_some_and(|s| s.is_empty()) {
-                return Ok(restrict);
+                return restrict;
             }
         }
 
-        Ok(restrict)
+        restrict
     }
 
     #[timed(search)]
