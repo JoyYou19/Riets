@@ -1,11 +1,7 @@
 use std::{
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::Sender,
-    },
-    thread::{self, JoinHandle},
+    sync::{ Arc, atomic::{ AtomicBool, Ordering }, mpsc::Sender },
+    thread::{ self, JoinHandle },
     time::Duration,
 };
 
@@ -14,7 +10,10 @@ use core_timing::timed;
 use crate::lsm::{
     //compact_segments,
     compaction::{
-        CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
+        CompactionConfig,
+        CompactionJob,
+        CompletedCompaction,
+        compact_segments_streaming,
     },
     index_worker::IndexCommand,
 };
@@ -32,7 +31,7 @@ impl CompactionWorker {
     pub fn start(
         sender: Sender<IndexCommand>,
         config: CompactionConfig,
-        interval: Duration,
+        interval: Duration
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
@@ -47,12 +46,16 @@ impl CompactionWorker {
                         io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped")
                     })?;
 
-                if let Some(job) = rx.recv().map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "index worker dropped compaction plan reply",
-                    )
-                })?? {
+                if
+                    let Some(job) = rx
+                        .recv()
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "index worker dropped compaction plan reply"
+                            )
+                        })??
+                {
                     tracing::info!(
                         job_id = job.job_id,
                         segments = job.selected.len(),
@@ -79,12 +82,14 @@ impl CompactionWorker {
                             io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped")
                         })?;
 
-                    install_rx.recv().map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "index worker dropped install acknowledgement",
-                        )
-                    })??;
+                    install_rx
+                        .recv()
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "index worker dropped install acknowledgement"
+                            )
+                        })??;
                 }
 
                 thread::sleep(interval);
@@ -103,12 +108,17 @@ impl CompactionWorker {
         self.stop.store(true, Ordering::Relaxed);
 
         if let Some(handle) = self.handle.take() {
-            handle
-                .join()
-                .map_err(|_| io::Error::other("compaction worker panicked"))??;
+            handle.join().map_err(|_| io::Error::other("compaction worker panicked"))??;
         }
 
         Ok(())
+    }
+    // Stops the worker without waiting for it to finish. The worker will stop on its own after noticing the stop flag.
+    pub fn stop_async(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            drop(handle); // detaches; thread keeps running until it notices stop and exits on its own
+        }
     }
 }
 
