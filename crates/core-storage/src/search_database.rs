@@ -87,6 +87,14 @@ pub struct ReplaceReport {
     pub failures: Vec<DocFailure>,
 }
 
+pub struct WordStats {
+    pub word: String,
+    //total occurances for a word
+    pub occurrences: u64,
+    //number of different docs that a word appeared in
+    pub documents: u64,
+}
+
 pub struct DeleteReport {
     pub deleted: u32,
     pub failures: Vec<DocFailure>,
@@ -700,9 +708,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     publish_window(worker, analyzer, &mut pending, progress)?;
                 }
             }
-            
+
             Ok(())
-            
         })?;
         if !current.is_empty() {
             pending.push(current);
