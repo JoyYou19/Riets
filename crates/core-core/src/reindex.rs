@@ -123,7 +123,7 @@ fn build_staging_index(
     }
     std::fs::create_dir_all(&staging_root)?;
 
-    let store = BinaryDocumentStore::open(params.shard_root.join("documents.bin"))?; //need to change to 
+    let store = BinaryDocumentStore::open(params.shard_root.join("documents"))?;
     let index = LsmIndex::persistent(&staging_root, params.options.runtime.flush_threshold)?;
     let mut staging = SearchDatabase::with_shard_policy(
         store,

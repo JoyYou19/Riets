@@ -8,7 +8,7 @@ INPUT_DIR = "./movie_chunks"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "movies"
 MAX_CHUNKS = 0  # 0 = send all
-
+SHARD_COUNT = 2
 USERNAME = "admin"
 PASSWORD = "secret"
 
@@ -144,14 +144,14 @@ def curl_put(url, body, token):
     return result.stdout.strip(), result.returncode
 
 
-def curl_delete(url, token):
-    result = subprocess.run(
-        ["curl", "-s", "-X", "DELETE", url,
-         "-H", f"X-Corelamo-Key: {token}"],
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip(), result.returncode
+# def curl_delete(url, token):
+#     result = subprocess.run(
+#         ["curl", "-s", "-X", "DELETE", url,
+#          "-H", f"X-Corelamo-Key: {token}"],
+#         capture_output=True,
+#         text=True,
+#     )
+#     return result.stdout.strip(), result.returncode
 
 
 def main():
@@ -161,7 +161,6 @@ def main():
     # 0. log in first — every request below needs the token
     print(f"[INFO] Logging in as '{USERNAME}'...")
     token = login(USERNAME, PASSWORD)
-
     print("[INFO] Login successful, token acquired.")
 
     # 1. delete if exists
@@ -173,13 +172,16 @@ def main():
     # 2. create database
     print(f"[INFO] Creating database '{DB_NAME}'...")
     out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/create-database", "", token)
+        f"{BASE_URL}/api/databases/{DB_NAME}/create-database",
+        json.dumps({"shard_count": SHARD_COUNT}), token)
     print(f"[INFO] {out}")
+
     # 2b. start database
     print(f"[INFO] Starting database '{DB_NAME}'...")
     out, _ = curl_post(
         f"{BASE_URL}/api/databases/{DB_NAME}/start-database", "", token)
     print(f"[INFO] {out}")
+
     # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
     out, _ = curl_post(
@@ -189,8 +191,7 @@ def main():
     # 4. upload chunks
     files = sorted(glob.glob(os.path.join(INPUT_DIR, "movies_*.json")))
     if not files:
-        print(
-            f"[ERROR] No chunk files found in {INPUT_DIR}. Run parse_movies.py first.")
+        print(f"[ERROR] No chunk files found in {INPUT_DIR}. Run parse_movies.py first.")
         return
 
     if MAX_CHUNKS > 0:
@@ -207,8 +208,7 @@ def main():
             print(f"[ERROR] Failed to upload {file}")
             print(out)
         else:
-            print(
-                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+            print(f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
 
     # 5. reindex
     # print("[INFO] Reindexing...")
