@@ -20,9 +20,9 @@ use crate::{
 };
 use core_protocol::{
     command_reponse_definitions::{
-        Command, CreateDatabaseRequest, DeleteCommand, GetLogsRequest, LoginResponse,
-        LookupCommand, PartialReplaceCommand, RenameDatabaseRequest, RetrieveCommand,
-        RetrieveResponse, SearchCommand, SearchResponse, TimingsRequest,
+        Command, CreateDatabaseRequest, DeleteCommand, GetLogsRequest, InfoWordsRequest,
+        LoginResponse, LookupCommand, PartialReplaceCommand, RenameDatabaseRequest,
+        RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, TimingsRequest,
     },
     errors::CorelamoError,
 };
@@ -1378,6 +1378,68 @@ pub async fn stats_handler(
             "restoring": stats.restoring,
             }
         }),
+        &ctx,
+    )
+    .into_response()
+}
+
+#[timed(search)]
+pub async fn info_words_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Search) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    let manager = match state.lookup(&db_name) {
+        Ok(m) => m,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    if !manager.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    let req: InfoWordsRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::InvalidData(format!("invalid info-words request: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let stats = match manager.info_words(req.words).await {
+        Ok(stats) => stats,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let results: Vec<serde_json::Value> = stats
+        .iter()
+        .map(|s| {
+            json!({
+                "word": s.word,
+                "occurrences": s.occurrences,
+                "documents": s.documents,
+            })
+        })
+        .collect();
+
+    HttpOk::with_data(
+        format!("info for {} word(s)", results.len()),
+        json!({ "words": results }),
         &ctx,
     )
     .into_response()

@@ -63,7 +63,7 @@ pub fn score_term_hybrid<S: SearchStats>(
                 let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
                 let norm = 1.0 - BM25_B + BM25_B * (dl / avgdl);
 
-                idf * ((tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm))
+                idf * ((tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm) + 1 as f32)
             } else {
                 1.0
             };

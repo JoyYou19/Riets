@@ -272,6 +272,10 @@ async fn main() -> io::Result<()> {
             get(handlers::stats_handler),
         )
         .route(
+            "/api/databases/{db_name}/info-words",
+            post(handlers::info_words_handler),
+        )
+        .route(
             "/api/databases/{db_name}/reindex",
             post(handlers::reindex_handler),
         )

@@ -27,7 +27,8 @@ use core_index::types::{ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
 use core_query::{Query, QueryExecutor, SearchHit};
 use core_storage::search_database::{
-    DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, visible_fields,
+    DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
+    visible_fields,
 };
 
 //insane portno kur dazaam komandam ir crossbeam_channel dazam ir oneshot
@@ -172,6 +173,38 @@ impl ShardHandle {
 
     pub fn is_clearing(&self) -> bool {
         self.shared.is_clearing.load(Ordering::Acquire)
+    }
+
+    #[timed(search)]
+    pub fn info_words_direct(
+        &self,
+        words: &[String],
+        xpaths: &[XPathId],
+    ) -> Result<Vec<WordStats>, CorelamoError> {
+        self.ensure_readable()?;
+        let snapshot = self.shared.snapshot.get();
+
+        let mut out = Vec::with_capacity(words.len());
+        for word in words {
+            let mut occurrences: u64 = 0;
+            let mut docs = std::collections::HashSet::new();
+
+            for token in self.analyzer.analyze(word) {
+                for &xpath in xpaths {
+                    for posting in snapshot.lookup(&token.text, xpath).items() {
+                        docs.insert(posting.doc_id);
+                        occurrences += posting.positions.len() as u64;
+                    }
+                }
+            }
+
+            out.push(WordStats {
+                word: word.clone(),
+                occurrences,
+                documents: docs.len() as u64,
+            });
+        }
+        Ok(out)
     }
 
     #[timed(search)]
