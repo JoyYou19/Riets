@@ -18,7 +18,7 @@ use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
 use core_query::{Query, SearchHit};
 use core_storage::document_store::StoredDocument;
-use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
+use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 use core_timing::timed;
 use crossbeam_channel::bounded;
@@ -1225,6 +1225,57 @@ impl ShardManager {
             return Err(e);
         }
         Ok(manifests)
+    }
+
+    #[timed(retrieve_opps)]
+    pub async fn info_words(&self, words: Vec<String>) -> Result<Vec<WordStats>, CorelamoError> {
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let xpaths = Arc::new(self.policy.read().searchable_xpaths().collect::<Vec<_>>());
+
+        let mut set = JoinSet::new();
+        for handle in &self.shards {
+            let handle = handle.clone();
+            let words = words.clone();
+            let xpaths = Arc::clone(&xpaths);
+            set.spawn_blocking(move || handle.info_words_direct(&words, &xpaths));
+        }
+
+        let mut merged: Vec<WordStats> = words
+            .iter()
+            .map(|word| WordStats {
+                word: word.clone(),
+                occurrences: 0,
+                documents: 0,
+            })
+            .collect();
+
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Ok(shard_stats)) => {
+                    for (i, s) in shard_stats.into_iter().enumerate() {
+                        if let Some(m) = merged.get_mut(i) {
+                            m.occurrences += s.occurrences;
+                            m.documents += s.documents;
+                        }
+                    }
+                }
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Err(je) if first_err.is_none() => {
+                    first_err = Some(CorelamoError::Internal(format!(
+                        "info-words shard task panicked: {je}"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+        Ok(merged)
     }
 
     #[timed(restore)]
