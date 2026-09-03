@@ -283,16 +283,12 @@ impl BackupManager {
         fs::create_dir_all(backup_path)?;
 
         let total =
-            shard_root.join("documents.bin").metadata()?.len() +
+            dir_size(&shard_root.join("documents"))? +
             dir_size(&shard_root.join("index"))?;
         progress.grow_total(total);
 
         let result = (|| -> Result<BackupManifest, BackupError> {
-            compress_file(
-                &shard_root.join("documents.bin"),
-                &backup_path.join("documents.bin.gz"),
-                progress
-            )?;
+            tar_dir(&shard_root.join("documents"), &backup_path.join("documents.tar.gz"),Some(progress))?;
             tar_dir(&shard_root.join("index"), &backup_path.join("index.tar.gz"), Some(progress))?;
 
             let manifest = BackupManifest {
@@ -340,7 +336,7 @@ impl BackupManager {
         progress: &BackupProgress
     ) -> Result<Option<BackupManifest>, BackupError> {
         let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
-
+        
         let start_offset = self.last_backup_offset;
         let end_offset = wal.durable_offset();
 
@@ -348,7 +344,7 @@ impl BackupManager {
             return Ok(None);
         }
 
-        fs::create_dir_all(backup_path)?;
+        //fs::create_dir_all(backup_path)?;
 
         let inner = || -> Result<BackupManifest, BackupError> {
             let records = wal
@@ -460,8 +456,8 @@ impl BackupManager {
             BackupType::Full => {
                 fs::create_dir_all(target_dir)?;
                 decompress_file(
-                    &backup_path.join("documents.bin.gz"),
-                    &target_dir.join("documents.bin")
+                    &backup_path.join("documents.tar.gz"),
+                    &target_dir.join("documents.tar.gz")
                 )?;
                 let dec = GzDecoder::new(File::open(backup_path.join("index.tar.gz"))?);
                 tar::Archive::new(dec).unpack(target_dir)?;

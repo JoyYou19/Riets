@@ -294,7 +294,9 @@ impl ShardStatsHandle {
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.stats.backup
     }
-
+    pub fn add_documents_indexed(&self, n: u64) {
+        self.stats.shards[self.index].documents_indexed.fetch_add(n, Relaxed);
+    }
     /// Levels, so publish after anything that changes the index. The shard
     /// thread pays for reading these so the HTTP reader never has to.
     pub fn publish(&self, document_count: usize, stats: &IndexingStats) {
@@ -302,14 +304,14 @@ impl ShardStatsHandle {
         g.documents.store(document_count, Relaxed);
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
-        // g.documents_indexed.store(stats.total_documents_indexed, Relaxed);
+        g.documents_indexed.store(stats.total_documents_indexed, Relaxed);
         g.documents_deleted.store(stats.total_documents_deleted, Relaxed);
         g.segments_written.store(stats.segments_written, Relaxed);
         g.compactions_completed.store(stats.compactions_completed, Relaxed);
     }
-    pub fn add_indexed(&self, n: u64) {
-        self.stats.counters.indexing_requests.fetch_add(n, Relaxed);
-    }
+    // pub fn add_indexed(&self, n: u64) {
+    //     self.stats.counters.indexing_requests.fetch_add(n, Relaxed);
+    // }
     // pub fn add_deleted(&self, n: u64) {
     //     self.stats.counters.documents_deleted.fetch_add(n, Relaxed);
     // }

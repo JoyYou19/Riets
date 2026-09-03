@@ -57,8 +57,8 @@ impl SharedShardState {
 
         //WARN: bellow is a todo comment lmao
         //TODO: pass this to the shared state in a pretty way, this is a placeholder
-        let path = self.root.join("documents.bin");
-        let doc = task::spawn_blocking(move || read_document_at_path(&path, loc.offset))
+        let path = self.root.join("documents");
+        let doc = task::spawn_blocking(move || read_document_at_path(&path,loc.segment, loc.offset))
             .await
             .map_err(|e| io::Error::other(format!("disk read task panicked: {e}")))??;
 

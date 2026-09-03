@@ -74,6 +74,7 @@ fn file_size_opt(path: &std::path::Path) -> Result<Option<u64>, CorelamoError> {
     Ok(Some(meta.len()))
 }
 
+
 fn dir_total_size(path: &std::path::Path) -> Result<u64, CorelamoError> {
     let mut total = 0u64;
     let entries = std::fs::read_dir(path).map_err(|e| {
@@ -192,7 +193,7 @@ pub fn compute_disk_usage(
     for shard_name in &shard_names {
         let shard_root = shards_dir.join(shard_name);
 
-        let doc_size = file_size_opt(&shard_root.join("documents.bin"))?.unwrap_or(0);
+        let doc_size = dir_total_size_opt(&shard_root.join("documents"))?.unwrap_or(0);
         documents_total += doc_size;
         documents_per_shard.insert(shard_name.clone(), json!(format_size(doc_size)));
 

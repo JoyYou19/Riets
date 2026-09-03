@@ -1,8 +1,5 @@
 use std::{
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::SystemTime,
+    io, path::{Path, PathBuf}, sync::{Arc, atomic::Ordering::Relaxed}, time::SystemTime,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,7 +99,7 @@ impl ShardDb {
         let log = logger::shard_logger(&root, &name);
         let wal = Wal::open(root.join("wal.log"), core_storage::wal::SyncMode::SyncEach)
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
-        let store_path = root.join("documents.bin");
+        let store_path = root.join("documents");
         BinaryDocumentStore::open(&store_path)?;
         let backup_dir = db_root.as_ref().join("backups");
         std::fs::create_dir_all(&backup_dir)?;
@@ -181,7 +178,7 @@ impl ShardDb {
         }
 
         let index_root = self.root.join("index");
-        let store_path = self.root.join("documents.bin");
+        let store_path = self.root.join("documents");
         let analyzer = self.analyzer();
 
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
@@ -317,7 +314,7 @@ impl ShardDb {
             info!(self.log, "shard stopped"; "shard_id" => self.shard_id);
         }
 
-        let store_path = self.root.join("documents.bin");
+        let store_path = self.root.join("documents");
         save_maps(&store_path, &self.shared.locations)
             .map_err(|e| CorelamoError::Internal(format!("failed to save doc maps: {e}")))?;
 
@@ -490,7 +487,7 @@ impl ShardDb {
         let elapsed = started.elapsed();
         match &result {
             Ok(report) => {
-                self.stats.add_indexed(report.inserted as u64);
+                self.stats.add_documents_indexed(report.inserted as u64);
                 self.publish_stats();
                 info!(self.log, "indexed batch";
                     "shard_id" => %self.shard_id,
@@ -974,13 +971,13 @@ impl ShardDb {
             warn!(self.log, "clear: shutdown of old database failed"; "shard_id" => self.shard_id, "error" => %e);
         }
         let index_root = self.root.join("index");
-        let store_path = self.root.join("documents.bin");
+        let store_path = self.root.join("documents");
 
         if index_root.exists() {
             let _ = std::fs::remove_dir_all(&index_root);
         }
         if store_path.exists() {
-            let _ = std::fs::remove_file(&store_path);
+            let _ = std::fs::remove_dir_all(&store_path);
         }
         if self.root.join("index.new").exists() {
             let _ = std::fs::remove_dir_all(self.root.join("index.new"));
@@ -1088,7 +1085,7 @@ impl ShardDb {
         backup_id: String,
         user: String,
     ) -> Result<Option<BackupManifest>, CorelamoError> {
-        info!(self.log, "Incremental backup made"; "user"=> user);
+        info!(self.log, "Incremental backup made"; "user"=> user, "backup_id"=> backup_id.clone());
         let progress = self.stats.backup_progress().clone();
         self.backup
             .create_incremental_backup(

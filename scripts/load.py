@@ -34,6 +34,7 @@ PASSWORD = "secret"
 BATCH_DOCS  = 10000
 BATCH_BYTES = 8 * 1024 * 1024
 MAX_DOCS    = 0                        # 0 = load everything
+SHARD_COUNT = 4
 
 # source field -> (output name, index type, stemming, weight min, weight max)
 FIELDS = [
@@ -205,12 +206,13 @@ def main():
     srv.login(USERNAME, PASSWORD)
     print("[info] logged in")
 
-    for method, path, label in (
-        ("DELETE", f"/api/databases/{DB_NAME}/delete-database", "delete"),
-        ("POST",   f"/api/databases/{DB_NAME}/create-database", "create"),
-        ("POST",   f"/api/databases/{DB_NAME}/start-database",  "start"),
+    for method, path, body, label in (
+        ("DELETE", f"/api/databases/{DB_NAME}/delete-database", b"", "delete"),
+        ("POST",   f"/api/databases/{DB_NAME}/create-database",
+                   json.dumps({"shard_count": SHARD_COUNT}).encode("utf-8"), "create"),
+        ("POST",   f"/api/databases/{DB_NAME}/start-database",  b"", "start"),
     ):
-        status, text = srv.call(method, path)
+        status, text = srv.call(method, path, body)
         print(f"[info] {label}: HTTP {status} {text[:120]}")
 
     status, text = srv.call("POST", f"/api/databases/{DB_NAME}/set-policy", build_policy())

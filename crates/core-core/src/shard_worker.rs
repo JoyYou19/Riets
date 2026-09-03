@@ -718,6 +718,12 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     user,
                     resp,
                 } => {
+                    if shared.last_backup_id.read().unwrap_or_else(|e| e.into_inner()).is_none() {
+                        let _ = resp.send(Err(CorelamoError::Internal(
+                            "no previous backup found for incremental backup".into(),
+                        )));
+                        continue;
+                    }
                     shared.is_backing_up.store(true, Ordering::Release);
                     let result = shard.backup_incremental(shard_backup_path, backup_id, user);
                     shared.is_backing_up.store(false, Ordering::Release);
