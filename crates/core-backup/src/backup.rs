@@ -1,14 +1,15 @@
 use crate::progress::BackupProgress;
 use core_logs::logger;
+use core_storage::binary_store::BinaryDocumentStore;
 use core_storage::wal::Wal;
 use core_timing::timed;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{ Deserialize, Serialize };
-use slog::{ Logger, error };
-use std::fs::{ self, File };
-use std::io::{ self, BufReader, BufWriter, Write };
+use slog::{ Logger, error, info };
+use std::fs::{ self, File, OpenOptions };
+use std::io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write };
 use std::path::{ Path, PathBuf };
 use std::time::SystemTime;
 const COPY_BUF_SIZE: usize = 256 * 1024;
@@ -19,26 +20,25 @@ pub struct BackupManifest {
     pub created_at: u64,
     pub backup_type: BackupType,
     pub start_offset: u64,
-    pub wal_offset: u64,
     pub document_count: usize,
     pub record_count: usize,
     pub parent_backup_id: Option<String>,
+    pub last_backup_segment: u32,
+    pub last_backup_offset: u64,
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BackupType {
     Full,
     Incremental,
 }
-
 pub struct BackupManager {
     backup_dir: PathBuf,
     shard_name: String,
-    last_backup_offset: u64,
     last_backup_id: Option<String>,
+    last_segment_id: u32,
+    last_segment_offset: u64,
     log: Logger,
 }
-
 #[derive(Debug)]
 pub enum BackupError {
     IoError(std::io::Error),
@@ -56,6 +56,11 @@ pub enum BackupError {
     },
 }
 
+struct SegmentDiff {
+    id: u32,
+    start: u64,
+    end: u64,
+}
 impl From<std::io::Error> for BackupError {
     fn from(error: std::io::Error) -> Self {
         BackupError::IoError(error)
@@ -127,10 +132,15 @@ fn dir_size(path: &Path) -> io::Result<u64> {
 
 //directory zipping
 #[timed(writing_files)]
-fn tar_dir(src: &Path, dst: &Path, progress: Option<&BackupProgress>) -> io::Result<()> {
+fn tar_dir(
+    src: &Path,
+    dst: &Path,
+    entry_name: &str,
+    progress: Option<&BackupProgress>
+) -> io::Result<()> {
     let enc = GzEncoder::new(File::create(dst)?, Compression::default());
     let mut builder = tar::Builder::new(enc);
-    builder.append_dir_all("index", src)?;
+    builder.append_dir_all(entry_name, src)?;
     builder.into_inner()?.finish()?;
     if let Some(p) = progress {
         p.add(dir_size(src)?);
@@ -155,9 +165,7 @@ fn decompress_file(src: &Path, dst: &Path) -> io::Result<()> {
     writer.flush()?;
     Ok(())
 }
-//Parses the (offset: u64 LE, len: u32 LE, payload) framing that
-// create_incremental_backup writes. Kept separate from restore() so it can
-// be unit-tested against a hand-built byte buffer without touching disk.
+
 #[timed(restore)]
 fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
     let mut records = Vec::new();
@@ -208,19 +216,29 @@ impl BackupManager {
         self.backup_dir.join(backup_id).join(&self.shard_name)
     }
     #[timed(database_lifecycle)]
-    pub fn new(shard_root: &Path, backup_dir: PathBuf, shard_name: String) -> Self {
+    pub fn new(
+        shard_root: &Path,
+        backup_dir: PathBuf,
+        shard_name: String,
+        last_segment_id: u32,
+        last_segment_offset: u64
+    ) -> Self {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
         let name = shard_name.clone();
         let log = logger::shard_logger(shard_root, &name);
-        let (last_backup_offset, last_backup_id) = if
+
+        let (last_segment_id, last_segment_offset, last_backup_id) = if
             let Ok(state) = fs::read_to_string(&state_path)
         {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+                let segment = parsed["last_segment_id"]
+                    .as_u64()
+                    .unwrap_or(last_segment_id as u64) as u32;
                 let offset = parsed["last_offset"].as_u64().unwrap_or(0);
                 let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
-                (offset, id)
+                (segment, offset, id)
             } else {
-                (0, None)
+                (last_segment_id, last_segment_offset, None)
             }
         } else {
             // State file doesn't exist; scan disk for latest backup
@@ -231,16 +249,15 @@ impl BackupManager {
                 .flatten()
                 .filter_map(|e| e.ok())
                 .filter_map(|e| {
-                    let manifest_path = e.path().join("manifest.json");
+                    let manifest_path = e.path().join(&shard_name).join("manifest.json");
                     let text = fs::read_to_string(&manifest_path).ok()?;
-                    let m: BackupManifest = serde_json::from_str(&text).ok()?;
-                    Some(m)
+                    serde_json::from_str::<BackupManifest>(&text).ok()
                 })
                 .max_by_key(|m| m.created_at);
 
             match best {
-                Some(m) => (m.wal_offset, Some(m.backup_id)),
-                None => (0, None),
+                Some(m) => (m.last_backup_segment, m.last_backup_offset, Some(m.backup_id)),
+                None => (last_segment_id, last_segment_offset, None),
             }
         };
 
@@ -248,18 +265,21 @@ impl BackupManager {
             backup_dir,
             shard_name,
             last_backup_id,
-            last_backup_offset,
+            last_segment_id,
+            last_segment_offset,
             log,
         }
     }
+
     #[timed(writing_files)]
     fn save_state(&self) -> Result<(), BackupError> {
         let dst = self.backup_dir.join(format!("backup_state_{}.json", self.shard_name));
         let tmp = dst.with_extension("json.tmp");
         let state =
             serde_json::json!({
-            "last_offset": self.last_backup_offset,
             "last_backup_id": self.last_backup_id,
+            "last_segment_id": self.last_segment_id,
+            "last_segment_offset": &self.last_segment_offset,
         });
         fs::write(&tmp, serde_json::to_string(&state)?)?;
         File::open(&tmp)?.sync_all()?;
@@ -272,36 +292,65 @@ impl BackupManager {
         shard_root: &Path,
         backup_path: &Path,
         backup_id: &str,
-        wal: &Wal,
+       
         progress: &BackupProgress,
         document_count: usize,
         record_count: usize
     ) -> Result<BackupManifest, BackupError> {
         //read wal offset before touching files so new things dont catch up with backup
-        let wal_offset = wal.durable_offset();
+        let store_dir = shard_root.join("documents");
+        let ids = BinaryDocumentStore::list_segment_ids(&store_dir)?;
+        let Some(&last_segment) = ids.last() else {
+            return Err(BackupError::IoError(io::Error::other("no document segments to back up")));
+        };
+        let last_segment_offset = fs
+            ::metadata(store_dir.join(BinaryDocumentStore::segment_filename(last_segment)))?
+            .len();
 
         fs::create_dir_all(backup_path)?;
 
-        let total =
-            dir_size(&shard_root.join("documents"))? +
-            dir_size(&shard_root.join("index"))?;
+        let total = dir_size(&store_dir)? + dir_size(&shard_root.join("index"))?;
         progress.grow_total(total);
 
         let result = (|| -> Result<BackupManifest, BackupError> {
-            tar_dir(&shard_root.join("documents"), &backup_path.join("documents.tar.gz"),Some(progress))?;
-            tar_dir(&shard_root.join("index"), &backup_path.join("index.tar.gz"), Some(progress))?;
+            let (idx_result, doc_result) = std::thread::scope(|s| {
+                let idx = s.spawn(||
+                    tar_dir(
+                        &shard_root.join("index"),
+                        &backup_path.join("index.tar.gz"),
+                        "index",
+                        Some(progress)
+                    )
+                );
+                let doc = s.spawn(||
+                    tar_dir(
+                        &store_dir,
+                        &backup_path.join("documents.tar.gz"),
+                        "documents",
+                        Some(progress)
+                    )
+                );
+                (idx.join(), doc.join())
+            });
+            idx_result.map_err(|_|
+                BackupError::IoError(io::Error::other("index tar thread panicked"))
+            )??;
+            doc_result.map_err(|_|
+                BackupError::IoError(io::Error::other("documents tar thread panicked"))
+            )??;
 
             let manifest = BackupManifest {
                 backup_id: backup_id.to_string(),
                 created_at: chrono::Utc::now().timestamp_millis() as u64,
                 backup_type: BackupType::Full,
                 start_offset: 0,
-                wal_offset, // the value snapshotted above
                 document_count,
                 record_count,
                 parent_backup_id: None,
-            };
+                last_backup_segment: last_segment,
+                last_backup_offset: last_segment_offset,
 
+            };
             write_manifest_atomic(&backup_path, &manifest)?;
             Ok(manifest)
         })();
@@ -311,7 +360,7 @@ impl BackupManager {
                 let old_id = self.last_backup_id.clone();
                 self.last_backup_id = Some(backup_id.to_string());
                 // in create_full_backup, where last_backup_offset is set
-                self.last_backup_offset = wal_offset;
+                self.last_segment_offset = last_segment_offset;
                 self.save_state()?;
                 if let Some(old_id) = old_id {
                     self.delete_incremental_chain(&old_id);
@@ -326,84 +375,103 @@ impl BackupManager {
         }
     }
 
-    #[timed(backup)]
-    pub fn create_incremental_backup(
-        &mut self,
-        backup_path: &Path, // pre-created by shard manager: backups/incr_123/shard-0/
-        backup_id: &str, // shared id from shard manager: "incr_123"
-        wal: &Wal,
-        document_count: usize,
-        progress: &BackupProgress
-    ) -> Result<Option<BackupManifest>, BackupError> {
-        let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
-        
-        let start_offset = self.last_backup_offset;
-        let end_offset = wal.durable_offset();
+    //new idea to incremental backup, copy only new bytes that differ from this state to the last full backup
 
-        if end_offset <= start_offset {
-            return Ok(None);
-        }
-
-        //fs::create_dir_all(backup_path)?;
-
-        let inner = || -> Result<BackupManifest, BackupError> {
-            let records = wal
-                .replay_from(start_offset)
-                .map_err(|e| BackupError::WalError(e.to_string()))?;
-            let total: u64 = records
-                .iter()
-                .map(|(_, payload)| payload.len() as u64)
-                .sum();
-            progress.grow_total(total);
-
-            let file = File::create(backup_path.join("wal_records.bin"))?;
-            let mut w = BufWriter::new(file);
-            let mut record_count = 0;
-
-            for (offset, payload) in records {
-                if offset <= start_offset || offset > end_offset {
-                    continue;
-                }
-                w.write_all(&offset.to_le_bytes())?;
-                w.write_all(&(payload.len() as u32).to_le_bytes())?;
-                w.write_all(&payload)?;
-                record_count += 1;
+    fn read_segment_diff(
+        store_dir: &Path,
+        last_segment_id: u32,
+        last_segment_offset: u64
+    ) -> io::Result<Vec<SegmentDiff>> {
+        let mut deltas = Vec::new();
+        for id in BinaryDocumentStore::list_segment_ids(store_dir)? {
+            if id < last_segment_id {
+                continue; // fully covered by an earlier backup
             }
+            let seg_path = store_dir.join(BinaryDocumentStore::segment_filename(id));
+            let end = fs::metadata(&seg_path)?.len();
+            let start = if id == last_segment_id { last_segment_offset } else { 0 };
+            if end > start {
+                deltas.push(SegmentDiff { id, start, end });
+            }
+        }
+        Ok(deltas)
+    }
 
-            w.flush()?;
-            w
-                .into_inner()
+   pub fn create_incremental_backup(
+    &mut self,
+    backup_path: &Path,
+    backup_id: &str,
+    segment_dir: &Path,
+    document_count: usize,
+    progress: &BackupProgress
+) -> Result<Option<BackupManifest>, BackupError> {
+    let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
+
+    let diff = Self::read_segment_diff(
+        segment_dir,
+        self.last_segment_id,
+        self.last_segment_offset
+    )?;
+    if diff.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(last_delta) = diff.last() else {
+        return Err(BackupError::IoError(io::Error::other("no segment diff to commit")));
+    };
+    let (new_segment_id, new_segment_offset) = (last_delta.id, last_delta.end);
+
+    let inner = || -> Result<BackupManifest, BackupError> {
+        let dst_dir = backup_path.join("documents");
+        fs::create_dir_all(&dst_dir)?;
+
+        let mut total: u64 = 0;
+        for d in &diff {
+            let seg_name = BinaryDocumentStore::segment_filename(d.id);
+            let mut src = File::open(segment_dir.join(&seg_name))?;
+            src.seek(SeekFrom::Start(d.start))?;
+            let mut src = src.take(d.end - d.start);
+
+            let dst = File::create(dst_dir.join(&seg_name))?;
+            let mut dst = BufWriter::new(dst);
+            let copied = io::copy(&mut src, &mut dst)?;
+            total += copied;
+            dst.flush()?;
+            dst.into_inner()
                 .map_err(|e| BackupError::IoError(e.into_error()))?
                 .sync_all()?;
+        }
+        progress.grow_total(total);
 
-            let manifest = BackupManifest {
-                backup_id: backup_id.to_string(),
-                created_at: chrono::Utc::now().timestamp() as u64,
-                backup_type: BackupType::Incremental,
-                start_offset,
-                wal_offset: end_offset,
-                document_count,
-                record_count,
-                parent_backup_id: Some(parent_id),
-            };
-
-            write_manifest_atomic(backup_path, &manifest)?;
-            Ok(manifest)
+        let manifest = BackupManifest {
+            backup_id: backup_id.to_string(),
+            created_at: chrono::Utc::now().timestamp() as u64,
+            backup_type: BackupType::Incremental,
+            start_offset: self.last_segment_offset,
+            document_count,
+            record_count: 0,
+            parent_backup_id: Some(parent_id),
+            last_backup_segment: new_segment_id,
+            last_backup_offset: new_segment_offset,
         };
+        write_manifest_atomic(backup_path, &manifest)?;
+        Ok(manifest)
+    };
 
-        match inner() {
-            Ok(manifest) => {
-                self.last_backup_offset = end_offset;
-                self.last_backup_id = Some(backup_id.to_string());
-                self.save_state()?;
-                Ok(Some(manifest))
-            }
-            Err(e) => {
-                let _ = fs::remove_dir_all(backup_path);
-                Err(e)
-            }
+    match inner() {
+        Ok(manifest) => {
+            self.last_segment_id = new_segment_id;
+            self.last_segment_offset = new_segment_offset;
+            self.last_backup_id = Some(backup_id.to_string());
+            self.save_state()?;
+            Ok(Some(manifest))
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(backup_path);
+            Err(e)
         }
     }
+} 
     #[timed(backup)]
     fn delete_incremental_chain(&self, from_id: &str) {
         let mut current_id = from_id.to_string();
@@ -443,33 +511,76 @@ impl BackupManager {
     }
 
     #[timed(restore)]
-    pub fn restore(
-        &self,
-        backup_id: &str,
-        target_dir: &Path,
-        wal: &mut Wal
-    ) -> Result<(), BackupError> {
+    pub fn restore(&self, backup_id: &str, target_dir: &Path) -> Result<(), BackupError> {
         let backup_path = self.shard_backup_path(backup_id);
         let manifest = self.load_manifest(backup_id)?;
-
         match manifest.backup_type {
             BackupType::Full => {
                 fs::create_dir_all(target_dir)?;
-                decompress_file(
-                    &backup_path.join("documents.tar.gz"),
-                    &target_dir.join("documents.tar.gz")
-                )?;
-                let dec = GzDecoder::new(File::open(backup_path.join("index.tar.gz"))?);
-                tar::Archive::new(dec).unpack(target_dir)?;
+                let (idx_result, doc_result) = std::thread::scope(|s| {
+                    let idx = s.spawn(|| {
+                        tar::Archive
+                            ::new(GzDecoder::new(File::open(backup_path.join("index.tar.gz"))?))
+                            .unpack(target_dir)
+                    });
+                    let doc = s.spawn(|| {
+                        tar::Archive
+                            ::new(GzDecoder::new(File::open(backup_path.join("documents.tar.gz"))?))
+                            .unpack(target_dir)
+                    });
+                    (idx.join(), doc.join())
+                });
+
+                if
+                    let Err(e) = idx_result.map_err(|_|
+                        io::Error::other("index tar thread panicked")
+                    )?
+                {
+                    error!(self.log, "restore: failed to unpack index.tar.gz"; "target" => %target_dir.display(), "error" => %e);
+                    return Err(BackupError::IoError(e));
+                }
+                if
+                    let Err(e) = doc_result.map_err(|_|
+                        io::Error::other("documents tar thread panicked")
+                    )?
+                {
+                    error!(self.log, "restore: failed to unpack documents.tar.gz"; "target" => %target_dir.display(), "error" => %e);
+                    return Err(BackupError::IoError(e));
+                }
+
+                let maps_path = target_dir.join("documents.maps.bin");
+                if maps_path.exists() {
+                    let _ = fs::remove_file(&maps_path);
+                }
+
+                info!(self.log, "restore: unpacked full backup"; "target" => %target_dir.display());
             }
             BackupType::Incremental => {
-                let raw = fs::read(backup_path.join("wal_records.bin"))?;
-                for (_offset, payload) in parse_wal_records(&raw)? {
-                    wal.append(&payload).map_err(|e| BackupError::WalError(e.to_string()))?;
+                let src_dir = backup_path.join("documents");
+                let dst_dir = target_dir.join("documents");
+                fs::create_dir_all(&dst_dir)?;
+
+                if src_dir.exists() {
+                    for entry in fs::read_dir(&src_dir)? {
+                        let entry = entry?;
+                        let file_name = entry.file_name();
+                        let src_path = entry.path();
+                        let dst_path = dst_dir.join(&file_name);
+
+                        let mut src = File::open(&src_path)?;
+                        let mut dst = OpenOptions::new().create(true).append(true).open(&dst_path)?;
+                        io::copy(&mut src, &mut dst)?;
+                    }
                 }
+
+                let maps_path = target_dir.join("documents.maps.bin");
+                if maps_path.exists() {
+                    let _ = fs::remove_file(&maps_path);
+                }
+
+                info!(self.log, "restore: applied incremental backup"; "target" => %target_dir.display());
             }
         }
-
         Ok(())
     }
     #[timed(restore)]
@@ -495,10 +606,14 @@ impl BackupManager {
         for window in chain.windows(2) {
             let parent = &window[0];
             let child = &window[1];
-            if child.start_offset != parent.wal_offset {
+            if
+                child.last_backup_segment < parent.last_backup_segment ||
+                (child.last_backup_segment == parent.last_backup_segment &&
+                    child.start_offset < parent.last_backup_offset)
+            {
                 return Err(BackupError::ChainGap {
                     parent_id: parent.backup_id.clone(),
-                    parent_end: parent.wal_offset,
+                    parent_end: parent.last_backup_offset,
                     child_id: child.backup_id.clone(),
                     child_start: child.start_offset,
                 });
@@ -506,7 +621,7 @@ impl BackupManager {
         }
 
         for manifest in &chain {
-            self.restore(&manifest.backup_id, target_dir, wal)?;
+            self.restore(&manifest.backup_id, target_dir)?;
         }
         self.cleanup_after_restore(backup_id, wal)?;
         Ok(())
@@ -538,7 +653,7 @@ impl BackupManager {
         for manifest in all_manifests {
             if
                 manifest.backup_type == BackupType::Incremental &&
-                manifest.start_offset >= restored_manifest.wal_offset
+                manifest.start_offset >= restored_manifest.last_backup_offset
             {
                 let path = self.shard_backup_path(&manifest.backup_id);
                 if let Err(e) = fs::remove_dir_all(&path) {
@@ -555,7 +670,7 @@ impl BackupManager {
         // Reset manager state to the restored point so the next incremental
         // starts from the correct offset.
         self.last_backup_id = Some(restored_backup_id.to_string());
-        self.last_backup_offset = wal.durable_offset();
+        self.last_segment_offset = wal.durable_offset();
         self.save_state()?;
 
         Ok(())

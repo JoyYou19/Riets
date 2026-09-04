@@ -1,5 +1,5 @@
 use std::{
-    io, path::{Path, PathBuf}, sync::{Arc, atomic::Ordering::Relaxed}, time::SystemTime,
+    io, path::{Path, PathBuf}, sync::Arc, time::SystemTime,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,8 +102,9 @@ impl ShardDb {
         let store_path = root.join("documents");
         BinaryDocumentStore::open(&store_path)?;
         let backup_dir = db_root.as_ref().join("backups");
+       
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(&root, backup_dir, name.clone());
+        let backup = BackupManager::new(&root, backup_dir, name.clone(), 0, 0);
         Ok(Self {
             shard_id,
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -154,7 +155,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let backup_dir = db_root.as_ref().join("backups");
         std::fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(&root, backup_dir, name.clone());
+        let backup = BackupManager::new(&root, backup_dir, name.clone(),0,0);
         Ok(Self {
             shard_id: ShardId::from(shard_id),
             shared: Arc::new(SharedShardState::new(root.clone())),
@@ -985,6 +986,9 @@ impl ShardDb {
         if self.root.join("index.old").exists() {
             let _ = std::fs::remove_dir_all(self.root.join("index.old"));
         }
+        if self.root.join("documents.maps.bin").exists(){
+            let _ = std::fs::remove_file(self.root.join("documents.maps.bin"));
+        }
 
         // outright WAL reset
         self.wal
@@ -1034,7 +1038,9 @@ impl ShardDb {
         user: String,
         shard_backup_path: PathBuf,
         backup_id: String,
+        
     ) -> Result<BackupManifest, CorelamoError> {
+        self.flush()?;
         if let Some(worker) = self.compaction_worker.take() {
             worker
                 .stop()
@@ -1058,7 +1064,6 @@ impl ShardDb {
                 &self.root,
                 &shard_backup_path,
                 &backup_id,
-                &self.wal,
                 &progress,
                 self.document_count(),
                 record_count.len(),
@@ -1084,6 +1089,7 @@ impl ShardDb {
         shard_backup_path: PathBuf,
         backup_id: String,
         user: String,
+        segment_dir: PathBuf
     ) -> Result<Option<BackupManifest>, CorelamoError> {
         info!(self.log, "Incremental backup made"; "user"=> user, "backup_id"=> backup_id.clone());
         let progress = self.stats.backup_progress().clone();
@@ -1091,7 +1097,7 @@ impl ShardDb {
             .create_incremental_backup(
                 &shard_backup_path,
                 &backup_id,
-                &self.wal,
+                &segment_dir,                
                 self.document_count(),
                 &progress,
             )

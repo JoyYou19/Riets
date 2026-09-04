@@ -67,11 +67,11 @@ impl BinaryDocumentStore {
 
         Ok(store)
     }
-    fn segment_filename(id: u32) -> String {
+    pub fn segment_filename(id: u32) -> String {
         format!("seg_{id:05}.bin")
     }
     #[timed(database_lifecycle)]
-    fn list_segment_ids(root: &Path) -> io::Result<Vec<u32>> {
+    pub fn list_segment_ids(root: &Path) -> io::Result<Vec<u32>> {
         let mut ids = Vec::new();
         for entry in std::fs::read_dir(root)? {
             let entry = entry?;
@@ -86,7 +86,7 @@ impl BinaryDocumentStore {
         ids.sort_unstable();
         Ok(ids)
     }
-    fn current_segment_path(&self) -> PathBuf {
+    pub fn current_segment_path(&self) -> PathBuf {
         let id = self.current_segment.load(std::sync::atomic::Ordering::Relaxed);
         self.path.join(Self::segment_filename(id))
     }

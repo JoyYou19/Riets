@@ -551,6 +551,7 @@ dependencies = [
  "slog-scope",
  "slog-term",
  "tar",
+ "tokio",
 ]
 
 [[package]]

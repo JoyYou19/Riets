@@ -725,7 +725,8 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                         continue;
                     }
                     shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_incremental(shard_backup_path, backup_id, user);
+                    let segment_dir = shard.root().join("documents");
+                    let result = shard.backup_incremental(shard_backup_path, backup_id, user,segment_dir);
                     shared.is_backing_up.store(false, Ordering::Release);
                     match &result {
                         Ok(Some(manifest)) => {
