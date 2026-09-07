@@ -41,14 +41,16 @@ pub struct SearchCommand {
 }
 
 pub struct SearchResponse {
-    docs: Vec<(String, FieldNode)>,
+    docs: Vec<(String, f32, FieldNode)>,
 }
 
 impl SearchResponse {
-    pub fn from_hits(docs: Vec<(String, BTreeMap<String, String>)>) -> Result<Self, CorelamoError> {
+    pub fn from_hits(
+        docs: Vec<(String, f32, BTreeMap<String, String>)>,
+    ) -> Result<Self, CorelamoError> {
         let mut trees = Vec::with_capacity(docs.len());
-        for (id, fields) in docs {
-            trees.push((id, unflatten(fields)?));
+        for (id, score, fields) in docs {
+            trees.push((id, score, unflatten(fields)?));
         }
         Ok(Self { docs: trees })
     }
@@ -59,9 +61,10 @@ impl ResponseData for SearchResponse {
         Ok(Value::Array(
             self.docs
                 .iter()
-                .map(|(id, tree)| {
+                .map(|(id, score, tree)| {
                     json!({
                         "id": id,
+                        "score": score,
                         "data": tree_to_json(tree)
                     })
                 })

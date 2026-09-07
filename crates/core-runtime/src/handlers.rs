@@ -326,9 +326,9 @@ pub async fn search_handler(
 
     handle.record_search(false, start.elapsed());
     let hit_count = hits.len();
-    let projected: Vec<(String, BTreeMap<String, String>)> = hits
+    let projected: Vec<(String, f32, BTreeMap<String, String>)> = hits
         .into_iter()
-        .map(|hit| (hit.external_id, hit.fields))
+        .map(|hit| (hit.external_id, hit.score, hit.fields))
         .collect();
 
     let resp = match SearchResponse::from_hits(projected) {
