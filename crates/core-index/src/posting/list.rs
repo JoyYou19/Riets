@@ -19,6 +19,27 @@ impl PostingList {
     }
 
     #[timed(search)]
+    /// Like `from_items`, but REQUIRES items already sorted by doc_id.
+    pub fn from_sorted(mut items: Vec<Posting>) -> Self {
+        let mut merged: Vec<Posting> = Vec::with_capacity(items.len());
+        for item in items.drain(..) {
+            if let Some(last) = merged.last_mut() {
+                if last.doc_id == item.doc_id {
+                    last.positions.extend_from_slice(&item.positions);
+                    last.weight = last.weight.max(item.weight);
+                    continue;
+                }
+            }
+            merged.push(item);
+        }
+        for posting in &mut merged {
+            posting.positions.sort_unstable();
+            posting.positions.dedup();
+        }
+        Self { items: merged }
+    }
+
+    #[timed(search)]
     pub fn from_items(mut items: Vec<Posting>) -> Self {
         items.sort_by_key(|p| p.doc_id);
 

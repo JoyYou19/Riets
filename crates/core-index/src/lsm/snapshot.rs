@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use arc_swap::ArcSwap;
 use core_timing::timed;
@@ -164,12 +167,14 @@ impl IndexSnapshot {
 #[derive(Clone)]
 pub struct SharedIndexSnapshot {
     inner: Arc<ArcSwap<IndexSnapshot>>,
+    generation: Arc<AtomicU64>,
 }
 
 impl SharedIndexSnapshot {
     pub fn new(snapshot: IndexSnapshot) -> Self {
         Self {
             inner: Arc::new(ArcSwap::new(Arc::new(snapshot))),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -179,6 +184,22 @@ impl SharedIndexSnapshot {
 
     pub fn publish(&self, snapshot: IndexSnapshot) {
         self.inner.store(Arc::new(snapshot));
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub fn get_snapshot(&self) -> (u64, Arc<IndexSnapshot>) {
+        loop {
+            let before = self.generation.load(Ordering::Acquire);
+            let snapshot = self.inner.load_full();
+            let after = self.generation.load(Ordering::Acquire);
+            if before == after {
+                return (after, snapshot);
+            }
+        }
     }
 
     pub fn get(&self) -> Arc<IndexSnapshot> {

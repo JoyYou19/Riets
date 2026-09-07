@@ -9,7 +9,7 @@ pub enum SortOrder {
     Desc,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DocValues {
     values: HashMap<DocId, String>,
 }

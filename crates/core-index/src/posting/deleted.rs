@@ -40,7 +40,7 @@ impl DeleteSet {
             .cloned()
             .collect();
 
-        PostingList::from_items(items)
+        PostingList::from_sorted(items)
     }
 
     pub fn contains(&self, doc_id: DocId) -> bool {
