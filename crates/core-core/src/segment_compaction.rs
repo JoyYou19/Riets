@@ -7,11 +7,8 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-
-// core-core, e.g. shard_worker.rs or a new segment_compaction.rs in core-core
 use core_storage::binary_store::run_segment_compaction;
 use crossbeam_channel::Sender;
-
 use crate::shard_worker::ShardCmd;
 
 pub struct SegmentCompactionWorker {
@@ -62,11 +59,6 @@ impl SegmentCompactionWorker {
                             Err(e) => eprintln!("[segcompact] run_segment_compaction failed: {e}"),
                         }
                     }
-                    Ok(Ok(None)) => eprintln!("[segcompact] no candidates this tick"),
-                    Ok(Err(e)) => eprintln!("[segcompact] plan error: {e}"),
-                    Err(_) => eprintln!(
-                        "[segcompact] plan reply channel dropped — shard worker likely stopped"
-                    ),
                 }
                 thread::sleep(interval);
             }
