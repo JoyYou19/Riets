@@ -9,6 +9,8 @@ use core_timing::timed;
 pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;
 pub mod segment_compaction;
+pub mod shard_manager_helpers;
+
 #[timed(shard_manager)]
 pub fn shard_for(external_id: &str, num_shards: u16) -> u16 {
     use std::collections::hash_map::DefaultHasher;

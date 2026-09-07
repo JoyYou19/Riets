@@ -22,6 +22,7 @@ impl SegmentCompactionWorker {
         let stop_thread = stop.clone();
         let handle = thread::spawn(move || {
             while !stop_thread.load(Ordering::Relaxed) {
+                // eprintln!("[segcompact] tick, threshold={dead_ratio_threshold}");
                 let (reply, rx) = std::sync::mpsc::channel();
                 sender
                     .send(ShardCmd::PlanSegmentCompaction {
@@ -31,17 +32,31 @@ impl SegmentCompactionWorker {
                     .map_err(|_| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "shard worker stopped")
                     })?;
-                if let Ok(Ok(Some(job))) = rx.recv() {
-                    if let Ok(completed) = run_segment_compaction(job) {
-                        let (ack, install_rx) = std::sync::mpsc::channel();
-                        if sender
-                            .send(ShardCmd::InstallSegmentCompaction {
-                                completed,
-                                ack: Some(ack),
-                            })
-                            .is_ok()
-                        {
-                            let _ = install_rx.recv();
+                match rx.recv() {
+                    Ok(Ok(Some(job))) => {
+                        //eprintln!("[segcompact] got job: {} segments", job.segment_ids.len());
+                        match run_segment_compaction(job) {
+                            Ok(completed) => {
+                                let (ack, install_rx) = std::sync::mpsc::channel();
+                                match sender.send(ShardCmd::InstallSegmentCompaction {
+                                    completed,
+                                    ack: Some(ack),
+                                }) {
+                                    Ok(()) => match install_rx.recv() {
+                                        Ok(Ok(installed)) => {
+                                            eprintln!("[segcompact] install result: {installed}")
+                                        }
+                                        Ok(Err(e)) => eprintln!("[segcompact] install error: {e}"),
+                                        Err(_) => {
+                                            eprintln!("[segcompact] install ack channel dropped")
+                                        }
+                                    },
+                                    Err(_) => eprintln!(
+                                        "[segcompact] shard worker stopped before install send"
+                                    ),
+                                }
+                            }
+                            Err(e) => eprintln!("[segcompact] run_segment_compaction failed: {e}"),
                         }
                     }
                 }

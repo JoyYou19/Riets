@@ -232,10 +232,10 @@ impl BinaryDocumentStore {
                 continue;
             }
             let dead_ratio = 1.0 - (live_entries.len() as f64) / (total as f64);
-            eprintln!(
-                "[plan] segment {id}: total={total} live={} dead_ratio={dead_ratio:.3}",
-                live_entries.len()
-            );
+            // eprintln!(
+            //     "[plan] segment {id}: total={total} live={} dead_ratio={dead_ratio:.3}",
+            //     live_entries.len()
+            // );
             if dead_ratio >= dead_ratio_threshold {
                 candidates.push((id, live_entries, live_bytes));
             }
@@ -248,10 +248,10 @@ impl BinaryDocumentStore {
         // ascending by id; sort candidates by live_bytes ascending so the
         // smallest/dirtiest segments get merged first
         candidates.sort_by_key(|(_, _, bytes)| *bytes);
-        eprintln!(
-            "[plan] {} candidates found, sorted by live_bytes",
-            candidates.len()
-        );
+        // eprintln!(
+        //     "[plan] {} candidates found, sorted by live_bytes",
+        //     candidates.len()
+        // );
         let mut selected_ids = Vec::new();
         let mut selected_entries = Vec::new();
         let mut running_size = 0u64;
@@ -268,12 +268,12 @@ impl BinaryDocumentStore {
         }
 
         if selected_ids.is_empty() {
-            eprintln!(
-                "[plan] only {} segment(s) selected, running_size={}, target_size={}",
-                selected_ids.len(),
-                running_size,
-                target_size
-            );
+            // eprintln!(
+            //     "[plan] only {} segment(s) selected, running_size={}, target_size={}",
+            //     selected_ids.len(),
+            //     running_size,
+            //     target_size
+            // );
             return Ok(None);
         }
         let new_segment_id = self.next_segment_id.fetch_add(1, Ordering::Relaxed);

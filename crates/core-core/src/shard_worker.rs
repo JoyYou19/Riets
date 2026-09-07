@@ -11,7 +11,7 @@ use core_index::analyzer::Analyzer;
 use core_index::search::SearchIndex;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_query::executor::FieldFilter;
-use core_query::sort::{DocValues, SortOrder, SortableDoc, compare};
+use core_query::sort::DocValues;
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
@@ -244,17 +244,16 @@ impl ShardHandle {
         ))
     }
 
-    //Like rank_top_k but orders by the given sort fields
     #[timed(search)]
     pub fn rank_sorted(
         &self,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldFilter>>,
         xpaths: &[XPathId],
-        sorts: &[(XPathId, SortOrder)],
-        k: usize,
+        sort_xpaths: &[XPathId],
+        window: usize,
     ) -> Result<Vec<(SearchHit, Vec<Option<String>>)>, CorelamoError> {
-        if k == 0 {
+        if window == 0 {
             return Ok(Vec::new());
         }
 
@@ -266,46 +265,32 @@ impl ShardHandle {
             None => None,
         };
 
-        // every match, not just the relevance's top
-        let all =
-            executor.search_all_xpaths_restricted(query, xpaths.iter().copied(), restrict.as_ref());
-        if all.is_empty() {
+        //gets the top canditates based on relevance + filters
+        let candidates = executor.search_all_xpaths_top_k_restricted(
+            query,
+            xpaths.iter().copied(),
+            window,
+            restrict.as_ref(),
+        );
+        if candidates.is_empty() {
             return Ok(Vec::new());
         }
 
-        let columns: Vec<DocValues> = sorts
+        let columns: Vec<DocValues> = sort_xpaths
             .iter()
-            .map(|(xpath, _)| DocValues::from_pairs(snapshot.numeric_values(*xpath)))
+            .map(|xpath| DocValues::from_hits(snapshot.numeric_values(*xpath)))
             .collect();
-        let orders: Vec<SortOrder> = sorts.iter().map(|&(_, order)| order).collect();
 
-        let mut items: Vec<(SearchHit, Vec<Option<String>>)> = Vec::with_capacity(all.len());
-        for hit in all {
-            let keys = columns
-                .iter()
-                .map(|column| column.value_of(hit.doc_id).map(str::to_owned))
-                .collect();
-            items.push((hit, keys));
-        }
-
-        items.sort_unstable_by(|(hit_a, keys_a), (hit_b, keys_b)| {
-            let a_keys: Vec<Option<&str>> = keys_a.iter().map(|k| k.as_deref()).collect();
-            let b_keys: Vec<Option<&str>> = keys_b.iter().map(|k| k.as_deref()).collect();
-            let a = SortableDoc {
-                doc_id: hit_a.doc_id,
-                relevance: hit_a.score,
-                keys: a_keys,
-            };
-            let b = SortableDoc {
-                doc_id: hit_b.doc_id,
-                relevance: hit_b.score,
-                keys: b_keys,
-            };
-            compare(&a, &b, &orders)
-        });
-
-        items.truncate(k);
-        Ok(items)
+        Ok(candidates
+            .into_iter()
+            .map(|hit| {
+                let keys = columns
+                    .iter()
+                    .map(|column| column.value_of(hit.doc_id).map(str::to_owned))
+                    .collect();
+                (hit, keys)
+            })
+            .collect())
     }
 
     #[timed(retrieve_opps)]
