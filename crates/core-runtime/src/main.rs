@@ -112,20 +112,17 @@ async fn main() -> io::Result<()> {
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(overrides) => overrides,
         Err(e) => {
-            eprintln!("error: {}", e);
             process::exit(1);
         }
     };
     let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error: {}", e);
             process::exit(1);
         }
     };
 
     if let Err(e) = corelamo_settings::validate_settings(&settings) {
-        eprintln!("error: {}", e);
         process::exit(1);
     }
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));

@@ -7,11 +7,8 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-
-// core-core, e.g. shard_worker.rs or a new segment_compaction.rs in core-core
 use core_storage::binary_store::run_segment_compaction;
 use crossbeam_channel::Sender;
-
 use crate::shard_worker::ShardCmd;
 
 pub struct SegmentCompactionWorker {
@@ -25,7 +22,6 @@ impl SegmentCompactionWorker {
         let stop_thread = stop.clone();
         let handle = thread::spawn(move || {
             while !stop_thread.load(Ordering::Relaxed) {
-                eprintln!("[segcompact] tick, threshold={dead_ratio_threshold}");
                 let (reply, rx) = std::sync::mpsc::channel();
                 sender
                     .send(ShardCmd::PlanSegmentCompaction {
@@ -35,38 +31,19 @@ impl SegmentCompactionWorker {
                     .map_err(|_| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "shard worker stopped")
                     })?;
-                match rx.recv() {
-                    Ok(Ok(Some(job))) => {
-                        eprintln!("[segcompact] got job: {} segments", job.segment_ids.len());
-                        match run_segment_compaction(job) {
-                            Ok(completed) => {
-                                let (ack, install_rx) = std::sync::mpsc::channel();
-                                match sender.send(ShardCmd::InstallSegmentCompaction {
-                                    completed,
-                                    ack: Some(ack),
-                                }) {
-                                    Ok(()) => match install_rx.recv() {
-                                        Ok(Ok(installed)) => {
-                                            eprintln!("[segcompact] install result: {installed}")
-                                        }
-                                        Ok(Err(e)) => eprintln!("[segcompact] install error: {e}"),
-                                        Err(_) => {
-                                            eprintln!("[segcompact] install ack channel dropped")
-                                        }
-                                    },
-                                    Err(_) => eprintln!(
-                                        "[segcompact] shard worker stopped before install send"
-                                    ),
-                                }
-                            }
-                            Err(e) => eprintln!("[segcompact] run_segment_compaction failed: {e}"),
+                if let Ok(Ok(Some(job))) = rx.recv() {
+                    if let Ok(completed) = run_segment_compaction(job) {
+                        let (ack, install_rx) = std::sync::mpsc::channel();
+                        if sender
+                            .send(ShardCmd::InstallSegmentCompaction {
+                                completed,
+                                ack: Some(ack),
+                            })
+                            .is_ok()
+                        {
+                            let _ = install_rx.recv();
                         }
                     }
-                    Ok(Ok(None)) => eprintln!("[segcompact] no candidates this tick"),
-                    Ok(Err(e)) => eprintln!("[segcompact] plan error: {e}"),
-                    Err(_) => eprintln!(
-                        "[segcompact] plan reply channel dropped — shard worker likely stopped"
-                    ),
                 }
                 thread::sleep(interval);
             }
