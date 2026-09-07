@@ -2024,3 +2024,23 @@ pub async fn disk_usage_handler(
 
     HttpOk::with_data(format!("disk usage for '{db_name}'"), usage, &ctx).into_response()
 }
+
+// pub async fn cleanup_handler(
+//     State(state): State<AppState>,
+//     Path(db_name): Path<String>,
+//     Extension(ctx): Extension<RequestContext>,
+//     Extension(principal): Extension<Principal>
+// )-> Response{
+//     if let Err(e) = check_permission(&state, &principal, Permission::Cleanup) {
+//         return HttpError::from_corelamo(e, &ctx).into_response();
+//     } 
+//     let handle = match state.lookup(&db_name) {
+//         Ok(h) => h,
+//         Err(e) => {
+//             return HttpError::from_corelamo(e, &ctx).into_response();
+//         }
+//     };
+//     match handle.cleanup{
+
+//     } 
+// }

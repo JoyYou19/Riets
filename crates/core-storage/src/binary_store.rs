@@ -14,11 +14,11 @@ use std::{
     fs::{ File, OpenOptions },
     io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write },
     path::{ Path, PathBuf },
-    sync::{ Arc, atomic::AtomicU32 },
+    sync::{ Arc, atomic::{ AtomicU32, Ordering } },
 };
 
 use core_index::types::DocId;
-use core_protocol::format::Format;
+use core_protocol::{ errors::CorelamoError, format::Format };
 use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
@@ -31,7 +31,7 @@ const OP_DELETE: u8 = 2;
 
 //TODO: make configurable per-database
 pub const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10000;
-pub const DEFAULT_SEGMENT_SIZE: u64 = 512 * 1024 * 1024;
+pub const DEFAULT_SEGMENT_SIZE: u64 = 512* 1024 * 1024;
 #[derive(Debug)]
 pub struct BinaryDocumentStore {
     path: PathBuf,
@@ -39,6 +39,20 @@ pub struct BinaryDocumentStore {
     internal_to_external: Arc<DashMap<DocId, String>>,
     locations: Arc<DashMap<String, DocLocation>>,
     current_segment: AtomicU32,
+    next_segment_id: AtomicU32,
+}
+pub struct SegmentCompactionJob {
+    pub segment_ids: Vec<u32>,
+    pub next_segment_id: u32,
+    pub store_dir: PathBuf,
+    pub locations_snapshot: Vec<(String, DocLocation)>, // this segment's live entries at plan time
+}
+#[derive(Debug)]
+pub struct CompletedSegmentCompaction {
+    pub old_segment_ids: Vec<u32>,
+    pub new_segment_id: u32,
+    pub tmp_path: PathBuf,
+    pub new_locations: Vec<(String, DocLocation)>,
 }
 
 impl BinaryDocumentStore {
@@ -54,13 +68,14 @@ impl BinaryDocumentStore {
             segment_ids.push(0);
         }
         let current_segment = *segment_ids.last().unwrap();
-
+        let existing_max = Self::list_segment_ids(&path)?.iter().max().copied().unwrap_or(0);
         let mut store = Self {
             path,
             current_segment: AtomicU32::new(current_segment),
             docs: Cache::builder().max_capacity(DEFAULT_DOC_CACHE_CAPACITY).build(),
             internal_to_external: Arc::new(DashMap::new()),
             locations: Arc::new(DashMap::new()),
+            next_segment_id: AtomicU32::new(existing_max + 1),
         };
 
         store.load()?;
@@ -109,7 +124,7 @@ impl BinaryDocumentStore {
             segment_ids.push(0);
         }
         let current_segment = *segment_ids.last().unwrap();
-
+        let next_segment_id = segment_ids.iter().max().copied().unwrap_or(0) + 1;
         docs.invalidate_all();
         internal_to_external.clear();
         locations.clear();
@@ -117,6 +132,7 @@ impl BinaryDocumentStore {
         let mut store = Self {
             path,
             current_segment: AtomicU32::new(current_segment),
+            next_segment_id: AtomicU32::new(next_segment_id),
             docs,
             internal_to_external,
             locations,
@@ -133,14 +149,152 @@ impl BinaryDocumentStore {
         if size < DEFAULT_SEGMENT_SIZE {
             return Ok(());
         }
-        let next_id = self.current_segment.load(std::sync::atomic::Ordering::Relaxed) + 1;
+        let next_id = self.next_segment_id.fetch_add(1, Ordering::Relaxed);
         let next_path = self.path.join(Self::segment_filename(next_id));
         let mut file = File::create(&next_path)?;
         file.write_all(MAGIC)?;
-        self.current_segment.store(next_id, std::sync::atomic::Ordering::Relaxed);
+        self.current_segment.store(next_id, Ordering::Relaxed);
         Ok(())
     }
+    pub fn plan_compaction(
+        &self,
+        dead_ratio_threshold: f64,
+        target_size: u64
+    ) -> io::Result<Option<SegmentCompactionJob>> {
+        let current = self.current_segment.load(Ordering::Relaxed);
 
+        let mut candidates = Vec::new();
+        for id in Self::list_segment_ids(&self.path)? {
+            if id >= current {
+                continue;
+            }
+
+            let seg_path = self.path.join(Self::segment_filename(id));
+            let file = File::open(&seg_path)?;
+            let mut reader = CountingReader::new(BufReader::new(file));
+            let mut magic = [0u8; 8];
+            reader.read_exact(&mut magic)?;
+            if &magic != MAGIC {
+                return Err(
+                    io::Error::new(io::ErrorKind::InvalidData, "bad document store magic").into()
+                );
+            }
+            let mut total = 0u64;
+            let mut live_entries = Vec::new();
+            let mut live_bytes = 0u64;
+            loop {
+                match read_u8(&mut reader) {
+                    Ok(OP_PUT) => {
+                        let start = reader.position();
+                        let doc = read_document(&mut reader)?;
+                        let doc_size = reader.position() - start;
+                        total += 1;
+                        if let Some(loc) = self.locations.get(&doc.external_id) {
+                            if loc.segment == id && loc.offset == start {
+                                live_entries.push((doc.external_id.clone(), *loc));
+                                live_bytes += doc_size;
+                            }
+                        }
+                    }
+                    Ok(OP_DELETE) => {
+                        let _ = read_string(&mut reader)?;
+                    }
+                    Ok(other) => {
+                        return Err(
+                            io::Error
+                                ::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("unknown document op {other}")
+                                )
+                                .into()
+                        );
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                        break;
+                    }
+                    Err(err) => {
+                        return Err(err.into());
+                    }
+                }
+            }
+            if total == 0 {
+                continue;
+            }
+            let dead_ratio = 1.0 - (live_entries.len() as f64) / (total as f64);
+            eprintln!(
+                "[plan] segment {id}: total={total} live={} dead_ratio={dead_ratio:.3}",
+                live_entries.len()
+            );
+            if dead_ratio >= dead_ratio_threshold {
+                candidates.push((id, live_entries, live_bytes));
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
+        // worst (most dead-ratio-worthy) first — list_segment_ids is already
+        // ascending by id; sort candidates by live_bytes ascending so the
+        // smallest/dirtiest segments get merged first
+        candidates.sort_by_key(|(_, _, bytes)| *bytes);
+        eprintln!("[plan] {} candidates found, sorted by live_bytes", candidates.len());
+        let mut selected_ids = Vec::new();
+        let mut selected_entries = Vec::new();
+        let mut running_size = 0u64;
+        for (id, entries, bytes) in candidates {
+            if !selected_ids.is_empty() && running_size + bytes > target_size {
+                break;
+            }
+            running_size += bytes;
+            selected_ids.push(id);
+            selected_entries.extend(entries);
+            if running_size >= target_size {
+                break;
+            }
+        }
+
+        if selected_ids.is_empty() {
+            eprintln!("[plan] only {} segment(s) selected, running_size={}, target_size={}", selected_ids.len(), running_size, target_size);
+            return Ok(None);
+        }
+        let new_segment_id = self.next_segment_id.fetch_add(1, Ordering::Relaxed);
+        Ok(
+            Some(SegmentCompactionJob {
+                segment_ids: selected_ids,
+                next_segment_id: new_segment_id,
+                store_dir: self.path.clone(),
+                locations_snapshot: selected_entries,
+            })
+        )
+    }
+    pub fn install_segment_compaction(
+        &mut self,
+        completed: CompletedSegmentCompaction
+    ) -> io::Result<bool> {
+        let still_valid = completed.new_locations.iter().all(|(id, _)| {
+            self.locations
+                .get(id)
+                .map(|loc| completed.old_segment_ids.contains(&loc.segment))
+                .unwrap_or(false)
+        });
+        if !still_valid {
+            std::fs::remove_file(&completed.tmp_path).ok();
+            return Ok(false);
+        }
+
+        for (id, loc) in completed.new_locations {
+            self.locations.insert(id, loc);
+        }
+
+        let final_path = self.path.join(Self::segment_filename(completed.new_segment_id));
+        std::fs::rename(&completed.tmp_path, &final_path)?;
+
+        for old_id in &completed.old_segment_ids {
+            let old_path = self.path.join(Self::segment_filename(*old_id));
+            std::fs::remove_file(old_path).ok();
+        }
+        Ok(true)
+    }
     #[timed(database_lifecycle)]
     fn load(&mut self) -> io::Result<()> {
         for id in Self::list_segment_ids(&self.path)? {
@@ -194,7 +348,7 @@ impl BinaryDocumentStore {
     }
 
     fn read_document_at(&self, segment_id: u32, offset: u64) -> io::Result<StoredDocument> {
-        read_document_at_path(&self.current_segment_path(), segment_id, offset)
+        read_document_at_path(&self.path, segment_id, offset)
     }
 
     #[timed(writing_files)]
@@ -548,6 +702,86 @@ fn try_load_maps(
     true
 }
 
+pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<CompletedSegmentCompaction> {
+    let live_ids: std::collections::HashSet<&str> = job.locations_snapshot
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+
+    let mut live_docs = Vec::new();
+    for &seg_id in &job.segment_ids {
+        let seg_path = job.store_dir.join(BinaryDocumentStore::segment_filename(seg_id));
+        let file = File::open(&seg_path)?;
+        let mut reader = CountingReader::new(BufReader::new(file));
+        let mut magic = [0u8; 8];
+        reader.read_exact(&mut magic)?;
+        if &magic != MAGIC {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad document store magic"));
+        }
+        loop {
+            match read_u8(&mut reader) {
+                Ok(OP_PUT) => {
+                    let doc = read_document(&mut reader)?;
+                    if live_ids.contains(doc.external_id.as_str()) {
+                        live_docs.push(doc);
+                    }
+                }
+                Ok(OP_DELETE) => {
+                    let _ = read_string(&mut reader)?;
+                }
+                Ok(other) => {
+                    return Err(
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown document op {other}")
+                        )
+                    );
+                }
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                    break;
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    let tmp_path = job.store_dir.join(
+        format!("{}.tmp", BinaryDocumentStore::segment_filename(job.next_segment_id))
+    );
+    let file = File::create(&tmp_path)?;
+    let mut writer = CountingWriter::new(BufWriter::new(file), 0);
+    writer.write_all(MAGIC)?;
+
+    let mut new_locations = Vec::with_capacity(live_docs.len());
+    for doc in &live_docs {
+        write_u8(&mut writer, OP_PUT)?;
+        let offset = writer.position();
+        write_document(&mut writer, doc)?;
+        new_locations.push((
+            doc.external_id.clone(),
+            DocLocation {
+                internal_id: doc.internal_id,
+                offset,
+                segment: job.next_segment_id,
+            },
+        ));
+    }
+    writer.flush()?;
+    writer
+        .into_inner()
+        .into_inner()
+        .map_err(|e| io::Error::other(format!("flush failed: {e}")))?
+        .sync_all()?;
+
+    Ok(CompletedSegmentCompaction {
+        old_segment_ids: job.segment_ids,
+        new_segment_id: job.next_segment_id,
+        tmp_path,
+        new_locations,
+    })
+}
 //TODO: make this persistend and generate on each load
 #[derive(Debug, Clone, Copy, bincode::Encode, bincode::Decode)]
 pub struct DocLocation {
@@ -593,6 +827,9 @@ impl<W: Write> CountingWriter<W> {
 
     fn position(&self) -> u64 {
         self.pos
+    }
+    fn into_inner(self) -> W {
+        self.inner
     }
 }
 

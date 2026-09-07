@@ -13,6 +13,7 @@ pub enum Permission {
     GetLogs,
     ClearLogs,
     AllFields,
+    Cleanup,
     //databases
     CreateDatabase,
     DeleteDatabase,

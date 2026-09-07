@@ -9,10 +9,12 @@ pub struct DatabaseOptions {
     pub runtime: IndexRuntimeConfig,
     pub enable_background_compaction: bool,
     pub compaction_interval: Duration,
+    pub dead_file_treshold: f64,
     pub bootable: bool,
     pub incremental_backup_interval: Duration,
     pub full_backup_interval: Duration,
     pub backup_lifetime: Duration,
+    
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -46,7 +48,7 @@ impl Default for DatabaseOptions {
             runtime: IndexRuntimeConfig::default(),
             enable_background_compaction: true,
             compaction_interval: Duration::from_secs(10),
-
+            dead_file_treshold: 0.5,
             incremental_backup_interval: Duration::from_secs(3600),
             full_backup_interval: Duration::from_hours(24),
             backup_lifetime: Duration::from_hours(24 * 7),
