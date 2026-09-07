@@ -37,7 +37,7 @@ impl SegmentCompactionWorker {
                     })?;
                 match rx.recv() {
                     Ok(Ok(Some(job))) => {
-                        eprintln!("[segcompact] got job: {} segments", job.segment_ids.len());
+                        //eprintln!("[segcompact] got job: {} segments", job.segment_ids.len());
                         match run_segment_compaction(job) {
                             Ok(completed) => {
                                 let (ack, install_rx) = std::sync::mpsc::channel();

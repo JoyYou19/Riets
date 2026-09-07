@@ -935,9 +935,6 @@ impl ShardManager {
         Ok(out)
     }
 
-    //policy fields parse before shards
-    //japachecko to BM25
-
     #[timed(search)]
     pub fn hits_cmp(a: &SearchHit, b: &SearchHit) -> Ordering {
         b.score
@@ -970,6 +967,7 @@ impl ShardManager {
             .as_ref()
             .map(|specs| Arc::new(specs.iter().map(|s| s.xpath).collect()));
 
+        //INFO:                page * multiplier    min    max
         let window = fetch.saturating_mul(50).clamp(100, 5_000);
 
         let mut set = JoinSet::new();
@@ -980,6 +978,7 @@ impl ShardManager {
             let xpaths = Arc::clone(&xpaths);
             let sort_xpaths = sort_xpaths.clone();
             set.spawn_blocking(move || {
+                //any sort mentioned? - we do smart thing
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
                     handle.rank_sorted(
                         (*query).as_ref(),
@@ -989,6 +988,7 @@ impl ShardManager {
                         window,
                     )
                 } else {
+                    //just relevance
                     let hits =
                         handle.rank_top_k((*query).as_ref(), filters.as_deref(), &xpaths, fetch)?;
                     Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
@@ -996,7 +996,6 @@ impl ShardManager {
             });
         }
 
-        // every shard returns (hit, sort keys); keys are empty when not sorting
         let mut items: Vec<(SearchHit, Vec<Option<String>>)> = Vec::new();
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
@@ -1017,8 +1016,9 @@ impl ShardManager {
             return Err(e);
         }
 
-        // final ordering: sort keys when sorting, otherwise relevance
+        //sort keys when sort given, otherwise just relevance/docid
         if let Some(specs) = sorts.as_ref() {
+            //the cool crazy sort
             order_blended(&mut items, specs);
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
@@ -1028,15 +1028,13 @@ impl ShardManager {
             items.truncate(fetch);
         }
 
-        let candidates: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
-
-        ///////
-        if offset >= candidates.len() {
+        let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
+        if offset >= just_hits.len() {
             return Ok(Vec::new());
         }
 
         //for the resolve hit to save position
-        let page: Vec<(usize, SearchHit)> = candidates
+        let page: Vec<(usize, SearchHit)> = just_hits
             .into_iter()
             .skip(offset)
             .take(limit)
@@ -1052,7 +1050,7 @@ impl ShardManager {
                 .push((pos, hit));
         }
 
-        //resolve in paralel
+        //sorted hits -> full documents for pretty results :)
         let mut set = JoinSet::new();
         for (idx, hits) in by_shard {
             let handle = self.shards[idx].clone();

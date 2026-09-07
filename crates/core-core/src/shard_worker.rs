@@ -265,6 +265,7 @@ impl ShardHandle {
             None => None,
         };
 
+        //gets the top canditates based on relevance + filters
         let candidates = executor.search_all_xpaths_top_k_restricted(
             query,
             xpaths.iter().copied(),
@@ -277,7 +278,7 @@ impl ShardHandle {
 
         let columns: Vec<DocValues> = sort_xpaths
             .iter()
-            .map(|xpath| DocValues::from_pairs(snapshot.numeric_values(*xpath)))
+            .map(|xpath| DocValues::from_hits(snapshot.numeric_values(*xpath)))
             .collect();
 
         Ok(candidates

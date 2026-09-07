@@ -11,7 +11,7 @@ use core_query::query_string_parser::parse_and_analyze;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub struct SortFieldSpec {
+pub struct SortField {
     pub xpath: XPathId,
     pub order: SortOrderRequest,
     pub ratio: u8,
@@ -83,7 +83,7 @@ pub fn resolve_filters(
 pub fn resolve_sorts(
     command: &SearchCommand,
     policy: &IndexPolicy,
-) -> Result<Option<Arc<Vec<SortFieldSpec>>>, CorelamoError> {
+) -> Result<Option<Arc<Vec<SortField>>>, CorelamoError> {
     let Some(requests) = command.sort.as_ref() else {
         return Ok(None);
     };
@@ -115,7 +115,7 @@ pub fn resolve_sorts(
             )));
         }
 
-        sorts.push(SortFieldSpec {
+        sorts.push(SortField {
             xpath: field_pol.xpath(&policy),
             order: spec.order,
             ratio: spec.ratio,
@@ -126,11 +126,17 @@ pub fn resolve_sorts(
     Ok(Some(Arc::new(sorts)))
 }
 
-pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &[SortFieldSpec]) {
+/// relevance_norm = score / rel_best                    → 0..1 (or 0)
+/// field_norm     = (value - min) / (max - min)         → 0..1 position in the window
+/// direction      = desc ? field_norm : 1 - field_norm  → "how good is this doc's value"
+/// blend          = (rel_weight * relevance_norm + Σ ratio_i * direction_i) / denom
+//                                  hit          sort fields like year, imdb...
+pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &[SortField]) {
     if items.is_empty() {
         return;
     }
 
+    //find the min/max values for normalization across all fields
     let mut mins = vec![f64::INFINITY; specs.len()];
     let mut maxs = vec![f64::NEG_INFINITY; specs.len()];
     for (_, keys) in items.iter() {
@@ -149,6 +155,7 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
         }
     }
 
+    //same for relevance just some dark magic to normalize everything 0-100
     let rel_best = items
         .iter()
         .fold(0.0f32, |best, (hit, _)| best.max(hit.score));
@@ -160,6 +167,7 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
         .iter()
         .map(|(hit, keys)| {
             let relevance = if rel_best > 0.0 {
+                // score relative to the best
                 (hit.score / rel_best).clamp(0.0, 1.0)
             } else {
                 0.0
@@ -182,12 +190,14 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
                         } else {
                             let norm = ((v - mins[index]) / (maxs[index] - mins[index])) as f32;
                             match spec.order {
+                                //for ascending its the same only negative basically (smaller better)
                                 SortOrderRequest::Asc => 1.0 - norm,
                                 SortOrderRequest::Desc => norm,
                             }
                         }
                     }
                 };
+                //weight math
                 field_sum += spec.ratio as f32 * component;
             }
 
@@ -195,6 +205,7 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
         })
         .collect();
 
+    //sorting
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_unstable_by(|&a, &b| {
         blends[b]
@@ -203,6 +214,7 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
             .then_with(|| items[a].0.doc_id.cmp(&items[b].0.doc_id))
     });
 
+    //send back to shard_manager
     let reordered: Vec<(SearchHit, Vec<Option<String>>)> = order
         .into_iter()
         .map(|index| items[index].clone())

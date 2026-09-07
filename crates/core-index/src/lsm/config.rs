@@ -13,8 +13,6 @@ pub struct IndexRuntimeConfig {
     pub indexing_window_size: usize,
 
     pub compaction: CompactionConfig,
-    
-   
 }
 
 impl Default for IndexRuntimeConfig {
@@ -24,7 +22,6 @@ impl Default for IndexRuntimeConfig {
             indexing_window_size: 4,
             indexing_batch_size: 4_000,
             compaction: CompactionConfig::default(),
-           
         }
     }
 }

@@ -15,7 +15,7 @@ pub struct DocValues {
 }
 
 impl DocValues {
-    pub fn from_pairs(pairs: Vec<(DocId, String)>) -> Self {
+    pub fn from_hits(pairs: Vec<(DocId, String)>) -> Self {
         let mut values = HashMap::with_capacity(pairs.len());
         for (doc, value) in pairs {
             values.insert(doc, value);
