@@ -6,16 +6,32 @@ use std::{
 
 use core_index::{
     analyzer::analyzer::Analyzer,
+    numbers::EncodedBound,
     posting::{
         PostingList,
         ops::{intersection, union},
     },
     search::{SearchIndex, SearchStats},
-    types::{DocId, XPathId},
+    types::{DocId, RangeBound, XPathId},
 };
 use core_timing::timed;
 
 use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan};
+
+#[derive(Debug, Clone)]
+pub struct FieldFilter {
+    pub xpath: XPathId,
+    pub kind: FieldFilterKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum FieldFilterKind {
+    Text(Option<Query>),
+    Range {
+        lo: Option<EncodedBound>,
+        hi: Option<EncodedBound>,
+    },
+}
 
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
@@ -465,7 +481,7 @@ where
     #[timed(search)]
     pub fn resolve_filters(
         &self,
-        filters: &HashMap<String, (Option<Query>, XPathId)>,
+        filters: &HashMap<String, FieldFilter>,
     ) -> Option<HashSet<DocId>> {
         if filters.is_empty() {
             return None;
@@ -473,15 +489,27 @@ where
 
         let mut restrict: Option<HashSet<DocId>> = None;
 
-        for (query, xpath) in filters.values() {
-            let matched: HashSet<DocId> = match query {
-                Some(query) => self
-                    .execute(query, *xpath)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
-                None => HashSet::new(),
+        for filter in filters.values() {
+            let matched: HashSet<DocId> = match &filter.kind {
+                FieldFilterKind::Text(query) => match query {
+                    Some(query) => self
+                        .execute(query, filter.xpath)
+                        .items()
+                        .iter()
+                        .map(|p| p.doc_id)
+                        .collect(),
+                    None => HashSet::new(),
+                },
+                FieldFilterKind::Range { lo, hi } => {
+                    let lo = lo.as_ref().map(|b| RangeBound::new(&b.term, b.inclusive));
+                    let hi = hi.as_ref().map(|b| RangeBound::new(&b.term, b.inclusive));
+                    self.index
+                        .lookup_range(filter.xpath, lo, hi)
+                        .items()
+                        .iter()
+                        .map(|p| p.doc_id)
+                        .collect()
+                }
             };
 
             restrict = Some(match restrict {

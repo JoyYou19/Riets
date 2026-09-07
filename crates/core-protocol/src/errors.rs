@@ -180,6 +180,13 @@ pub enum FailReason {
     #[error("missing id field '{field}' (auto_increment is off)")]
     MissingId { field: String },
 
+    #[error("invalid value for field '{field}': expected {expected}, got '{got}'")]
+    InvalidField {
+        field: String,
+        expected: String,
+        got: String,
+    },
+
     #[error("policy has no id field declared")]
     NoIdField,
 
@@ -202,6 +209,7 @@ impl FailReason {
             FailReason::DuplicatePrimaryId => "duplicate_primary_id",
             FailReason::NotFound => "not_found",
             FailReason::Internal { .. } => "internal_error",
+            FailReason::InvalidField { .. } => "invalid_field",
         }
     }
 
@@ -209,6 +217,7 @@ impl FailReason {
         match self {
             FailReason::InvalidJson(_) => 400,
             FailReason::MissingId { .. } => 400,
+            FailReason::InvalidField { .. } => 400,
             FailReason::NoIdField => 400,
             FailReason::DuplicatePrimaryId => 409,
             FailReason::NotFound => 404,

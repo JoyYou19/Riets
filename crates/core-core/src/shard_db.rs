@@ -1,5 +1,8 @@
 use std::{
-    io, path::{Path, PathBuf}, sync::{Arc, atomic::Ordering::Relaxed}, time::SystemTime,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::SystemTime,
 };
 
 #[derive(Debug, Clone, PartialEq)]

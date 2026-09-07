@@ -12,7 +12,7 @@ use crate::{
     },
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchStats},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{DocId, FieldStats, RangeBound, TermKey, XPathId},
 };
 /*
 * MMaps a disk segment and implements SearchIndex
@@ -37,6 +37,37 @@ impl SearchStats for DiskSegment {
             .get(&xpath)
             .map(|s| s.doc_count)
             .unwrap_or(0)
+    }
+
+    #[timed(search)]
+    fn lookup_range(
+        &self,
+        xpath: crate::types::XPathId,
+        lo: Option<RangeBound<'_>>,
+        hi: Option<RangeBound<'_>>,
+    ) -> PostingList {
+        let lo_key = lo.map(|b| b.key).unwrap_or("");
+        let start = self.lower_bound_term(lo_key, xpath);
+
+        let mut postings = Vec::new();
+        for entry in &self.dictionary[start..] {
+            if entry.xpath != xpath {
+                break;
+            }
+            if let Some(lo) = lo {
+                if lo.below(&entry.term) {
+                    continue;
+                }
+            }
+            if let Some(hi) = hi {
+                if hi.past(&entry.term) {
+                    break;
+                }
+            }
+            self.read_postings_into(entry, &mut postings);
+        }
+
+        PostingList::from_items(postings)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {

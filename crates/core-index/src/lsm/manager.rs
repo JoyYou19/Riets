@@ -14,7 +14,7 @@ use crate::{
     posting::{DeleteSet, PostingList},
     search::{SearchIndex, SearchReader, SearchStats},
     segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, XPathId},
+    types::{DocId, RangeBound, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -52,6 +52,16 @@ impl SearchIndex for LsmIndex {
 impl SearchStats for LsmIndex {
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
         self.snapshot().doc_len(doc_id, xpath)
+    }
+
+    #[timed(search)]
+    fn lookup_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<RangeBound<'_>>,
+        hi: Option<RangeBound<'_>>,
+    ) -> PostingList {
+        self.snapshot().lookup_range(xpath, lo, hi)
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {

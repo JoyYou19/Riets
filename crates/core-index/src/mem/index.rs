@@ -7,7 +7,7 @@ use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
 use crate::posting::PostingList;
 use crate::search::{SearchIndex, SearchStats};
-use crate::types::{DocId, FieldStats, TermKey, XPathId};
+use crate::types::{DocId, FieldStats, RangeBound, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
@@ -35,6 +35,35 @@ impl SearchIndex for MemIndex {
 impl SearchStats for MemIndex {
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
         self.doc_lengths.get(&(doc_id, xpath)).copied()
+    }
+
+    #[timed(search)]
+    fn lookup_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<RangeBound<'_>>,
+        hi: Option<RangeBound<'_>>,
+    ) -> PostingList {
+        let mut items = Vec::new();
+
+        for (key, postings) in &self.terms {
+            if key.xpath != xpath {
+                continue;
+            }
+            if let Some(lo) = lo {
+                if lo.below(&key.term) {
+                    continue;
+                }
+            }
+            if let Some(hi) = hi {
+                if hi.past(&key.term) {
+                    continue;
+                }
+            }
+            items.extend_from_slice(postings.items());
+        }
+
+        PostingList::from_items(items)
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {
@@ -194,6 +223,13 @@ impl MemIndex {
                 part.weight.min,
                 part.weight.max,
             );
+        }
+
+        for part in &document.numbers {
+            self.terms
+                .entry(TermKey::new(part.term.clone(), part.xpath))
+                .or_default()
+                .insert_numeric(document.doc_id);
         }
     }
 

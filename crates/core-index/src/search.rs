@@ -1,6 +1,6 @@
 use crate::{
     posting::PostingList,
-    types::{DocId, XPathId},
+    types::{DocId, RangeBound, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -17,6 +17,13 @@ pub trait SearchStats {
     fn doc_count(&self, xpath: XPathId) -> u64;
     fn total_doc_len(&self, xpath: XPathId) -> u64;
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32>;
+
+    fn lookup_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<RangeBound<'_>>,
+        hi: Option<RangeBound<'_>>,
+    ) -> PostingList;
 
     fn avg_doc_len(&self, xpath: XPathId) -> f32 {
         let count = self.doc_count(xpath);
