@@ -36,6 +36,7 @@ impl SearchStats for DiskSegment {
             .unwrap_or(0)
     }
 
+    //insane dark magic lai aatri un efektiivi atrastu visus fieldus intervaalaa
     #[timed(search)]
     fn lookup_range(
         &self,
