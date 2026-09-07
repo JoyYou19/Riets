@@ -572,6 +572,7 @@ dependencies = [
  "indexmap",
  "moka",
  "parking_lot",
+ "rayon",
  "serde",
  "serde_json",
  "slog",

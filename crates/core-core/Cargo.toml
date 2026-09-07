@@ -26,6 +26,7 @@ parking_lot = "0.12.5"
 dashmap = "6.2.1"
 moka = "0.12.16"
 slog-scope = "4.4.1"
+rayon = "1.12.0"
 
 
 

@@ -42,7 +42,7 @@ pub fn union(left: &PostingList, right: &PostingList) -> PostingList {
     result.extend_from_slice(&a[i..]);
     result.extend_from_slice(&b[j..]);
 
-    PostingList::from_items(result)
+    PostingList::from_sorted(result)
 }
 
 #[timed(search)]
@@ -66,7 +66,7 @@ pub fn intersection(left: &PostingList, right: &PostingList) -> PostingList {
         }
     }
 
-    PostingList::from_items(result)
+    PostingList::from_sorted(result)
 }
 
 #[timed(search)]
@@ -97,7 +97,7 @@ pub fn difference(left: &PostingList, right: &PostingList) -> PostingList {
         }
     }
 
-    PostingList::from_items(result)
+    PostingList::from_sorted(result)
 }
 
 #[timed(search)]
@@ -108,7 +108,7 @@ pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> Posti
         items.extend_from_slice(list.items());
     }
 
-    PostingList::from_items(items)
+    PostingList::from_sorted(items)
 }
 
 #[test]
