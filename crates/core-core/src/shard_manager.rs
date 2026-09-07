@@ -12,13 +12,15 @@ use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
 use core_index::lsm::index_worker::Phase;
-use core_index::types::{ShardId, XPathId, shard_of};
+use core_index::numbers::{self, float_term, integer_term, parse_filter};
+use core_index::types::{ShardId, shard_of};
 use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
+use core_query::SearchHit;
+use core_query::executor::{FieldFilter, FieldFilterKind};
 use core_query::query_string_parser::parse_and_analyze;
-use core_query::{Query, SearchHit};
 use core_storage::document_store::StoredDocument;
-use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
+use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 use core_timing::timed;
 use crossbeam_channel::bounded;
@@ -944,6 +946,70 @@ impl ShardManager {
             .then_with(|| a.doc_id.cmp(&b.doc_id))
     }
 
+    fn resolve_filters(
+        &self,
+        command: &SearchCommand,
+        policy: &IndexPolicy,
+    ) -> Result<Option<Arc<HashMap<String, FieldFilter>>>, CorelamoError> {
+        match command.filters.as_ref() {
+            Some(fs) => {
+                let mut resolved = HashMap::with_capacity(fs.len());
+                for (field, term) in fs {
+                    if term.trim().is_empty() {
+                        continue;
+                    }
+
+                    let field_pol = policy
+                        .fields
+                        .iter()
+                        .find(|f| &f.name == field)
+                        .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
+
+                    let kind = match field_pol.index {
+                        //old behavior analyze the filter value like a query
+                        IndexKind::Text => {
+                            FieldFilterKind::Text(parse_and_analyze(term, &self.analyzer)?)
+                        }
+                        //numeric predicates  >40  >=40  <50  <=50  =20  30..40
+                        IndexKind::Integer => {
+                            let range = parse_filter(term, integer_term).map_err(|e| {
+                                CorelamoError::InvalidData(format!(
+                                    "invalid filter '{term}' on numeric field '{field}': {e}"
+                                ))
+                            })?;
+                            FieldFilterKind::Range {
+                                lo: range.lo,
+                                hi: range.hi,
+                            }
+                        }
+                        IndexKind::Float => {
+                            let range = numbers::parse_filter(term, float_term).map_err(|e| {
+                                CorelamoError::InvalidData(format!(
+                                    "invalid filter '{term}' on numeric field '{field}': {e}"
+                                ))
+                            })?;
+                            FieldFilterKind::Range {
+                                lo: range.lo,
+                                hi: range.hi,
+                            }
+                        }
+                        _ => return Err(CorelamoError::PathNotIndexed(field.clone())),
+                    };
+
+                    resolved.insert(
+                        field.clone(),
+                        FieldFilter {
+                            xpath: field_pol.xpath(&policy),
+                            kind,
+                        },
+                    );
+                }
+                Ok(Some(Arc::new(resolved)))
+            }
+            None => Ok(None),
+        }
+    }
+
     #[timed(search)]
     pub async fn search(
         &self,
@@ -959,29 +1025,9 @@ impl ShardManager {
         let query = Arc::new(parse_and_analyze(&command.query, &self.analyzer)?);
         let policy = self.policy.read().clone();
 
-        let filters: Option<Arc<HashMap<String, (Option<Query>, XPathId)>>> =
-            match command.filters.as_ref() {
-                Some(fs) => {
-                    let mut analyzed = HashMap::with_capacity(fs.len());
-                    for (field, term) in fs {
-                        if term.trim().is_empty() {
-                            continue;
-                        }
-                        let field_pol = policy
-                            .fields
-                            .iter()
-                            .find(|f| &f.name == field)
-                            .filter(|f| f.index == IndexKind::Text)
-                            .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
-                        let query = parse_and_analyze(term, &self.analyzer)?;
-                        analyzed.insert(field.clone(), (query, field_pol.xpath(&policy)));
-                    }
-                    Some(Arc::new(analyzed))
-                }
-                None => None,
-            };
-
         let xpaths = Arc::new(policy.searchable_xpaths().collect::<Vec<_>>());
+
+        let filters = Self::resolve_filters(self, command, &policy)?;
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
@@ -1225,6 +1271,57 @@ impl ShardManager {
             return Err(e);
         }
         Ok(manifests)
+    }
+
+    #[timed(retrieve_opps)]
+    pub async fn info_words(&self, words: Vec<String>) -> Result<Vec<WordStats>, CorelamoError> {
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let xpaths = Arc::new(self.policy.read().searchable_xpaths().collect::<Vec<_>>());
+
+        let mut set = JoinSet::new();
+        for handle in &self.shards {
+            let handle = handle.clone();
+            let words = words.clone();
+            let xpaths = Arc::clone(&xpaths);
+            set.spawn_blocking(move || handle.info_words_direct(&words, &xpaths));
+        }
+
+        let mut merged: Vec<WordStats> = words
+            .iter()
+            .map(|word| WordStats {
+                word: word.clone(),
+                occurrences: 0,
+                documents: 0,
+            })
+            .collect();
+
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(Ok(shard_stats)) => {
+                    for (i, s) in shard_stats.into_iter().enumerate() {
+                        if let Some(m) = merged.get_mut(i) {
+                            m.occurrences += s.occurrences;
+                            m.documents += s.documents;
+                        }
+                    }
+                }
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Err(je) if first_err.is_none() => {
+                    first_err = Some(CorelamoError::Internal(format!(
+                        "info-words shard task panicked: {je}"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+        Ok(merged)
     }
 
     #[timed(restore)]

@@ -8,6 +8,13 @@ use crate::{
 pub struct IndexedDocument {
     pub doc_id: DocId,
     pub parts: Vec<DocumentPart>,
+    pub numbers: Vec<NumericPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumericPart {
+    pub xpath: XPathId,
+    pub term: String,
 }
 
 impl IndexedDocument {
@@ -15,7 +22,16 @@ impl IndexedDocument {
         Self {
             doc_id,
             parts: Vec::new(),
+            numbers: Vec::new(),
         }
+    }
+
+    pub fn with_number(mut self, xpath: XPathId, term: impl Into<String>) -> Self {
+        self.numbers.push(NumericPart {
+            xpath,
+            term: term.into(),
+        });
+        self
     }
 
     pub fn with_part(

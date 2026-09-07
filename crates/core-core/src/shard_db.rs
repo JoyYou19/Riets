@@ -9,6 +9,7 @@ pub struct DatabaseStats {
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
     pub backup: BackupStats,
+    pub shard_count: usize,
     pub restoring: bool,
 }
 
@@ -638,15 +639,15 @@ impl ShardDb {
             );
         }
 
-        let t0 = std::time::Instant::now();
+        //let t0 = std::time::Instant::now();
         self.flush()?;
-        eprintln!("flush: {:?}", t0.elapsed());
+        //eprintln!("flush: {:?}", t0.elapsed());
 
-        let t1 = std::time::Instant::now();
+        //let t1 = std::time::Instant::now();
         if let Some(worker) = self.compaction_worker.take() {
             let _ = worker.stop_async();
         }
-        eprintln!("compaction stop: {:?}", t1.elapsed());
+        //eprintln!("compaction stop: {:?}", t1.elapsed());
 
         self.generation += 1;
 

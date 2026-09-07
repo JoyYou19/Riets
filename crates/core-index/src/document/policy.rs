@@ -4,8 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::{
+    numbers::{float_term, integer_term},
+    types::XPathId,
+};
 use core_timing::timed;
-use crate::types::XPathId;
 use serde::{Deserialize, Serialize};
 
 // Core policy, eventually will need to move to a configuration file
@@ -168,14 +171,16 @@ impl IndexPolicy {
     }
 
     pub fn searchable_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
-        self.indexed_fields().map(move |field| {
-            self.registry.get(&field.name).unwrap_or_else(|| {
-                panic!(
-                    "field '{}' has no registered xpath id IndexPolicy::load()/save()/resolve() should happen",
-                    field.name
-                )
+        self.indexed_fields()
+            .filter(|field| !field.index.is_numeric())
+            .map(move |field| {
+                self.registry.get(&field.name).unwrap_or_else(|| {
+                    panic!(
+                        "field '{}' has no registered xpath id IndexPolicy::load()/save()/resolve() should happen",
+                        field.name
+                    )
+                })
             })
-        })
     }
 
     pub fn resolve(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
@@ -223,14 +228,46 @@ impl IndexPolicy {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum IndexKind {
     None,
     Text,
-    Number,
+    Integer,
+    Float,
     Date,
     Id,
     IdAuto,
+}
+
+impl IndexKind {
+    pub fn is_numeric(self) -> bool {
+        matches!(self, IndexKind::Integer | IndexKind::Float)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            IndexKind::None => "none",
+            IndexKind::Text => "text",
+            IndexKind::Integer => "integer",
+            IndexKind::Float => "float",
+            IndexKind::Date => "date",
+            IndexKind::Id => "id",
+            IndexKind::IdAuto => "id",
+        }
+    }
+
+    pub fn validate_value(self, raw: &str) -> Result<(), String> {
+        let valid = match self {
+            IndexKind::Integer => integer_term(raw).is_some(),
+            IndexKind::Float => float_term(raw).is_some(),
+            _ => true,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(format!("expected {}, got '{}'", self.label(), raw.trim()))
+        }
+    }
 }
 
 pub enum MatchMode {
@@ -239,10 +276,6 @@ pub enum MatchMode {
     Both,
 }
 
-//
-//
-//
-//
 //
 //
 //

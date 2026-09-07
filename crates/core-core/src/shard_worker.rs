@@ -10,6 +10,7 @@ use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_storage::binary_store::{ CompletedSegmentCompaction, SegmentCompactionJob };
+use core_query::executor::FieldFilter;
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
 use crossbeam_channel::{ Receiver, Sender, bounded };
@@ -29,11 +30,7 @@ use core_index::types::{ ShardId, XPathId };
 use core_protocol::errors::CorelamoError;
 use core_query::{ Query, QueryExecutor, SearchHit };
 use core_storage::search_database::{
-    DeleteReport,
-    DocumentInput,
-    InsertReport,
-    ReplaceReport,
-    SearchDocumentHit,
+    DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
     visible_fields,
 };
 
@@ -183,10 +180,42 @@ impl ShardHandle {
     }
 
     #[timed(search)]
+    pub fn info_words_direct(
+        &self,
+        words: &[String],
+        xpaths: &[XPathId],
+    ) -> Result<Vec<WordStats>, CorelamoError> {
+        self.ensure_readable()?;
+        let snapshot = self.shared.snapshot.get();
+
+        let mut out = Vec::with_capacity(words.len());
+        for word in words {
+            let mut occurrences: u64 = 0;
+            let mut docs = std::collections::HashSet::new();
+
+            for token in self.analyzer.analyze(word) {
+                for &xpath in xpaths {
+                    for posting in snapshot.lookup(&token.text, xpath).items() {
+                        docs.insert(posting.doc_id);
+                        occurrences += posting.positions.len() as u64;
+                    }
+                }
+            }
+
+            out.push(WordStats {
+                word: word.clone(),
+                occurrences,
+                documents: docs.len() as u64,
+            });
+        }
+        Ok(out)
+    }
+
+    #[timed(search)]
     pub fn rank_top_k(
         &self,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, (Option<Query>, XPathId)>>,
+        filters: Option<&HashMap<String, FieldFilter>>,
         xpaths: &[XPathId],
         k: usize
     ) -> Result<Vec<SearchHit>, CorelamoError> {

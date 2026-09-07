@@ -280,3 +280,8 @@ pub struct TimingsRequest {
     pub categories: Option<Vec<String>>,
     pub file: Option<String>,
 }
+
+#[derive(Deserialize)]
+pub struct InfoWordsRequest {
+    pub words: Vec<String>,
+}
