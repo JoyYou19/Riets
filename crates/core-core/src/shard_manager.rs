@@ -966,11 +966,11 @@ impl ShardManager {
                         .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
 
                     let kind = match field_pol.index {
-                        // old behavior: analyze the filter value like a query
+                        //old behavior analyze the filter value like a query
                         IndexKind::Text => {
                             FieldFilterKind::Text(parse_and_analyze(term, &self.analyzer)?)
                         }
-                        // new: numeric predicates  >40  >=40  <50  <=50  =20  30..40
+                        //numeric predicates  >40  >=40  <50  <=50  =20  30..40
                         IndexKind::Integer => {
                             let range = parse_filter(term, integer_term).map_err(|e| {
                                 CorelamoError::InvalidData(format!(

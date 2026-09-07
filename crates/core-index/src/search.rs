@@ -18,6 +18,7 @@ pub trait SearchStats {
     fn total_doc_len(&self, xpath: XPathId) -> u64;
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32>;
 
+    //every tpye of index needs to be able to return a document list based on a numeric field range
     fn lookup_range(
         &self,
         xpath: XPathId,

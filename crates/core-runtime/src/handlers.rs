@@ -1346,6 +1346,7 @@ pub async fn stats_handler(
         format!("stats for '{db_name}'"),
         json!({
             "background_compaction_enabled": stats.background_compaction_enabled,
+            "shard_count": stats.shard_count,
             "metrics": {
                 "search_requests": metrics.search_requests,
                 "search_errors": metrics.search_errors,

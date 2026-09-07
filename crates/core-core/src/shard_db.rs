@@ -14,6 +14,7 @@ pub struct DatabaseStats {
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
     pub backup: BackupStats,
+    pub shard_count: usize,
     pub restoring: bool,
 }
 

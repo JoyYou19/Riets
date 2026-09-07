@@ -64,7 +64,7 @@ impl SearchStats for ImmutableSegment {
             }
             if let Some(lo) = lo {
                 if lo.below(&key.term) {
-                    continue; // only possible at the boundary itself
+                    continue;
                 }
             }
             if let Some(hi) = hi {

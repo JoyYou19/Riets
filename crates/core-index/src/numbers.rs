@@ -44,6 +44,7 @@ fn has_op_prefix(t: &str) -> bool {
     t.starts_with('=') || t.starts_with('>') || t.starts_with('<')
 }
 
+//vibe vibe vibe
 pub fn parse_filter(raw: &str, encode: fn(&str) -> Option<String>) -> Result<NumericRange, String> {
     let s = raw.trim();
     if s.is_empty() {

@@ -14,9 +14,6 @@ use crate::{
     search::{SearchIndex, SearchStats},
     types::{DocId, FieldStats, RangeBound, TermKey, XPathId},
 };
-/*
-* MMaps a disk segment and implements SearchIndex
-*/
 
 // Read only disk segment.
 // Segmetn file layout is roughly [header][posting bytes][dictionary bytes][footer]

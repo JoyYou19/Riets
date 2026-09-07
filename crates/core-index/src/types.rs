@@ -103,7 +103,7 @@ impl<'a> RangeBound<'a> {
         Self { key, inclusive }
     }
 
-    //True if `term` is below this bound (or equal to it while exclusive).
+    //salidzinasana pa str nevis u32/64...
     pub fn below(self, term: &str) -> bool {
         match term.cmp(self.key) {
             std::cmp::Ordering::Less => true,
@@ -112,7 +112,6 @@ impl<'a> RangeBound<'a> {
         }
     }
 
-    //True if `term` is past this bound (or equal to it while exclusive).
     pub fn past(self, term: &str) -> bool {
         match term.cmp(self.key) {
             std::cmp::Ordering::Greater => true,

@@ -240,7 +240,6 @@ pub enum IndexKind {
 }
 
 impl IndexKind {
-    /// True for kinds whose values are indexed as numeric terms.
     pub fn is_numeric(self) -> bool {
         matches!(self, IndexKind::Integer | IndexKind::Float)
     }
