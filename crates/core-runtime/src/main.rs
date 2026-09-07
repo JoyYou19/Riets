@@ -201,70 +201,23 @@ async fn main() -> io::Result<()> {
     //pec login
     //god forbid someone breaks this
     let protected_routes = Router::new()
-        .route(
-            "/api/databases/{db_name}/search",
-            post(handlers::search_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/insert",
-            post(handlers::insert_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/lookup",
-            post(handlers::lookup_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/retrieve",
-            post(handlers::retrieve_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/replace",
-            post(handlers::replace_document_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/partial-replace",
-            post(handlers::partial_replace_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/upsert",
-            post(handlers::upsert_document_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/delete",
-            delete(handlers::delete_document_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/get-logs",
-            get(handlers::get_logs_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/clear-logs",
-            delete(handlers::clear_logs_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/create-database",
-            post(handlers::create_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/clear-database",
-            delete(handlers::clear_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/delete-database",
-            delete(handlers::delete_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/rename-database",
-            post(handlers::rename_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/start-database",
-            post(handlers::start_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/stop-database",
-            post(handlers::stop_database_handler),
-        )
+        .route("/api/databases/{db_name}/search", post(handlers::search_handler))
+        .route("/api/databases/{db_name}/insert", post(handlers::insert_handler))
+        .route("/api/databases/{db_name}/lookup", post(handlers::lookup_handler))
+        .route("/api/databases/{db_name}/retrieve", post(handlers::retrieve_handler))
+        .route("/api/databases/{db_name}/replace", post(handlers::replace_document_handler))
+        .route("/api/databases/{db_name}/partial-replace", post(handlers::partial_replace_handler))
+        .route("/api/databases/{db_name}/upsert", post(handlers::upsert_document_handler))
+        .route("/api/databases/{db_name}/delete", delete(handlers::delete_document_handler))
+        .route("/api/databases/{db_name}/get-logs", get(handlers::get_logs_handler))
+        .route("/api/databases/{db_name}/clear-logs", delete(handlers::clear_logs_handler))
+        // .route("/api/databases/[db_name}/cleanup", post(handlers::cleanup_handler))
+        .route("/api/databases/{db_name}/create-database", post(handlers::create_database_handler))
+        .route("/api/databases/{db_name}/clear-database", delete(handlers::clear_database_handler))
+        .route("/api/databases/{db_name}/delete-database",delete(handlers::delete_database_handler))
+        .route("/api/databases/{db_name}/rename-database", post(handlers::rename_database_handler))
+        .route("/api/databases/{db_name}/start-database", post(handlers::start_database_handler))
+        .route("/api/databases/{db_name}/stop-database", post(handlers::stop_database_handler))
         .route("/api/list-databases", get(handlers::list_databases_handler))
         .route(
             "/api/databases/{db_name}/status",
@@ -296,50 +249,17 @@ async fn main() -> io::Result<()> {
             delete(handlers::delete_user_handler),
         )
         .route("/api/users/list-users", get(handlers::list_users_handler))
-        .route(
-            "/api/users/{username}/password",
-            post(handlers::update_user_password_handler),
-        )
-        .route(
-            "/api/users/{username}/roles",
-            post(handlers::update_user_roles_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/get-config",
-            get(handlers::get_config_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/set-config",
-            post(handlers::set_config_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/all-fields",
-            get(handlers::get_all_fields_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/restart-database",
-            post(handlers::restart_database_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/backup",
-            post(handlers::backup_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/delete-backup/{backup_id}",
-            delete(handlers::backup_delete_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/backup/incremental",
-            post(handlers::backup_incremental_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/list-backups",
-            get(handlers::list_backups_handler),
-        )
-        .route(
-            "/api/databases/{db_name}/restore-backup/{backup_id}",
-            post(handlers::backup_restore_handler),
-        )
+        .route("/api/users/{username}/password", post(handlers::update_user_password_handler))
+        .route("/api/users/{username}/roles", post(handlers::update_user_roles_handler))
+        .route("/api/databases/{db_name}/get-config", get(handlers::get_config_handler))
+        .route("/api/databases/{db_name}/set-config", post(handlers::set_config_handler))
+        .route("/api/databases/{db_name}/all-fields", get(handlers::get_all_fields_handler))
+        .route("/api/databases/{db_name}/restart-database",post(handlers::restart_database_handler))
+        .route("/api/databases/{db_name}/backup", post(handlers::backup_handler))
+        .route( "/api/databases/{db_name}/delete-backup/{backup_id}",delete(handlers::backup_delete_handler))
+        .route("/api/databases/{db_name}/backup/incremental",post(handlers::backup_incremental_handler))
+        .route("/api/databases/{db_name}/list-backups", get(handlers::list_backups_handler))
+        .route("/api/databases/{db_name}/restore-backup/{backup_id}",post(handlers::backup_restore_handler))
         .route("/api/timings", post(handlers::timings_handler))
         .route(
             "/api/databases/{db_name}/disk-usage",

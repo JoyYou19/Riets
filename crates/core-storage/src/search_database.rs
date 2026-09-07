@@ -1,16 +1,17 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    io,
-};
+use std::{ collections::{ BTreeMap, HashSet }, io };
 
-use crate::document_store::{DocumentStore, StoredDocument};
+use crate::document_store::{ DocumentStore, StoredDocument };
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{ IndexPolicy, IndexedDocument, policy::IndexKind },
     lsm::{
         LsmIndex,
         index_worker::{
-            IndexCommand, IndexWorker, IndexingStats, ReindexProgress, build_segments_parallel,
+            IndexCommand,
+            IndexWorker,
+            IndexingStats,
+            ReindexProgress,
+            build_segments_parallel,
         },
         snapshot::SharedIndexSnapshot,
     },
@@ -18,17 +19,17 @@ use core_index::{
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
-use bincode::{Decode, Encode};
+use bincode::{ Decode, Encode };
 use core_protocol::{
     command_reponse_definitions::LookupResponse,
-    command_response_helpers::{apply_merge_patch, traverse_json},
-    errors::{DocFailure, FailReason},
+    command_response_helpers::{ apply_merge_patch, traverse_json },
+    errors::{ DocFailure, FailReason },
     format::Format,
 };
-use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use core_query::{ Query, QueryExecutor, SearchHit, planner::QueryPlan };
 use core_timing::timed;
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{ Deserialize, Serialize };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,
@@ -103,8 +104,12 @@ pub struct DeleteReport {
 
 //Norcha check
 pub enum PendingOp {
-    Index { doc: IndexedDocument },
-    Tombstone { internal_id: DocId },
+    Index {
+        doc: IndexedDocument,
+    },
+    Tombstone {
+        internal_id: DocId,
+    },
 }
 
 //start stop database (already stopped/started)
@@ -144,7 +149,9 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn store(&self) -> &S {
         &self.store
     }
-
+    pub fn mut_store(&mut self) -> &mut S {
+        &mut self.store
+    }
     pub fn index_worker(&self) -> &IndexWorker {
         &self.index_worker
     }
@@ -167,7 +174,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         store: S,
         index: LsmIndex,
         analyzer: Analyzer,
-        policy: IndexPolicy,
+        policy: IndexPolicy
     ) -> io::Result<Self> {
         Self::with_shard_policy(store, index, analyzer, policy, ShardId(0))
     }
@@ -180,7 +187,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         index: LsmIndex,
         analyzer: Analyzer,
         policy: IndexPolicy,
-        shard_id: ShardId,
+        shard_id: ShardId
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, shard_id)?;
 
@@ -205,7 +212,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         analyzer: Analyzer,
         policy: IndexPolicy,
         shard_id: ShardId,
-        shared_snapshot: SharedIndexSnapshot,
+        shared_snapshot: SharedIndexSnapshot
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, shard_id)?;
 
@@ -225,15 +232,13 @@ impl<S: DocumentStore> SearchDatabase<S> {
     /// Allocates the next globally unique ID owned by this shard.
     fn allocate_internal_id(&mut self) -> io::Result<DocId> {
         if self.next_local_id > MAX_LOCAL_DOC_ID {
-            return Err(io::Error::other(format!(
-                "document ID space exhausted for shard {}",
-                self.shard_id
-            )));
+            return Err(
+                io::Error::other(format!("document ID space exhausted for shard {}", self.shard_id))
+            );
         }
 
         let local_id = self.next_local_id;
-        self.next_local_id = self
-            .next_local_id
+        self.next_local_id = self.next_local_id
             .checked_add(1)
             .ok_or_else(|| io::Error::other("local document ID overflow"))?;
 
@@ -245,7 +250,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
     pub fn for_each_document(
         &self,
-        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
+        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>
     ) -> io::Result<()> {
         self.store.for_each_document(f)
     }
@@ -272,20 +277,18 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn begin_import(
         &mut self,
         batch_size: usize,
-        window_size: usize,
+        window_size: usize
     ) -> io::Result<IndexPipeline<'_, S>> {
         if batch_size == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "batch_size must be greater than zero",
-            ));
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "batch_size must be greater than zero")
+            );
         }
 
         if window_size == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "window_size must be greater than zero",
-            ));
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "window_size must be greater than zero")
+            );
         }
 
         Ok(IndexPipeline {
@@ -306,7 +309,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         inputs: Vec<DocumentInput>,
         batch_size: usize,
-        window_size: usize,
+        window_size: usize
     ) -> io::Result<InsertReport> {
         let mut pipeline = self.begin_import(batch_size, window_size)?;
 
@@ -320,7 +323,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(inserting)]
     pub fn put_document_store_only_return_indexed(
         &mut self,
-        input: DocumentInput,
+        input: DocumentInput
     ) -> io::Result<IndexedDocument> {
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -350,8 +353,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         };
 
         if let Some(old_doc) = self.store.get(&external_id)? {
-            self.index_worker
-                .delete_document_wait(old_doc.internal_id)?;
+            self.index_worker.delete_document_wait(old_doc.internal_id)?;
         }
 
         let doc = StoredDocument {
@@ -373,28 +375,31 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn partial_replace_document(
         &mut self,
         external_id: &str,
-        patch: &serde_json::Value,
+        patch: &serde_json::Value
     ) -> io::Result<Option<StoredDocument>> {
         let Some(old_doc) = self.store.get(external_id)? else {
             return Ok(None);
         };
 
-        let mut doc_value: serde_json::Value =
-            serde_json::from_slice(&old_doc.source).map_err(|e| {
+        let mut doc_value: serde_json::Value = serde_json
+            ::from_slice(&old_doc.source)
+            .map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("stored document is not valid JSON: {e}"),
+                    format!("stored document is not valid JSON: {e}")
                 )
             })?;
 
         apply_merge_patch(&mut doc_value, patch);
 
-        let new_source = serde_json::to_vec(&doc_value).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to serialize patched document: {e}"),
-            )
-        })?;
+        let new_source = serde_json
+            ::to_vec(&doc_value)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to serialize patched document: {e}")
+                )
+            })?;
 
         let mut fields = BTreeMap::new();
         //gay af bet ok
@@ -409,8 +414,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             format: old_doc.format,
         };
 
-        self.index_worker
-            .delete_document_wait(old_doc.internal_id)?;
+        self.index_worker.delete_document_wait(old_doc.internal_id)?;
 
         self.store.put(new_doc.clone())?;
 
@@ -423,8 +427,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(modifying_documents)]
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
-            self.index_worker
-                .delete_document_wait(old_doc.internal_id)?;
+            self.index_worker.delete_document_wait(old_doc.internal_id)?;
         }
 
         self.store.delete(external_id)
@@ -433,14 +436,16 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(modifying_documents)]
     pub fn delete_internal_document(&mut self, doc_id: DocId) -> io::Result<()> {
         if !self.owns_doc_id(doc_id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "document {doc_id} belongs to shard {}, not shard {}",
-                    shard_of(doc_id),
-                    self.shard_id,
-                ),
-            ));
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "document {doc_id} belongs to shard {}, not shard {}",
+                        shard_of(doc_id),
+                        self.shard_id
+                    )
+                )
+            );
         }
 
         self.index_worker.delete_document_wait(doc_id)
@@ -461,7 +466,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_hits(
         &mut self,
         query: &Query,
-        xpath: u32,
+        xpath: u32
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let hits = self.search(query, xpath);
 
@@ -486,7 +491,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         query: &Query,
         xpath: u32,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
@@ -499,7 +504,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_hits_all_fields_top_k(
         &self,
         query: &Query,
-        k: usize,
+        k: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
@@ -514,7 +519,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn search_document_results_all_fields_top_k(
         &mut self,
         query: &Query,
-        k: usize,
+        k: usize
     ) -> io::Result<SearchDocumentResults> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
@@ -543,16 +548,17 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn lookup_documents(
         &self,
         ids: &[String],
-        return_fields: Option<&IndexMap<String, bool>>,
+        return_fields: Option<&IndexMap<String, bool>>
     ) -> io::Result<LookupResponse> {
         let mut found = Vec::new();
         let mut not_found = Vec::new();
         for id in ids {
             match self.get_document(id)? {
-                Some(doc) => found.push((
-                    doc.external_id,
-                    visible_fields(&doc.fields, &self.policy, return_fields),
-                )),
+                Some(doc) =>
+                    found.push((
+                        doc.external_id,
+                        visible_fields(&doc.fields, &self.policy, return_fields),
+                    )),
                 None => not_found.push(id.clone()),
             }
         }
@@ -565,18 +571,20 @@ impl<S: DocumentStore> SearchDatabase<S> {
         plan: &QueryPlan,
         return_fields: Option<&IndexMap<String, bool>>,
         offset: usize,
-        limit: usize,
+        limit: usize
     ) -> io::Result<Vec<SearchDocumentHit>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
-        let requested_hits = offset.checked_add(limit).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "offset and limit exceed the supported range",
-            )
-        })?;
+        let requested_hits = offset
+            .checked_add(limit)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "offset and limit exceed the supported range"
+                )
+            })?;
 
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
@@ -603,7 +611,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn resolve_document_hits(
         &self,
         hits: Vec<SearchHit>,
-        return_fields: Option<&IndexMap<String, bool>>,
+        return_fields: Option<&IndexMap<String, bool>>
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let mut results = Vec::new();
 
@@ -682,7 +690,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         batch_size: usize,
         window_size: usize,
-        progress: &ReindexProgress,
+        progress: &ReindexProgress
     ) -> io::Result<()> {
         // Shared borrows so the closure can publish while the store iterates.
         let store = &self.store;
@@ -693,20 +701,19 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let mut current: Vec<IndexedDocument> = Vec::with_capacity(batch_size);
         let mut pending: Vec<Vec<IndexedDocument>> = Vec::with_capacity(window_size);
 
-        store.for_each_document(&mut |doc| {
-            if progress.is_cancelled() {
-                return Err(io::Error::other("reindex cancelled"));
-            }
-            current.push(stored_document_to_indexed(doc, policy));
+        store.for_each_document(
+            &mut (|doc| {
+                if progress.is_cancelled() {
+                    return Err(io::Error::other("reindex cancelled"));
+                }
+                current.push(stored_document_to_indexed(doc, policy));
 
-            if current.len() >= batch_size {
-                pending.push(std::mem::replace(
-                    &mut current,
-                    Vec::with_capacity(batch_size),
-                ));
+                if current.len() >= batch_size {
+                    pending.push(std::mem::replace(&mut current, Vec::with_capacity(batch_size)));
 
-                if pending.len() >= window_size {
-                    publish_window(worker, analyzer, &mut pending, progress)?;
+                    if pending.len() >= window_size {
+                        publish_window(worker, analyzer, &mut pending, progress)?;
+                    }
                 }
             }
 
@@ -770,12 +777,15 @@ fn publish_window(
     worker: &IndexWorker,
     analyzer: &Analyzer,
     pending: &mut Vec<Vec<IndexedDocument>>,
-    progress: &ReindexProgress,
+    progress: &ReindexProgress
 ) -> io::Result<()> {
     if pending.is_empty() {
         return Ok(());
     }
-    let counts: Vec<u64> = pending.iter().map(|b| b.len() as u64).collect();
+    let counts: Vec<u64> = pending
+        .iter()
+        .map(|b| b.len() as u64)
+        .collect();
     let batches = std::mem::take(pending);
     let segments = build_segments_parallel(analyzer.clone(), batches);
 
@@ -792,7 +802,7 @@ fn publish_window(
 pub fn visible_fields(
     fields: &BTreeMap<String, String>,
     policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
+    resolved: Option<&IndexMap<String, bool>>
 ) -> BTreeMap<String, String> {
     fields
         .iter()
@@ -804,7 +814,7 @@ pub fn visible_fields(
 fn should_include(
     path: &str,
     policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
+    resolved: Option<&IndexMap<String, bool>>
 ) -> bool {
     if let Some(rf) = resolved {
         let mut candidate = path;
@@ -813,8 +823,12 @@ fn should_include(
                 return include;
             }
             match candidate.rfind('/') {
-                Some(idx) => candidate = &candidate[..idx],
-                None => break,
+                Some(idx) => {
+                    candidate = &candidate[..idx];
+                }
+                None => {
+                    break;
+                }
             }
         }
     }
@@ -825,8 +839,12 @@ fn should_include(
             return field.list;
         }
         match candidate.rfind('/') {
-            Some(idx) => candidate = &candidate[..idx],
-            None => break,
+            Some(idx) => {
+                candidate = &candidate[..idx];
+            }
+            None => {
+                break;
+            }
         }
     }
 
@@ -841,11 +859,9 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         let external_id = input.external_id;
 
         if self.external_id_exists(&external_id)? {
-            self.failures.push(DocFailure::with_id(
-                input_index,
-                external_id,
-                FailReason::DuplicatePrimaryId,
-            ));
+            self.failures.push(
+                DocFailure::with_id(input_index, external_id, FailReason::DuplicatePrimaryId)
+            );
             return Ok(());
         }
 
@@ -924,7 +940,10 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         let batches = std::mem::take(&mut self.pending_batches);
 
-        let counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+        let counts: Vec<u64> = batches
+            .iter()
+            .map(|batch| batch.len() as u64)
+            .collect();
 
         let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
 
@@ -963,7 +982,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 #[timed(database_lifecycle)]
 fn next_local_id_for_shard<S: DocumentStore>(
     store: &S,
-    shard_id: ShardId,
+    shard_id: ShardId
 ) -> io::Result<LocalDocId> {
     let max_global_id = store.max_internal_id();
 
@@ -974,18 +993,20 @@ fn next_local_id_for_shard<S: DocumentStore>(
     let stored_shard = shard_of(max_global_id);
 
     if stored_shard != shard_id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "document store belongs to shard {stored_shard}, \
-                 but was opened as shard {shard_id}",
-            ),
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "document store belongs to shard {stored_shard}, \
+                 but was opened as shard {shard_id}"
+                )
+            )
+        );
     }
 
     let max_local_id = local_of(max_global_id);
 
     max_local_id
         .checked_add(1)
-        .ok_or_else(|| io::Error::other(format!("document ID space is full for shard {shard_id}",)))
+        .ok_or_else(|| io::Error::other(format!("document ID space is full for shard {shard_id}")))
 }
