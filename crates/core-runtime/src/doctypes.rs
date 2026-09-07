@@ -172,6 +172,7 @@ fn parse_one(
 
     let mut fields = BTreeMap::new();
     traverse_json(&value, &mut "".to_string(), &mut fields);
+    validate_numeric_fields(&fields, policy).map_err(|reason| DocFailure::at(index, reason))?;
 
     let external_id =
         extract_external_id(&fields, policy).map_err(|reason| DocFailure::at(index, reason))?;
@@ -193,6 +194,7 @@ fn json_value_to_document_input(
 
     let mut fields = BTreeMap::new();
     traverse_json(&value, &mut "".to_string(), &mut fields);
+    validate_numeric_fields(&fields, policy)?;
 
     let external_id = extract_external_id(&fields, policy)?;
 
@@ -220,6 +222,33 @@ pub fn convert_from_storage(
         }
     }
     (output, skipped)
+}
+
+#[timed(json_parsing)]
+fn validate_numeric_fields(
+    fields: &BTreeMap<String, String>,
+    policy: &IndexPolicy,
+) -> Result<(), FailReason> {
+    for field in &policy.fields {
+        if !field.index.is_numeric() {
+            continue;
+        }
+        let Some(raw) = fields.get(&field.name) else {
+            continue;
+        };
+        if raw.trim().is_empty() {
+            continue;
+        }
+        field
+            .index
+            .validate_value(raw)
+            .map_err(|_| FailReason::InvalidField {
+                field: field.name.clone(),
+                expected: field.index.label().to_string(),
+                got: raw.clone(),
+            })?;
+    }
+    Ok(())
 }
 
 #[timed(json_parsing)]

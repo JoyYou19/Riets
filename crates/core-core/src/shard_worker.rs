@@ -9,6 +9,7 @@ use std::{fs, io};
 use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
 use core_protocol::command_reponse_definitions::LookupResponse;
+use core_query::executor::FieldFilter;
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -211,7 +212,7 @@ impl ShardHandle {
     pub fn rank_top_k(
         &self,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, (Option<Query>, XPathId)>>,
+        filters: Option<&HashMap<String, FieldFilter>>,
         xpaths: &[XPathId],
         k: usize,
     ) -> Result<Vec<SearchHit>, CorelamoError> {
@@ -718,7 +719,12 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     user,
                     resp,
                 } => {
-                    if shared.last_backup_id.read().unwrap_or_else(|e| e.into_inner()).is_none() {
+                    if shared
+                        .last_backup_id
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_none()
+                    {
                         let _ = resp.send(Err(CorelamoError::Internal(
                             "no previous backup found for incremental backup".into(),
                         )));

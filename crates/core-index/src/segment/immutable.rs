@@ -5,7 +5,7 @@ use core_timing::timed;
 use crate::{
     posting::PostingList,
     search::{SearchIndex, SearchStats},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{DocId, FieldStats, RangeBound, TermKey, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -43,6 +43,39 @@ impl SearchStats for ImmutableSegment {
             .get(&xpath)
             .map(|s| s.doc_count)
             .unwrap_or(0)
+    }
+
+    #[timed(search)]
+    fn lookup_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<RangeBound<'_>>,
+        hi: Option<RangeBound<'_>>,
+    ) -> PostingList {
+        let start = match lo {
+            Some(bound) => TermKey::new(bound.key, xpath),
+            None => TermKey::new("", xpath),
+        };
+
+        let mut items = Vec::new();
+        for (key, postings) in self.terms.range(start..) {
+            if key.xpath != xpath {
+                break;
+            }
+            if let Some(lo) = lo {
+                if lo.below(&key.term) {
+                    continue;
+                }
+            }
+            if let Some(hi) = hi {
+                if hi.past(&key.term) {
+                    break;
+                }
+            }
+            items.extend_from_slice(postings.items());
+        }
+
+        PostingList::from_items(items)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {

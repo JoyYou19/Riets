@@ -91,3 +91,32 @@ pub fn shard_of(doc: DocId) -> ShardId {
 pub fn local_of(doc: DocId) -> LocalDocId {
     doc & ((1u64 << LOCAL_BITS) - 1)
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RangeBound<'a> {
+    pub key: &'a str,
+    pub inclusive: bool,
+}
+
+impl<'a> RangeBound<'a> {
+    pub fn new(key: &'a str, inclusive: bool) -> Self {
+        Self { key, inclusive }
+    }
+
+    //salidzinasana pa str nevis u32/64...
+    pub fn below(self, term: &str) -> bool {
+        match term.cmp(self.key) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Equal => !self.inclusive,
+            std::cmp::Ordering::Greater => false,
+        }
+    }
+
+    pub fn past(self, term: &str) -> bool {
+        match term.cmp(self.key) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Equal => !self.inclusive,
+            std::cmp::Ordering::Less => false,
+        }
+    }
+}

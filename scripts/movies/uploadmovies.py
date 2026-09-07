@@ -32,7 +32,7 @@ max = 95
 
 [[fields]]
 name     = "year"
-index    = "Text"
+index    = "Integer"
 list   = true
 stemming = ""
 [fields.weight]
@@ -191,7 +191,8 @@ def main():
     # 4. upload chunks
     files = sorted(glob.glob(os.path.join(INPUT_DIR, "movies_*.json")))
     if not files:
-        print(f"[ERROR] No chunk files found in {INPUT_DIR}. Run parse_movies.py first.")
+        print(f"[ERROR] No chunk files found in {
+              INPUT_DIR}. Run parse_movies.py first.")
         return
 
     if MAX_CHUNKS > 0:
@@ -208,7 +209,8 @@ def main():
             print(f"[ERROR] Failed to upload {file}")
             print(out)
         else:
-            print(f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+            print(
+                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
 
     # 5. reindex
     # print("[INFO] Reindexing...")

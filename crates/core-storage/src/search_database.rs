@@ -14,6 +14,7 @@ use core_index::{
         },
         snapshot::SharedIndexSnapshot,
     },
+    numbers::{float_term, integer_term},
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
@@ -734,22 +735,36 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
     let mut indexed = IndexedDocument::new(doc.internal_id);
 
     for field in policy.indexed_fields() {
-        if field.index != IndexKind::Text
-            && field.index != IndexKind::Id
-            && field.index != IndexKind::IdAuto
-        {
-            continue;
+        match field.index {
+            IndexKind::Text | IndexKind::Id | IndexKind::IdAuto => {
+                let Some(text) = doc.fields.get(&field.name) else {
+                    continue;
+                };
+                indexed = indexed.with_part(field.xpath(policy), text, field.weight);
+            }
+            IndexKind::Integer => {
+                let Some(raw) = doc.fields.get(&field.name) else {
+                    continue;
+                };
+                if let Some(term) = integer_term(raw) {
+                    indexed = indexed.with_number(field.xpath(policy), term);
+                }
+            }
+            IndexKind::Float => {
+                let Some(raw) = doc.fields.get(&field.name) else {
+                    continue;
+                };
+                if let Some(term) = float_term(raw) {
+                    indexed = indexed.with_number(field.xpath(policy), term);
+                }
+            }
+            _ => {} // Date / None: not indexed yet
         }
-
-        let Some(text) = doc.fields.get(&field.name) else {
-            continue;
-        };
-
-        indexed = indexed.with_part(field.xpath(policy), text, field.weight);
     }
 
     indexed
 }
+
 #[timed(reindex)]
 fn publish_window(
     worker: &IndexWorker,

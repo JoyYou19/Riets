@@ -7,7 +7,7 @@ use crate::{
     mem::MemIndex,
     posting::{DeleteSet, PostingList, ops::union_many},
     search::{SearchIndex, SearchReader, SearchStats},
-    types::XPathId,
+    types::{RangeBound, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -45,6 +45,24 @@ impl SearchStats for IndexSnapshot {
         }
 
         total
+    }
+
+    #[timed(search)]
+    fn lookup_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<RangeBound<'_>>,
+        hi: Option<RangeBound<'_>>,
+    ) -> PostingList {
+        let mut lists = Vec::new();
+
+        lists.push(self.mem.lookup_range(xpath, lo, hi));
+
+        for segment in &self.segments {
+            lists.push(segment.lookup_range(xpath, lo, hi));
+        }
+
+        self.apply_deletes(union_many(lists.iter()))
     }
 
     fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {

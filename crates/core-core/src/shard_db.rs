@@ -1,5 +1,8 @@
 use std::{
-    io, path::{Path, PathBuf}, sync::Arc, time::SystemTime,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::SystemTime,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -11,6 +14,7 @@ pub struct DatabaseStats {
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
     pub backup: BackupStats,
+    pub shard_count: usize,
     pub restoring: bool,
 }
 
