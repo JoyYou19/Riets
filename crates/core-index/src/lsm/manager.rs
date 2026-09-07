@@ -39,6 +39,11 @@ impl SearchIndex for LsmIndex {
     }
 
     #[timed(search)]
+    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
+        self.snapshot().numeric_values(xpath)
+    }
+
+    #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_prefix(prefix, xpath)
     }

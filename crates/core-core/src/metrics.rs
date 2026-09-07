@@ -46,6 +46,7 @@ struct Counters {
     reindex_errors: AtomicU64,
     reindex_nanos: AtomicU64,
 }
+
 /// One slot per shard. Levels, not counters: the owning shard overwrites its
 /// own slot and no other thread ever writes it.
 #[derive(Debug, Default)]

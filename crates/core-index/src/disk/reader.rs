@@ -231,6 +231,26 @@ impl SearchIndex for DiskSegment {
     }
 
     #[timed(search)]
+    fn numeric_values(&self, xpath: crate::types::XPathId) -> Vec<(DocId, String)> {
+        let start = self.lower_bound_term("", xpath);
+        let mut out = Vec::new();
+        let mut buffer = Vec::new();
+
+        for entry in &self.dictionary[start..] {
+            if entry.xpath != xpath {
+                break;
+            }
+            buffer.clear();
+            self.read_postings_into(entry, &mut buffer);
+            for posting in &buffer {
+                out.push((posting.doc_id, entry.term.clone()));
+            }
+        }
+
+        out
+    }
+
+    #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: crate::types::XPathId) -> PostingList {
         let start = self.lower_bound_term(prefix, xpath);
         let mut postings = Vec::new();
