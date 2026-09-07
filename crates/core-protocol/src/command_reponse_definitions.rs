@@ -38,6 +38,23 @@ pub struct SearchCommand {
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,
+    pub sort: Option<IndexMap<String, SortOrderRequest>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrderRequest {
+    Asc,
+    //default descending i guess
+    #[default]
+    Desc,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SortFieldRequest {
+    pub field: String,
+    #[serde(default)]
+    pub order: SortOrderRequest,
 }
 
 pub struct SearchResponse {

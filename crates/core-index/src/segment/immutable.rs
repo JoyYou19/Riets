@@ -24,6 +24,20 @@ impl SearchIndex for ImmutableSegment {
         self.lookup_or_empty(term, xpath)
     }
 
+    #[timed(search)]
+    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
+        let mut out = Vec::new();
+        for (key, postings) in self.terms.range(TermKey::new("", xpath)..) {
+            if key.xpath != xpath {
+                break;
+            }
+            for posting in postings.items() {
+                out.push((posting.doc_id, key.term.clone()));
+            }
+        }
+        out
+    }
+
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         ImmutableSegment::lookup_prefix(self, prefix, xpath)
     }

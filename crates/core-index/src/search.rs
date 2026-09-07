@@ -10,6 +10,7 @@ pub trait SearchIndex {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList;
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList;
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList;
+    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)>;
 }
 
 // How are these documents going to be scored? Used for BM25, is needed for the math equation

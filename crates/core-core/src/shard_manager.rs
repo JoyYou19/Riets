@@ -13,12 +13,15 @@ use core_index::document::all_fields::AllFields;
 use core_index::document::policy::IndexKind;
 use core_index::lsm::index_worker::Phase;
 use core_index::numbers::{self, float_term, integer_term, parse_filter};
-use core_index::types::{ShardId, shard_of};
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
+use core_index::types::{ShardId, XPathId, shard_of};
+use core_protocol::command_reponse_definitions::{
+    LookupCommand, LookupResponse, SearchCommand, SortOrderRequest,
+};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::{FieldFilter, FieldFilterKind};
 use core_query::query_string_parser::parse_and_analyze;
+use core_query::sort::{SortOrder, SortableDoc, compare};
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -946,6 +949,45 @@ impl ShardManager {
             .then_with(|| a.doc_id.cmp(&b.doc_id))
     }
 
+    fn to_sort_order(order: SortOrderRequest) -> SortOrder {
+        match order {
+            SortOrderRequest::Asc => SortOrder::Asc,
+            SortOrderRequest::Desc => SortOrder::Desc,
+        }
+    }
+
+    fn resolve_sorts(
+        &self,
+        command: &SearchCommand,
+        policy: &IndexPolicy,
+    ) -> Result<Option<Arc<Vec<(XPathId, SortOrder)>>>, CorelamoError> {
+        let Some(requests) = command.sort.as_ref() else {
+            return Ok(None);
+        };
+        if requests.is_empty() {
+            return Ok(None);
+        }
+
+        let mut sorts = Vec::with_capacity(requests.len());
+        for (field, order) in requests {
+            let field_pol = policy
+                .fields
+                .iter()
+                .find(|f| &f.name == field)
+                .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
+
+            if !field_pol.index.is_numeric() {
+                return Err(CorelamoError::InvalidData(format!(
+                    "sorting by '{field}' is not supported yet (only numeric fields can be sorted in v1)"
+                )));
+            }
+
+            sorts.push((field_pol.xpath(policy), Self::to_sort_order(*order)));
+        }
+
+        Ok(Some(Arc::new(sorts)))
+    }
+
     fn resolve_filters(
         &self,
         command: &SearchCommand,
@@ -1028,6 +1070,7 @@ impl ShardManager {
         let xpaths = Arc::new(policy.searchable_xpaths().collect::<Vec<_>>());
 
         let filters = Self::resolve_filters(self, command, &policy)?;
+        let sorts = Self::resolve_sorts(self, command, &policy)?;
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
@@ -1035,16 +1078,24 @@ impl ShardManager {
             let query = Arc::clone(&query);
             let filters = filters.clone();
             let xpaths = Arc::clone(&xpaths);
+            let sorts = sorts.clone();
             set.spawn_blocking(move || {
-                handle.rank_top_k((*query).as_ref(), filters.as_deref(), &xpaths, fetch)
+                if let Some(sorts) = sorts.as_ref() {
+                    handle.rank_sorted((*query).as_ref(), filters.as_deref(), &xpaths, sorts, fetch)
+                } else {
+                    let hits =
+                        handle.rank_top_k((*query).as_ref(), filters.as_deref(), &xpaths, fetch)?;
+                    Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
+                }
             });
         }
 
-        let mut candidates: Vec<SearchHit> = Vec::new();
+        // every shard returns (hit, sort keys); keys are empty when not sorting
+        let mut items: Vec<(SearchHit, Vec<Option<String>>)> = Vec::new();
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Ok(hits)) => candidates.extend(hits),
+                Ok(Ok(hits)) => items.extend(hits),
                 Ok(Err(e)) if first_err.is_none() => {
                     first_err = Some(e);
                 }
@@ -1060,12 +1111,35 @@ impl ShardManager {
             return Err(e);
         }
 
-        if candidates.len() > fetch {
-            candidates.select_nth_unstable_by(fetch - 1, Self::hits_cmp);
-            candidates.truncate(fetch);
+        // final ordering: sort keys when sorting, otherwise relevance
+        if let Some(sorts) = sorts.as_ref() {
+            let orders: Vec<SortOrder> = sorts.iter().map(|&(_, order)| order).collect();
+            items.sort_unstable_by(|(hit_a, keys_a), (hit_b, keys_b)| {
+                let a_keys: Vec<Option<&str>> = keys_a.iter().map(|k| k.as_deref()).collect();
+                let b_keys: Vec<Option<&str>> = keys_b.iter().map(|k| k.as_deref()).collect();
+                let a = SortableDoc {
+                    doc_id: hit_a.doc_id,
+                    relevance: hit_a.score,
+                    keys: a_keys,
+                };
+                let b = SortableDoc {
+                    doc_id: hit_b.doc_id,
+                    relevance: hit_b.score,
+                    keys: b_keys,
+                };
+                compare(&a, &b, &orders)
+            });
+        } else {
+            items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
         }
-        candidates.sort_unstable_by(Self::hits_cmp);
 
+        if items.len() > fetch {
+            items.truncate(fetch);
+        }
+
+        let candidates: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
+
+        ///////
         if offset >= candidates.len() {
             return Ok(Vec::new());
         }

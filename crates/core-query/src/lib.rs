@@ -5,6 +5,7 @@ pub mod query_string_parser;
 mod scored_posting;
 mod scorer;
 mod search_hit;
+pub mod sort;
 
 pub use ast::Query;
 pub use executor::QueryExecutor;

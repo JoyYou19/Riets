@@ -8,8 +8,10 @@ use std::{fs, io};
 
 use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
+use core_index::search::SearchIndex;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_query::executor::FieldFilter;
+use core_query::sort::{DocValues, SortOrder, SortableDoc, compare};
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -230,6 +232,70 @@ impl ShardHandle {
             k,
             restrict.as_ref(),
         ))
+    }
+
+    //Like rank_top_k but orders by the given sort fields
+    #[timed(search)]
+    pub fn rank_sorted(
+        &self,
+        query: Option<&Query>,
+        filters: Option<&HashMap<String, FieldFilter>>,
+        xpaths: &[XPathId],
+        sorts: &[(XPathId, SortOrder)],
+        k: usize,
+    ) -> Result<Vec<(SearchHit, Vec<Option<String>>)>, CorelamoError> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        let snapshot = self.shared.snapshot.get();
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
+
+        let restrict = match filters {
+            Some(filtr) => executor.resolve_filters(filtr),
+            None => None,
+        };
+
+        // every match, not just the relevance's top
+        let all =
+            executor.search_all_xpaths_restricted(query, xpaths.iter().copied(), restrict.as_ref());
+        if all.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let columns: Vec<DocValues> = sorts
+            .iter()
+            .map(|(xpath, _)| DocValues::from_pairs(snapshot.numeric_values(*xpath)))
+            .collect();
+        let orders: Vec<SortOrder> = sorts.iter().map(|&(_, order)| order).collect();
+
+        let mut items: Vec<(SearchHit, Vec<Option<String>>)> = Vec::with_capacity(all.len());
+        for hit in all {
+            let keys = columns
+                .iter()
+                .map(|column| column.value_of(hit.doc_id).map(str::to_owned))
+                .collect();
+            items.push((hit, keys));
+        }
+
+        items.sort_unstable_by(|(hit_a, keys_a), (hit_b, keys_b)| {
+            let a_keys: Vec<Option<&str>> = keys_a.iter().map(|k| k.as_deref()).collect();
+            let b_keys: Vec<Option<&str>> = keys_b.iter().map(|k| k.as_deref()).collect();
+            let a = SortableDoc {
+                doc_id: hit_a.doc_id,
+                relevance: hit_a.score,
+                keys: a_keys,
+            };
+            let b = SortableDoc {
+                doc_id: hit_b.doc_id,
+                relevance: hit_b.score,
+                keys: b_keys,
+            };
+            compare(&a, &b, &orders)
+        });
+
+        items.truncate(k);
+        Ok(items)
     }
 
     #[timed(retrieve_opps)]
@@ -732,7 +798,8 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     }
                     shared.is_backing_up.store(true, Ordering::Release);
                     let segment_dir = shard.root().join("documents");
-                    let result = shard.backup_incremental(shard_backup_path, backup_id, user,segment_dir);
+                    let result =
+                        shard.backup_incremental(shard_backup_path, backup_id, user, segment_dir);
                     shared.is_backing_up.store(false, Ordering::Release);
                     match &result {
                         Ok(Some(manifest)) => {
