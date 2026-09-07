@@ -27,6 +27,10 @@ impl SearchIndex for MemIndex {
         self.lookup_prefix(prefix, xpath)
     }
 
+    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
+        MemIndex::numeric_values(self, xpath)
+    }
+
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.lookup_wildcard(pattern, xpath)
     }
@@ -97,6 +101,20 @@ impl MemIndex {
         let field_stats = self.field_stats;
 
         crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats)
+    }
+
+    #[timed(search)]
+    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
+        let mut out = Vec::new();
+        for (key, postings) in &self.terms {
+            if key.xpath != xpath {
+                continue;
+            }
+            for posting in postings.items() {
+                out.push((posting.doc_id, key.term.clone()));
+            }
+        }
+        out
     }
 
     pub fn add_token(

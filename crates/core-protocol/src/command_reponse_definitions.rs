@@ -38,17 +38,36 @@ pub struct SearchCommand {
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,
+    pub sort: Option<IndexMap<String, SortOrderRequest>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrderRequest {
+    Asc,
+    //default descending i guess
+    #[default]
+    Desc,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SortFieldRequest {
+    pub field: String,
+    #[serde(default)]
+    pub order: SortOrderRequest,
 }
 
 pub struct SearchResponse {
-    docs: Vec<(String, FieldNode)>,
+    docs: Vec<(String, f32, FieldNode)>,
 }
 
 impl SearchResponse {
-    pub fn from_hits(docs: Vec<(String, BTreeMap<String, String>)>) -> Result<Self, CorelamoError> {
+    pub fn from_hits(
+        docs: Vec<(String, f32, BTreeMap<String, String>)>,
+    ) -> Result<Self, CorelamoError> {
         let mut trees = Vec::with_capacity(docs.len());
-        for (id, fields) in docs {
-            trees.push((id, unflatten(fields)?));
+        for (id, score, fields) in docs {
+            trees.push((id, score, unflatten(fields)?));
         }
         Ok(Self { docs: trees })
     }
@@ -59,9 +78,10 @@ impl ResponseData for SearchResponse {
         Ok(Value::Array(
             self.docs
                 .iter()
-                .map(|(id, tree)| {
+                .map(|(id, score, tree)| {
                     json!({
                         "id": id,
+                        "score": score,
                         "data": tree_to_json(tree)
                     })
                 })

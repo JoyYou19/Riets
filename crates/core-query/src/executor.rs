@@ -630,6 +630,61 @@ where
         top_k_from_hits(by_doc.into_values(), k)
     }
 
+    //matching docs, restricted to `allowed`.
+    //used for sorting by some field - not relevance
+    #[timed(search)]
+    pub fn search_all_xpaths_restricted(
+        &self,
+        query: Option<&Query>,
+        xpaths: impl IntoIterator<Item = XPathId>,
+        restrict: Option<&HashSet<DocId>>,
+    ) -> Vec<SearchHit> {
+        if restrict.is_some_and(|s| s.is_empty()) {
+            return Vec::new();
+        }
+
+        let Some(query) = query else {
+            let Some(allowed) = restrict else {
+                return Vec::new();
+            };
+            return allowed
+                .iter()
+                .copied()
+                .map(|doc_id| SearchHit {
+                    doc_id,
+                    matched_terms: 0,
+                    weight_sum: 0,
+                    distance_factor: 0.0,
+                    score: 1.0,
+                })
+                .collect();
+        };
+
+        let mut by_doc = HashMap::<DocId, SearchHit>::new();
+
+        for xpath in xpaths {
+            for hit in self.search(query, xpath) {
+                if let Some(allowed) = restrict {
+                    if !allowed.contains(&hit.doc_id) {
+                        continue;
+                    }
+                }
+                by_doc
+                    .entry(hit.doc_id)
+                    .and_modify(|existing| {
+                        existing.matched_terms += hit.matched_terms;
+                        existing.weight_sum += hit.weight_sum;
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
+                        existing.score += hit.score;
+                    })
+                    .or_insert(hit);
+            }
+        }
+
+        by_doc.into_values().collect()
+    }
+
     // Search the entire database all xpaths
     #[timed(search)]
     pub fn search_all_xpaths(

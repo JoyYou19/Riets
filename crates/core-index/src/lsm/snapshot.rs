@@ -7,7 +7,7 @@ use crate::{
     mem::MemIndex,
     posting::{DeleteSet, PostingList, ops::union_many},
     search::{SearchIndex, SearchReader, SearchStats},
-    types::{RangeBound, XPathId},
+    types::{DocId, RangeBound, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -25,6 +25,15 @@ pub struct IndexSnapshot {
 impl SearchIndex for IndexSnapshot {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup(self, term, xpath)
+    }
+
+    #[timed(search)]
+    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
+        let mut out = self.mem.numeric_values(xpath);
+        for segment in &self.segments {
+            out.extend(segment.numeric_values(xpath));
+        }
+        out
     }
 
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
