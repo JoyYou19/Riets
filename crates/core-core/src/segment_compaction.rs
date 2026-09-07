@@ -25,7 +25,7 @@ impl SegmentCompactionWorker {
         let stop_thread = stop.clone();
         let handle = thread::spawn(move || {
             while !stop_thread.load(Ordering::Relaxed) {
-                eprintln!("[segcompact] tick, threshold={dead_ratio_threshold}");
+                // eprintln!("[segcompact] tick, threshold={dead_ratio_threshold}");
                 let (reply, rx) = std::sync::mpsc::channel();
                 sender
                     .send(ShardCmd::PlanSegmentCompaction {

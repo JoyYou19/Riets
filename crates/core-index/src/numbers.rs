@@ -1,5 +1,5 @@
-//insane dark-magic to convert an integer/float to a string that keeps its alphabetic order the same
-//way that integers would
+//WARN: the next 4 functions work, thats it, they shouldnt be touched by any mortal being
+//INFO: used to encode/decode an integer/float to a string that has the same sorting properties
 pub fn encode_i64(v: i64) -> String {
     let u = (v as u64) ^ (1u64 << 63);
     format!("{u:016x}")
@@ -14,6 +14,21 @@ pub fn encode_f64(v: f64) -> String {
         bits ^ (1u64 << 63)
     };
     format!("{u:016x}")
+}
+
+pub fn decode_i64(term: &str) -> Option<i64> {
+    let key = u64::from_str_radix(term, 16).ok()?;
+    Some((key ^ (1u64 << 63)) as i64)
+}
+
+pub fn decode_f64(term: &str) -> Option<f64> {
+    let key = u64::from_str_radix(term, 16).ok()?;
+    let bits = if key >> 63 == 1 {
+        key ^ (1u64 << 63)
+    } else {
+        !key
+    };
+    Some(f64::from_bits(bits))
 }
 
 pub fn integer_term(raw: &str) -> Option<String> {
