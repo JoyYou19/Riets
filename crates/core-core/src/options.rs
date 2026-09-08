@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{fs, io};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct DatabaseOptions {
     pub runtime: IndexRuntimeConfig,
     pub enable_background_compaction: bool,

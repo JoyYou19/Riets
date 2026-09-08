@@ -210,35 +210,28 @@ impl ShardManager {
 
     #[timed(database_lifecycle)]
     pub async fn start(&self) -> Result<(), CorelamoError> {
+        let policy = IndexPolicy::load(&self.root)?;
+        let options = DatabaseOptions::load_or_default(&self.root);
+        *self.policy.write() = policy.clone();
+        *self.options.write() = options.clone();
+
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-
-            set.spawn(async move { handle.start().await });
+            let (policy, options) = (policy.clone(), options.clone());
+            set.spawn(async move { handle.start(policy, options).await });
         }
-
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Err(e)) => {
-                    if first_err.is_none() {
-                        first_err = Some(e);
-                    }
-                }
-                Err(je) => {
-                    if first_err.is_none() {
-                        first_err = Some(CorelamoError::Internal(format!(
-                            "shard task panicked: {je}"
-                        )));
-                    }
-                }
-                Ok(Ok(())) => {}
-            }
+                Ok(Err(e)) => first_err.get_or_insert(e),
+                Err(je) => first_err.get_or_insert(CorelamoError::Internal(format!(
+                    "shard task panicked: {je}"
+                ))),
+                Ok(Ok(())) => continue,
+            };
         }
-        match first_err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        first_err.map_or(Ok(()), Err)
     }
 
     pub fn all_readable(&self) -> bool {
@@ -694,12 +687,15 @@ impl ShardManager {
         options: DatabaseOptions,
         user: String,
     ) -> Result<(), CorelamoError> {
+        options.save_to_file(&self.root)?;
+        *self.options.write() = options;
+
         let mut set = JoinSet::new();
         for h in &self.shards {
             let handle = h.clone();
-            let o = options.clone();
+            let opt = options.clone();
             let user = user.clone();
-            set.spawn(async move { handle.set_config(o, user).await });
+            set.spawn(async move { handle.set_config(opt, user).await });
         }
 
         let mut first_err = None;
@@ -724,8 +720,6 @@ impl ShardManager {
             return Err(e);
         }
 
-        options.save_to_file(&self.root)?;
-        *self.options.write() = options;
         Ok(())
     }
 

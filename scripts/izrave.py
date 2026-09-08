@@ -15,12 +15,12 @@ import urllib.parse
 
 # ---------------------------------------------------------------- CONFIG ---
 
-DB_NAME  = "fever"
-SERVER   = "http://localhost:6006"
+DB_NAME = "movies"
+SERVER = "http://localhost:6006"
 USERNAME = "admin"
 PASSWORD = "secret"
 
-BATCH_SIZE      = 1000
+BATCH_SIZE = 10
 COLLECT_QUERIES = [
     "century", "government", "film", "university", "war", "music",
     "species", "river", "population", "history", "school", "state",
@@ -29,7 +29,7 @@ COLLECT_QUERIES = [
     "english", "system", "area", "north", "south",
 ]
 HITS_PER_QUERY = 1000
-MAX_ROUNDS      = 200   # safety cap so a stuck loop doesn't run forever
+MAX_ROUNDS = 200   # safety cap so a stuck loop doesn't run forever
 
 # ---------------------------------------------------------------------------
 
@@ -38,7 +38,8 @@ class Server:
     def __init__(self, base):
         p = urllib.parse.urlsplit(base)
         self.https = p.scheme == "https"
-        self.host, self.port = p.hostname, p.port or (443 if self.https else 80)
+        self.host, self.port = p.hostname, p.port or (
+            443 if self.https else 80)
         self.conn, self.token = None, None
 
     def call(self, method, path, body=b""):
@@ -90,7 +91,8 @@ def get_document_count(srv):
     try:
         return json.loads(text)["data"]["indexed"]["documents"]
     except Exception:
-        sys.exit(f"[error] could not read document count from status: {text[:300]}")
+        sys.exit(f"[error] could not read document count from status: {
+                 text[:300]}")
 
 
 def collect_ids(srv):
@@ -118,7 +120,8 @@ def delete_ids(srv, ids):
     deleted, failed = 0, 0
     for i in range(0, len(ids), BATCH_SIZE):
         chunk = ids[i:i + BATCH_SIZE]
-        status, text = srv.call("DELETE", delete, json.dumps(chunk).encode("utf-8"))
+        status, text = srv.call(
+            "DELETE", delete, json.dumps(chunk).encode("utf-8"))
         if status >= 400:
             print(f"[warn] delete batch failed (HTTP {status}): {text[:300]}")
             failed += len(chunk)
@@ -165,7 +168,8 @@ def main():
               f"search sampling may be stuck finding the same leftover docs")
 
     final = get_document_count(srv)
-    print(f"[info] total rounds: {round_num}, total deleted: {total_deleted:,}")
+    print(f"[info] total rounds: {
+          round_num}, total deleted: {total_deleted:,}")
     print(f"[info] documents remaining: {final:,}")
     print("[info] done")
 
