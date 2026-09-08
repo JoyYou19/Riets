@@ -91,7 +91,11 @@ pub fn resolve_sorts(
         return Ok(None);
     }
 
-    let mut sorts = Vec::with_capacity(requests.len());
+    let field_count = requests.len();
+
+    let mut sorts = Vec::with_capacity(field_count);
+    let mut total_ratio: u32 = 0;
+
     for (field, spec) in requests {
         let field_pol = policy
             .fields
@@ -109,16 +113,36 @@ pub fn resolve_sorts(
             }
         };
 
-        if spec.ratio > 100 {
+        let ratio = if field_count == 1 && spec.ratio.is_none() {
+            100
+        } else {
+            match spec.ratio {
+                Some(ratio) => ratio,
+                None => {
+                    return Err(CorelamoError::InvalidData(format!(
+                        "'ratio' is required for sort field '{field}' when sorting by more than one field"
+                    )));
+                }
+            }
+        };
+
+        if ratio > 100 {
             return Err(CorelamoError::InvalidData(format!(
                 "sort ratio for '{field}' must be between 0 and 100"
             )));
         }
 
+        total_ratio += ratio as u32;
+        if total_ratio > 100 {
+            return Err(CorelamoError::InvalidData(
+                "sort ratios must add up to at most 100 (the rest is relevance)".to_string(),
+            ));
+        }
+
         sorts.push(SortField {
             xpath: field_pol.xpath(&policy),
             order: spec.order,
-            ratio: spec.ratio,
+            ratio,
             is_float,
         });
     }
@@ -217,7 +241,12 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
     //send back to shard_manager
     let reordered: Vec<(SearchHit, Vec<Option<String>>)> = order
         .into_iter()
-        .map(|index| items[index].clone())
+        .map(|index| {
+            let (mut hit, keys) = items[index].clone();
+            hit.score = blends[index]; //switching the relevance score with our calculated one for
+            //better output
+            (hit, keys)
+        })
         .collect();
     *items = reordered;
 }
