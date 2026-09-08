@@ -234,7 +234,7 @@ impl BackupManager {
                 let segment = parsed["last_segment_id"]
                     .as_u64()
                     .unwrap_or(last_segment_id as u64) as u32;
-                let offset = parsed["last_offset"].as_u64().unwrap_or(0);
+                let offset = parsed["last_segment_offset"].as_u64().unwrap_or(0);
                 let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
                 (segment, offset, id)
             } else {
@@ -292,12 +292,11 @@ impl BackupManager {
         shard_root: &Path,
         backup_path: &Path,
         backup_id: &str,
-       
+
         progress: &BackupProgress,
         document_count: usize,
         record_count: usize
     ) -> Result<BackupManifest, BackupError> {
-        //read wal offset before touching files so new things dont catch up with backup
         let store_dir = shard_root.join("documents");
         let ids = BinaryDocumentStore::list_segment_ids(&store_dir)?;
         let Some(&last_segment) = ids.last() else {
@@ -349,7 +348,6 @@ impl BackupManager {
                 parent_backup_id: None,
                 last_backup_segment: last_segment,
                 last_backup_offset: last_segment_offset,
-
             };
             write_manifest_atomic(&backup_path, &manifest)?;
             Ok(manifest)
@@ -361,6 +359,7 @@ impl BackupManager {
                 self.last_backup_id = Some(backup_id.to_string());
                 // in create_full_backup, where last_backup_offset is set
                 self.last_segment_offset = last_segment_offset;
+                self.last_segment_id = last_segment;
                 self.save_state()?;
                 if let Some(old_id) = old_id {
                     self.delete_incremental_chain(&old_id);
@@ -374,8 +373,6 @@ impl BackupManager {
             }
         }
     }
-
-    //new idea to incremental backup, copy only new bytes that differ from this state to the last full backup
 
     fn read_segment_diff(
         store_dir: &Path,
@@ -397,81 +394,82 @@ impl BackupManager {
         Ok(deltas)
     }
 
-   pub fn create_incremental_backup(
-    &mut self,
-    backup_path: &Path,
-    backup_id: &str,
-    segment_dir: &Path,
-    document_count: usize,
-    progress: &BackupProgress
-) -> Result<Option<BackupManifest>, BackupError> {
-    let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
+    pub fn create_incremental_backup(
+        &mut self,
+        backup_path: &Path,
+        backup_id: &str,
+        segment_dir: &Path,
+        document_count: usize,
+        progress: &BackupProgress
+    ) -> Result<Option<BackupManifest>, BackupError> {
+        let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
 
-    let diff = Self::read_segment_diff(
-        segment_dir,
-        self.last_segment_id,
-        self.last_segment_offset
-    )?;
-    if diff.is_empty() {
-        return Ok(None);
-    }
-
-    let Some(last_delta) = diff.last() else {
-        return Err(BackupError::IoError(io::Error::other("no segment diff to commit")));
-    };
-    let (new_segment_id, new_segment_offset) = (last_delta.id, last_delta.end);
-
-    let inner = || -> Result<BackupManifest, BackupError> {
-        let dst_dir = backup_path.join("documents");
-        fs::create_dir_all(&dst_dir)?;
-
-        let mut total: u64 = 0;
-        for d in &diff {
-            let seg_name = BinaryDocumentStore::segment_filename(d.id);
-            let mut src = File::open(segment_dir.join(&seg_name))?;
-            src.seek(SeekFrom::Start(d.start))?;
-            let mut src = src.take(d.end - d.start);
-
-            let dst = File::create(dst_dir.join(&seg_name))?;
-            let mut dst = BufWriter::new(dst);
-            let copied = io::copy(&mut src, &mut dst)?;
-            total += copied;
-            dst.flush()?;
-            dst.into_inner()
-                .map_err(|e| BackupError::IoError(e.into_error()))?
-                .sync_all()?;
+        let diff = Self::read_segment_diff(
+            segment_dir,
+            self.last_segment_id,
+            self.last_segment_offset
+        )?;
+        if diff.is_empty() {
+            return Ok(None);
         }
-        progress.grow_total(total);
 
-        let manifest = BackupManifest {
-            backup_id: backup_id.to_string(),
-            created_at: chrono::Utc::now().timestamp() as u64,
-            backup_type: BackupType::Incremental,
-            start_offset: self.last_segment_offset,
-            document_count,
-            record_count: 0,
-            parent_backup_id: Some(parent_id),
-            last_backup_segment: new_segment_id,
-            last_backup_offset: new_segment_offset,
+        let Some(last_delta) = diff.last() else {
+            return Err(BackupError::IoError(io::Error::other("no segment diff to commit")));
         };
-        write_manifest_atomic(backup_path, &manifest)?;
-        Ok(manifest)
-    };
+        let (new_segment_id, new_segment_offset) = (last_delta.id, last_delta.end);
 
-    match inner() {
-        Ok(manifest) => {
-            self.last_segment_id = new_segment_id;
-            self.last_segment_offset = new_segment_offset;
-            self.last_backup_id = Some(backup_id.to_string());
-            self.save_state()?;
-            Ok(Some(manifest))
-        }
-        Err(e) => {
-            let _ = fs::remove_dir_all(backup_path);
-            Err(e)
+        let inner = || -> Result<BackupManifest, BackupError> {
+            let dst_dir = backup_path.join("documents");
+            fs::create_dir_all(&dst_dir)?;
+
+            let mut total: u64 = 0;
+            for d in &diff {
+                let seg_name = BinaryDocumentStore::segment_filename(d.id);
+                let mut src = File::open(segment_dir.join(&seg_name))?;
+                src.seek(SeekFrom::Start(d.start))?;
+                let mut src = src.take(d.end - d.start);
+
+                let dst = File::create(dst_dir.join(&seg_name))?;
+                let mut dst = BufWriter::new(dst);
+                let copied = io::copy(&mut src, &mut dst)?;
+                total += copied;
+                dst.flush()?;
+                dst
+                    .into_inner()
+                    .map_err(|e| BackupError::IoError(e.into_error()))?
+                    .sync_all()?;
+            }
+            progress.grow_total(total);
+
+            let manifest = BackupManifest {
+                backup_id: backup_id.to_string(),
+                created_at: chrono::Utc::now().timestamp() as u64,
+                backup_type: BackupType::Incremental,
+                start_offset: self.last_segment_offset,
+                document_count,
+                record_count: 0,
+                parent_backup_id: Some(parent_id),
+                last_backup_segment: new_segment_id,
+                last_backup_offset: new_segment_offset,
+            };
+            write_manifest_atomic(backup_path, &manifest)?;
+            Ok(manifest)
+        };
+
+        match inner() {
+            Ok(manifest) => {
+                self.last_segment_id = new_segment_id;
+                self.last_segment_offset = new_segment_offset;
+                self.last_backup_id = Some(backup_id.to_string());
+                self.save_state()?;
+                Ok(Some(manifest))
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(backup_path);
+                Err(e)
+            }
         }
     }
-} 
     #[timed(backup)]
     fn delete_incremental_chain(&self, from_id: &str) {
         let mut current_id = from_id.to_string();
@@ -559,16 +557,28 @@ impl BackupManager {
                 let src_dir = backup_path.join("documents");
                 let dst_dir = target_dir.join("documents");
                 fs::create_dir_all(&dst_dir)?;
+                let parent_id = manifest.parent_backup_id
+                    .as_ref()
+                    .ok_or_else(||
+                        BackupError::IoError(io::Error::other("incremental backup missing parent"))
+                    )?;
+                let parent_manifest = self.load_manifest(parent_id)?;
 
                 if src_dir.exists() {
-                    for entry in fs::read_dir(&src_dir)? {
-                        let entry = entry?;
-                        let file_name = entry.file_name();
-                        let src_path = entry.path();
+                    for id in BinaryDocumentStore::list_segment_ids(&src_dir)? {
+                        let file_name = BinaryDocumentStore::segment_filename(id);
+                        let src_path = src_dir.join(&file_name);
                         let dst_path = dst_dir.join(&file_name);
 
+                        let start_offset = if id == parent_manifest.last_backup_segment {
+                            parent_manifest.last_backup_offset
+                        } else {
+                            0
+                        };
+
                         let mut src = File::open(&src_path)?;
-                        let mut dst = OpenOptions::new().create(true).append(true).open(&dst_path)?;
+                        let mut dst = OpenOptions::new().create(true).write(true).open(&dst_path)?;
+                        dst.seek(SeekFrom::Start(start_offset))?;
                         io::copy(&mut src, &mut dst)?;
                     }
                 }
@@ -623,7 +633,7 @@ impl BackupManager {
         for manifest in &chain {
             self.restore(&manifest.backup_id, target_dir)?;
         }
-        self.cleanup_after_restore(backup_id, wal)?;
+        self.cleanup_after_restore(backup_id)?;
         Ok(())
     }
     pub fn latest_backup_id(&self) -> Option<&str> {
@@ -633,7 +643,7 @@ impl BackupManager {
     pub fn cleanup_after_restore(
         &mut self,
         restored_backup_id: &str,
-        wal: &Wal
+     
     ) -> Result<(), BackupError> {
         let restored_manifest = self.load_manifest(restored_backup_id)?;
 
@@ -670,7 +680,8 @@ impl BackupManager {
         // Reset manager state to the restored point so the next incremental
         // starts from the correct offset.
         self.last_backup_id = Some(restored_backup_id.to_string());
-        self.last_segment_offset = wal.durable_offset();
+        self.last_segment_id = restored_manifest.last_backup_segment;
+        self.last_segment_offset = restored_manifest.last_backup_offset;
         self.save_state()?;
 
         Ok(())
