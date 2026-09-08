@@ -129,10 +129,7 @@ impl DbStats {
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.backup
     }
-    pub fn restore_progress(&self) -> &BackupProgress {
-        &self.restore
-    }
-
+    
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.reindex
     }

@@ -1091,9 +1091,6 @@ impl ShardManager {
     //viss ar backups
     #[timed(backup)]
     pub fn try_start_backup(&self) -> Result<(), CorelamoError> {
-        if self.db_stats.restore_progress().is_running() {
-            return Err(CorelamoError::Busy("restore in progress".into()));
-        }
         if !self.db_stats.begin_backup(self.shards.len()) {
             return Err(CorelamoError::Busy("backup already in progress".into()));
         }
@@ -1293,6 +1290,7 @@ impl ShardManager {
         self.db_stats.finish_restore(failures.is_empty());
 
         if failures.is_empty() {
+           self.start().await?;
             Ok(())
         } else {
             Err(CorelamoError::Internal(
