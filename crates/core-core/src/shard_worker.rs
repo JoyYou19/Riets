@@ -82,6 +82,8 @@ pub enum ShardCmd {
         resp: Sender<Result<(), CorelamoError>>,
     },
     Start {
+        policy: IndexPolicy,
+        options: DatabaseOptions,
         resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     Stop {
@@ -534,8 +536,17 @@ impl ShardHandle {
         .await?
     }
     #[timed(database_lifecycle)]
-    pub async fn start(&self) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::Start { resp }).await?
+    pub async fn start(
+        &self,
+        policy: IndexPolicy,
+        options: DatabaseOptions,
+    ) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::Start {
+            policy,
+            options,
+            resp,
+        })
+        .await?
     }
     #[timed(database_lifecycle)]
     pub async fn stop(&self) -> Result<(), CorelamoError> {
@@ -752,7 +763,12 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 ShardCmd::CommitReindex { done, resp } => {
                     let _ = resp.send(shard.commit_reindex(done));
                 }
-                ShardCmd::Start { resp } => {
+                ShardCmd::Start {
+                    policy,
+                    options,
+                    resp,
+                } => {
+                    shard.apply_config(policy, options);
                     let result = shard.start();
                     shared.is_running.store(result.is_ok(), Ordering::Release);
                     let _ = resp.send(result);

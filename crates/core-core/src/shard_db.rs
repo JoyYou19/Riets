@@ -406,6 +406,11 @@ impl ShardDb {
         Analyzer::new()
     }
 
+    pub fn apply_config(&mut self, policy: IndexPolicy, options: DatabaseOptions) {
+        self.policy = policy;
+        self.options = options;
+    }
+
     // ====== Read Operations ======
 
     #[timed(retrieve_opps)]
