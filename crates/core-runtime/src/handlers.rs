@@ -5,7 +5,7 @@ use axum::{
     response::{ IntoResponse, Response },
 };
 use core_auth::{ Permission, Principal };
-use core_backup::backup::{ BackupManifest, BackupType };
+use core_backup::backup::BackupType;
 use core_core::{ DatabaseOptions, shard_manager::ShardManager };
 use core_index::lsm::index_worker::ReindexStatus;
 use core_timing::timed;
