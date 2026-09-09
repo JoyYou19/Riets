@@ -369,6 +369,7 @@ async fn main() -> io::Result<()> {
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        .layer(RequestDecompressionLayer::new())
         .layer(DefaultBodyLimit::max(max_payload_size * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -376,8 +377,8 @@ async fn main() -> io::Result<()> {
             Duration::from_secs(max_request_timeout as u64),
         ))
         //to and from gzip n shit
-        .layer(CompressionLayer::new())
-        .layer(RequestDecompressionLayer::new())
+        // .layer(CompressionLayer::new())
+        
         ////////////////////////////
         .layer(from_fn_with_state(
             state.clone(),
