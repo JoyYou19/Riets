@@ -1135,7 +1135,7 @@ impl ShardDb {
         info!(self.log, "Restore to backup"; "backup id"=> backup_id, "user"=>user);
         self.stop()?;
         self.backup
-            .restore_chain(&backup_id, &root, &mut self.wal)
+            .restore_chain(&backup_id, &root)
             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         self.start()?;
 
@@ -1147,10 +1147,10 @@ impl ShardDb {
         &mut self,
         backup_id: &str,
         target_dir: &Path,
-        wal: &mut Wal,
+        
     ) -> Result<(), CorelamoError> {
         self.backup
-            .restore_chain(backup_id, target_dir, wal)
+            .restore_chain(backup_id, target_dir)
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 

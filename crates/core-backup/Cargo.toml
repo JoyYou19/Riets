@@ -13,7 +13,7 @@ core-storage = { path = "../core-storage" }
 core-timing = { path = "../core-timing" }
 core-logs ={path = "../core-logs"}
 chrono = "0.4.45"
-flate2 ="1.0"
+flate2 = { version = "1.1", features = ["zlib-rs"], default-features = false }
 tar = "0.4"
 slog ="2"
 slog-async="2"

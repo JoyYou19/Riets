@@ -1,7 +1,6 @@
 use crate::progress::BackupProgress;
 use core_logs::logger;
 use core_storage::binary_store::BinaryDocumentStore;
-use core_storage::wal::Wal;
 use core_timing::timed;
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -12,7 +11,7 @@ use std::fs::{ self, File, OpenOptions };
 use std::io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write };
 use std::path::{ Path, PathBuf };
 use std::time::SystemTime;
-const COPY_BUF_SIZE: usize = 256 * 1024;
+const COPY_BUF_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
@@ -60,6 +59,20 @@ struct SegmentDiff {
     id: u32,
     start: u64,
     end: u64,
+}
+struct ProgressWriter<'a, W> {
+    inner: W,
+    progress: &'a BackupProgress,
+}
+impl<'a, W: Write> Write for ProgressWriter<'a, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.progress.add(n as u64);
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 impl From<std::io::Error> for BackupError {
     fn from(error: std::io::Error) -> Self {
@@ -138,20 +151,30 @@ fn tar_dir(
     entry_name: &str,
     progress: Option<&BackupProgress>
 ) -> io::Result<()> {
-    let enc = GzEncoder::new(File::create(dst)?, Compression::default());
-    let mut builder = tar::Builder::new(enc);
+    // let enc = GzEncoder::new(File::create(dst)?, Compression::default());
+    // let mut builder = tar::Builder::new(enc);
+    // builder.append_dir_all(entry_name, src)?;
+    // builder.into_inner()?.finish()?;
+    // if let Some(p) = progress {
+    //     p.add(dir_size(src)?);
+    // }
+    // Ok(())
+    let file = File::create(dst)?;
+    let enc = GzEncoder::new(file, Compression::fast());
+    let buffered = BufWriter::with_capacity(COPY_BUF_SIZE, enc);
+    let mut builder = match progress {
+        Some(p) => tar::Builder::new(Box::new(ProgressWriter { inner: buffered, progress: p }) as Box<dyn Write>),
+        None => tar::Builder::new(Box::new(buffered) as Box<dyn Write>),
+    };
     builder.append_dir_all(entry_name, src)?;
-    builder.into_inner()?.finish()?;
-    if let Some(p) = progress {
-        p.add(dir_size(src)?);
-    }
+    builder.into_inner()?.flush()?;
     Ok(())
 }
 
 #[timed(writing_files)]
 pub fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::Result<()> {
     let reader = BufReader::new(File::open(src)?);
-    let mut encoder = GzEncoder::new(File::create(dst)?, Compression::default());
+    let mut encoder = GzEncoder::new(File::create(dst)?, Compression::fast());
     copy_with_progress(reader, &mut encoder, progress)?;
     encoder.finish()?;
     Ok(())
@@ -598,7 +621,7 @@ impl BackupManager {
         &mut self,
         backup_id: &str,
         target_dir: &Path,
-        wal: &mut Wal
+      
     ) -> Result<(), BackupError> {
         let mut chain = vec![self.load_manifest(backup_id)?];
 
