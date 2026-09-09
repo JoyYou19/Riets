@@ -10,8 +10,8 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("port", "6006"),
     ("format", "json"),
     ("auth", "true"),
-    ("max_payload_size", "512"),
-    ("max_request_timeout", "30"),
+    ("max_payload_size", "1024"),
+    ("max_request_timeout", "240"),
 ];
 
 pub const HELP: &str = "\
