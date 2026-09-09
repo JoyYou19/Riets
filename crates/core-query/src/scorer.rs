@@ -121,18 +121,19 @@ pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPost
 
         let r = &right.items()[i];
 
-        let Some((left_pos, right_pos, distance)) = closest_window(&l.positions, &r.positions)
-        else {
-            continue;
-        };
+        let mut positions = l.positions.clone();
+        let mut density = l.density;
 
-        let proximity = 1.0 + (1.0 / (1.0 + distance as f32));
+        if let Some(pair) = closest_window(&l.positions, &r.positions) {
+            positions = Arc::from([pair.left_pos, pair.right_pos]);
+            density *= 1.0 + (1.0 / (1.0 + pair.distance as f32));
+        }
 
         result.push(ScoredPosting {
             doc_id: l.doc_id,
-            positions: Arc::from([left_pos, right_pos]),
+            positions,
             score: l.score + ((r.weight as u64) * 1000),
-            density: l.density * proximity,
+            density,
             matched_terms: l.matched_terms + 1,
         });
     }
@@ -140,28 +141,116 @@ pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPost
     result
 }
 
-// WARN: Need to add a maximum window later down the road for large documents, might want to
-// specify in query the amount of positions to search for
+//helper to make code prettier
+#[derive(Debug, Clone, Copy)]
+struct ClosestPair {
+    left_pos: Position,
+    right_pos: Position,
+    distance: u32,
+}
+
+fn make_pair(few_is_left: bool, few_pos: Position, other_pos: Position) -> ClosestPair {
+    let distance = few_pos.abs_diff(other_pos);
+    if few_is_left {
+        ClosestPair {
+            left_pos: few_pos,
+            right_pos: other_pos,
+            distance,
+        }
+    } else {
+        ClosestPair {
+            left_pos: other_pos,
+            right_pos: few_pos,
+            distance,
+        }
+    }
+}
+
+//WARN: es esmu valters es uzrakstiju kko kas nav optimals plz help me:
+//INFO: es esmu normunds, es centos uzlbot sito pec valtera warninga
+const PROXIMITY_WINDOW: Position = 8;
 #[timed(search)]
-fn closest_window(left: &[Position], right: &[Position]) -> Option<(Position, Position, u32)> {
-    let mut best: Option<(Position, Position, u32)> = None;
+fn closest_window(left: &[Position], right: &[Position]) -> Option<ClosestPair> {
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
 
-    let mut i = 0;
-    let mut j = 0;
+    let probe_cost = left
+        .len()
+        .min(right.len())
+        .saturating_mul(right.len().max(left.len()).ilog2() as usize + 1);
+    let merge_cost = left.len() + right.len();
 
-    while i < left.len() && j < right.len() {
-        let a = left[i];
-        let b = right[j];
-        let distance = a.abs_diff(b);
+    if probe_cost < merge_cost {
+        closest_window_probe(left, right) //one term is much rarer in this doc
+    } else {
+        closest_window_merge(left, right) //both terms occur a similar number of times
+    }
+}
 
-        if best.map_or(true, |(_, _, best_distance)| distance < best_distance) {
-            best = Some((a, b, distance));
+fn closest_window_merge(left: &[Position], right: &[Position]) -> Option<ClosestPair> {
+    let mut best: Option<ClosestPair> = None;
+
+    let mut left_index = 0;
+    let mut right_index = 0;
+
+    while left_index < left.len() && right_index < right.len() {
+        let left_pos = left[left_index];
+        let right_pos = right[right_index];
+        let distance = left_pos.abs_diff(right_pos);
+
+        if distance <= PROXIMITY_WINDOW {
+            if best.is_none_or(|b| distance < b.distance) {
+                best = Some(ClosestPair {
+                    left_pos,
+                    right_pos,
+                    distance,
+                });
+
+                if distance <= 1 {
+                    break;
+                }
+            }
         }
 
-        if a < b {
-            i += 1;
+        if left_pos < right_pos {
+            left_index += 1;
         } else {
-            j += 1;
+            right_index += 1;
+        }
+    }
+
+    best
+}
+
+///the fancy binary search for occasions when one array has like 2 and the other has like 500
+//positions
+fn closest_window_probe(left: &[Position], right: &[Position]) -> Option<ClosestPair> {
+    let (few, many, few_is_left) = if left.len() <= right.len() {
+        (left, right, true)
+    } else {
+        (right, left, false)
+    };
+
+    let mut best: Option<ClosestPair> = None;
+
+    for &position in few {
+        let split = many.partition_point(|&other| other < position);
+
+        if split > 0 {
+            let neighbour = many[split - 1];
+            let distance = position - neighbour;
+            if distance <= PROXIMITY_WINDOW && best.is_none_or(|b| distance < b.distance) {
+                best = Some(make_pair(few_is_left, position, neighbour));
+            }
+        }
+
+        // Neighbour after us.
+        if let Some(&neighbour) = many.get(split) {
+            let distance = neighbour - position;
+            if distance <= PROXIMITY_WINDOW && best.is_none_or(|b| distance < b.distance) {
+                best = Some(make_pair(few_is_left, position, neighbour));
+            }
         }
     }
 

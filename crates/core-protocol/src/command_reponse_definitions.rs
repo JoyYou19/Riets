@@ -53,12 +53,7 @@ pub enum SortOrderRequest {
 pub struct SortSpec {
     #[serde(default)]
     pub order: SortOrderRequest,
-    #[serde(default = "default_ratio")]
-    pub ratio: u8,
-}
-
-fn default_ratio() -> u8 {
-    100
+    pub ratio: Option<u8>,
 }
 
 pub struct SearchResponse {
