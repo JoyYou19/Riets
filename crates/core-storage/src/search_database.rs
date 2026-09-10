@@ -6,7 +6,7 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{IndexPolicy, IndexedDocument, policy::FieldKind},
     lsm::{
         LsmIndex,
         index_worker::{
@@ -14,7 +14,7 @@ use core_index::{
         },
         snapshot::SharedIndexSnapshot,
     },
-    numbers::{float_term, integer_term},
+    numeric_columns::{parse_float, parse_integer},
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
@@ -736,30 +736,45 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
     let mut indexed = IndexedDocument::new(doc.internal_id);
 
     for field in policy.indexed_fields() {
-        match field.index {
-            IndexKind::Text | IndexKind::Id | IndexKind::IdAuto => {
+        match field.kind {
+            FieldKind::Text => {
                 let Some(text) = doc.fields.get(&field.name) else {
                     continue;
                 };
                 indexed = indexed.with_part(field.xpath(policy), text, field.weight);
             }
-            IndexKind::Integer => {
+            FieldKind::Id => {
+                // | FieldKind::IdAuto => { //ja id ir auto tas kkas lidzigs: kjbdyui2bd7913bu91oub
+                // nu nahuj vinu vajag
+                let Some(text) = doc.fields.get(&field.name) else {
+                    continue;
+                };
+                indexed = indexed.with_exact(field.xpath(policy), text, field.weight);
+            }
+
+            FieldKind::Integer => {
                 let Some(raw) = doc.fields.get(&field.name) else {
                     continue;
                 };
-                if let Some(term) = integer_term(raw) {
-                    indexed = indexed.with_number(field.xpath(policy), term);
+                if let Some(value) = parse_integer(raw) {
+                    indexed = indexed.with_column(field.xpath(policy), value);
+                    if field.searchable() {
+                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
+                    }
                 }
             }
-            IndexKind::Float => {
+            FieldKind::Float => {
                 let Some(raw) = doc.fields.get(&field.name) else {
                     continue;
                 };
-                if let Some(term) = float_term(raw) {
-                    indexed = indexed.with_number(field.xpath(policy), term);
+                if let Some(value) = parse_float(raw) {
+                    indexed = indexed.with_column(field.xpath(policy), value);
+                    if field.searchable() {
+                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
+                    }
                 }
             }
-            _ => {} // Date / None: not indexed yet
+            _ => {} // Date / None / IdAuto : not indexed yet
         }
     }
 

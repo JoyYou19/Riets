@@ -1004,6 +1004,7 @@ impl ShardDb {
         db.store()
             .plan_compaction(dead_ratio_threshold, DEFAULT_SEGMENT_SIZE)
     }
+
     pub fn install_segment_compaction_cmd(
         &mut self,
         completed: CompletedSegmentCompaction,
@@ -1011,6 +1012,7 @@ impl ShardDb {
         let db = self.db_mut().map_err(io::Error::other)?;
         db.mut_store().install_segment_compaction(completed)
     }
+
     #[timed(database_lifecycle)]
     pub fn clear(&mut self) -> Result<(), CorelamoError> {
         let was_running = self.db.is_some();
@@ -1029,12 +1031,6 @@ impl ShardDb {
         }
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents");
-
-        self.shared
-            .sort_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
 
         if index_root.exists() {
             let _ = std::fs::remove_dir_all(&index_root);

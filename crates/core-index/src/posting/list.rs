@@ -66,26 +66,6 @@ impl PostingList {
     }
 
     #[timed(indexing_documents)]
-    pub fn insert_numeric(&mut self, doc_id: DocId) {
-        if let Some(last) = self.items.last_mut() {
-            if last.doc_id == doc_id {
-                return;
-            }
-            if last.doc_id < doc_id {
-                self.items.push(Posting::with_weight(doc_id, Vec::new(), 0));
-                return;
-            }
-        }
-        match self.items.binary_search_by_key(&doc_id, |p| p.doc_id) {
-            Ok(_) => {}
-            Err(index) => {
-                self.items
-                    .insert(index, Posting::with_weight(doc_id, Vec::new(), 0));
-            }
-        }
-    }
-
-    #[timed(indexing_documents)]
     pub fn insert(&mut self, doc_id: DocId, position: Position, weight: u16) {
         if let Some(last) = self.items.last_mut() {
             if last.doc_id == doc_id {

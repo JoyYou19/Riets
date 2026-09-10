@@ -10,9 +10,10 @@ use crate::{
         codec::{read_var_u16, read_var_u32, read_var_u64},
         format::{FOOTER_LEN, MAGIC, SegmentFooter, TermEntry, VERSION},
     },
+    numeric_columns::{NumericBound, NumericColumns, NumericValue},
     posting::{Posting, PostingList},
-    search::{SearchIndex, SearchStats},
-    types::{DocId, FieldStats, RangeBound, TermKey, XPathId},
+    search::{SearchColumns, SearchIndex, SearchStats},
+    types::{DocId, FieldStats, TermKey, XPathId},
 };
 
 // Read only disk segment.
@@ -26,6 +27,7 @@ pub struct DiskSegment {
     //could cache this
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
+    columns: NumericColumns,
 }
 
 impl SearchStats for DiskSegment {
@@ -34,38 +36,6 @@ impl SearchStats for DiskSegment {
             .get(&xpath)
             .map(|s| s.doc_count)
             .unwrap_or(0)
-    }
-
-    //insane dark magic lai aatri un efektiivi atrastu visus fieldus intervaalaa
-    #[timed(search)]
-    fn lookup_range(
-        &self,
-        xpath: crate::types::XPathId,
-        lo: Option<RangeBound<'_>>,
-        hi: Option<RangeBound<'_>>,
-    ) -> PostingList {
-        let lo_key = lo.map(|b| b.key).unwrap_or("");
-        let start = self.lower_bound_term(lo_key, xpath);
-
-        let mut postings = Vec::new();
-        for entry in &self.dictionary[start..] {
-            if entry.xpath != xpath {
-                break;
-            }
-            if let Some(lo) = lo {
-                if lo.below(&entry.term) {
-                    continue;
-                }
-            }
-            if let Some(hi) = hi {
-                if hi.past(&entry.term) {
-                    break;
-                }
-            }
-            self.read_postings_into(entry, &mut postings);
-        }
-
-        PostingList::from_items(postings)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
@@ -77,6 +47,34 @@ impl SearchStats for DiskSegment {
 
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
         self.doc_lengths.get(&(doc_id, xpath)).copied()
+    }
+}
+
+impl SearchColumns for DiskSegment {
+    fn column_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+    ) -> PostingList {
+        let docs = self.columns.range(xpath, lo, hi);
+        PostingList::from_items(
+            docs.into_iter()
+                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
+                .collect(),
+        )
+    }
+
+    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
+        self.columns
+            .column(xpath)
+            .map(|column| {
+                column
+                    .entries()
+                    .map(|(value, doc_id)| (doc_id, value))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -100,17 +98,23 @@ impl DiskSegment {
         let field_stats = build_field_stats(&doc_lengths);
 
         let dictionary = read_dictionary(&mmap, &footer)?;
+        let columns = read_columns(&mmap, &footer)?;
 
         Ok(Self {
             mmap,
             dictionary,
             doc_lengths,
             field_stats,
+            columns,
         })
     }
 
     pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
+    }
+
+    pub fn columns(&self) -> &NumericColumns {
+        &self.columns
     }
 
     //bro yo zis so good function
@@ -181,6 +185,7 @@ impl DiskSegment {
             terms,
             self.doc_lengths.clone(),
             self.field_stats.clone(),
+            self.columns.clone(),
         )
     }
 }
@@ -228,26 +233,6 @@ impl SearchIndex for DiskSegment {
             Ok(index) => self.read_postings(&self.dictionary[index]),
             Err(_) => PostingList::default(),
         }
-    }
-
-    #[timed(search)]
-    fn numeric_values(&self, xpath: crate::types::XPathId) -> Vec<(DocId, String)> {
-        let start = self.lower_bound_term("", xpath);
-        let mut out = Vec::new();
-        let mut buffer = Vec::new();
-
-        for entry in &self.dictionary[start..] {
-            if entry.xpath != xpath {
-                break;
-            }
-            buffer.clear();
-            self.read_postings_into(entry, &mut buffer);
-            for posting in &buffer {
-                out.push((posting.doc_id, entry.term.clone()));
-            }
-        }
-
-        out
     }
 
     #[timed(search)]
@@ -323,6 +308,31 @@ fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
         ));
     }
 
+    //extra checks
+    let columns_start = footer.columns_offset as usize;
+    let columns_len = footer.columns_len as usize;
+
+    let Some(columns_end) = columns_start.checked_add(columns_len) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "columns offset overflow",
+        ));
+    };
+
+    if columns_start < crate::disk::format::HEADER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "columns start before segment body",
+        ));
+    }
+
+    if columns_end > bytes.len() - FOOTER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "columns outside segment bounds",
+        ));
+    }
+
     if footer.term_count == 0 && footer.dictionary_len != 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -367,7 +377,9 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
         doc_lengths_len: read_u64_at(bytes, start + 8),
         dictionary_offset: read_u64_at(bytes, start + 16),
         dictionary_len: read_u64_at(bytes, start + 24),
-        term_count: read_u32_at(bytes, start + 32),
+        columns_offset: read_u64_at(bytes, start + 32),
+        columns_len: read_u64_at(bytes, start + 40),
+        term_count: read_u32_at(bytes, start + 48),
     })
 }
 
@@ -459,6 +471,55 @@ fn read_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Vec<TermE
     Ok(entries)
 }
 
+fn read_columns(bytes: &[u8], footer: &SegmentFooter) -> io::Result<NumericColumns> {
+    let start = footer.columns_offset as usize;
+    let len = footer.columns_len as usize;
+
+    let Some(end) = start.checked_add(len) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "columns offset overflow",
+        ));
+    };
+
+    if end > bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "columns outside segment bounds",
+        ));
+    }
+
+    let mut cursor = Cursor::new(&bytes[start..end]);
+    let xpath_count = cursor.read_u32()? as usize;
+    let mut columns = NumericColumns::new();
+
+    for _ in 0..xpath_count {
+        let xpath = cursor.read_u32()?;
+        let entry_count = cursor.read_u32()? as usize;
+
+        for _ in 0..entry_count {
+            let kind = cursor.read_u8()?;
+            let raw = cursor.read_u64()?;
+            let doc_id = cursor.read_u64()?;
+
+            let value = match kind {
+                0 => NumericValue::Int(raw as i64),
+                1 => NumericValue::Float(f64::from_bits(raw)),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unknown numeric column kind",
+                    ));
+                }
+            };
+
+            columns.insert(xpath, value, doc_id);
+        }
+    }
+
+    Ok(columns)
+}
+
 fn read_posting_list(bytes: &[u8], doc_freq: u32) -> io::Result<PostingList> {
     let mut postings = Vec::new();
     read_posting_list_into(bytes, doc_freq, &mut postings)?;
@@ -488,6 +549,10 @@ impl<'a> Cursor<'a> {
     //     let value = u16::from_le_bytes(self.take(2)?.try_into().unwrap());
     //     Ok(value)
     // }
+
+    fn read_u8(&mut self) -> io::Result<u8> {
+        Ok(self.take(1)?[0])
+    }
 
     fn read_u32(&mut self) -> io::Result<u32> {
         let value = u32::from_le_bytes(self.take(4)?.try_into().unwrap());

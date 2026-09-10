@@ -43,6 +43,7 @@ pub struct SearchCommand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[serde(deny_unknown_fields)]
 pub enum SortOrderRequest {
     Asc,
     #[default]
@@ -50,6 +51,7 @@ pub enum SortOrderRequest {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SortSpec {
     #[serde(default)]
     pub order: SortOrderRequest,

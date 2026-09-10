@@ -8,10 +8,9 @@ use std::{fs, io};
 
 use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
-use core_index::search::SearchIndex;
+use core_index::search::SearchColumns;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_query::executor::FieldFilter;
-use core_query::sort::DocValues;
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
@@ -28,7 +27,7 @@ use crate::shared_state::SharedShardState;
 
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
-use core_index::types::{ShardId, XPathId};
+use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
 use core_query::{Query, QueryExecutor, SearchHit};
 use core_storage::search_database::{
@@ -247,6 +246,7 @@ impl ShardHandle {
     }
 
     #[timed(search)]
+    #[timed(search)]
     pub fn rank_sorted(
         &self,
         query: Option<&Query>,
@@ -254,12 +254,12 @@ impl ShardHandle {
         xpaths: &[XPathId],
         sort_xpaths: &[XPathId],
         window: usize,
-    ) -> Result<Vec<(SearchHit, Vec<Option<String>>)>, CorelamoError> {
+    ) -> Result<Vec<(SearchHit, Vec<Option<f64>>)>, CorelamoError> {
         if window == 0 {
             return Ok(Vec::new());
         }
 
-        let (generation, snapshot) = self.shared.snapshot.get_snapshot();
+        let snapshot = self.shared.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let restrict = match filters {
@@ -267,7 +267,7 @@ impl ShardHandle {
             None => None,
         };
 
-        //gets the top canditates based on relevance + filters
+        // gets the top candidates based on relevance + filters
         let candidates = executor.search_all_xpaths_top_k_restricted(
             query,
             xpaths.iter().copied(),
@@ -278,30 +278,23 @@ impl ShardHandle {
             return Ok(Vec::new());
         }
 
-        let mut cache = self
-            .shared
-            .sort_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        let mut columns: Vec<Arc<DocValues>> = Vec::with_capacity(sort_xpaths.len());
+        // Build doc -> numeric value maps straight from the columns
+        let mut columns: Vec<HashMap<DocId, f64>> = Vec::with_capacity(sort_xpaths.len());
         for &xpath in sort_xpaths {
-            let entry = cache
-                .entry(xpath)
-                .or_insert_with(|| (0, Arc::new(DocValues::default())));
-            if entry.0 != generation {
-                entry.0 = generation;
-                entry.1 = Arc::new(DocValues::from_hits(snapshot.numeric_values(xpath)));
-            }
-            columns.push(Arc::clone(&entry.1));
+            let map: HashMap<DocId, f64> = snapshot
+                .column_values(xpath)
+                .into_iter()
+                .map(|(doc_id, value)| (doc_id, value.as_f64()))
+                .collect();
+            columns.push(map);
         }
-        drop(cache);
+
         Ok(candidates
             .into_iter()
             .map(|hit| {
                 let keys = columns
                     .iter()
-                    .map(|column| column.value_of(hit.doc_id).map(str::to_owned))
+                    .map(|column| column.get(&hit.doc_id).copied())
                     .collect();
                 (hit, keys)
             })

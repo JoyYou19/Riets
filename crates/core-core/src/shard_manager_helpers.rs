@@ -1,7 +1,7 @@
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
-use core_index::document::policy::IndexKind;
-use core_index::numbers::{decode_f64, decode_i64, float_term, integer_term, parse_filter};
+use core_index::document::policy::FieldKind;
+use core_index::numeric_columns::{parse_float, parse_integer, parse_numeric_range};
 use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{SearchCommand, SortOrderRequest};
 use core_protocol::errors::CorelamoError;
@@ -15,7 +15,6 @@ pub struct SortField {
     pub xpath: XPathId,
     pub order: SortOrderRequest,
     pub ratio: u8,
-    pub is_float: bool,
 }
 
 pub fn resolve_filters(
@@ -37,12 +36,12 @@ pub fn resolve_filters(
                     .find(|f| &f.name == field)
                     .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
 
-                let kind = match field_pol.index {
+                let kind = match field_pol.kind {
                     //old behavior with text
-                    IndexKind::Text => FieldFilterKind::Text(parse_and_analyze(term, analyzer)?),
+                    FieldKind::Text => FieldFilterKind::Text(parse_and_analyze(term, analyzer)?),
                     //numeric >40  >=40  <50  <=50  =20  30..40
-                    IndexKind::Integer => {
-                        let range = parse_filter(term, integer_term).map_err(|e| {
+                    FieldKind::Integer => {
+                        let range = parse_numeric_range(term, parse_integer).map_err(|e| {
                             CorelamoError::InvalidData(format!(
                                 "invalid filter '{term}' on numeric field '{field}': {e}"
                             ))
@@ -52,8 +51,8 @@ pub fn resolve_filters(
                             hi: range.hi,
                         }
                     }
-                    IndexKind::Float => {
-                        let range = parse_filter(term, float_term).map_err(|e| {
+                    FieldKind::Float => {
+                        let range = parse_numeric_range(term, parse_float).map_err(|e| {
                             CorelamoError::InvalidData(format!(
                                 "invalid filter '{term}' on numeric field '{field}': {e}"
                             ))
@@ -103,15 +102,11 @@ pub fn resolve_sorts(
             .find(|f| &f.name == field)
             .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
 
-        let is_float = match field_pol.index {
-            IndexKind::Integer => false,
-            IndexKind::Float => true,
-            _ => {
-                return Err(CorelamoError::InvalidData(format!(
-                    "sorting by '{field}' is not supported yet (only numeric fields)"
-                )));
-            }
-        };
+        if !matches!(field_pol.kind, FieldKind::Integer | FieldKind::Float) {
+            return Err(CorelamoError::InvalidData(format!(
+                "sorting by '{field}' is not supported yet (only numeric fields)"
+            )));
+        }
 
         let ratio = if field_count == 1 && spec.ratio.is_none() {
             100
@@ -143,7 +138,6 @@ pub fn resolve_sorts(
             xpath: field_pol.xpath(&policy),
             order: spec.order,
             ratio,
-            is_float,
         });
     }
 
@@ -155,7 +149,7 @@ pub fn resolve_sorts(
 /// direction      = desc ? field_norm : 1 - field_norm  → "how good is this doc's value"
 /// blend          = (rel_weight * relevance_norm + Σ ratio_i * direction_i) / denom
 //                                  hit          sort fields like year, imdb...
-pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &[SortField]) {
+pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[SortField]) {
     if items.is_empty() {
         return;
     }
@@ -164,14 +158,8 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
     let mut mins = vec![f64::INFINITY; specs.len()];
     let mut maxs = vec![f64::NEG_INFINITY; specs.len()];
     for (_, keys) in items.iter() {
-        for (index, spec) in specs.iter().enumerate() {
-            let value = keys[index].as_deref().and_then(|t| {
-                if spec.is_float {
-                    decode_f64(t)
-                } else {
-                    decode_i64(t).map(|v| v as f64)
-                }
-            });
+        for (index, _spec) in specs.iter().enumerate() {
+            let value = keys[index];
             if let Some(v) = value {
                 mins[index] = mins[index].min(v);
                 maxs[index] = maxs[index].max(v);
@@ -199,13 +187,7 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
 
             let mut field_sum = 0.0f32;
             for (index, spec) in specs.iter().enumerate() {
-                let value = keys[index].as_deref().and_then(|t| {
-                    if spec.is_float {
-                        decode_f64(t)
-                    } else {
-                        decode_i64(t).map(|v| v as f64)
-                    }
-                });
+                let value = keys[index];
                 let component = match value {
                     None => 0.0, // missing contributes nothing
                     Some(v) => {
@@ -239,7 +221,7 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<String>>)>, specs: &
     });
 
     //send back to shard_manager
-    let reordered: Vec<(SearchHit, Vec<Option<String>>)> = order
+    let reordered: Vec<(SearchHit, Vec<Option<f64>>)> = order
         .into_iter()
         .map(|index| {
             let (mut hit, keys) = items[index].clone();
