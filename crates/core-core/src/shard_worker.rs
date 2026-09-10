@@ -133,7 +133,6 @@ pub enum ShardCmd {
 pub struct ShardHandle {
     id: ShardId,
     tx: Sender<ShardCmd>,
-    alive: Arc<AtomicBool>,
     progress: Arc<ReindexProgress>,
     analyzer: Analyzer,
     shared: Arc<SharedShardState>,
@@ -172,13 +171,6 @@ impl ShardHandle {
 
     pub fn progress(&self) -> &Arc<ReindexProgress> {
         &self.progress
-    }
-    pub fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Acquire)
-    }
-
-    pub fn queued(&self) -> usize {
-        self.tx.len()
     }
 
     pub fn is_running(&self) -> bool {
@@ -320,9 +312,6 @@ impl ShardHandle {
         }
 
         Ok(out)
-    }
-    pub fn document_count_direct(&self) -> usize {
-        self.shared.locations.len()
     }
 
     pub fn get_logs_direct(&self, date: Option<String>) -> Result<String, CorelamoError> {
@@ -708,7 +697,6 @@ pub fn spawn(
         ShardHandle {
             id,
             tx,
-            alive,
             progress,
             analyzer,
             shared,

@@ -197,17 +197,6 @@ impl SharedIndexSnapshot {
         self.generation.load(Ordering::Acquire)
     }
 
-    pub fn get_snapshot(&self) -> (u64, Arc<IndexSnapshot>) {
-        loop {
-            let before = self.generation.load(Ordering::Acquire);
-            let snapshot = self.inner.load_full();
-            let after = self.generation.load(Ordering::Acquire);
-            if before == after {
-                return (after, snapshot);
-            }
-        }
-    }
-
     pub fn get(&self) -> Arc<IndexSnapshot> {
         self.inner.load_full()
     }

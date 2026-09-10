@@ -50,10 +50,6 @@ pub struct ShardManager {
 impl ShardManager {
     const DEFAULT_QUEUE_DEPTH: usize = 256;
 
-    pub fn all_alive(&self) -> bool {
-        self.shards.iter().all(|h| h.is_alive())
-    }
-
     pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
         self.db_stats.record_search(failed, elapsed);
     }
@@ -124,17 +120,6 @@ impl ShardManager {
         self.all_fields.read().clone()
     }
 
-    //helper
-    pub fn update_all_fields_from_partial_replace(
-        &self,
-        items: &[(String, BTreeMap<String, String>)],
-    ) -> Result<(), CorelamoError> {
-        let mut all_fields_map = BTreeMap::new();
-        for (_, fields) in items {
-            all_fields_map.extend(fields.clone());
-        }
-        self.update_all_fields_from_fields(&all_fields_map)
-    }
     //peak name
     #[timed(shard_manager_doc_modifying)]
     fn update_all_fields_from_fields(
@@ -232,10 +217,6 @@ impl ShardManager {
             };
         }
         first_err.map_or(Ok(()), Err)
-    }
-
-    pub fn all_readable(&self) -> bool {
-        self.shards.iter().all(|h| h.is_running())
     }
 
     pub fn all_running(&self) -> bool {

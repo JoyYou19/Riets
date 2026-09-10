@@ -162,32 +162,6 @@ impl DiskSegment {
 
         let _ = read_posting_list_into(&self.mmap[start..end], entry.doc_freq, out);
     }
-
-    // Love this function, amazing, beautiful, great, lovely.
-    #[timed(disk_io)]
-    pub fn to_immutable_segment(&self) -> crate::segment::ImmutableSegment {
-        let mut terms = std::collections::BTreeMap::new();
-
-        for entry in &self.dictionary {
-            let postings = self.read_postings(entry);
-
-            if postings.is_empty() {
-                continue;
-            }
-
-            terms.insert(
-                crate::types::TermKey::new(entry.term.clone(), entry.xpath),
-                postings,
-            );
-        }
-
-        crate::segment::ImmutableSegment::new(
-            terms,
-            self.doc_lengths.clone(),
-            self.field_stats.clone(),
-            self.columns.clone(),
-        )
-    }
 }
 
 fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -> io::Result<()> {

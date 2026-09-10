@@ -1181,17 +1181,6 @@ impl ShardDb {
         Ok(())
     }
 
-    #[timed(restore)]
-    pub fn restore_from_backup(
-        &mut self,
-        backup_id: &str,
-        target_dir: &Path,
-    ) -> Result<(), CorelamoError> {
-        self.backup
-            .restore_chain(backup_id, target_dir)
-            .map_err(|e| CorelamoError::Internal(e.to_string()))
-    }
-
     fn publish_stats(&self) {
         let Ok(db) = self.db_ref() else {
             return;

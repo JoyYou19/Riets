@@ -101,20 +101,6 @@ impl MemIndex {
         crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats, self.columns)
     }
 
-    #[timed(search)]
-    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
-        let mut out = Vec::new();
-        for (key, postings) in &self.terms {
-            if key.xpath != xpath {
-                continue;
-            }
-            for posting in postings.items() {
-                out.push((posting.doc_id, key.term.clone()));
-            }
-        }
-        out
-    }
-
     pub fn add_token(
         &mut self,
         term: impl Into<String>,
@@ -161,19 +147,6 @@ impl MemIndex {
 
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {
         self.terms.get(&TermKey::new(term, xpath))
-    }
-
-    #[timed(search)]
-    pub fn lookup_all_xpaths(&self, term: &str) -> PostingList {
-        let mut items = Vec::new();
-
-        for (key, postings) in &self.terms {
-            if key.term == term {
-                items.extend_from_slice(postings.items());
-            }
-        }
-
-        PostingList::from_items(items)
     }
 
     pub fn term_count(&self) -> usize {
