@@ -178,6 +178,11 @@ impl SharedIndexSnapshot {
         }
     }
 
+    pub fn clear(&self) {
+        self.inner.store(Arc::new(IndexSnapshot::default()));
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
     pub fn empty() -> Self {
         Self::new(IndexSnapshot::default())
     }

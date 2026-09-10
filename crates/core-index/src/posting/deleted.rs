@@ -1,5 +1,4 @@
-use std::collections::BTreeSet;
-
+use ahash::HashSet;
 use core_timing::timed;
 
 use crate::{
@@ -11,7 +10,7 @@ use crate::{
 // this means it won't apear in any queries, and won't be saved to the disk
 #[derive(Debug, Default, Clone)]
 pub struct DeleteSet {
-    deleted: BTreeSet<DocId>,
+    deleted: HashSet<DocId>,
 }
 
 impl DeleteSet {

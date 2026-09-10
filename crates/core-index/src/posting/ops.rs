@@ -108,7 +108,7 @@ pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> Posti
         items.extend_from_slice(list.items());
     }
 
-    PostingList::from_sorted(items)
+    PostingList::from_items(items)
 }
 
 #[test]

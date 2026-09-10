@@ -613,12 +613,25 @@ where
         let mut by_doc = HashMap::<DocId, SearchHit>::new();
 
         for xpath in xpaths {
-            for hit in self.search_top_k_restricted(query, xpath, k, restrict) {
+            let scored = self.execute_scored(query, xpath);
+            for p in scored {
+                if let Some(allowed) = restrict {
+                    if !allowed.contains(&p.doc_id) {
+                        continue;
+                    }
+                }
+                let hit = SearchHit {
+                    doc_id: p.doc_id,
+                    matched_terms: p.matched_terms,
+                    weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                    distance_factor: p.density,
+                    score: p.score as f32 / 1000.0 * p.density,
+                };
                 by_doc
                     .entry(hit.doc_id)
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
-                        existing.weight_sum += hit.weight_sum;
+                        existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
                         existing.distance_factor =
                             existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;

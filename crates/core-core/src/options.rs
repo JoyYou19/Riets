@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::{fs, io};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+#[serde(deny_unknown_fields)]
 pub struct DatabaseOptions {
     pub runtime: IndexRuntimeConfig,
     pub enable_background_compaction: bool,
@@ -27,18 +28,18 @@ impl DatabaseOptions {
         fs::write(Self::config_path(root.as_ref()), toml_string)
     }
     pub fn load_from_file(root: impl AsRef<Path>) -> io::Result<Self> {
-        let toml_string = fs::read_to_string(Self::config_path(root.as_ref()))?;
-        toml::from_str(&toml_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-    pub fn load_or_default(root: impl AsRef<Path>) -> Self {
-        match Self::load_from_file(root.as_ref()) {
-            Ok(options) => options,
-            Err(e) => {
-                if e.kind() != std::io::ErrorKind::NotFound {}
-                //if not found its ok, use defaults either way we use defaults
-                Self::default()
-            }
-        }
+        let path = Self::config_path(root.as_ref());
+
+        let contents = fs::read_to_string(&path).map_err(|e| {
+            io::Error::new(e.kind(), format!("database config {}: {e}", path.display()))
+        })?;
+
+        toml::from_str(&contents).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("database config is invalid: {}", e.message()),
+            )
+        })
     }
 }
 impl Default for DatabaseOptions {
