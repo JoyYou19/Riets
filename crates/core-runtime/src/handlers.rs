@@ -1681,15 +1681,18 @@ pub async fn list_databases_handler(
             .map(|(name, m)| (name.clone(), Arc::clone(m)))
             .collect()
     };
+   
 
     let count = managers.len();
-
+   
     let entries = tokio::task::spawn_blocking(move || {
         managers
             .into_iter()
             .map(|(name, manager)| {
+                let db_root = state.databases_dir.join(&name);
                 let running = manager.all_running();
-                json!({ "name": name, "running": running })
+                let usage = compute_disk_usage(&db_root, name.as_str()).unwrap();
+                json!({ "name": name, "running": running, "documents": manager.stats().document_count,"shard count": manager.stats().shard_count,"database_size": usage["total"].as_str().unwrap() })
             })
             .collect::<Vec<_>>()
     })
