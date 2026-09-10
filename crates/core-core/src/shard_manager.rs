@@ -998,7 +998,7 @@ impl ShardManager {
             });
         }
 
-        let mut items: Vec<(SearchHit, Vec<Option<String>>)> = Vec::new();
+        let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
@@ -1020,7 +1020,7 @@ impl ShardManager {
 
         //sort keys when sort given, otherwise just relevance/docid
         if let Some(specs) = sorts.as_ref() {
-            //the cool crazy sort
+            //the cool crazy meged sort
             order_blended(&mut items, specs);
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));

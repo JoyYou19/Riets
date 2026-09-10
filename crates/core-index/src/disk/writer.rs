@@ -254,10 +254,11 @@ pub fn write_merged_segment(
     path: impl AsRef<Path>,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+    columns: &NumericColumns,
 ) -> io::Result<()> {
     let file = File::create(path)?;
     let mut out = BufWriter::new(file);
-    write_merged_segment_to(&mut out, terms, doc_lengths)?;
+    write_merged_segment_to(&mut out, terms, doc_lengths, columns)?;
     out.flush()
 }
 
@@ -266,6 +267,7 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     out: &mut W,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+    columns: &NumericColumns,
 ) -> io::Result<()> {
     write_header(out)?;
 
@@ -298,10 +300,7 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     let dictionary_end = out.stream_position()?;
 
     let columns_offset = out.stream_position()?;
-
-    //FIX:
-    // TODO accept and merge columns from source segments.
-    write_columns(out, &NumericColumns::new())?;
+    write_columns(out, columns)?;
     let columns_end = out.stream_position()?;
 
     let footer = SegmentFooter {

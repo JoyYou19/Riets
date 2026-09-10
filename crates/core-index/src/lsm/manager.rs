@@ -11,10 +11,11 @@ use crate::{
         manifest,
     },
     mem::MemIndex,
+    numeric_columns::{NumericBound, NumericValue},
     posting::{DeleteSet, PostingList},
-    search::{SearchIndex, SearchReader, SearchStats},
+    search::{SearchColumns, SearchIndex, SearchReader, SearchStats},
     segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, RangeBound, XPathId},
+    types::{DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -39,11 +40,6 @@ impl SearchIndex for LsmIndex {
     }
 
     #[timed(search)]
-    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
-        self.snapshot().numeric_values(xpath)
-    }
-
-    #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_prefix(prefix, xpath)
     }
@@ -54,19 +50,26 @@ impl SearchIndex for LsmIndex {
     }
 }
 
-impl SearchStats for LsmIndex {
-    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
-        self.snapshot().doc_len(doc_id, xpath)
+impl SearchColumns for LsmIndex {
+    #[timed(search)]
+    fn column_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+    ) -> PostingList {
+        self.snapshot().column_range(xpath, lo, hi)
     }
 
     #[timed(search)]
-    fn lookup_range(
-        &self,
-        xpath: XPathId,
-        lo: Option<RangeBound<'_>>,
-        hi: Option<RangeBound<'_>>,
-    ) -> PostingList {
-        self.snapshot().lookup_range(xpath, lo, hi)
+    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
+        self.snapshot().column_values(xpath)
+    }
+}
+
+impl SearchStats for LsmIndex {
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        self.snapshot().doc_len(doc_id, xpath)
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {

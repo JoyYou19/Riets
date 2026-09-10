@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use core_timing::timed;
 
 use crate::{
-    numeric_columns::NumericColumns,
-    posting::PostingList,
-    search::{SearchIndex, SearchStats},
-    types::{DocId, FieldStats, RangeBound, TermKey, XPathId},
+    numeric_columns::{NumericBound, NumericColumns, NumericValue},
+    posting::{Posting, PostingList},
+    search::{SearchColumns, SearchIndex, SearchStats},
+    types::{DocId, FieldStats, TermKey, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -26,26 +26,40 @@ impl SearchIndex for ImmutableSegment {
         self.lookup_or_empty(term, xpath)
     }
 
-    #[timed(search)]
-    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
-        let mut out = Vec::new();
-        for (key, postings) in self.terms.range(TermKey::new("", xpath)..) {
-            if key.xpath != xpath {
-                break;
-            }
-            for posting in postings.items() {
-                out.push((posting.doc_id, key.term.clone()));
-            }
-        }
-        out
-    }
-
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         ImmutableSegment::lookup_prefix(self, prefix, xpath)
     }
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         ImmutableSegment::lookup_wildcard(self, pattern, xpath)
+    }
+}
+
+impl SearchColumns for ImmutableSegment {
+    fn column_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+    ) -> PostingList {
+        let docs = self.columns.range(xpath, lo, hi);
+        PostingList::from_items(
+            docs.into_iter()
+                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
+                .collect(),
+        )
+    }
+
+    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
+        self.columns
+            .column(xpath)
+            .map(|column| {
+                column
+                    .entries()
+                    .map(|(value, doc_id)| (doc_id, value))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -59,39 +73,6 @@ impl SearchStats for ImmutableSegment {
             .get(&xpath)
             .map(|s| s.doc_count)
             .unwrap_or(0)
-    }
-
-    #[timed(search)]
-    fn lookup_range(
-        &self,
-        xpath: XPathId,
-        lo: Option<RangeBound<'_>>,
-        hi: Option<RangeBound<'_>>,
-    ) -> PostingList {
-        let start = match lo {
-            Some(bound) => TermKey::new(bound.key, xpath),
-            None => TermKey::new("", xpath),
-        };
-
-        let mut items = Vec::new();
-        for (key, postings) in self.terms.range(start..) {
-            if key.xpath != xpath {
-                break;
-            }
-            if let Some(lo) = lo {
-                if lo.below(&key.term) {
-                    continue;
-                }
-            }
-            if let Some(hi) = hi {
-                if hi.past(&key.term) {
-                    break;
-                }
-            }
-            items.extend_from_slice(postings.items());
-        }
-
-        PostingList::from_items(items)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {

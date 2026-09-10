@@ -6,13 +6,13 @@ use std::{
 
 use core_index::{
     analyzer::analyzer::Analyzer,
-    numbers::EncodedBound,
+    numeric_columns::NumericBound,
     posting::{
         PostingList,
         ops::{intersection, union},
     },
-    search::{SearchIndex, SearchStats},
-    types::{DocId, RangeBound, XPathId},
+    search::{SearchColumns, SearchIndex, SearchStats},
+    types::{DocId, XPathId},
 };
 use core_timing::timed;
 
@@ -28,8 +28,8 @@ pub struct FieldFilter {
 pub enum FieldFilterKind {
     Text(Option<Query>),
     Range {
-        lo: Option<EncodedBound>,
-        hi: Option<EncodedBound>,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
     },
 }
 
@@ -48,7 +48,7 @@ where
 
 impl<'a, I> QueryExecutor<'a, I>
 where
-    I: SearchIndex + SearchStats,
+    I: SearchIndex + SearchStats + SearchColumns,
 {
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self { index, analyzer }
@@ -500,16 +500,13 @@ where
                         .collect(),
                     None => HashSet::new(),
                 },
-                FieldFilterKind::Range { lo, hi } => {
-                    let lo = lo.as_ref().map(|b| RangeBound::new(&b.term, b.inclusive));
-                    let hi = hi.as_ref().map(|b| RangeBound::new(&b.term, b.inclusive));
-                    self.index
-                        .lookup_range(filter.xpath, lo, hi)
-                        .items()
-                        .iter()
-                        .map(|p| p.doc_id)
-                        .collect()
-                }
+                FieldFilterKind::Range { lo, hi } => self
+                    .index
+                    .column_range(filter.xpath, *lo, *hi)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
             };
 
             restrict = Some(match restrict {

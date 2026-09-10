@@ -10,10 +10,10 @@ use crate::{
         codec::{read_var_u16, read_var_u32, read_var_u64},
         format::{FOOTER_LEN, MAGIC, SegmentFooter, TermEntry, VERSION},
     },
-    numeric_columns::{NumericColumns, NumericValue},
+    numeric_columns::{NumericBound, NumericColumns, NumericValue},
     posting::{Posting, PostingList},
-    search::{SearchIndex, SearchStats},
-    types::{DocId, FieldStats, RangeBound, TermKey, XPathId},
+    search::{SearchColumns, SearchIndex, SearchStats},
+    types::{DocId, FieldStats, TermKey, XPathId},
 };
 
 // Read only disk segment.
@@ -38,38 +38,6 @@ impl SearchStats for DiskSegment {
             .unwrap_or(0)
     }
 
-    //insane dark magic lai aatri un efektiivi atrastu visus fieldus intervaalaa
-    #[timed(search)]
-    fn lookup_range(
-        &self,
-        xpath: crate::types::XPathId,
-        lo: Option<RangeBound<'_>>,
-        hi: Option<RangeBound<'_>>,
-    ) -> PostingList {
-        let lo_key = lo.map(|b| b.key).unwrap_or("");
-        let start = self.lower_bound_term(lo_key, xpath);
-
-        let mut postings = Vec::new();
-        for entry in &self.dictionary[start..] {
-            if entry.xpath != xpath {
-                break;
-            }
-            if let Some(lo) = lo {
-                if lo.below(&entry.term) {
-                    continue;
-                }
-            }
-            if let Some(hi) = hi {
-                if hi.past(&entry.term) {
-                    break;
-                }
-            }
-            self.read_postings_into(entry, &mut postings);
-        }
-
-        PostingList::from_items(postings)
-    }
-
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
@@ -79,6 +47,34 @@ impl SearchStats for DiskSegment {
 
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
         self.doc_lengths.get(&(doc_id, xpath)).copied()
+    }
+}
+
+impl SearchColumns for DiskSegment {
+    fn column_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+    ) -> PostingList {
+        let docs = self.columns.range(xpath, lo, hi);
+        PostingList::from_items(
+            docs.into_iter()
+                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
+                .collect(),
+        )
+    }
+
+    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
+        self.columns
+            .column(xpath)
+            .map(|column| {
+                column
+                    .entries()
+                    .map(|(value, doc_id)| (doc_id, value))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -115,6 +111,10 @@ impl DiskSegment {
 
     pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
+    }
+
+    pub fn columns(&self) -> &NumericColumns {
+        &self.columns
     }
 
     //bro yo zis so good function
@@ -233,26 +233,6 @@ impl SearchIndex for DiskSegment {
             Ok(index) => self.read_postings(&self.dictionary[index]),
             Err(_) => PostingList::default(),
         }
-    }
-
-    #[timed(search)]
-    fn numeric_values(&self, xpath: crate::types::XPathId) -> Vec<(DocId, String)> {
-        let start = self.lower_bound_term("", xpath);
-        let mut out = Vec::new();
-        let mut buffer = Vec::new();
-
-        for entry in &self.dictionary[start..] {
-            if entry.xpath != xpath {
-                break;
-            }
-            buffer.clear();
-            self.read_postings_into(entry, &mut buffer);
-            for posting in &buffer {
-                out.push((posting.doc_id, entry.term.clone()));
-            }
-        }
-
-        out
     }
 
     #[timed(search)]

@@ -1,5 +1,6 @@
 use crate::{
     document::policy::WeightInterval,
+    numeric_columns::NumericValue,
     types::{DocId, XPathId},
 };
 
@@ -8,13 +9,21 @@ use crate::{
 pub struct IndexedDocument {
     pub doc_id: DocId,
     pub parts: Vec<DocumentPart>,
-    pub numbers: Vec<NumericPart>,
+    pub columns: Vec<ColumnPart>,
+    pub exact: Vec<ExactPart>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NumericPart {
+pub struct ColumnPart {
     pub xpath: XPathId,
-    pub term: String,
+    pub value: NumericValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactPart {
+    pub xpath: XPathId,
+    pub text: String,
+    pub weight: WeightInterval,
 }
 
 impl IndexedDocument {
@@ -22,14 +31,26 @@ impl IndexedDocument {
         Self {
             doc_id,
             parts: Vec::new(),
-            numbers: Vec::new(),
+            columns: Vec::new(),
+            exact: Vec::new(),
         }
     }
 
-    pub fn with_number(mut self, xpath: XPathId, term: impl Into<String>) -> Self {
-        self.numbers.push(NumericPart {
+    pub fn with_column(mut self, xpath: XPathId, value: NumericValue) -> Self {
+        self.columns.push(ColumnPart { xpath, value });
+        self
+    }
+
+    pub fn with_exact(
+        mut self,
+        xpath: XPathId,
+        text: impl Into<String>,
+        weight: WeightInterval,
+    ) -> Self {
+        self.exact.push(ExactPart {
             xpath,
-            term: term.into(),
+            text: text.into(),
+            weight,
         });
         self
     }

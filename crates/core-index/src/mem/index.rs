@@ -5,10 +5,10 @@ use core_timing::timed;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
-use crate::numeric_columns::NumericColumns;
-use crate::posting::PostingList;
-use crate::search::{SearchIndex, SearchStats};
-use crate::types::{DocId, FieldStats, RangeBound, TermKey, XPathId};
+use crate::numeric_columns::{NumericBound, NumericColumns, NumericValue};
+use crate::posting::{Posting, PostingList};
+use crate::search::{SearchColumns, SearchIndex, SearchStats};
+use crate::types::{DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
@@ -29,47 +29,42 @@ impl SearchIndex for MemIndex {
         self.lookup_prefix(prefix, xpath)
     }
 
-    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
-        MemIndex::numeric_values(self, xpath)
-    }
-
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.lookup_wildcard(pattern, xpath)
+    }
+}
+
+impl SearchColumns for MemIndex {
+    fn column_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+    ) -> PostingList {
+        let docs = self.columns.range(xpath, lo, hi);
+        PostingList::from_items(
+            docs.into_iter()
+                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
+                .collect(),
+        )
+    }
+
+    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
+        self.columns
+            .column(xpath)
+            .map(|column| {
+                column
+                    .entries()
+                    .map(|(value, doc_id)| (doc_id, value))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
 impl SearchStats for MemIndex {
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
         self.doc_lengths.get(&(doc_id, xpath)).copied()
-    }
-
-    #[timed(search)]
-    fn lookup_range(
-        &self,
-        xpath: XPathId,
-        lo: Option<RangeBound<'_>>,
-        hi: Option<RangeBound<'_>>,
-    ) -> PostingList {
-        let mut items = Vec::new();
-
-        for (key, postings) in &self.terms {
-            if key.xpath != xpath {
-                continue;
-            }
-            if let Some(lo) = lo {
-                if lo.below(&key.term) {
-                    continue;
-                }
-            }
-            if let Some(hi) = hi {
-                if hi.past(&key.term) {
-                    continue;
-                }
-            }
-            items.extend_from_slice(postings.items());
-        }
-
-        PostingList::from_items(items)
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {
@@ -246,12 +241,39 @@ impl MemIndex {
             );
         }
 
-        for part in &document.numbers {
-            self.terms
-                .entry(TermKey::new(part.term.clone(), part.xpath))
-                .or_default()
-                .insert_numeric(document.doc_id);
+        for column in &document.columns {
+            self.columns
+                .insert(column.xpath, column.value, document.doc_id);
         }
+
+        for exact in &document.exact {
+            self.add_exact_weighted(
+                document.doc_id,
+                exact.xpath,
+                &exact.text,
+                exact.weight.min,
+                exact.weight.max,
+            );
+        }
+    }
+
+    #[timed(indexing_documents)]
+    pub fn add_exact_weighted(
+        &mut self,
+        doc_id: DocId,
+        xpath: XPathId,
+        text: &str,
+        min_weight: u16,
+        max_weight: u16,
+    ) {
+        self.doc_lengths.insert((doc_id, xpath), 1);
+
+        let stats = self.field_stats.entry(xpath).or_default();
+        stats.doc_count += 1;
+        stats.total_doc_len += 1;
+
+        let weight = min_weight.saturating_add(1).min(max_weight);
+        self.add_posting_weighted(text, xpath, doc_id, vec![0], weight);
     }
 
     pub fn lookup_or_empty(&self, term: &str, xpath: XPathId) -> PostingList {
