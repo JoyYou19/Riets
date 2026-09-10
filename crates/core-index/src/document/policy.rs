@@ -33,6 +33,7 @@ impl WeightInterval {
 // weight from x to y and it must be index=true etc.
 //TODO: the list would need to be some enum with yes/no/snippet right?
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FieldPolicy {
     pub name: String,
     //now automatic

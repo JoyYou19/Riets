@@ -211,7 +211,7 @@ impl ShardManager {
     #[timed(database_lifecycle)]
     pub async fn start(&self) -> Result<(), CorelamoError> {
         let policy = IndexPolicy::load(&self.root)?;
-        let options = DatabaseOptions::load_or_default(&self.root);
+        let options = DatabaseOptions::load_from_file(&self.root)?;
         *self.policy.write() = policy.clone();
         *self.options.write() = options.clone();
 
@@ -551,7 +551,11 @@ impl ShardManager {
         }
 
         let policy = IndexPolicy::load(&root)?;
-        let options = DatabaseOptions::load_or_default(&root);
+
+        let options = match DatabaseOptions::load_from_file(&root) {
+            Ok(o) => o,
+            Err(e) => return Err(CorelamoError::from(e)),
+        };
 
         let backup_dir = root.join("backups");
         let shard_count = shard_paths.len();
@@ -599,6 +603,10 @@ impl ShardManager {
 
     #[timed(database_lifecycle)]
     pub fn shutdown(self) -> Result<(), CorelamoError> {
+        for h in &self.shards {
+            h.progress().cancel();
+        }
+
         let pending: Vec<_> = self
             .shards
             .iter()
@@ -1290,7 +1298,7 @@ impl ShardManager {
         self.db_stats.finish_restore(failures.is_empty());
 
         if failures.is_empty() {
-           self.start().await?;
+            self.start().await?;
             Ok(())
         } else {
             Err(CorelamoError::Internal(

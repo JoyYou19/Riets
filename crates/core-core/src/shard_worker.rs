@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::SystemTime;
 use std::{fs, io};
@@ -138,8 +138,6 @@ pub struct ShardHandle {
     progress: Arc<ReindexProgress>,
     analyzer: Analyzer,
     shared: Arc<SharedShardState>,
-    //field -> value for sorting
-    sort_cache: Arc<Mutex<HashMap<XPathId, (u64, Arc<DocValues>)>>>,
 }
 
 impl ShardHandle {
@@ -280,7 +278,11 @@ impl ShardHandle {
             return Ok(Vec::new());
         }
 
-        let mut cache = self.sort_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self
+            .shared
+            .sort_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut columns: Vec<Arc<DocValues>> = Vec::with_capacity(sort_xpaths.len());
         for &xpath in sort_xpaths {
@@ -717,7 +719,6 @@ pub fn spawn(
             progress,
             analyzer,
             shared,
-            sort_cache: Arc::new(Mutex::new(HashMap::new())),
         },
         join,
         boot_rx,
