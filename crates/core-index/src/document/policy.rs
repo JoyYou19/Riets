@@ -4,10 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{
-    numbers::{float_term, integer_term},
-    types::XPathId,
-};
+use crate::types::XPathId;
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
 
@@ -29,22 +26,32 @@ impl WeightInterval {
     }
 }
 
-// Represents how we handle a single field inside of a file, for example for "title" we must have a
-// weight from x to y and it must be index=true etc.
 //TODO: the list would need to be some enum with yes/no/snippet right?
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldPolicy {
     pub name: String,
-    //now automatic
-    //pub xpath: XPathId,
-    pub index: IndexKind,
+    pub kind: FieldKind,
+    pub searchable: bool,
     pub list: bool,
     pub weight: WeightInterval,
     pub stemming: Option<String>,
+    pub exact: bool,
 }
 
 impl FieldPolicy {
+    pub fn new(name: impl Into<String>, kind: FieldKind) -> Self {
+        Self::from_raw(RawFieldPolicy {
+            name: name.into(),
+            kind,
+            searchable: None,
+            list: None,
+            weight: None,
+            stemming: None,
+            exact: None,
+        })
+    }
+
     pub fn xpath(&self, policy: &IndexPolicy) -> XPathId {
         policy.xpath_of(&self.name).unwrap_or_else(|| {
             panic!(
@@ -53,6 +60,65 @@ impl FieldPolicy {
                 self.name
             )
         })
+    }
+
+    pub fn searchable(&self) -> bool {
+        self.searchable
+    }
+
+    pub fn list(&self) -> bool {
+        self.list
+    }
+
+    pub fn weight(&self) -> WeightInterval {
+        self.weight
+    }
+
+    pub fn stemming(&self) -> Option<&str> {
+        self.stemming.as_deref()
+    }
+
+    pub fn exact(&self) -> bool {
+        self.exact
+    }
+
+    pub fn has_column(&self) -> bool {
+        self.kind.has_column()
+    }
+
+    fn from_raw(raw: RawFieldPolicy) -> Self {
+        let defaults = raw.kind.defaults();
+        Self {
+            name: raw.name,
+            kind: raw.kind,
+            searchable: raw.searchable.unwrap_or(defaults.searchable),
+            list: raw.list.unwrap_or(defaults.list),
+            weight: raw.weight.unwrap_or(defaults.weight),
+            stemming: raw.stemming,
+            exact: raw.exact.unwrap_or(defaults.exact),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFieldPolicy {
+    name: String,
+    kind: FieldKind,
+    searchable: Option<bool>,
+    list: Option<bool>,
+    weight: Option<WeightInterval>,
+    stemming: Option<String>,
+    exact: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for FieldPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawFieldPolicy::deserialize(deserializer)?;
+        Ok(Self::from_raw(raw))
     }
 }
 
@@ -107,7 +173,7 @@ impl IndexPolicy {
         let id_count = self
             .fields
             .iter()
-            .filter(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAuto))
+            .filter(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
             .count();
         if id_count != 1 {
             return Err(io::Error::new(
@@ -121,26 +187,15 @@ impl IndexPolicy {
 
     pub fn default_document() -> Self {
         Self::new(vec![
+            FieldPolicy::new("id", FieldKind::IdAuto),
             FieldPolicy {
-                name: "id".to_string(),
-                weight: WeightInterval { min: 100, max: 100 },
-                index: IndexKind::IdAuto,
-                list: true,
-                stemming: None,
-            },
-            FieldPolicy {
-                name: "title".to_string(),
                 weight: WeightInterval::TITLE,
-                index: IndexKind::Text,
-                list: true,
                 stemming: Some("english".to_string()),
+                ..FieldPolicy::new("title", FieldKind::Text)
             },
             FieldPolicy {
-                name: "body".to_string(),
-                weight: WeightInterval::TEXT,
-                index: IndexKind::Text,
-                list: true,
                 stemming: Some("english".to_string()),
+                ..FieldPolicy::new("body", FieldKind::Text)
             },
         ])
     }
@@ -148,7 +203,7 @@ impl IndexPolicy {
     pub fn id_field(&self) -> Option<&FieldPolicy> {
         self.fields
             .iter()
-            .find(|f| matches!(f.index, IndexKind::Id | IndexKind::IdAuto))
+            .find(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
     }
 
     pub fn id_field_name(&self) -> Option<&str> {
@@ -157,14 +212,14 @@ impl IndexPolicy {
 
     pub fn is_auto_increment(&self) -> bool {
         self.id_field()
-            .map(|f| f.index == IndexKind::IdAuto)
+            .map(|f| f.kind == FieldKind::IdAuto)
             .unwrap_or(false)
     }
 
     pub fn indexed_fields(&self) -> impl Iterator<Item = &FieldPolicy> {
         self.fields
             .iter()
-            .filter(|field| field.index != IndexKind::None)
+            .filter(|field| field.kind != FieldKind::None)
     }
 
     pub fn xpath_of(&self, name: &str) -> Option<XPathId> {
@@ -173,7 +228,7 @@ impl IndexPolicy {
 
     pub fn searchable_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
         self.indexed_fields()
-            .filter(|field| !field.index.is_numeric())
+            .filter(|field| !field.kind.is_numeric())
             .map(move |field| {
                 self.registry.get(&field.name).unwrap_or_else(|| {
                     panic!(
@@ -230,7 +285,7 @@ impl IndexPolicy {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
-pub enum IndexKind {
+pub enum FieldKind {
     None,
     Text,
     Integer,
@@ -240,27 +295,82 @@ pub enum IndexKind {
     IdAuto,
 }
 
-impl IndexKind {
+#[derive(Debug, Clone, Copy)]
+struct FieldDefaults {
+    searchable: bool,
+    list: bool,
+    weight: WeightInterval,
+    exact: bool,
+}
+
+//reasonable default for each type of field based on my intuition
+impl FieldKind {
+    fn defaults(self) -> FieldDefaults {
+        match self {
+            FieldKind::Text => FieldDefaults {
+                searchable: true,
+                list: true,
+                weight: WeightInterval::TEXT,
+                exact: false,
+            },
+            FieldKind::Id => FieldDefaults {
+                searchable: true,
+                list: true,
+                weight: WeightInterval::DEFAULT,
+                exact: true,
+            },
+            FieldKind::IdAuto => FieldDefaults {
+                searchable: false,
+                list: true,
+                weight: WeightInterval::DEFAULT,
+                exact: true,
+            },
+            FieldKind::Integer | FieldKind::Float | FieldKind::Date => FieldDefaults {
+                searchable: false,
+                list: true,
+                weight: WeightInterval::DEFAULT,
+                exact: true,
+            },
+            FieldKind::None => FieldDefaults {
+                searchable: false,
+                list: false,
+                weight: WeightInterval::DEFAULT,
+                exact: false,
+            },
+        }
+    }
+
     pub fn is_numeric(self) -> bool {
-        matches!(self, IndexKind::Integer | IndexKind::Float)
+        matches!(self, FieldKind::Integer | FieldKind::Float)
+    }
+
+    pub fn has_column(self) -> bool {
+        matches!(
+            self,
+            FieldKind::Integer | FieldKind::Float | FieldKind::Date
+        )
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            IndexKind::None => "none",
-            IndexKind::Text => "text",
-            IndexKind::Integer => "integer",
-            IndexKind::Float => "float",
-            IndexKind::Date => "date",
-            IndexKind::Id => "id",
-            IndexKind::IdAuto => "id",
+            FieldKind::None => "none",
+            FieldKind::Text => "text",
+            FieldKind::Integer => "integer",
+            FieldKind::Float => "float",
+            FieldKind::Date => "date",
+            FieldKind::Id => "id",
+            FieldKind::IdAuto => "id",
         }
     }
 
     pub fn validate_value(self, raw: &str) -> Result<(), String> {
         let valid = match self {
-            IndexKind::Integer => integer_term(raw).is_some(),
-            IndexKind::Float => float_term(raw).is_some(),
+            FieldKind::Integer => raw.trim().parse::<i64>().is_ok(),
+            FieldKind::Float => raw
+                .trim()
+                .parse::<f64>()
+                .map(|value| value.is_finite())
+                .unwrap_or(false),
             _ => true,
         };
         if valid {

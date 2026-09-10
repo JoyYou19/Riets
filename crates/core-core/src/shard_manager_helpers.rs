@@ -1,6 +1,6 @@
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
-use core_index::document::policy::IndexKind;
+use core_index::document::policy::FieldKind;
 use core_index::numbers::{decode_f64, decode_i64, float_term, integer_term, parse_filter};
 use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{SearchCommand, SortOrderRequest};
@@ -37,11 +37,11 @@ pub fn resolve_filters(
                     .find(|f| &f.name == field)
                     .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
 
-                let kind = match field_pol.index {
+                let kind = match field_pol.kind {
                     //old behavior with text
-                    IndexKind::Text => FieldFilterKind::Text(parse_and_analyze(term, analyzer)?),
+                    FieldKind::Text => FieldFilterKind::Text(parse_and_analyze(term, analyzer)?),
                     //numeric >40  >=40  <50  <=50  =20  30..40
-                    IndexKind::Integer => {
+                    FieldKind::Integer => {
                         let range = parse_filter(term, integer_term).map_err(|e| {
                             CorelamoError::InvalidData(format!(
                                 "invalid filter '{term}' on numeric field '{field}': {e}"
@@ -52,7 +52,7 @@ pub fn resolve_filters(
                             hi: range.hi,
                         }
                     }
-                    IndexKind::Float => {
+                    FieldKind::Float => {
                         let range = parse_filter(term, float_term).map_err(|e| {
                             CorelamoError::InvalidData(format!(
                                 "invalid filter '{term}' on numeric field '{field}': {e}"
@@ -103,9 +103,9 @@ pub fn resolve_sorts(
             .find(|f| &f.name == field)
             .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
 
-        let is_float = match field_pol.index {
-            IndexKind::Integer => false,
-            IndexKind::Float => true,
+        let is_float = match field_pol.kind {
+            FieldKind::Integer => false,
+            FieldKind::Float => true,
             _ => {
                 return Err(CorelamoError::InvalidData(format!(
                     "sorting by '{field}' is not supported yet (only numeric fields)"

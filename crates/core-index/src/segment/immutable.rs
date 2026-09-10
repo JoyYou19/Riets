@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use core_timing::timed;
 
 use crate::{
+    numeric_columns::NumericColumns,
     posting::PostingList,
     search::{SearchIndex, SearchStats},
     types::{DocId, FieldStats, RangeBound, TermKey, XPathId},
@@ -16,6 +17,7 @@ pub struct ImmutableSegment {
     terms: BTreeMap<TermKey, PostingList>,
     doc_lengths: BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
+    columns: NumericColumns,
 }
 
 // Haha, if we want to search inside of this segment, it must implement, and we do
@@ -105,16 +107,22 @@ impl ImmutableSegment {
         terms: BTreeMap<TermKey, PostingList>,
         doc_lengths: BTreeMap<(DocId, XPathId), u32>,
         field_stats: BTreeMap<XPathId, FieldStats>,
+        columns: NumericColumns,
     ) -> Self {
         Self {
             terms,
             doc_lengths,
             field_stats,
+            columns,
         }
     }
 
     pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
+    }
+
+    pub fn columns(&self) -> &NumericColumns {
+        &self.columns
     }
 
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {

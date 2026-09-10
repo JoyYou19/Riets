@@ -10,7 +10,7 @@ use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
-use core_index::document::policy::IndexKind;
+use core_index::document::policy::FieldKind;
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
@@ -154,8 +154,8 @@ impl ShardManager {
                 .fields
                 .iter()
                 .find(|f| f.name == *xpath)
-                .map(|f| f.index.clone())
-                .unwrap_or(IndexKind::None);
+                .map(|f| f.kind.clone())
+                .unwrap_or(FieldKind::None);
 
             if all_fields.get_fields().get(xpath) != Some(&kind) {
                 all_fields.get_fields_mut().insert(xpath.clone(), kind);
@@ -800,8 +800,8 @@ impl ShardManager {
 
         for (xpath, kind) in all_fields.get_fields_mut().iter_mut() {
             if let Some(field) = policy.fields.iter().find(|f| f.name == *xpath) {
-                if *kind != field.index {
-                    *kind = field.index.clone();
+                if *kind != field.kind {
+                    *kind = field.kind.clone();
                     changed = true;
                 }
             }

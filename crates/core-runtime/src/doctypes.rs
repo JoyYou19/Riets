@@ -1,4 +1,4 @@
-use core_index::document::{IndexPolicy, policy::IndexKind};
+use core_index::document::{IndexPolicy, policy::FieldKind};
 use core_protocol::{
     command_response_helpers::{apply_merge_patch, traverse_json},
     errors::{CorelamoError, DocFailure, FailReason},
@@ -57,7 +57,7 @@ fn extract_external_id(
         Some(v) if !v.is_empty() => Ok(v.clone()),
         //INFO: we generate a random auto id for shard rounting if its auto shard_manager detects it
         //and inside the shard_db it gets a correct id
-        _ if id_field.index == IndexKind::IdAuto => Ok(generate_routing_id(fields)),
+        _ if id_field.kind == FieldKind::IdAuto => Ok(generate_routing_id(fields)),
         _ => Err(FailReason::MissingId {
             field: id_field.name.clone(),
         }),
@@ -230,7 +230,7 @@ fn validate_numeric_fields(
     policy: &IndexPolicy,
 ) -> Result<(), FailReason> {
     for field in &policy.fields {
-        if !field.index.is_numeric() {
+        if !field.kind.is_numeric() {
             continue;
         }
         let Some(raw) = fields.get(&field.name) else {
@@ -240,11 +240,11 @@ fn validate_numeric_fields(
             continue;
         }
         field
-            .index
+            .kind
             .validate_value(raw)
             .map_err(|_| FailReason::InvalidField {
                 field: field.name.clone(),
-                expected: field.index.label().to_string(),
+                expected: field.kind.label().to_string(),
                 got: raw.clone(),
             })?;
     }

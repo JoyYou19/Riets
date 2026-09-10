@@ -11,6 +11,7 @@ use crate::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
         format::{SegmentFooter, SegmentHeader, TermEntry},
     },
+    numeric_columns::{NumericColumns, NumericValue},
     posting::PostingList,
     segment::ImmutableSegment,
     types::{DocId, TermKey, XPathId},
@@ -24,9 +25,9 @@ fn trace_segment_writer() -> bool {
     std::env::var_os("CORELAMO_TRACE_SEGMENT_WRITER").is_some()
 }
 
-// fn write_u16(out: &mut impl Write, value: u16) -> io::Result<()> {
-//     out.write_all(&value.to_le_bytes())
-// }
+fn write_u8(out: &mut impl Write, value: u8) -> io::Result<()> {
+    out.write_all(&[value])
+}
 
 fn write_u32(out: &mut impl Write, value: u32) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
@@ -52,31 +53,10 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
     write_u64(out, footer.doc_lengths_len)?;
     write_u64(out, footer.dictionary_offset)?;
     write_u64(out, footer.dictionary_len)?;
+    write_u64(out, footer.columns_offset)?;
+    write_u64(out, footer.columns_len)?;
     write_u32(out, footer.term_count)
 }
-
-// fn write_posting_list(out: &mut impl Write, list: &PostingList) -> io::Result<()> {
-//     let mut last_doc_id = 0u64;
-//
-//     for posting in list.items() {
-//         let doc_delta = posting.doc_id - last_doc_id;
-//         last_doc_id = posting.doc_id;
-//
-//         write_var_u64(out, doc_delta)?;
-//         write_var_u16(out, posting.weight)?;
-//         write_var_u32(out, posting.positions.len() as u32)?;
-//
-//         let mut last_position = 0u32;
-//
-//         for &position in &posting.positions {
-//             let position_delta = position - last_position;
-//             last_position = position;
-//             write_var_u32(out, position_delta)?;
-//         }
-//     }
-//
-//     Ok(())
-// }
 
 fn write_dictionary(out: &mut impl Write, entries: &[TermEntry]) -> io::Result<()> {
     write_u32(out, entries.len() as u32)?;
@@ -87,6 +67,31 @@ fn write_dictionary(out: &mut impl Write, entries: &[TermEntry]) -> io::Result<(
         write_u64(out, entry.postings_offset)?;
         write_u32(out, entry.postings_len)?;
         write_u32(out, entry.doc_freq)?;
+    }
+
+    Ok(())
+}
+
+fn write_columns(out: &mut impl Write, columns: &NumericColumns) -> io::Result<()> {
+    write_u32(out, columns.iter().count() as u32)?;
+
+    for (xpath, column) in columns.iter() {
+        write_u32(out, xpath)?;
+        write_u32(out, column.len() as u32)?;
+
+        for (value, doc_id) in column.entries() {
+            match value {
+                NumericValue::Int(v) => {
+                    write_u8(out, 0)?;
+                    write_u64(out, v as u64)?;
+                }
+                NumericValue::Float(v) => {
+                    write_u8(out, 1)?;
+                    write_u64(out, v.to_bits())?;
+                }
+            }
+            write_u64(out, doc_id)?;
+        }
     }
 
     Ok(())
@@ -179,14 +184,19 @@ pub fn write_segment_to<W: Write + Seek>(
 
     let started = std::time::Instant::now();
 
+    let columns_offset = out.stream_position()?;
+    write_columns(out, segment.columns())?;
+    let columns_end = out.stream_position()?;
+
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
         dictionary_offset,
         dictionary_len: dictionary_end - dictionary_offset,
+        columns_offset,
+        columns_len: columns_end - columns_offset,
         term_count: dictionary.len() as u32,
     };
-
     write_footer(out, &footer)?;
 
     if trace {
@@ -287,11 +297,20 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     write_dictionary(out, &dictionary)?;
     let dictionary_end = out.stream_position()?;
 
+    let columns_offset = out.stream_position()?;
+
+    //FIX:
+    // TODO accept and merge columns from source segments.
+    write_columns(out, &NumericColumns::new())?;
+    let columns_end = out.stream_position()?;
+
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
         dictionary_offset,
         dictionary_len: dictionary_end - dictionary_offset,
+        columns_offset,
+        columns_len: columns_end - columns_offset,
         term_count: dictionary.len() as u32,
     };
 

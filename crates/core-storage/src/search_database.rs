@@ -6,7 +6,7 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{IndexPolicy, IndexedDocument, policy::FieldKind},
     lsm::{
         LsmIndex,
         index_worker::{
@@ -736,14 +736,14 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
     let mut indexed = IndexedDocument::new(doc.internal_id);
 
     for field in policy.indexed_fields() {
-        match field.index {
-            IndexKind::Text | IndexKind::Id | IndexKind::IdAuto => {
+        match field.kind {
+            FieldKind::Text | FieldKind::Id | FieldKind::IdAuto => {
                 let Some(text) = doc.fields.get(&field.name) else {
                     continue;
                 };
                 indexed = indexed.with_part(field.xpath(policy), text, field.weight);
             }
-            IndexKind::Integer => {
+            FieldKind::Integer => {
                 let Some(raw) = doc.fields.get(&field.name) else {
                     continue;
                 };
@@ -751,7 +751,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
                     indexed = indexed.with_number(field.xpath(policy), term);
                 }
             }
-            IndexKind::Float => {
+            FieldKind::Float => {
                 let Some(raw) = doc.fields.get(&field.name) else {
                     continue;
                 };

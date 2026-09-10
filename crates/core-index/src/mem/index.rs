@@ -5,6 +5,7 @@ use core_timing::timed;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
+use crate::numeric_columns::NumericColumns;
 use crate::posting::PostingList;
 use crate::search::{SearchIndex, SearchStats};
 use crate::types::{DocId, FieldStats, RangeBound, TermKey, XPathId};
@@ -16,6 +17,7 @@ pub struct MemIndex {
     terms: HashMap<TermKey, PostingList>,
     doc_lengths: HashMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
+    columns: NumericColumns,
 }
 
 impl SearchIndex for MemIndex {
@@ -91,6 +93,7 @@ impl MemIndex {
             terms: HashMap::new(),
             doc_lengths: HashMap::new(),
             field_stats: BTreeMap::new(),
+            columns: NumericColumns::new(),
         }
     }
 
@@ -100,7 +103,7 @@ impl MemIndex {
         let doc_lengths: BTreeMap<_, _> = self.doc_lengths.into_iter().collect();
         let field_stats = self.field_stats;
 
-        crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats)
+        crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats, self.columns)
     }
 
     #[timed(search)]
