@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::AtomicU64;
-use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool};
+use std::{path::PathBuf, sync::Arc, sync::Mutex, sync::atomic::AtomicBool};
 
+use core_query::sort::DocValues;
 use core_storage::binary_store::{DEFAULT_DOC_CACHE_CAPACITY, DocLocation, read_document_at_path};
 use core_timing::timed;
 use dashmap::DashMap;
 
 use core_index::lsm::snapshot::SharedIndexSnapshot;
-use core_index::types::DocId;
+use core_index::types::{DocId, XPathId};
 use core_storage::document_store::StoredDocument;
 use moka::sync::Cache;
 use tokio::task;
@@ -23,6 +25,7 @@ pub struct SharedShardState {
     pub is_restoring: AtomicBool,
     pub last_backup_at: AtomicU64,
     pub last_backup_id: std::sync::RwLock<Option<String>>,
+    pub sort_cache: Mutex<HashMap<XPathId, (u64, Arc<DocValues>)>>,
     pub root: PathBuf,
 }
 
@@ -38,11 +41,31 @@ impl SharedShardState {
             is_running: AtomicBool::new(false),
             is_clearing: AtomicBool::new(false),
             is_backing_up: AtomicBool::new(false),
+            sort_cache: Mutex::new(HashMap::new()),
             is_restoring: AtomicBool::new(false),
             last_backup_at: AtomicU64::new(0),
             last_backup_id: std::sync::RwLock::new(None),
             root,
         }
+    }
+
+    #[timed(database_lifecycle)]
+    pub fn release(&self) {
+        //INFO: release EVERYTHING RAAAH: -Normunds nevis Kristians
+        self.snapshot.clear();
+
+        let mut sort = self.sort_cache.lock().unwrap_or_else(|e| e.into_inner());
+        sort.clear();
+        sort.shrink_to_fit();
+
+        self.docs.invalidate_all();
+        self.docs.run_pending_tasks();
+
+        self.locations.clear();
+        self.locations.shrink_to_fit();
+
+        self.internal_to_external.clear();
+        self.internal_to_external.shrink_to_fit();
     }
 
     #[timed(retrieve_opps)]
@@ -58,9 +81,10 @@ impl SharedShardState {
         //WARN: bellow is a todo comment lmao
         //TODO: pass this to the shared state in a pretty way, this is a placeholder
         let path = self.root.join("documents");
-        let doc = task::spawn_blocking(move || read_document_at_path(&path,loc.segment, loc.offset))
-            .await
-            .map_err(|e| io::Error::other(format!("disk read task panicked: {e}")))??;
+        let doc =
+            task::spawn_blocking(move || read_document_at_path(&path, loc.segment, loc.offset))
+                .await
+                .map_err(|e| io::Error::other(format!("disk read task panicked: {e}")))??;
 
         self.docs.insert(external_id.to_string(), doc.clone());
         Ok(Some(doc))
