@@ -461,31 +461,33 @@ impl ShardDb {
         let not_flushed = self.pending >= (batch_size as u32);
         let result = (|| -> Result<InsertReport, CorelamoError> {
             self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
-            info!(self.log, "Documents inserted";
-                "user" => user.clone(),
-                "operation" => "create",
-                "shard_id" => %self.shard_id,
-                "documents" => count,
-                "durable_offset" => self.wal.durable_offset(),
-            );
+            // info!(self.log, "Documents inserted";
+            //     "user" => user.clone(),
+            //     "operation" => "create",
+            //     "shard_id" => %self.shard_id,
+            //     "documents" => count,
+            //     "durable_offset" => self.wal.durable_offset(),
+            // );
 
             let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
             let report = db
                 .put_documents_parallel(inputs, batch_size, window_size)
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
+            let now = std::time::Instant::now();
+            // let should_flush =
+            //     self.pending >= (batch_size as u32) ||
+            //     now.duration_since(self) >= std::time::Duration::from_secs(60);
             if not_flushed {
                 db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-                self.pending = 0;
+                info!(self.log, "Db flushed"; "pending" => not_flushed,"batch"=> batch_size);
+                self.publish_stats();
                 self.wal
                     .reset()
                     .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
                 self.pending = 0;
             }
 
-            if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
-                warn!(self.log, "checkpoint write failed"; "error" => %e);
-            }
+            
 
             Ok(report)
         })();
@@ -493,7 +495,7 @@ impl ShardDb {
         match &result {
             Ok(report) => {
                 self.stats.add_documents_indexed(report.inserted as u64);
-                self.publish_stats();
+                // self.publish_stats();
                 info!(self.log, "indexed batch";
                     "shard_id" => %self.shard_id,
                     "documents" => count,
@@ -580,7 +582,7 @@ impl ShardDb {
     ) -> Result<DeleteReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = ids.len();
-        
+
         self.pending += count as u32;
         let batch_size = self.options.runtime.indexing_batch_size;
         let not_flushed = self.pending >= (batch_size as u32);
@@ -629,20 +631,18 @@ impl ShardDb {
                     }
                 }
             }
-          
-            if not_flushed{
+
+            if not_flushed {
                 db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-                self.pending = 0;
+                self.publish_stats();
                 self.wal
                     .reset()
                     .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
                 self.pending = 0;
             }
-            if let Err(e) = self.wal.write_checkpoint(0) {
-                warn!(self.log, "checkpoint write failed"; "error" => %e);
-            }
+           
         }
-        self.publish_stats();
+        // self.publish_stats();
         let elapsed = started.elapsed();
         info!(self.log, "delete batch";
             "user" => user.clone(),
@@ -775,7 +775,7 @@ impl ShardDb {
     ) -> Result<ReplaceReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
-        
+
         self.pending += count as u32;
         let batch_size = self.options.runtime.indexing_batch_size;
         let not_flushed = self.pending >= (batch_size as u32);
@@ -785,7 +785,6 @@ impl ShardDb {
         let mut old_internal_ids = Vec::new();
         let mut written_ids = Vec::new();
 
-        
         let _offset = self
             .wal_append_record(&WalRecord::Replace(inputs.clone()))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
@@ -832,15 +831,15 @@ impl ShardDb {
                     }
                 }
             }
-             if not_flushed {
-            db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            self.wal
-                .reset()
-                .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+            if not_flushed {
+                db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+                self.publish_stats();
+                self.wal
+                    .reset()
+                    .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+                self.pending=0;
             }
-            if let Err(e) = self.wal.write_checkpoint(0) {
-                warn!(self.log, "checkpoint write failed"; "error" => %e);
-            }
+           
         }
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
@@ -915,15 +914,15 @@ impl ShardDb {
                     }
                 }
             }
-            if not_flushed{
-            db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            self.wal
-                .reset()
-                .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
-        }
-            self.wal
-                .write_checkpoint(0)
-                .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
+            if not_flushed {
+                db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+                self.wal
+                    .reset()
+                    .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+                self.publish_stats();
+                self.pending=0;
+            }
+           
         }
         let elapsed = started.elapsed();
         info!(self.log, "upsert batch";
