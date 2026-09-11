@@ -13,10 +13,12 @@ use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
+use core_protocol::command_reponse_definitions::{
+    LookupCommand, LookupResponse, QuerySpec, SearchCommand,
+};
 use core_protocol::errors::CorelamoError;
-use core_query::SearchHit;
 use core_query::query_string_parser::parse_and_analyze;
+use core_query::{Query, SearchHit};
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -938,10 +940,26 @@ impl ShardManager {
             return Ok(Vec::new());
         }
 
-        let query = Arc::new(parse_and_analyze(&command.query, &self.analyzer)?);
         let policy = self.policy.read().clone();
 
-        let xpaths = Arc::new(policy.searchable_xpaths().collect::<Vec<_>>());
+        let (raw_query, exact) = match &command.query {
+            QuerySpec::Plain(raw) => (raw.as_str(), false),
+            QuerySpec::Exact { query, exact } => (query.as_str(), *exact),
+        };
+
+        //stupid shit to do so that someone can do shit like "query": {"query": penis, "exact":
+        //false}
+        let (query, xpaths) = if exact {
+            (
+                Arc::new(Some(Query::Exact(raw_query.to_string()))),
+                Arc::new(policy.exact_xpaths().collect::<Vec<_>>()),
+            )
+        } else {
+            (
+                Arc::new(parse_and_analyze(raw_query, &self.analyzer)?),
+                Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
+            )
+        };
 
         let filters = resolve_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;

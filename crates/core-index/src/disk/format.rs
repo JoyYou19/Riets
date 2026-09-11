@@ -11,7 +11,7 @@
 //! +------------------------+
 //! | dictionary             |  u32 count, then TermEntry*
 //! +------------------------+
-//! | columns                |  u32 xpath_count, then per xpath:
+//! | columns                |  u32 xpath_count, then per xpath:false
 //! |                        |    u32 xpath, u32 entry_count,
 //! |                        |    (u8 kind, u64 value_bits, u64 doc_id)*
 //! +------------------------+

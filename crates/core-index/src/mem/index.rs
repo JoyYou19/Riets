@@ -204,32 +204,33 @@ impl MemIndex {
     #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
         for part in &document.parts {
-            self.add_document_weighted(
-                analyzer,
-                document.doc_id,
-                part.xpath,
-                &part.text,
-                part.weight.min,
-                part.weight.max,
-            );
+            if part.exact {
+                self.add_exact_weighted(
+                    document.doc_id,
+                    part.xpath,
+                    &part.text,
+                    part.weight.min,
+                    part.weight.max,
+                );
+            } else {
+                self.add_document_weighted(
+                    analyzer,
+                    document.doc_id,
+                    part.xpath,
+                    &part.text,
+                    part.weight.min,
+                    part.weight.max,
+                );
+            }
         }
 
         for column in &document.columns {
             self.columns
                 .insert(column.xpath, column.value, document.doc_id);
         }
-
-        for exact in &document.exact {
-            self.add_exact_weighted(
-                document.doc_id,
-                exact.xpath,
-                &exact.text,
-                exact.weight.min,
-                exact.weight.max,
-            );
-        }
     }
 
+    //basically add_document without lowercasing stemming
     #[timed(indexing_documents)]
     pub fn add_exact_weighted(
         &mut self,
@@ -239,14 +240,28 @@ impl MemIndex {
         min_weight: u16,
         max_weight: u16,
     ) {
-        self.doc_lengths.insert((doc_id, xpath), 1);
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let len = words.len().min(u32::MAX as usize) as u32;
+
+        self.doc_lengths.insert((doc_id, xpath), len);
 
         let stats = self.field_stats.entry(xpath).or_default();
         stats.doc_count += 1;
-        stats.total_doc_len += 1;
+        stats.total_doc_len += len as u64;
 
-        let weight = min_weight.saturating_add(1).min(max_weight);
-        self.add_posting_weighted(text, xpath, doc_id, vec![0], weight);
+        let mut grouped = HashMap::<String, Vec<u32>>::new();
+        for (position, word) in words.iter().enumerate() {
+            grouped
+                .entry((*word).to_string())
+                .or_default()
+                .push(position as u32);
+        }
+
+        for (term, positions) in grouped {
+            let occurrences = positions.len().min(u16::MAX as usize) as u16;
+            let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            self.add_posting_weighted(term, xpath, doc_id, positions, weight);
+        }
     }
 
     pub fn lookup_or_empty(&self, term: &str, xpath: XPathId) -> PostingList {

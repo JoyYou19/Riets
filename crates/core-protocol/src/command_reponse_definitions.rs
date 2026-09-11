@@ -33,12 +33,37 @@ pub trait ResponseData {
 #[derive(Debug, Deserialize)]
 //TODO: numbers exact-match
 pub struct SearchCommand {
-    pub query: String,
-    pub filters: Option<HashMap<String, String>>,
+    pub query: QuerySpec,
+    pub filters: Option<HashMap<String, FilterSpec>>,
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,
     pub sort: Option<IndexMap<String, SortSpec>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum QuerySpec {
+    Plain(String),
+    Exact { query: String, exact: bool },
+}
+
+use std::fmt;
+
+impl fmt::Display for QuerySpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QuerySpec::Plain(q) => write!(f, "{q}"),
+            QuerySpec::Exact { query, .. } => write!(f, "{query}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum FilterSpec {
+    Plain(String),
+    Exact { value: String, exact: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

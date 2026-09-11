@@ -10,7 +10,6 @@ pub struct IndexedDocument {
     pub doc_id: DocId,
     pub parts: Vec<DocumentPart>,
     pub columns: Vec<ColumnPart>,
-    pub exact: Vec<ExactPart>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,39 +18,17 @@ pub struct ColumnPart {
     pub value: NumericValue,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExactPart {
-    pub xpath: XPathId,
-    pub text: String,
-    pub weight: WeightInterval,
-}
-
 impl IndexedDocument {
     pub fn new(doc_id: DocId) -> Self {
         Self {
             doc_id,
             parts: Vec::new(),
             columns: Vec::new(),
-            exact: Vec::new(),
         }
     }
 
     pub fn with_column(mut self, xpath: XPathId, value: NumericValue) -> Self {
         self.columns.push(ColumnPart { xpath, value });
-        self
-    }
-
-    pub fn with_exact(
-        mut self,
-        xpath: XPathId,
-        text: impl Into<String>,
-        weight: WeightInterval,
-    ) -> Self {
-        self.exact.push(ExactPart {
-            xpath,
-            text: text.into(),
-            weight,
-        });
         self
     }
 
@@ -65,8 +42,23 @@ impl IndexedDocument {
             xpath,
             text: text.into(),
             weight,
+            exact: false,
         });
+        self
+    }
 
+    pub fn with_exact(
+        mut self,
+        xpath: XPathId,
+        text: impl Into<String>,
+        weight: WeightInterval,
+    ) -> Self {
+        self.parts.push(DocumentPart {
+            xpath,
+            text: text.into(),
+            weight,
+            exact: true,
+        });
         self
     }
 }
@@ -76,4 +68,5 @@ pub struct DocumentPart {
     pub xpath: XPathId,
     pub text: String,
     pub weight: WeightInterval,
+    pub exact: bool,
 }

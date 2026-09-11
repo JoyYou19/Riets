@@ -86,6 +86,22 @@ impl FieldPolicy {
         self.kind.has_column()
     }
 
+    pub fn has_exact_index(&self) -> bool {
+        self.kind == FieldKind::Text && self.exact
+    }
+
+    pub fn exact_xpath(&self, policy: &IndexPolicy) -> Option<XPathId> {
+        if !self.has_exact_index() {
+            return None;
+        }
+        Some(policy.exact_xpath_of(&self.name).unwrap_or_else(|| {
+            panic!(
+                "field '{}' has no exact xpath — IndexPolicy::resolve() should have registered it",
+                self.name
+            )
+        }))
+    }
+
     fn from_raw(raw: RawFieldPolicy) -> Self {
         let defaults = raw.kind.defaults();
         Self {
@@ -216,6 +232,10 @@ impl IndexPolicy {
         self.registry.get(name)
     }
 
+    pub fn exact_xpath_of(&self, name: &str) -> Option<XPathId> {
+        self.registry.get_exact(name)
+    }
+
     pub fn searchable_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
         self.indexed_fields()
             .filter(|field| !field.kind.is_numeric())
@@ -223,6 +243,20 @@ impl IndexPolicy {
                 self.registry.get(&field.name).unwrap_or_else(|| {
                     panic!(
                         "field '{}' has no registered xpath id IndexPolicy::load()/save()/resolve() should happen",
+                        field.name
+                    )
+                })
+            })
+    }
+
+    pub fn exact_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
+        self.fields
+            .iter()
+            .filter(|field| field.has_exact_index())
+            .map(move |field| {
+                self.exact_xpath_of(&field.name).unwrap_or_else(|| {
+                    panic!(
+                        "field '{}' has no exact xpath — IndexPolicy::resolve() should have registered it",
                         field.name
                     )
                 })
@@ -237,6 +271,9 @@ impl IndexPolicy {
         let before = registry.len();
         for field in &self.fields {
             registry.resolve(&field.name);
+            if field.has_exact_index() {
+                registry.resolve_exact(&field.name);
+            }
         }
         if registry.len() != before {
             registry.save(&registry_path)?;
@@ -387,6 +424,8 @@ pub enum MatchMode {
 struct FieldRegistry {
     next_id: XPathId,
     ids: BTreeMap<String, XPathId>,
+    #[serde(default)]
+    exact_ids: BTreeMap<String, XPathId>,
 }
 
 impl FieldRegistry {
@@ -394,6 +433,7 @@ impl FieldRegistry {
         Self {
             next_id: 1,
             ids: BTreeMap::new(),
+            exact_ids: BTreeMap::new(),
         }
     }
 
@@ -406,9 +446,22 @@ impl FieldRegistry {
         let mut registry: Self =
             toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
+        //porniks ar tiem exact logic
         let max_assigned = registry.ids.values().copied().max().unwrap_or(0);
-        registry.next_id = registry.next_id.max(max_assigned + 1);
+        let max_exact = registry.exact_ids.values().copied().max().unwrap_or(0);
+
+        registry.next_id = registry.next_id.max(max_assigned + 1).max(max_exact + 1);
         Ok(registry)
+    }
+
+    fn resolve_exact(&mut self, name: &str) -> XPathId {
+        if let Some(&id) = self.exact_ids.get(name) {
+            return id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.exact_ids.insert(name.to_string(), id);
+        id
     }
 
     fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
@@ -439,7 +492,11 @@ impl FieldRegistry {
     }
 
     fn len(&self) -> usize {
-        self.ids.len()
+        self.ids.len() + self.exact_ids.len()
+    }
+
+    fn get_exact(&self, name: &str) -> Option<XPathId> {
+        self.exact_ids.get(name).copied()
     }
 }
 

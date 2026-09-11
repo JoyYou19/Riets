@@ -570,6 +570,9 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
                     continue;
                 };
                 indexed = indexed.with_part(field.xpath(policy), text, field.weight);
+                if let Some(exact_xpath) = field.exact_xpath(policy) {
+                    indexed = indexed.with_exact(exact_xpath, text, field.weight);
+                }
             }
             FieldKind::Id => {
                 // | FieldKind::IdAuto => { //ja id ir auto tas kkas lidzigs: kjbdyui2bd7913bu91oub

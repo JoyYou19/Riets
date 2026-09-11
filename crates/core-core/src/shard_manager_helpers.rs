@@ -3,7 +3,7 @@ use core_index::document::IndexPolicy;
 use core_index::document::policy::FieldKind;
 use core_index::numeric_columns::{parse_float, parse_integer, parse_numeric_range};
 use core_index::types::XPathId;
-use core_protocol::command_reponse_definitions::{SearchCommand, SortOrderRequest};
+use core_protocol::command_reponse_definitions::{FilterSpec, SearchCommand, SortOrderRequest};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::{FieldFilter, FieldFilterKind};
@@ -25,53 +25,60 @@ pub fn resolve_filters(
     match command.filters.as_ref() {
         Some(fs) => {
             let mut resolved = HashMap::with_capacity(fs.len());
-            for (field, term) in fs {
-                if term.trim().is_empty() {
-                    continue;
-                }
-
+            for (field, spec) in fs {
                 let field_pol = policy
                     .fields
                     .iter()
                     .find(|f| &f.name == field)
                     .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
 
-                let kind = match field_pol.kind {
-                    //old behavior with text
-                    FieldKind::Text => FieldFilterKind::Text(parse_and_analyze(term, analyzer)?),
-                    //numeric >40  >=40  <50  <=50  =20  30..40
-                    FieldKind::Integer => {
-                        let range = parse_numeric_range(term, parse_integer).map_err(|e| {
-                            CorelamoError::InvalidData(format!(
-                                "invalid filter '{term}' on numeric field '{field}': {e}"
-                            ))
-                        })?;
-                        FieldFilterKind::Range {
-                            lo: range.lo,
-                            hi: range.hi,
-                        }
-                    }
-                    FieldKind::Float => {
-                        let range = parse_numeric_range(term, parse_float).map_err(|e| {
-                            CorelamoError::InvalidData(format!(
-                                "invalid filter '{term}' on numeric field '{field}': {e}"
-                            ))
-                        })?;
-                        FieldFilterKind::Range {
-                            lo: range.lo,
-                            hi: range.hi,
-                        }
-                    }
-                    _ => return Err(CorelamoError::PathNotIndexed(field.clone())),
+                let (raw, exact) = match spec {
+                    FilterSpec::Plain(term) => (term.as_str(), false),
+                    FilterSpec::Exact { value, exact } => (value.as_str(), *exact),
                 };
 
-                resolved.insert(
-                    field.clone(),
-                    FieldFilter {
-                        xpath: field_pol.xpath(&policy),
-                        kind,
-                    },
-                );
+                if raw.trim().is_empty() {
+                    continue;
+                }
+
+                let (xpath, kind) = if exact {
+                    let exact_xpath = field_pol.exact_xpath(&policy).ok_or_else(|| {
+                        CorelamoError::InvalidData(format!(
+                            "field '{field}' has no exact index (add 'exact = true' to its policy)"
+                        ))
+                    })?;
+                    (exact_xpath, FieldFilterKind::Exact(raw.to_string()))
+                } else {
+                    let kind = match field_pol.kind {
+                        FieldKind::Text => FieldFilterKind::Text(parse_and_analyze(raw, analyzer)?),
+                        FieldKind::Integer => {
+                            let range = parse_numeric_range(raw, parse_integer).map_err(|e| {
+                                CorelamoError::InvalidData(format!(
+                                    "invalid filter '{raw}' on numeric field '{field}': {e}"
+                                ))
+                            })?;
+                            FieldFilterKind::Range {
+                                lo: range.lo,
+                                hi: range.hi,
+                            }
+                        }
+                        FieldKind::Float => {
+                            let range = parse_numeric_range(raw, parse_float).map_err(|e| {
+                                CorelamoError::InvalidData(format!(
+                                    "invalid filter '{raw}' on numeric field '{field}': {e}"
+                                ))
+                            })?;
+                            FieldFilterKind::Range {
+                                lo: range.lo,
+                                hi: range.hi,
+                            }
+                        }
+                        _ => return Err(CorelamoError::PathNotIndexed(field.clone())),
+                    };
+                    (field_pol.xpath(&policy), kind)
+                };
+
+                resolved.insert(field.clone(), FieldFilter { xpath, kind });
             }
             Ok(Some(Arc::new(resolved)))
         }

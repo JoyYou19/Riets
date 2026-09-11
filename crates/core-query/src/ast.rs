@@ -6,5 +6,6 @@ pub enum Query {
     And(Vec<Query>),
     Or(Vec<Query>),
     Phrase(Vec<String>),
+    Exact(String),
     // Not(Box<Query>),
 }

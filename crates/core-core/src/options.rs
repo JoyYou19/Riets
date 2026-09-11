@@ -42,6 +42,7 @@ impl DatabaseOptions {
         })
     }
 }
+
 impl Default for DatabaseOptions {
     fn default() -> Self {
         Self {
