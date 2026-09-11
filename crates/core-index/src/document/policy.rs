@@ -206,16 +206,6 @@ impl IndexPolicy {
             .find(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
     }
 
-    pub fn id_field_name(&self) -> Option<&str> {
-        self.id_field().map(|f| f.name.as_str())
-    }
-
-    pub fn is_auto_increment(&self) -> bool {
-        self.id_field()
-            .map(|f| f.kind == FieldKind::IdAuto)
-            .unwrap_or(false)
-    }
-
     pub fn indexed_fields(&self) -> impl Iterator<Item = &FieldPolicy> {
         self.fields
             .iter()

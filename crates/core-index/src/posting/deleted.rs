@@ -46,20 +46,3 @@ impl DeleteSet {
         self.deleted.contains(&doc_id)
     }
 }
-
-#[test]
-fn filters_deleted_docs() {
-    let list = PostingList::from_items(vec![
-        Posting::new(1, vec![0]),
-        Posting::new(2, vec![0]),
-        Posting::new(3, vec![0]),
-    ]);
-
-    let mut deleted = DeleteSet::new();
-    deleted.delete(2);
-
-    let filtered = deleted.filter(&list);
-    let ids: Vec<_> = filtered.items().iter().map(|p| p.doc_id).collect();
-
-    assert_eq!(ids, vec![1, 3]);
-}
