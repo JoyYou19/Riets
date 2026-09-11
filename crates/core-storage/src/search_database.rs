@@ -21,7 +21,6 @@ use core_index::{
 use bincode::{Decode, Encode};
 use core_protocol::{
     command_reponse_definitions::LookupResponse,
-    command_response_helpers::{apply_merge_patch, traverse_json},
     errors::{DocFailure, FailReason},
     format::Format,
 };
@@ -350,8 +349,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     #[timed(modifying_documents)]
-    
-
     #[timed(modifying_documents)]
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
@@ -736,7 +733,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
 
         // for (segment, count) in segments.into_iter().zip(counts) {
-            self.db.index_worker.add_segment_wait(segments, counts)?;
+        self.db.index_worker.add_segment_wait(segments, counts)?;
         // }
 
         Ok(())
