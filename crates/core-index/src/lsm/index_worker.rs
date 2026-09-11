@@ -191,18 +191,6 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
-    #[timed(compaction)]
-    pub fn install_compaction_wait(&self, completed: CompletedCompaction) -> io::Result<()> {
-        let (ack, rx) = mpsc::channel();
-
-        self.send(IndexCommand::InstallCompaction {
-            completed,
-            ack: Some(ack),
-        })?;
-
-        wait_for_acknowledgement(rx)
-    }
-
     pub fn abort(&self) -> io::Result<()> {
         self.send(IndexCommand::Abort)
     }
@@ -660,15 +648,8 @@ impl ReindexProgress {
         self.total.fetch_add(extra, Ordering::Relaxed);
     }
 
-    pub fn set_total(&self, total: u64) {
-        self.total.store(total, Ordering::Relaxed);
-    }
-
     pub fn set_phase(&self, phase: Phase) {
         self.phase.store(phase as u8, Ordering::Release);
-    }
-    pub fn request_cancel(&self) {
-        self.cancel.store(true, Ordering::Release);
     }
 
     pub fn is_cancelled(&self) -> bool {

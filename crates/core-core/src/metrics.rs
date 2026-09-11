@@ -129,7 +129,7 @@ impl DbStats {
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.backup
     }
-    
+
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.reindex
     }
@@ -228,11 +228,6 @@ impl DbStats {
                 BackupPhase::Complete
             });
         }
-    }
-
-    pub fn abort_backup(&self) {
-        self.backup_outstanding.store(0, Relaxed);
-        self.backup.set_phase(BackupPhase::Failed);
     }
 
     // ---- reads ----

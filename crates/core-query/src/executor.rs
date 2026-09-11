@@ -6,17 +6,17 @@ use std::{
 
 use core_index::{
     analyzer::analyzer::Analyzer,
-    numbers::EncodedBound,
+    numeric_columns::NumericBound,
     posting::{
         PostingList,
         ops::{intersection, union},
     },
-    search::{SearchIndex, SearchStats},
-    types::{DocId, RangeBound, XPathId},
+    search::{SearchColumns, SearchIndex, SearchStats},
+    types::{DocId, XPathId},
 };
 use core_timing::timed;
 
-use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, planner::QueryPlan};
+use crate::{ScoredPosting, SearchHit, TopHit, ast::Query};
 
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
@@ -27,9 +27,10 @@ pub struct FieldFilter {
 #[derive(Debug, Clone)]
 pub enum FieldFilterKind {
     Text(Option<Query>),
+    Exact(String),
     Range {
-        lo: Option<EncodedBound>,
-        hi: Option<EncodedBound>,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
     },
 }
 
@@ -48,7 +49,7 @@ where
 
 impl<'a, I> QueryExecutor<'a, I>
 where
-    I: SearchIndex + SearchStats,
+    I: SearchIndex + SearchStats + SearchColumns,
 {
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self { index, analyzer }
@@ -63,6 +64,7 @@ where
             Query::And(parts) => self.execute_and(parts, xpath),
             Query::Or(parts) => self.execute_or(parts, xpath),
             Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
+            Query::Exact(term) => Some(self.execute_exact(term, xpath)),
         }
     }
 
@@ -215,6 +217,53 @@ where
     }
 
     #[timed(search)]
+    fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
+        use core_index::posting::Posting;
+
+        let words: Vec<&str> = raw.split_whitespace().collect();
+        if words.is_empty() {
+            return PostingList::default();
+        }
+        if words.len() == 1 {
+            return self.index.lookup(words[0], xpath);
+        }
+
+        let lists: Vec<PostingList> = words
+            .iter()
+            .map(|word| self.index.lookup(word, xpath))
+            .collect();
+
+        if lists.iter().any(|list| list.is_empty()) {
+            return PostingList::default();
+        }
+
+        let mut result = Vec::new();
+        let first = lists[0].items();
+
+        for first_posting in first {
+            let doc_id = first_posting.doc_id;
+            let mut position_lists: Vec<&[u32]> = vec![first_posting.positions.as_slice()];
+
+            let mut all_terms_in_doc = true;
+            for list in lists.iter().skip(1) {
+                match list.items().binary_search_by_key(&doc_id, |p| p.doc_id) {
+                    Ok(index) => position_lists.push(list.items()[index].positions.as_slice()),
+                    Err(_) => {
+                        all_terms_in_doc = false;
+                        break;
+                    }
+                }
+            }
+
+            if all_terms_in_doc && phrase_matches(&position_lists) {
+                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+            }
+        }
+
+        PostingList::from_items(result)
+    }
+
+    #[timed(search)]
     fn execute_phrase_optional(&self, terms: &[String], xpath: XPathId) -> Option<PostingList> {
         if terms.is_empty() {
             return None;
@@ -293,139 +342,6 @@ where
         hits
     }
 
-    #[timed(search)]
-    pub fn search_plan_top_k(&self, plan: &QueryPlan, xpath: XPathId, k: usize) -> Vec<SearchHit> {
-        if k == 0 {
-            return Vec::new();
-        }
-
-        let candidate_k = (k * 50).max(100).min(2_000);
-
-        let mut by_doc: HashMap<u64, SearchHit> = self
-            .search_top_k(&plan.retrieval, xpath, candidate_k)
-            .into_iter()
-            .map(|hit| (hit.doc_id, hit))
-            .collect();
-
-        if by_doc.is_empty() {
-            return Vec::new();
-        }
-
-        for signal in &plan.signals {
-            let postings = self.execute(&signal.query, xpath);
-
-            if postings.is_empty() {
-                if signal.required {
-                    return Vec::new();
-                }
-                continue;
-            }
-
-            if signal.required {
-                by_doc.retain(|doc_id, _| {
-                    postings
-                        .items()
-                        .binary_search_by_key(doc_id, |p| p.doc_id)
-                        .is_ok()
-                });
-            }
-
-            for posting in postings.items() {
-                let Some(existing) = by_doc.get_mut(&posting.doc_id) else {
-                    continue;
-                };
-
-                let signal_score =
-                    (posting.weight as f32) * signal.boost * (1.0 + posting.positions.len() as f32);
-
-                existing.score += signal_score;
-                existing.weight_sum = existing
-                    .weight_sum
-                    .saturating_add(signal_score.max(0.0) as u32);
-                existing.matched_terms += 1;
-            }
-        }
-
-        top_k_from_hits(by_doc.into_values(), k)
-    }
-
-    #[timed(search)]
-    pub fn search_plan_all_xpaths_top_k(
-        &self,
-        plan: &QueryPlan,
-        xpaths: impl IntoIterator<Item = XPathId>,
-        k: usize,
-    ) -> Vec<SearchHit> {
-        if k == 0 {
-            return Vec::new();
-        }
-
-        let xpaths: Vec<_> = xpaths.into_iter().collect();
-        let candidate_k = (k * 50).max(100).min(2_000);
-
-        let mut by_doc = HashMap::<DocId, SearchHit>::new();
-
-        // One retrieval phase across all fields.
-        for xpath in &xpaths {
-            for hit in self.search_top_k(&plan.retrieval, *xpath, candidate_k) {
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|existing| {
-                        existing.matched_terms += hit.matched_terms;
-                        existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
-                        existing.score += hit.score;
-                    })
-                    .or_insert(hit);
-            }
-        }
-
-        if by_doc.is_empty() {
-            return Vec::new();
-        }
-
-        // Rerank only candidate docs.
-        for signal in &plan.signals {
-            let mut required_seen = std::collections::HashSet::new();
-
-            for xpath in &xpaths {
-                let postings = self.execute(&signal.query, *xpath);
-
-                if postings.is_empty() {
-                    continue;
-                }
-
-                for posting in postings.items() {
-                    let Some(existing) = by_doc.get_mut(&posting.doc_id) else {
-                        continue;
-                    };
-
-                    required_seen.insert(posting.doc_id);
-
-                    let signal_score = posting.weight as f32
-                        * signal.boost
-                        * (1.0 + posting.positions.len() as f32);
-
-                    existing.score += signal_score;
-                    existing.weight_sum = existing
-                        .weight_sum
-                        .saturating_add(signal_score.max(0.0) as u32);
-                    existing.matched_terms += 1;
-                }
-            }
-
-            if signal.required {
-                by_doc.retain(|doc_id, _| required_seen.contains(doc_id));
-                if by_doc.is_empty() {
-                    return Vec::new();
-                }
-            }
-        }
-
-        top_k_from_hits(by_doc.into_values(), k)
-    }
-
     // INFO: Currently we might want to think about other ways of implementing the idea
     // of searching within all xpaths, cause it still happens independently.
     #[timed(search)]
@@ -500,16 +416,20 @@ where
                         .collect(),
                     None => HashSet::new(),
                 },
-                FieldFilterKind::Range { lo, hi } => {
-                    let lo = lo.as_ref().map(|b| RangeBound::new(&b.term, b.inclusive));
-                    let hi = hi.as_ref().map(|b| RangeBound::new(&b.term, b.inclusive));
-                    self.index
-                        .lookup_range(filter.xpath, lo, hi)
-                        .items()
-                        .iter()
-                        .map(|p| p.doc_id)
-                        .collect()
-                }
+                FieldFilterKind::Range { lo, hi } => self
+                    .index
+                    .column_range(filter.xpath, *lo, *hi)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+
+                FieldFilterKind::Exact(term) => self
+                    .execute_exact(term, filter.xpath)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
             };
 
             restrict = Some(match restrict {
@@ -523,56 +443,6 @@ where
         }
 
         restrict
-    }
-
-    #[timed(search)]
-    pub fn search_top_k_restricted(
-        &self,
-        query: &Query,
-        xpath: XPathId,
-        k: usize,
-        restrict: Option<&HashSet<DocId>>,
-    ) -> Vec<SearchHit> {
-        if k == 0 {
-            return Vec::new();
-        }
-        if restrict.is_some_and(|s| s.is_empty()) {
-            return Vec::new();
-        }
-
-        let scored = self.execute_scored(query, xpath);
-        let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
-
-        for p in scored {
-            if let Some(allowed) = restrict {
-                if !allowed.contains(&p.doc_id) {
-                    continue;
-                }
-            }
-
-            let score = p.score as f32 / 1000.0 * p.density;
-            let hit = SearchHit {
-                doc_id: p.doc_id,
-                matched_terms: p.matched_terms,
-                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
-                distance_factor: p.density,
-                score,
-            };
-
-            heap.push(TopHit(hit));
-            if heap.len() > k {
-                heap.pop();
-            }
-        }
-
-        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.doc_id.cmp(&b.doc_id))
-        });
-        hits
     }
 
     #[timed(search)]

@@ -6,12 +6,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::policy::{IndexKind, IndexPolicy};
+use super::policy::FieldKind;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AllFields {
     //xpath -> IndexKind if not found them None
-    fields: BTreeMap<String, IndexKind>,
+    fields: BTreeMap<String, FieldKind>,
 }
 
 impl AllFields {
@@ -52,24 +52,11 @@ impl AllFields {
         Ok(())
     }
 
-    pub fn record_fields(&mut self, fields: &BTreeMap<String, String>, policy: &IndexPolicy) {
-        for (xpath, _) in fields {
-            let kind = policy
-                .fields
-                .iter()
-                .find(|f| f.name == *xpath)
-                .map(|f| f.index.clone())
-                .unwrap_or(IndexKind::None);
-
-            self.fields.entry(xpath.clone()).or_insert(kind);
-        }
-    }
-
-    pub fn get_fields(&self) -> &BTreeMap<String, IndexKind> {
+    pub fn get_fields(&self) -> &BTreeMap<String, FieldKind> {
         &self.fields
     }
 
-    pub fn get_fields_mut(&mut self) -> &mut BTreeMap<String, IndexKind> {
+    pub fn get_fields_mut(&mut self) -> &mut BTreeMap<String, FieldKind> {
         &mut self.fields
     }
 

@@ -2,6 +2,7 @@ import json
 import os
 import time
 import math
+import random
 
 INPUT_FILE = "movies.json"
 OUTPUT_DIR = "./movie_chunks"
@@ -33,11 +34,13 @@ def main():
 
     docs = []
     for i, movie in enumerate(movies, start=1):
-        # Insert the incrementing ID as the first key
-        # doc = {"id": i}
         doc = {}
         for key, value in movie.items():
             doc[key] = flatten_value(value)
+
+        # Add random float between 1.000 and 1000.000
+        # doc["random_float"] = round(random.uniform(1.0, 1000.0), 3)
+
         docs.append(doc)
 
     num_chunks = math.ceil(total_movies / CHUNK_SIZE)

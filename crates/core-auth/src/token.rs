@@ -61,21 +61,4 @@ impl TokenStore {
         }
         Some(entry.username.clone())
     }
-    pub fn revoke(&self, token: &Token) {
-        let hashed = hash_token(token);
-        self.tokens
-            .write()
-            .unwrap_or_else(
-                |e: std::sync::PoisonError<
-                    std::sync::RwLockWriteGuard<'_, HashMap<String, TokenEntry>>,
-                >| e.into_inner(),
-            )
-            .remove(&hashed);
-    }
-    pub fn revoke_all_for(&self, username: &str) {
-        self.tokens
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, entry| entry.username != username);
-    }
 }

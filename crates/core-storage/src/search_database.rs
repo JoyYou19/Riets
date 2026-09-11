@@ -6,7 +6,7 @@ use std::{
 use crate::document_store::{DocumentStore, StoredDocument};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::IndexKind},
+    document::{IndexPolicy, IndexedDocument, policy::FieldKind},
     lsm::{
         LsmIndex,
         index_worker::{
@@ -14,7 +14,7 @@ use core_index::{
         },
         snapshot::SharedIndexSnapshot,
     },
-    numbers::{float_term, integer_term},
+    numeric_columns::{parse_float, parse_integer},
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
@@ -25,7 +25,7 @@ use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
-use core_query::{Query, QueryExecutor, SearchHit, planner::QueryPlan};
+use core_query::{Query, QueryExecutor, SearchHit};
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -157,10 +157,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn shard_id(&self) -> ShardId {
         self.shard_id
-    }
-
-    pub fn owns_doc_id(&self, doc_id: DocId) -> bool {
-        shard_of(doc_id) == self.shard_id
     }
 
     // WARN: This is old, must be changed, backwards compatibility here is 0
@@ -319,24 +315,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         pipeline.finish()
     }
 
-    #[timed(inserting)]
-    pub fn put_document_store_only_return_indexed(
-        &mut self,
-        input: DocumentInput,
-    ) -> io::Result<IndexedDocument> {
-        let doc = StoredDocument {
-            external_id: input.external_id,
-            internal_id: self.allocate_internal_id()?,
-            source: input.source,
-            fields: input.fields,
-            format: input.format,
-        };
-
-        self.store.put(doc.clone())?;
-
-        Ok(stored_document_to_indexed(&doc, &self.policy))
-    }
-
     // Update creates a new internal version, the old internal_id is tombstoned, while the
     // external_id points to the latest version
     // INFO: changed the name cuz upsert is more precise here
@@ -384,22 +362,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.store.delete(external_id)
     }
 
-    #[timed(modifying_documents)]
-    pub fn delete_internal_document(&mut self, doc_id: DocId) -> io::Result<()> {
-        if !self.owns_doc_id(doc_id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "document {doc_id} belongs to shard {}, not shard {}",
-                    shard_of(doc_id),
-                    self.shard_id
-                ),
-            ));
-        }
-
-        self.index_worker.delete_document_wait(doc_id)
-    }
-
     pub fn get_document(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         self.store.get(external_id)
     }
@@ -409,87 +371,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let snapshot = self.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
         executor.search(query, xpath)
-    }
-
-    #[timed(search)]
-    pub fn search_document_hits(
-        &mut self,
-        query: &Query,
-        xpath: u32,
-    ) -> io::Result<Vec<SearchDocumentHit>> {
-        let hits = self.search(query, xpath);
-
-        let mut results = Vec::new();
-
-        for hit in hits {
-            if let Some(doc) = self.store.get_by_internal_id(hit.doc_id)? {
-                results.push(SearchDocumentHit {
-                    external_id: doc.external_id.clone(),
-                    internal_id: doc.internal_id,
-                    score: hit.score,
-                    fields: visible_fields(&doc.fields, &self.policy, None),
-                });
-            }
-        }
-
-        Ok(results)
-    }
-
-    #[timed(search)]
-    pub fn search_document_hits_top_k(
-        &mut self,
-        query: &Query,
-        xpath: u32,
-        k: usize,
-    ) -> io::Result<Vec<SearchDocumentHit>> {
-        let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-        let hits = executor.search_top_k(query, xpath, k);
-
-        self.resolve_document_hits(hits, None)
-    }
-
-    #[timed(search)]
-    pub fn search_document_hits_all_fields_top_k(
-        &self,
-        query: &Query,
-        k: usize,
-    ) -> io::Result<Vec<SearchDocumentHit>> {
-        let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-
-        let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
-        let hits = executor.search_all_xpaths_top_k(query, xpaths, k);
-
-        self.resolve_document_hits(hits, None)
-    }
-
-    #[timed(search)]
-    pub fn search_document_results_all_fields_top_k(
-        &mut self,
-        query: &Query,
-        k: usize,
-    ) -> io::Result<SearchDocumentResults> {
-        let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-
-        let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
-        let all_hits = executor.search_all_xpaths(query, xpaths);
-
-        let total_hits = all_hits.len();
-
-        let mut top_hits = all_hits;
-        top_hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.doc_id.cmp(&b.doc_id))
-        });
-        top_hits.truncate(k);
-
-        let hits = self.resolve_document_hits(top_hits, None)?;
-
-        Ok(SearchDocumentResults { total_hits, hits })
     }
 
     //lookup-retrieves+filters document based on request
@@ -511,46 +392,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
             }
         }
         LookupResponse::from_hits(found, not_found).map_err(io::Error::other)
-    }
-
-    #[timed(search)]
-    pub fn search_document_hits_plan(
-        &self,
-        plan: &QueryPlan,
-        return_fields: Option<&IndexMap<String, bool>>,
-        offset: usize,
-        limit: usize,
-    ) -> io::Result<Vec<SearchDocumentHit>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let requested_hits = offset.checked_add(limit).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "offset and limit exceed the supported range",
-            )
-        })?;
-
-        let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-
-        let xpaths: Vec<_> = self.policy.searchable_xpaths().collect();
-
-        // the executor might not rank enough results to coover the skipped portion and the
-        // requested page, so we must ensure it does
-
-        let mut hits = executor.search_plan_all_xpaths_top_k(plan, xpaths, requested_hits);
-
-        if offset >= hits.len() {
-            return Ok(Vec::new());
-        }
-
-        // I don't want to allocate another Vec and also lets not touch skipped docs
-        hits.drain(..offset);
-        hits.truncate(limit);
-
-        self.resolve_document_hits(hits, return_fields)
     }
 
     #[timed(search)]
@@ -597,13 +438,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.index_worker.sender()
     }
 
-    pub fn analyze_query_term(&self, term: &str) -> Option<String> {
-        self.analyzer
-            .analyze(term)
-            .first()
-            .map(|token| token.text.clone())
-    }
-
     pub fn segment_count(&self) -> io::Result<usize> {
         self.index_worker.segment_count()
     }
@@ -623,12 +457,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let _docs = self.store.all_documents()?; // jauzliek _ ?
 
         todo!("needs LsmINdex reset/clear before rebuilding")
-    }
-
-    #[timed(database_lifecycle)]
-    pub fn shutdown_into_store(self) -> io::Result<S> {
-        let _inex = self.index_worker.shutdown()?;
-        Ok(self.store)
     }
 
     #[timed(reindex)]
@@ -688,30 +516,48 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
     let mut indexed = IndexedDocument::new(doc.internal_id);
 
     for field in policy.indexed_fields() {
-        match field.index {
-            IndexKind::Text | IndexKind::Id | IndexKind::IdAuto => {
+        match field.kind {
+            FieldKind::Text => {
                 let Some(text) = doc.fields.get(&field.name) else {
                     continue;
                 };
                 indexed = indexed.with_part(field.xpath(policy), text, field.weight);
+                if let Some(exact_xpath) = field.exact_xpath(policy) {
+                    indexed = indexed.with_exact(exact_xpath, text, field.weight);
+                }
             }
-            IndexKind::Integer => {
+            FieldKind::Id => {
+                // | FieldKind::IdAuto => { //ja id ir auto tas kkas lidzigs: kjbdyui2bd7913bu91oub
+                // nu nahuj vinu vajag
+                let Some(text) = doc.fields.get(&field.name) else {
+                    continue;
+                };
+                indexed = indexed.with_exact(field.xpath(policy), text, field.weight);
+            }
+
+            FieldKind::Integer => {
                 let Some(raw) = doc.fields.get(&field.name) else {
                     continue;
                 };
-                if let Some(term) = integer_term(raw) {
-                    indexed = indexed.with_number(field.xpath(policy), term);
+                if let Some(value) = parse_integer(raw) {
+                    indexed = indexed.with_column(field.xpath(policy), value);
+                    if field.searchable() {
+                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
+                    }
                 }
             }
-            IndexKind::Float => {
+            FieldKind::Float => {
                 let Some(raw) = doc.fields.get(&field.name) else {
                     continue;
                 };
-                if let Some(term) = float_term(raw) {
-                    indexed = indexed.with_number(field.xpath(policy), term);
+                if let Some(value) = parse_float(raw) {
+                    indexed = indexed.with_column(field.xpath(policy), value);
+                    if field.searchable() {
+                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
+                    }
                 }
             }
-            _ => {} // Date / None: not indexed yet
+            _ => {} // Date / None / IdAuto : not indexed yet
         }
     }
 

@@ -10,13 +10,15 @@ use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
-use core_index::document::policy::IndexKind;
+use core_index::document::policy::FieldKind;
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
-use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
+use core_protocol::command_reponse_definitions::{
+    LookupCommand, LookupResponse, QuerySpec, SearchCommand,
+};
 use core_protocol::errors::CorelamoError;
-use core_query::SearchHit;
 use core_query::query_string_parser::parse_and_analyze;
+use core_query::{Query, SearchHit};
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -49,10 +51,6 @@ pub struct ShardManager {
 
 impl ShardManager {
     const DEFAULT_QUEUE_DEPTH: usize = 256;
-
-    pub fn all_alive(&self) -> bool {
-        self.shards.iter().all(|h| h.is_alive())
-    }
 
     pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
         self.db_stats.record_search(failed, elapsed);
@@ -124,17 +122,6 @@ impl ShardManager {
         self.all_fields.read().clone()
     }
 
-    //helper
-    pub fn update_all_fields_from_partial_replace(
-        &self,
-        items: &[(String, BTreeMap<String, String>)],
-    ) -> Result<(), CorelamoError> {
-        let mut all_fields_map = BTreeMap::new();
-        for (_, fields) in items {
-            all_fields_map.extend(fields.clone());
-        }
-        self.update_all_fields_from_fields(&all_fields_map)
-    }
     //peak name
     #[timed(shard_manager_doc_modifying)]
     fn update_all_fields_from_fields(
@@ -154,8 +141,8 @@ impl ShardManager {
                 .fields
                 .iter()
                 .find(|f| f.name == *xpath)
-                .map(|f| f.index.clone())
-                .unwrap_or(IndexKind::None);
+                .map(|f| f.kind.clone())
+                .unwrap_or(FieldKind::None);
 
             if all_fields.get_fields().get(xpath) != Some(&kind) {
                 all_fields.get_fields_mut().insert(xpath.clone(), kind);
@@ -232,10 +219,6 @@ impl ShardManager {
             };
         }
         first_err.map_or(Ok(()), Err)
-    }
-
-    pub fn all_readable(&self) -> bool {
-        self.shards.iter().all(|h| h.is_running())
     }
 
     pub fn all_running(&self) -> bool {
@@ -800,8 +783,8 @@ impl ShardManager {
 
         for (xpath, kind) in all_fields.get_fields_mut().iter_mut() {
             if let Some(field) = policy.fields.iter().find(|f| f.name == *xpath) {
-                if *kind != field.index {
-                    *kind = field.index.clone();
+                if *kind != field.kind {
+                    *kind = field.kind.clone();
                     changed = true;
                 }
             }
@@ -957,10 +940,26 @@ impl ShardManager {
             return Ok(Vec::new());
         }
 
-        let query = Arc::new(parse_and_analyze(&command.query, &self.analyzer)?);
         let policy = self.policy.read().clone();
 
-        let xpaths = Arc::new(policy.searchable_xpaths().collect::<Vec<_>>());
+        let (raw_query, exact) = match &command.query {
+            QuerySpec::Plain(raw) => (raw.as_str(), false),
+            QuerySpec::Exact { query, exact } => (query.as_str(), *exact),
+        };
+
+        //stupid shit to do so that someone can do shit like "query": {"query": penis, "exact":
+        //false}
+        let (query, xpaths) = if exact {
+            (
+                Arc::new(Some(Query::Exact(raw_query.to_string()))),
+                Arc::new(policy.exact_xpaths().collect::<Vec<_>>()),
+            )
+        } else {
+            (
+                Arc::new(parse_and_analyze(raw_query, &self.analyzer)?),
+                Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
+            )
+        };
 
         let filters = resolve_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
@@ -998,7 +997,7 @@ impl ShardManager {
             });
         }
 
-        let mut items: Vec<(SearchHit, Vec<Option<String>>)> = Vec::new();
+        let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
@@ -1020,7 +1019,7 @@ impl ShardManager {
 
         //sort keys when sort given, otherwise just relevance/docid
         if let Some(specs) = sorts.as_ref() {
-            //the cool crazy sort
+            //the cool crazy meged sort
             order_blended(&mut items, specs);
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));

@@ -8,9 +8,10 @@ use core_timing::timed;
 
 use crate::{
     mem::MemIndex,
+    numeric_columns::{NumericBound, NumericValue},
     posting::{DeleteSet, PostingList, ops::union_many},
-    search::{SearchIndex, SearchReader, SearchStats},
-    types::{DocId, RangeBound, XPathId},
+    search::{SearchColumns, SearchIndex, SearchReader, SearchStats},
+    types::{DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -30,21 +31,39 @@ impl SearchIndex for IndexSnapshot {
         IndexSnapshot::lookup(self, term, xpath)
     }
 
-    #[timed(search)]
-    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
-        let mut out = self.mem.numeric_values(xpath);
-        for segment in &self.segments {
-            out.extend(segment.numeric_values(xpath));
-        }
-        out
-    }
-
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup_prefix(self, prefix, xpath)
     }
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup_wildcard(self, pattern, xpath)
+    }
+}
+
+impl SearchColumns for IndexSnapshot {
+    fn column_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+    ) -> PostingList {
+        let mut lists = Vec::new();
+
+        lists.push(self.mem.column_range(xpath, lo, hi));
+
+        for segment in &self.segments {
+            lists.push(segment.column_range(xpath, lo, hi));
+        }
+
+        self.apply_deletes(union_many(lists.iter()))
+    }
+
+    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
+        let mut out = self.mem.column_values(xpath);
+        for segment in &self.segments {
+            out.extend(segment.column_values(xpath));
+        }
+        out
     }
 }
 
@@ -57,24 +76,6 @@ impl SearchStats for IndexSnapshot {
         }
 
         total
-    }
-
-    #[timed(search)]
-    fn lookup_range(
-        &self,
-        xpath: XPathId,
-        lo: Option<RangeBound<'_>>,
-        hi: Option<RangeBound<'_>>,
-    ) -> PostingList {
-        let mut lists = Vec::new();
-
-        lists.push(self.mem.lookup_range(xpath, lo, hi));
-
-        for segment in &self.segments {
-            lists.push(segment.lookup_range(xpath, lo, hi));
-        }
-
-        self.apply_deletes(union_many(lists.iter()))
     }
 
     fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {
@@ -194,17 +195,6 @@ impl SharedIndexSnapshot {
 
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
-    }
-
-    pub fn get_snapshot(&self) -> (u64, Arc<IndexSnapshot>) {
-        loop {
-            let before = self.generation.load(Ordering::Acquire);
-            let snapshot = self.inner.load_full();
-            let after = self.generation.load(Ordering::Acquire);
-            if before == after {
-                return (after, snapshot);
-            }
-        }
     }
 
     pub fn get(&self) -> Arc<IndexSnapshot> {

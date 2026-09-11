@@ -1,15 +1,13 @@
-use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::AtomicU64;
-use std::{path::PathBuf, sync::Arc, sync::Mutex, sync::atomic::AtomicBool};
+use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool};
 
-use core_query::sort::DocValues;
 use core_storage::binary_store::{DEFAULT_DOC_CACHE_CAPACITY, DocLocation, read_document_at_path};
 use core_timing::timed;
 use dashmap::DashMap;
 
 use core_index::lsm::snapshot::SharedIndexSnapshot;
-use core_index::types::{DocId, XPathId};
+use core_index::types::DocId;
 use core_storage::document_store::StoredDocument;
 use moka::sync::Cache;
 use tokio::task;
@@ -25,7 +23,6 @@ pub struct SharedShardState {
     pub is_restoring: AtomicBool,
     pub last_backup_at: AtomicU64,
     pub last_backup_id: std::sync::RwLock<Option<String>>,
-    pub sort_cache: Mutex<HashMap<XPathId, (u64, Arc<DocValues>)>>,
     pub root: PathBuf,
 }
 
@@ -41,7 +38,6 @@ impl SharedShardState {
             is_running: AtomicBool::new(false),
             is_clearing: AtomicBool::new(false),
             is_backing_up: AtomicBool::new(false),
-            sort_cache: Mutex::new(HashMap::new()),
             is_restoring: AtomicBool::new(false),
             last_backup_at: AtomicU64::new(0),
             last_backup_id: std::sync::RwLock::new(None),
@@ -53,10 +49,6 @@ impl SharedShardState {
     pub fn release(&self) {
         //INFO: release EVERYTHING RAAAH: -Normunds nevis Kristians
         self.snapshot.clear();
-
-        let mut sort = self.sort_cache.lock().unwrap_or_else(|e| e.into_inner());
-        sort.clear();
-        sort.shrink_to_fit();
 
         self.docs.invalidate_all();
         self.docs.run_pending_tasks();

@@ -5,9 +5,10 @@ use core_timing::timed;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
-use crate::posting::PostingList;
-use crate::search::{SearchIndex, SearchStats};
-use crate::types::{DocId, FieldStats, RangeBound, TermKey, XPathId};
+use crate::numeric_columns::{NumericBound, NumericColumns, NumericValue};
+use crate::posting::{Posting, PostingList};
+use crate::search::{SearchColumns, SearchIndex, SearchStats};
+use crate::types::{DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
@@ -16,6 +17,7 @@ pub struct MemIndex {
     terms: HashMap<TermKey, PostingList>,
     doc_lengths: HashMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
+    columns: NumericColumns,
 }
 
 impl SearchIndex for MemIndex {
@@ -27,47 +29,42 @@ impl SearchIndex for MemIndex {
         self.lookup_prefix(prefix, xpath)
     }
 
-    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
-        MemIndex::numeric_values(self, xpath)
-    }
-
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.lookup_wildcard(pattern, xpath)
+    }
+}
+
+impl SearchColumns for MemIndex {
+    fn column_range(
+        &self,
+        xpath: XPathId,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+    ) -> PostingList {
+        let docs = self.columns.range(xpath, lo, hi);
+        PostingList::from_items(
+            docs.into_iter()
+                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
+                .collect(),
+        )
+    }
+
+    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
+        self.columns
+            .column(xpath)
+            .map(|column| {
+                column
+                    .entries()
+                    .map(|(value, doc_id)| (doc_id, value))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
 impl SearchStats for MemIndex {
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
         self.doc_lengths.get(&(doc_id, xpath)).copied()
-    }
-
-    #[timed(search)]
-    fn lookup_range(
-        &self,
-        xpath: XPathId,
-        lo: Option<RangeBound<'_>>,
-        hi: Option<RangeBound<'_>>,
-    ) -> PostingList {
-        let mut items = Vec::new();
-
-        for (key, postings) in &self.terms {
-            if key.xpath != xpath {
-                continue;
-            }
-            if let Some(lo) = lo {
-                if lo.below(&key.term) {
-                    continue;
-                }
-            }
-            if let Some(hi) = hi {
-                if hi.past(&key.term) {
-                    continue;
-                }
-            }
-            items.extend_from_slice(postings.items());
-        }
-
-        PostingList::from_items(items)
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {
@@ -91,6 +88,7 @@ impl MemIndex {
             terms: HashMap::new(),
             doc_lengths: HashMap::new(),
             field_stats: BTreeMap::new(),
+            columns: NumericColumns::new(),
         }
     }
 
@@ -100,21 +98,7 @@ impl MemIndex {
         let doc_lengths: BTreeMap<_, _> = self.doc_lengths.into_iter().collect();
         let field_stats = self.field_stats;
 
-        crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats)
-    }
-
-    #[timed(search)]
-    fn numeric_values(&self, xpath: XPathId) -> Vec<(DocId, String)> {
-        let mut out = Vec::new();
-        for (key, postings) in &self.terms {
-            if key.xpath != xpath {
-                continue;
-            }
-            for posting in postings.items() {
-                out.push((posting.doc_id, key.term.clone()));
-            }
-        }
-        out
+        crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats, self.columns)
     }
 
     pub fn add_token(
@@ -163,19 +147,6 @@ impl MemIndex {
 
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {
         self.terms.get(&TermKey::new(term, xpath))
-    }
-
-    #[timed(search)]
-    pub fn lookup_all_xpaths(&self, term: &str) -> PostingList {
-        let mut items = Vec::new();
-
-        for (key, postings) in &self.terms {
-            if key.term == term {
-                items.extend_from_slice(postings.items());
-            }
-        }
-
-        PostingList::from_items(items)
     }
 
     pub fn term_count(&self) -> usize {
@@ -233,21 +204,63 @@ impl MemIndex {
     #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
         for part in &document.parts {
-            self.add_document_weighted(
-                analyzer,
-                document.doc_id,
-                part.xpath,
-                &part.text,
-                part.weight.min,
-                part.weight.max,
-            );
+            if part.exact {
+                self.add_exact_weighted(
+                    document.doc_id,
+                    part.xpath,
+                    &part.text,
+                    part.weight.min,
+                    part.weight.max,
+                );
+            } else {
+                self.add_document_weighted(
+                    analyzer,
+                    document.doc_id,
+                    part.xpath,
+                    &part.text,
+                    part.weight.min,
+                    part.weight.max,
+                );
+            }
         }
 
-        for part in &document.numbers {
-            self.terms
-                .entry(TermKey::new(part.term.clone(), part.xpath))
+        for column in &document.columns {
+            self.columns
+                .insert(column.xpath, column.value, document.doc_id);
+        }
+    }
+
+    //basically add_document without lowercasing stemming
+    #[timed(indexing_documents)]
+    pub fn add_exact_weighted(
+        &mut self,
+        doc_id: DocId,
+        xpath: XPathId,
+        text: &str,
+        min_weight: u16,
+        max_weight: u16,
+    ) {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let len = words.len().min(u32::MAX as usize) as u32;
+
+        self.doc_lengths.insert((doc_id, xpath), len);
+
+        let stats = self.field_stats.entry(xpath).or_default();
+        stats.doc_count += 1;
+        stats.total_doc_len += len as u64;
+
+        let mut grouped = HashMap::<String, Vec<u32>>::new();
+        for (position, word) in words.iter().enumerate() {
+            grouped
+                .entry((*word).to_string())
                 .or_default()
-                .insert_numeric(document.doc_id);
+                .push(position as u32);
+        }
+
+        for (term, positions) in grouped {
+            let occurrences = positions.len().min(u16::MAX as usize) as u16;
+            let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            self.add_posting_weighted(term, xpath, doc_id, positions, weight);
         }
     }
 

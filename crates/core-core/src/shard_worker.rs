@@ -8,7 +8,7 @@ use std::{ fs, io };
 
 use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
-use core_index::search::SearchIndex;
+use core_index::search::SearchColumns;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_query::executor::FieldFilter;
 use core_query::sort::DocValues;
@@ -139,7 +139,6 @@ pub enum ShardCmd {
 pub struct ShardHandle {
     id: ShardId,
     tx: Sender<ShardCmd>,
-    alive: Arc<AtomicBool>,
     progress: Arc<ReindexProgress>,
     analyzer: Analyzer,
     shared: Arc<SharedShardState>,
@@ -171,13 +170,6 @@ impl ShardHandle {
 
     pub fn progress(&self) -> &Arc<ReindexProgress> {
         &self.progress
-    }
-    pub fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Acquire)
-    }
-
-    pub fn queued(&self) -> usize {
-        self.tx.len()
     }
 
     pub fn is_running(&self) -> bool {
@@ -246,6 +238,7 @@ impl ShardHandle {
         )
     }
 
+   
     #[timed(search)]
     pub fn rank_sorted(
         &self,
@@ -253,13 +246,13 @@ impl ShardHandle {
         filters: Option<&HashMap<String, FieldFilter>>,
         xpaths: &[XPathId],
         sort_xpaths: &[XPathId],
-        window: usize
-    ) -> Result<Vec<(SearchHit, Vec<Option<String>>)>, CorelamoError> {
+        window: usize,
+    ) -> Result<Vec<(SearchHit, Vec<Option<f64>>)>, CorelamoError> {
         if window == 0 {
             return Ok(Vec::new());
         }
 
-        let (generation, snapshot) = self.shared.snapshot.get_snapshot();
+        let snapshot = self.shared.snapshot.get();
         let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
 
         let restrict = match filters {
@@ -267,7 +260,7 @@ impl ShardHandle {
             None => None,
         };
 
-        //gets the top canditates based on relevance + filters
+        // gets the top candidates based on relevance + filters
         let candidates = executor.search_all_xpaths_top_k_restricted(
             query,
             xpaths.iter().copied(),
@@ -278,30 +271,27 @@ impl ShardHandle {
             return Ok(Vec::new());
         }
 
-        let mut cache = self.shared.sort_cache.lock().unwrap_or_else(|e| e.into_inner());
-
-        let mut columns: Vec<Arc<DocValues>> = Vec::with_capacity(sort_xpaths.len());
+        // Build doc -> numeric value maps straight from the columns
+        let mut columns: Vec<HashMap<DocId, f64>> = Vec::with_capacity(sort_xpaths.len());
         for &xpath in sort_xpaths {
-            let entry = cache.entry(xpath).or_insert_with(|| (0, Arc::new(DocValues::default())));
-            if entry.0 != generation {
-                entry.0 = generation;
-                entry.1 = Arc::new(DocValues::from_hits(snapshot.numeric_values(xpath)));
-            }
-            columns.push(Arc::clone(&entry.1));
-        }
-        drop(cache);
-        Ok(
-            candidates
+            let map: HashMap<DocId, f64> = snapshot
+                .column_values(xpath)
                 .into_iter()
-                .map(|hit| {
-                    let keys = columns
-                        .iter()
-                        .map(|column| column.value_of(hit.doc_id).map(str::to_owned))
-                        .collect();
-                    (hit, keys)
-                })
-                .collect()
-        )
+                .map(|(doc_id, value)| (doc_id, value.as_f64()))
+                .collect();
+            columns.push(map);
+        }
+
+        Ok(candidates
+            .into_iter()
+            .map(|hit| {
+                let keys = columns
+                    .iter()
+                    .map(|column| column.get(&hit.doc_id).copied())
+                    .collect();
+                (hit, keys)
+            })
+            .collect())
     }
 
     #[timed(retrieve_opps)]
@@ -321,9 +311,6 @@ impl ShardHandle {
         }
 
         Ok(out)
-    }
-    pub fn document_count_direct(&self) -> usize {
-        self.shared.locations.len()
     }
 
     pub fn get_logs_direct(&self, date: Option<String>) -> Result<String, CorelamoError> {
@@ -688,7 +675,6 @@ pub fn spawn(
         ShardHandle {
             id,
             tx,
-            alive,
             progress,
             analyzer,
             shared,

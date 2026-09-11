@@ -12,6 +12,7 @@ use core_timing::timed;
 
 use crate::{
     disk::{reader::DiskSegment, writer::write_merged_segment},
+    numeric_columns::NumericColumns,
     posting::{DeleteSet, PostingList},
     segment::{ImmutableSegment, SegmentHandle},
     types::{DocId, TermKey, XPathId},
@@ -29,6 +30,13 @@ impl OpenSegment {
         match self {
             OpenSegment::Disk(d) => d.doc_lengths(),
             OpenSegment::Memory(m) => m.doc_lengths(),
+        }
+    }
+
+    fn columns(&self) -> &NumericColumns {
+        match self {
+            OpenSegment::Disk(d) => d.columns(),
+            OpenSegment::Memory(m) => m.columns(),
         }
     }
 
@@ -103,12 +111,29 @@ pub fn compact_segments_streaming(
         }
     }
 
+    let mut merged_columns = NumericColumns::new();
+    for segment in &opened {
+        for (xpath, column) in segment.columns().iter() {
+            for (value, doc_id) in column.entries() {
+                if deleted.contains(doc_id) {
+                    continue;
+                }
+                merged_columns.insert(xpath, value, doc_id);
+            }
+        }
+    }
+
     let sources: Vec<Peekable<TermIter<'_>>> =
         opened.iter().map(|s| s.iter_terms().peekable()).collect();
 
     let merged_terms = MergedTerms { sources, deleted };
 
-    write_merged_segment(output_path, merged_terms, &merged_doc_lengths)
+    write_merged_segment(
+        output_path,
+        merged_terms,
+        &merged_doc_lengths,
+        &merged_columns,
+    )
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

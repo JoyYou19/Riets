@@ -3,7 +3,7 @@ pub mod disk;
 pub mod document;
 pub mod lsm;
 pub mod mem;
-pub mod numbers;
+pub mod numeric_columns;
 pub mod posting;
 pub mod search;
 pub mod segment;
