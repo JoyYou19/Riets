@@ -311,7 +311,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         window_size: usize,
     ) -> io::Result<InsertReport> {
         let mut pipeline = self.begin_import(batch_size, window_size)?;
-
+        pipeline.seen.reserve(inputs.len());
         for (input_index, input) in inputs.into_iter().enumerate() {
             pipeline.push(input, input_index)?;
         }

@@ -18,9 +18,10 @@ fn record_crc(offset: u64, len: u32, payload: &[u8]) -> u32 {
     crc.update(payload);
     crc.finalize()
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
 pub enum SyncMode {
-    SyncEach, // fsync before every acknowledgment (default, safe)
+    SyncEach, 
+    #[default]// fsync before every acknowledgment (default, safe)
     Manual,   // caller must invoke flush(); appends are not durable until then
 }
 struct Inner {

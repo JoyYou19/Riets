@@ -407,14 +407,13 @@ impl DocumentStore for BinaryDocumentStore {
         let file = OpenOptions::new().append(true).open(&self.current_segment_path())?;
         let start = file.metadata()?.len();
         let mut writer = CountingWriter::new(BufWriter::new(file), start);
-
+        let current_segment = self.current_segment.load(Ordering::Relaxed);
         for doc in docs {
             write_u8(&mut writer, OP_PUT)?;
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
 
             self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
-            let current_segment = Self::list_segment_ids(&self.path)?.last().copied().unwrap_or(0);
             self.locations.insert(doc.external_id.clone(), DocLocation {
                 internal_id: doc.internal_id,
                 offset: doc_offset,
