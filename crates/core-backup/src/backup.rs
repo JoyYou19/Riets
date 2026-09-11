@@ -11,6 +11,7 @@ use std::fs::{ self, File, OpenOptions };
 use std::io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write };
 use std::path::{ Path, PathBuf };
 use std::time::SystemTime;
+use simd_json::prelude::*;
 const COPY_BUF_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +42,7 @@ pub struct BackupManager {
 #[derive(Debug)]
 pub enum BackupError {
     IoError(std::io::Error),
-    SerdeError(serde_json::Error),
+    SerdeError(simd_json::Error),
     BincodeError(String),
     WalError(String),
     CorruptRecord(String),
@@ -80,8 +81,8 @@ impl From<std::io::Error> for BackupError {
     }
 }
 
-impl From<serde_json::Error> for BackupError {
-    fn from(error: serde_json::Error) -> Self {
+impl From<simd_json::Error> for BackupError {
+    fn from(error: simd_json::Error) -> Self {
         BackupError::SerdeError(error)
     }
 }
@@ -163,7 +164,10 @@ fn tar_dir(
     let enc = GzEncoder::new(file, Compression::fast());
     let buffered = BufWriter::with_capacity(COPY_BUF_SIZE, enc);
     let mut builder = match progress {
-        Some(p) => tar::Builder::new(Box::new(ProgressWriter { inner: buffered, progress: p }) as Box<dyn Write>),
+        Some(p) =>
+            tar::Builder::new(
+                Box::new(ProgressWriter { inner: buffered, progress: p }) as Box<dyn Write>
+            ),
         None => tar::Builder::new(Box::new(buffered) as Box<dyn Write>),
     };
     builder.append_dir_all(entry_name, src)?;
@@ -228,7 +232,7 @@ fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
 fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
     let tmp = backup_path.join("manifest.json.tmp");
     let dst = backup_path.join("manifest.json");
-    fs::write(&tmp, serde_json::to_string(manifest)?)?;
+    fs::write(&tmp, simd_json::to_string(manifest)?)?;
     File::open(&tmp)?.sync_all()?;
     fs::rename(&tmp, &dst)?;
     Ok(())
@@ -253,7 +257,8 @@ impl BackupManager {
         let (last_segment_id, last_segment_offset, last_backup_id) = if
             let Ok(state) = fs::read_to_string(&state_path)
         {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+            let mut buf = state.into_bytes();
+            if let Ok(parsed) = simd_json::from_slice::<simd_json::OwnedValue>(&mut buf) {
                 let segment = parsed["last_segment_id"]
                     .as_u64()
                     .unwrap_or(last_segment_id as u64) as u32;
@@ -274,7 +279,8 @@ impl BackupManager {
                 .filter_map(|e| {
                     let manifest_path = e.path().join(&shard_name).join("manifest.json");
                     let text = fs::read_to_string(&manifest_path).ok()?;
-                    serde_json::from_str::<BackupManifest>(&text).ok()
+                    let mut buf = text.into_bytes();
+                    simd_json::from_slice::<BackupManifest>(&mut buf).ok()
                 })
                 .max_by_key(|m| m.created_at);
 
@@ -299,12 +305,12 @@ impl BackupManager {
         let dst = self.backup_dir.join(format!("backup_state_{}.json", self.shard_name));
         let tmp = dst.with_extension("json.tmp");
         let state =
-            serde_json::json!({
+            simd_json::json!({
             "last_backup_id": self.last_backup_id,
             "last_segment_id": self.last_segment_id,
             "last_segment_offset": &self.last_segment_offset,
         });
-        fs::write(&tmp, serde_json::to_string(&state)?)?;
+        fs::write(&tmp, simd_json::to_string(&state)?)?;
         File::open(&tmp)?.sync_all()?;
         fs::rename(&tmp, &dst)?;
         Ok(())
@@ -528,7 +534,8 @@ impl BackupManager {
     #[timed(backup)]
     fn load_manifest(&self, backup_id: &str) -> Result<BackupManifest, BackupError> {
         let path = self.shard_backup_path(backup_id).join("manifest.json");
-        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+        let mut buf = fs::read_to_string(path)?.into_bytes();
+        Ok(simd_json::from_slice(&mut buf)?)
     }
 
     #[timed(restore)]
@@ -617,12 +624,7 @@ impl BackupManager {
         Ok(())
     }
     #[timed(restore)]
-    pub fn restore_chain(
-        &mut self,
-        backup_id: &str,
-        target_dir: &Path,
-      
-    ) -> Result<(), BackupError> {
+    pub fn restore_chain(&mut self, backup_id: &str, target_dir: &Path) -> Result<(), BackupError> {
         let mut chain = vec![self.load_manifest(backup_id)?];
 
         while chain.last().unwrap().backup_type == BackupType::Incremental {
@@ -663,11 +665,7 @@ impl BackupManager {
         self.last_backup_id.as_deref()
     }
     #[timed(restore)]
-    pub fn cleanup_after_restore(
-        &mut self,
-        restored_backup_id: &str,
-     
-    ) -> Result<(), BackupError> {
+    pub fn cleanup_after_restore(&mut self, restored_backup_id: &str) -> Result<(), BackupError> {
         let restored_manifest = self.load_manifest(restored_backup_id)?;
 
         // Collect every backup on disk.
@@ -677,10 +675,10 @@ impl BackupManager {
             .filter_map(|e| {
                 let manifest_path = e.path().join(&self.shard_name).join("manifest.json");
                 let text = fs::read_to_string(&manifest_path).ok()?;
-                serde_json::from_str(&text).ok()
+                let mut buf = text.into_bytes();
+                simd_json::from_slice(&mut buf).ok()
             })
             .collect();
-
         // Delete any incremental whose start_offset is >= the restored point.
         // These were built on state that no longer exists after the restore.
         for manifest in all_manifests {
@@ -718,7 +716,8 @@ impl BackupManager {
                 let text = fs
                     ::read_to_string(e.path().join(&self.shard_name).join("manifest.json"))
                     .ok()?;
-                serde_json::from_str(&text).ok()
+                let mut buf = text.into_bytes();
+                simd_json::from_slice(&mut buf).ok()
             })
             .collect();
         all.sort_by_key(|m| m.created_at);

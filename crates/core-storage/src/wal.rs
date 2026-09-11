@@ -7,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-const MAX_ENTRY_SIZE: u32 = 64 * 1024 * 1024; //japarbauda
+const MAX_ENTRY_SIZE: u32 = 1024 * 1024 * 1024; //japarbauda
 const HEADER_SIZE: u64 = 8;
 const MIN_RECORD_SIZE: u64 = HEADER_SIZE + 1;
 

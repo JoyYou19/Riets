@@ -2,12 +2,12 @@
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::Deserialize;
-use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use simd_json::{ OwnedValue, json };
+use std::collections::{ BTreeMap, HashMap };
 
 use crate::{
-    command_response_helpers::{FieldNode, tree_to_json, unflatten},
-    errors::{CorelamoError, DocFailure},
+    command_response_helpers::{ FieldNode, tree_to_json, unflatten },
+    errors::{ CorelamoError, DocFailure },
     format::Format,
 };
 
@@ -26,7 +26,7 @@ pub trait Command: Sized {
 }
 
 pub trait ResponseData {
-    fn to_json(&self) -> Result<Value, CorelamoError>;
+    fn to_json(&self) -> Result<OwnedValue, CorelamoError>;
     //fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error>;
 }
 
@@ -62,7 +62,7 @@ pub struct SearchResponse {
 
 impl SearchResponse {
     pub fn from_hits(
-        docs: Vec<(String, f32, BTreeMap<String, String>)>,
+        docs: Vec<(String, f32, BTreeMap<String, String>)>
     ) -> Result<Self, CorelamoError> {
         let mut trees = Vec::with_capacity(docs.len());
         for (id, score, fields) in docs {
@@ -73,19 +73,18 @@ impl SearchResponse {
 }
 
 impl ResponseData for SearchResponse {
-    fn to_json(&self) -> Result<Value, CorelamoError> {
-        Ok(Value::Array(
-            self.docs
-                .iter()
-                .map(|(id, score, tree)| {
-                    json!({
-                        "id": id,
-                        "score": score,
-                        "data": tree_to_json(tree)
-                    })
+    fn to_json(&self) -> Result<OwnedValue, CorelamoError> {
+        let items: Vec<OwnedValue> = self.docs
+            .iter()
+            .map(|(id, score, tree)| {
+                json!({
+                    "id": id,
+                    "score": score,
+                    "data": tree_to_json(tree)
                 })
-                .collect(),
-        ))
+            })
+            .collect();
+        Ok(OwnedValue::Array(Box::new(items)))
     }
 
     // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {}
@@ -94,7 +93,8 @@ impl ResponseData for SearchResponse {
 impl Command for SearchCommand {
     #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        serde_json::from_str(body).map_err(CorelamoError::from)
+        let mut bytes = body.as_bytes().to_vec();
+        simd_json::from_slice(&mut bytes).map_err(CorelamoError::from)
     }
 
     // fn from_xml(body: &str) -> Result<Self, CorelamoError> {
@@ -111,7 +111,9 @@ impl Command for RetrieveCommand {
     // TODO: accept more shapes later, e.g. {"ids": [...]}
     #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let ids: Vec<String> = serde_json::from_str(body)
+        let mut bytes = body.as_bytes().to_vec();
+        let ids: Vec<String> = simd_json
+            ::from_slice(&mut bytes)
             .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
         Ok(RetrieveCommand { ids })
     }
@@ -131,7 +133,7 @@ impl RetrieveResponse {
     pub fn new(
         documents: Vec<(String, Vec<u8>)>,
         not_found: Vec<String>,
-        skipped: Vec<String>,
+        skipped: Vec<String>
     ) -> Self {
         Self {
             documents,
@@ -142,29 +144,35 @@ impl RetrieveResponse {
 }
 
 impl ResponseData for RetrieveResponse {
-    fn to_json(&self) -> Result<Value, CorelamoError> {
-        let docs = self
-            .documents
+    fn to_json(&self) -> Result<OwnedValue, CorelamoError> {
+        let docs = self.documents
             .iter()
             .map(|(id, bytes)| {
-                let data: Value = serde_json::from_slice(bytes).map_err(|e| {
-                    CorelamoError::Internal(format!(
-                        "stored document '{id}' is not valid JSON (corruption): {e}"
-                    ))
-                })?;
+                let mut buf = bytes.clone();
+                let data: OwnedValue = simd_json
+                    ::from_slice(&mut buf)
+                    .map_err(|e| {
+                        CorelamoError::Internal(
+                            format!("stored document '{id}' is not valid JSON (corruption): {e}")
+                        )
+                    })?;
 
-                Ok(serde_json::json!({
+                Ok(
+                    simd_json::json!({
                     "id": id,
                     "data": data
-                }))
+                })
+                )
             })
-            .collect::<Result<Vec<Value>, CorelamoError>>()?;
+            .collect::<Result<Vec<OwnedValue>, CorelamoError>>()?;
 
-        Ok(serde_json::json!({
+        Ok(
+            simd_json::json!({
             "documents": docs,
             "not_found": self.not_found,
             "skipped_ids": self.skipped,
-        }))
+        })
+        )
     }
     // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {
     //     todo!();
@@ -185,7 +193,8 @@ pub struct LookupCommand {
 impl Command for LookupCommand {
     #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        serde_json::from_str(body).map_err(CorelamoError::from)
+        let mut bytes = body.as_bytes().to_vec();
+        simd_json::from_slice(&mut bytes).map_err(CorelamoError::from)
     }
 }
 
@@ -197,7 +206,7 @@ pub struct LookupResponse {
 impl LookupResponse {
     pub fn from_hits(
         docs: Vec<(String, BTreeMap<String, String>)>,
-        not_found: Vec<String>,
+        not_found: Vec<String>
     ) -> Result<Self, CorelamoError> {
         let mut trees = Vec::with_capacity(docs.len());
         for (id, fields) in docs {
@@ -211,16 +220,17 @@ impl LookupResponse {
 }
 
 impl ResponseData for LookupResponse {
-    fn to_json(&self) -> Result<Value, CorelamoError> {
-        let documents: Vec<Value> = self
-            .docs
+    fn to_json(&self) -> Result<OwnedValue, CorelamoError> {
+        let documents: Vec<OwnedValue> = self.docs
             .iter()
             .map(|(id, tree)| json!({ "id": id, "data": tree_to_json(tree) }))
             .collect();
-        Ok(json!({
+        Ok(
+            json!({
             "documents": documents,
             "not_found": self.not_found,
-        }))
+        })
+        )
     }
 }
 
@@ -232,7 +242,9 @@ pub struct GetLogsRequest {
 impl Command for DeleteCommand {
     #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let ids: Vec<String> = serde_json::from_str(body)
+        let mut bytes = body.as_bytes().to_vec();
+        let ids: Vec<String> = simd_json
+            ::from_slice(&mut bytes)
             .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
         Ok(DeleteCommand { ids })
     }
@@ -246,7 +258,7 @@ pub struct LoginResponse {
     pub token: String,
 }
 impl ResponseData for LoginResponse {
-    fn to_json(&self) -> Result<Value, CorelamoError> {
+    fn to_json(&self) -> Result<OwnedValue, CorelamoError> {
         Ok(json!({"token":self.token}))
     }
 }
@@ -254,7 +266,7 @@ impl ResponseData for LoginResponse {
 #[derive(Debug, Deserialize)]
 pub struct PartialReplaceItem {
     pub id: String,
-    pub patch: serde_json::Value,
+    pub patch: simd_json::OwnedValue,
 }
 
 #[derive(Debug)]
@@ -270,14 +282,17 @@ pub struct ParsedPartialReplace {
 impl Command for PartialReplaceCommand {
     #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let items: Vec<PartialReplaceItem> = serde_json::from_str(body).map_err(|e| {
-            CorelamoError::InvalidData(format!("invalid partial-replace request: {e}"))
-        })?;
+        let mut bytes = body.as_bytes().to_vec();
+        let items: Vec<PartialReplaceItem> = simd_json
+            ::from_slice(&mut bytes)
+            .map_err(|e| {
+                CorelamoError::InvalidData(format!("invalid partial-replace request: {e}"))
+            })?;
 
         if items.is_empty() {
-            return Err(CorelamoError::InvalidData(
-                "partial-replace requires at least one document".into(),
-            ));
+            return Err(
+                CorelamoError::InvalidData("partial-replace requires at least one document".into())
+            );
         }
 
         Ok(PartialReplaceCommand { items })

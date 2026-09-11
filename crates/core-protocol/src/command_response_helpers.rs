@@ -1,6 +1,7 @@
 use core_timing::timed;
 use indexmap::IndexMap;
-use serde_json::{Map, Value};
+use simd_json::{OwnedValue, StaticNode, owned::Object};
+use simd_json::prelude::*;
 use std::collections::BTreeMap;
 
 use crate::errors::CorelamoError;
@@ -62,20 +63,20 @@ fn insert_path(
 
 //json from field node
 // TODO: hardcoded "id" key
-pub fn tree_to_json(node: &FieldNode) -> Value {
+pub fn tree_to_json(node: &FieldNode) -> OwnedValue {
     let obj = match node_to_json(node) {
-        Value::Object(m) => m,
-        _ => Map::new(),
+        OwnedValue::Object(m) => *m,
+        _ => Object::new(),
     };
-    Value::Object(obj)
+    OwnedValue::Object(Box::new(obj))
 }
 
 #[timed(json_parsing)]
-pub fn traverse_json(value: &Value, path: &mut String, fields: &mut BTreeMap<String, String>) {
+pub fn traverse_json(value: &OwnedValue, path: &mut String, fields: &mut BTreeMap<String, String>) {
     match value {
-        Value::Object(map) => {
+        OwnedValue::Object(map) => {
             let base_len = path.len();
-            for (key, val) in map {
+            for (key, val) in map.iter() {
                 if !path.is_empty() {
                     path.push('/');
                 }
@@ -84,7 +85,7 @@ pub fn traverse_json(value: &Value, path: &mut String, fields: &mut BTreeMap<Str
                 path.truncate(base_len);
             }
         }
-        Value::Array(arr) => {
+        OwnedValue::Array(arr) => {
             // TODO: figure out best way to handle arrays, for now separate with " "
             let joined = arr
                 .iter()
@@ -99,27 +100,27 @@ pub fn traverse_json(value: &Value, path: &mut String, fields: &mut BTreeMap<Str
     }
 }
 
-fn value_to_string(value: &Value) -> String {
+fn value_to_string(value: &OwnedValue) -> String {
     match value {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
+        OwnedValue::String(s) => s.clone(),
+        OwnedValue::Static(simd_json::StaticNode::Null) => String::new(),
         other => other.to_string(),
     }
 }
 
 #[timed(json_parsing)]
-pub fn apply_merge_patch(target: &mut Value, patch: &Value) {
+pub fn apply_merge_patch(target: &mut OwnedValue, patch: &OwnedValue) {
     match patch {
-        Value::Object(patch_obj) => {
+        OwnedValue::Object(patch_obj) => {
             if !target.is_object() {
-                *target = Value::Object(serde_json::Map::new());
+                *target = OwnedValue::Object(Box::new(Object::new()));
             }
-            if let Value::Object(target_obj) = target {
-                for (key, patch_value) in patch_obj {
+            if let OwnedValue::Object(target_obj) = target {
+                for (key, patch_value) in patch_obj.iter() {
                     if patch_value.is_null() {
                         target_obj.remove(key);
                     } else {
-                        let entry = target_obj.entry(key.clone()).or_insert(Value::Null);
+                        let entry = target_obj.entry(key.clone()).or_insert(OwnedValue::Static(StaticNode::Null));
                         apply_merge_patch(entry, patch_value);
                     }
                 }
@@ -131,15 +132,15 @@ pub fn apply_merge_patch(target: &mut Value, patch: &Value) {
     }
 }
 
-fn node_to_json(node: &FieldNode) -> Value {
+fn node_to_json(node: &FieldNode) -> OwnedValue {
     match node {
-        FieldNode::Leaf(s) => Value::String(s.clone()),
+        FieldNode::Leaf(s) => OwnedValue::String(s.clone()),
         FieldNode::Branch(children) => {
-            let mut obj = Map::new();
+            let mut obj = Object::new();
             for (k, child) in children {
-                obj.insert(k.clone(), node_to_json(child));
+                obj.insert(k.clone().into(), node_to_json(child));
             }
-            Value::Object(obj)
+            OwnedValue::Object(Box::new(obj))
         }
     }
 }

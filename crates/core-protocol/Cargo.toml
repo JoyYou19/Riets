@@ -12,6 +12,7 @@ toml = "1.1.2"
 bincode="2.0"
 indexmap = { version = "2", features = ["serde"] }
 core-timing = { path = "../core-timing" }
+simd-json = "0.18.1"
 
 [features]
 timing = ["core-timing/timing"]

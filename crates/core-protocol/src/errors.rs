@@ -122,15 +122,10 @@ impl From<std::io::Error> for CorelamoError {
     }
 }
 
-impl From<serde_json::Error> for CorelamoError {
-    fn from(e: serde_json::Error) -> Self {
-        match e.classify() {
-            // Io category = serialization failure, our bug
-            serde_json::error::Category::Io => CorelamoError::Internal(e.to_string()),
-            // Syntax/Data/Eof = bad client input
-            _ => CorelamoError::InvalidData(e.to_string()),
-        }
-    }
+impl From<simd_json::Error> for CorelamoError {
+   fn from(e: simd_json::Error) -> Self {
+        CorelamoError::InvalidData(e.to_string())
+    } 
 }
 
 impl From<toml::de::Error> for CorelamoError {

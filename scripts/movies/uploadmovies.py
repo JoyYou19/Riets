@@ -15,92 +15,95 @@ PASSWORD = "secret"
 POLICY = """\
 [[fields]]
 name = "id"
-index = "IdAuto"
+kind = "IdAuto"
 list = true
 [fields.weight]
 min = 90
 max = 95
-
 
 [[fields]]
 name = "title"
-index = "Text"
+kind = "Text"
 list = true
 [fields.weight]
 min = 90
 max = 95
 
 [[fields]]
-name     = "year"
-index    = "Integer"
-list   = true
-stemming = ""
+name = "year"
+kind = "Integer"
+searchable = true
+list = true
 [fields.weight]
 min = 1
 max = 50
 
 [[fields]]
-name     = "cast"
-index    = "Text"
-list   = true
+name = "cast"
+kind = "Text"
+list = true
 stemming = "english"
 [fields.weight]
 min = 1
 max = 75
 
 [[fields]]
-name     = "genres"
-index    = "Text"
-list   = true
-stemming = ""
+name = "genres"
+kind = "Text"
+list = true
 [fields.weight]
 min = 1
 max = 60
 
 [[fields]]
-name     = "extract"
-index    = "Text"
-list   = true
+name = "extract"
+kind = "Text"
+list = true
 stemming = "english"
 [fields.weight]
 min = 1
 max = 75
 
 [[fields]]
-name     = "href"
-index    = "None"
-list   = true
-stemming = ""
+name = "href"
+kind = "None"
+list = true
 [fields.weight]
 min = 0
 max = 0
 
 [[fields]]
-name     = "thumbnail"
-index    = "None"
-list   = true
-stemming = ""
+name = "thumbnail"
+kind = "None"
+list = true
 [fields.weight]
 min = 0
 max = 0
 
 [[fields]]
-name     = "thumbnail_width"
-index    = "None"
-list   = true
-stemming = ""
+name = "thumbnail_width"
+kind = "None"
+list = true
 [fields.weight]
 min = 0
 max = 0
 
 [[fields]]
-name     = "thumbnail_height"
-index    = "None"
-list   = true
-stemming = ""
+name = "thumbnail_height"
+kind = "None"
+list = true
 [fields.weight]
 min = 0
 max = 0
+
+[[fields]]
+name = "random_float"
+kind = "Float"
+searchable = true
+list = true
+[fields.weight]
+min = 1
+max = 50
 """
 
 
@@ -131,93 +134,39 @@ def curl_post(url, body, token):
     return result.stdout.strip(), result.returncode
 
 
-def curl_put(url, body, token):
-    result = subprocess.run(
-        ["curl", "-s", "-X", "PUT", url,
-         "-H", "Accept: application/json",
-         "-H", f"X-Corelamo-Key: {token}",
-         "--data-binary", "@-"],
-        input=body,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip(), result.returncode
-
-
-# def curl_delete(url, token):
-#     result = subprocess.run(
-#         ["curl", "-s", "-X", "DELETE", url,
-#          "-H", f"X-Corelamo-Key: {token}"],
-#         capture_output=True,
-#         text=True,
-#     )
-#     return result.stdout.strip(), result.returncode
-
-
-def wait_until_searchable(expected_count, token, timeout=30):
-    query = json.dumps({"query": "*", "docs": expected_count})
-    start = time.time()
-    found = 0
-    while time.time() - start < timeout:
-        out, _ = curl_post(
-            f"{BASE_URL}/api/databases/{DB_NAME}/search", query, token)
-        result = json.loads(out)
-        data = result.get("data", [])
-        found = len(data) if isinstance(data, list) else data.get("total", 0)
-        if found >= expected_count:
-            print(
-                f"[INFO] Searchable after {time.time() - start}s ({found}/{expected_count} docs)")
-            return
-    print(f"[WARN] Not fully searchable after {timeout}s ({found}/{expected_count} docs)")
-
-
 def main():
     start_time = time.time()
     print("[INFO] Starting movie uploader...")
 
-    # 0. log in first — every request below needs the token
     print(f"[INFO] Logging in as '{USERNAME}'...")
     token = login(USERNAME, PASSWORD)
     print("[INFO] Login successful, token acquired.")
 
-    # 1. delete if exists
-    # print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
-    # out, _ = curl_delete(
-    #    f"{BASE_URL}/api/databases/{DB_NAME}/clear-database", token)
-    # print(f"[INFO] {out}")
-
-    # 2. create database
     print(f"[INFO] Creating database '{DB_NAME}'...")
     out, _ = curl_post(
         f"{BASE_URL}/api/databases/{DB_NAME}/create-database",
         json.dumps({"shard_count": SHARD_COUNT}), token)
     print(f"[INFO] {out}")
 
-    # 2b. start database
     print(f"[INFO] Starting database '{DB_NAME}'...")
     out, _ = curl_post(
         f"{BASE_URL}/api/databases/{DB_NAME}/start-database", "", token)
     print(f"[INFO] {out}")
 
-    # 3. set policy — always TOML, no format suffix
     print("[INFO] Setting policy...")
     out, _ = curl_post(
         f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
     print(f"[INFO] {out}")
 
-    # 4. upload chunks — insert stays batched to disk server-side,
-    #    we just verify each chunk becomes searchable before moving on
     files = sorted(glob.glob(os.path.join(INPUT_DIR, "movies_*.json")))
     if not files:
-        print(f"[ERROR] No chunk files found in {
-              INPUT_DIR}. Run parse_movies.py first.")
+        print(f"[ERROR] No chunk files found in {INPUT_DIR}.")
         return
 
     if MAX_CHUNKS > 0:
         files = files[:MAX_CHUNKS]
 
     print(f"[INFO] Uploading {len(files)} chunk(s)...")
-    total_docs = 0
     for idx, file in enumerate(files, start=1):
         with open(file, "r", encoding="utf-8") as f:
             chunk = json.load(f)
@@ -227,12 +176,9 @@ def main():
         if code != 0:
             print(f"[ERROR] Failed to upload {file}")
             print(out)
-            continue
-
-        total_docs += len(chunk)
-        print(
-            f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
-        wait_until_searchable(total_docs, token)
+        else:
+            print(
+                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
 
     duration = time.time() - start_time
     print(f"\n[INFO] Done in {duration:.2f}s.")

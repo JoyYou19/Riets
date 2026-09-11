@@ -10,7 +10,7 @@ use core_storage::{
 };
 use core_timing::timed;
 use rayon::prelude::*;
-use serde_json::{Value, value::RawValue};
+use simd_json::OwnedValue as Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -73,12 +73,15 @@ impl<'a> DocumentConversion for Json<'a> {
     #[timed(json_parsing)]
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError> {
         //If an array was given
-        if let Ok(raw_items) = serde_json::from_str::<Vec<&RawValue>>(self.body) {
-            return Ok(parse_raw_items(&raw_items, policy));
+        let mut buf = self.body.as_bytes().to_vec();
+
+        if let Ok(Value::Array(items)) = simd_json::to_owned_value(&mut buf) {
+            return Ok(parse_raw_items(&items, policy));
         }
 
         //If a single document was given
-        let value: Value = serde_json::from_str(self.body).map_err(CorelamoError::from)?;
+       let mut buf = self.body.as_bytes().to_vec();
+        let value: Value = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
         let mut docs = Vec::new();
         let mut indices = Vec::new();
         let mut failures = Vec::new();
@@ -98,24 +101,24 @@ impl<'a> DocumentConversion for Json<'a> {
 }
 
 #[timed(json_parsing)]
-fn parse_raw_items(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcome {
-    if raw_items.len() > PARALLEL_PARSE_THRESHOLD {
+fn parse_raw_items(items: &[Value], policy: &IndexPolicy) -> ParseOutcome {
+    if items.len() > PARALLEL_PARSE_THRESHOLD {
         //DATABASE LOG
-        parse_raw_items_parallel(raw_items, policy)
+        parse_raw_items_parallel(items, policy)
     } else {
         //println!("sequential: ");
-        parse_raw_items_sequential(raw_items, policy)
+        parse_raw_items_sequential(items, policy)
     }
 }
 
 #[timed(json_parsing)]
-fn parse_raw_items_sequential(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcome {
+fn parse_raw_items_sequential(raw_items: &[Value], policy: &IndexPolicy) -> ParseOutcome {
     let mut docs = Vec::with_capacity(raw_items.len());
     let mut indices = Vec::with_capacity(raw_items.len());
     let mut failures = Vec::new();
-
+    let mut path_buf =String::with_capacity(64);
     for (index, raw) in raw_items.iter().enumerate() {
-        match parse_one(index, raw, policy) {
+        match parse_one(index, raw, policy, &mut path_buf) {
             Ok(doc) => {
                 docs.push(doc);
                 indices.push(index);
@@ -131,11 +134,11 @@ fn parse_raw_items_sequential(raw_items: &[&RawValue], policy: &IndexPolicy) -> 
 }
 
 #[timed(json_parsing)]
-fn parse_raw_items_parallel(raw_items: &[&RawValue], policy: &IndexPolicy) -> ParseOutcome {
+fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy, ) -> ParseOutcome {
     let results: Vec<Result<DocumentInput, DocFailure>> = raw_items
         .par_iter()
         .enumerate()
-        .map(|(index, raw)| parse_one(index, raw, policy))
+        .map(|(index, raw)|{let mut path_buf = String::with_capacity(64); parse_one(index, raw, policy, &mut path_buf)})
         .collect();
 
     let mut docs = Vec::with_capacity(results.len());
@@ -160,18 +163,13 @@ fn parse_raw_items_parallel(raw_items: &[&RawValue], policy: &IndexPolicy) -> Pa
 }
 
 #[timed(json_parsing)]
-fn parse_one(
-    index: usize,
-    raw: &RawValue,
-    policy: &IndexPolicy,
-) -> Result<DocumentInput, DocFailure> {
-    let value: Value = serde_json::from_str(raw.get())
+fn parse_one(index: usize, value: &Value, policy: &IndexPolicy, path_buf:&mut String) -> Result<DocumentInput, DocFailure> {
+    let source = simd_json::to_vec(value)
         .map_err(|e| DocFailure::at(index, FailReason::InvalidJson(e.to_string())))?;
 
-    let source = raw.get().as_bytes().to_vec();
-
     let mut fields = BTreeMap::new();
-    traverse_json(&value, &mut "".to_string(), &mut fields);
+    path_buf.clear();
+    traverse_json(value, &mut "".to_string(), &mut fields);
     validate_numeric_fields(&fields, policy).map_err(|reason| DocFailure::at(index, reason))?;
 
     let external_id =
@@ -190,7 +188,7 @@ fn json_value_to_document_input(
     value: Value,
     policy: &IndexPolicy,
 ) -> Result<DocumentInput, FailReason> {
-    let source = serde_json::to_vec(&value).map_err(|e| FailReason::InvalidJson(e.to_string()))?;
+    let source = simd_json::to_vec(&value).map_err(|e| FailReason::InvalidJson(e.to_string()))?;
 
     let mut fields = BTreeMap::new();
     traverse_json(&value, &mut "".to_string(), &mut fields);
@@ -253,7 +251,7 @@ fn validate_numeric_fields(
 
 #[timed(json_parsing)]
 pub fn parse_partial_replace_to_inputs(
-    items: &[(String, serde_json::Value)],
+    items: &[(String, Value)],
     get_document: impl Fn(&str) -> Result<Option<StoredDocument>, CorelamoError>,
 ) -> (Vec<DocumentInput>, Vec<DocFailure>) {
     let mut inputs = Vec::with_capacity(items.len());
@@ -279,8 +277,8 @@ pub fn parse_partial_replace_to_inputs(
                 continue;
             }
         };
-
-        let mut doc_value: serde_json::Value = match serde_json::from_slice(&doc.source) {
+        let mut buf = doc.source.clone();
+        let mut doc_value: Value = match simd_json::from_slice(&mut buf) {
             Ok(v) => v,
             Err(e) => {
                 failures.push(DocFailure::new(
@@ -297,7 +295,7 @@ pub fn parse_partial_replace_to_inputs(
         let mut fields = BTreeMap::new();
         traverse_json(&doc_value, &mut "".to_string(), &mut fields);
 
-        let source = match serde_json::to_vec(&doc_value) {
+        let source = match simd_json::to_vec(&doc_value) {
             Ok(v) => v,
             Err(e) => {
                 failures.push(DocFailure::new(

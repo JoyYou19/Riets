@@ -9,7 +9,8 @@ use core_protocol::{
     errors::{CorelamoError, DocFailure},
     format::Format,
 };
-use serde_json::{Map, Value, json};
+
+use simd_json::{OwnedValue, json, owned::Object};
 use slog::{error, o, warn};
 use std::time::Instant;
 
@@ -25,8 +26,8 @@ struct SerializableData<T: serde::Serialize> {
 }
 
 impl<T: serde::Serialize> ResponseData for SerializableData<T> {
-    fn to_json(&self) -> Result<Value, CorelamoError> {
-        serde_json::to_value(&self.data)
+    fn to_json(&self) -> Result<OwnedValue, CorelamoError> {
+        simd_json::serde::to_owned_value(&self.data)
             .map_err(|e| CorelamoError::Internal(format!("failed to serialize response data: {e}")))
     }
 }
@@ -282,20 +283,20 @@ impl IntoResponse for HttpOk {
 
                 let time_taken = format!("{:?}", self.time_start.elapsed());
 
-                let mut obj = Map::new();
-                obj.insert("status".to_string(), Value::from(self.status.as_u16()));
-                obj.insert("title".to_string(), Value::String(self.title));
-                obj.insert("instance".to_string(), Value::String(self.instance));
+                let mut obj = Object::new();
+                obj.insert("status".into(), OwnedValue::from(self.status.as_u16()));
+                obj.insert("title".into(), OwnedValue::String(self.title));
+                obj.insert("instance".into(), OwnedValue::String(self.instance));
                 obj.insert(
-                    "request_id".to_string(),
-                    Value::String(self.request_id.to_string()),
+                    "request_id".into(),
+                    OwnedValue::String(self.request_id.to_string()),
                 );
-                obj.insert("time_taken".to_string(), Value::String(time_taken));
+                obj.insert("time_taken".into(), OwnedValue::String(time_taken.into()));
                 if let Some(v) = data_value {
-                    obj.insert("data".to_string(), v);
+                    obj.insert("data".into(), v);
                 }
 
-                let body = serde_json::to_string_pretty(&Value::Object(obj))
+                let body = simd_json::to_string_pretty(&OwnedValue::Object(obj.into()))
                     .unwrap_or_else(|_| "{}".to_string());
 
                 Response::builder()
@@ -354,17 +355,17 @@ impl BatchOutcome {
         !self.failures.is_empty()
     }
 
-    fn to_value(&self, db_name: &str) -> Value {
-        let mut obj = Map::new();
-        obj.insert(self.success_label.to_string(), Value::from(self.succeeded));
-        obj.insert("database".to_string(), Value::String(db_name.to_string()));
+    fn to_value(&self, db_name: &str) -> OwnedValue {
+        let mut obj = Object::new();
+        obj.insert(self.success_label.to_string(), OwnedValue::from(self.succeeded));
+        obj.insert("database".to_string(), OwnedValue::String(db_name.to_string()));
 
         if !self.failures.is_empty() {
             obj.insert(
                 "failed".to_string(),
-                Value::from(self.failures.len() as u64),
+                OwnedValue::from(self.failures.len() as u64),
             );
-            let results: Vec<Value> = self
+            let results: Vec<OwnedValue> = self
                 .failures
                 .iter()
                 .map(|f| {
@@ -377,10 +378,10 @@ impl BatchOutcome {
                     })
                 })
                 .collect();
-            obj.insert("results".to_string(), Value::Array(results));
+            obj.insert("results".to_string(), OwnedValue::Array(results.into()));
         }
 
-        Value::Object(obj)
+        OwnedValue::Object(obj.into())
     }
 
     pub fn into_ok(
