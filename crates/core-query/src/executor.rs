@@ -27,6 +27,7 @@ pub struct FieldFilter {
 #[derive(Debug, Clone)]
 pub enum FieldFilterKind {
     Text(Option<Query>),
+    Exact(String),
     Range {
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
@@ -63,6 +64,7 @@ where
             Query::And(parts) => self.execute_and(parts, xpath),
             Query::Or(parts) => self.execute_or(parts, xpath),
             Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
+            Query::Exact(term) => Some(self.execute_exact(term, xpath)),
         }
     }
 
@@ -199,6 +201,53 @@ where
                     Ok(index) => {
                         position_lists.push(list.items()[index].positions.as_slice());
                     }
+                    Err(_) => {
+                        all_terms_in_doc = false;
+                        break;
+                    }
+                }
+            }
+
+            if all_terms_in_doc && phrase_matches(&position_lists) {
+                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+            }
+        }
+
+        PostingList::from_items(result)
+    }
+
+    #[timed(search)]
+    fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
+        use core_index::posting::Posting;
+
+        let words: Vec<&str> = raw.split_whitespace().collect();
+        if words.is_empty() {
+            return PostingList::default();
+        }
+        if words.len() == 1 {
+            return self.index.lookup(words[0], xpath);
+        }
+
+        let lists: Vec<PostingList> = words
+            .iter()
+            .map(|word| self.index.lookup(word, xpath))
+            .collect();
+
+        if lists.iter().any(|list| list.is_empty()) {
+            return PostingList::default();
+        }
+
+        let mut result = Vec::new();
+        let first = lists[0].items();
+
+        for first_posting in first {
+            let doc_id = first_posting.doc_id;
+            let mut position_lists: Vec<&[u32]> = vec![first_posting.positions.as_slice()];
+
+            let mut all_terms_in_doc = true;
+            for list in lists.iter().skip(1) {
+                match list.items().binary_search_by_key(&doc_id, |p| p.doc_id) {
+                    Ok(index) => position_lists.push(list.items()[index].positions.as_slice()),
                     Err(_) => {
                         all_terms_in_doc = false;
                         break;
@@ -370,6 +419,13 @@ where
                 FieldFilterKind::Range { lo, hi } => self
                     .index
                     .column_range(filter.xpath, *lo, *hi)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+
+                FieldFilterKind::Exact(term) => self
+                    .execute_exact(term, filter.xpath)
                     .items()
                     .iter()
                     .map(|p| p.doc_id)

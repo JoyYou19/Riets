@@ -236,6 +236,8 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
 
         Query::And(subs) => combine(subs, analyzer, Query::And),
         Query::Or(subs) => combine(subs, analyzer, Query::Or),
+
+        Query::Exact(term) => Some(Query::Exact(term)),
     }
 }
 

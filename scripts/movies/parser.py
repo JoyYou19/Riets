@@ -39,7 +39,7 @@ def main():
             doc[key] = flatten_value(value)
 
         # Add random float between 1.000 and 1000.000
-        doc["random_float"] = round(random.uniform(1.0, 1000.0), 3)
+        # doc["random_float"] = round(random.uniform(1.0, 1000.0), 3)
 
         docs.append(doc)
 

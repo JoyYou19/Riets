@@ -249,6 +249,20 @@ impl IndexPolicy {
             })
     }
 
+    pub fn exact_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
+        self.fields
+            .iter()
+            .filter(|field| field.has_exact_index())
+            .map(move |field| {
+                self.exact_xpath_of(&field.name).unwrap_or_else(|| {
+                    panic!(
+                        "field '{}' has no exact xpath — IndexPolicy::resolve() should have registered it",
+                        field.name
+                    )
+                })
+            })
+    }
+
     pub fn resolve(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
         let root = root.as_ref();
         let registry_path = Self::registry_path(root);
@@ -479,16 +493,6 @@ impl FieldRegistry {
 
     fn len(&self) -> usize {
         self.ids.len() + self.exact_ids.len()
-    }
-
-    fn resolve_exact(&mut self, name: &str) -> XPathId {
-        if let Some(&id) = self.exact_ids.get(name) {
-            return id;
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        self.exact_ids.insert(name.to_string(), id);
-        id
     }
 
     fn get_exact(&self, name: &str) -> Option<XPathId> {

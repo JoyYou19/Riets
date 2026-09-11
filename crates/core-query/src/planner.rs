@@ -130,6 +130,8 @@ impl QueryPlanner {
                     Self::collect_signals(part, out);
                 }
             }
+
+            Query::Exact(_) => {}
         }
     }
 }
