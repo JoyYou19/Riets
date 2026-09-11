@@ -784,7 +784,7 @@ fn publish_window(
         if progress.is_cancelled() {
             return Err(io::Error::other("reindex cancelled"));
         }
-        worker.add_segment_wait(segment, count)?;
+        worker.add_segment_wait(vec![segment], count)?;
         progress.add(count);
     }
     Ok(())
@@ -933,13 +933,13 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         let batches = std::mem::take(&mut self.pending_batches);
 
-        let counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+        let counts: u64 = batches.iter().map(|batch| batch.len() as u64).sum();
 
         let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
 
-        for (segment, count) in segments.into_iter().zip(counts) {
-            self.db.index_worker.add_segment_wait(segment, count)?;
-        }
+        // for (segment, count) in segments.into_iter().zip(counts) {
+            self.db.index_worker.add_segment_wait(segments, counts)?;
+        // }
 
         Ok(())
     }

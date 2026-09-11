@@ -3,12 +3,13 @@ use rayon::prelude::*;
 use std::{
     io,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender},
+        Arc,
+        Mutex,
+        atomic::{ AtomicBool, AtomicU8, AtomicU64, Ordering },
+        mpsc::{ self, Receiver, Sender },
     },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    thread::{ self, JoinHandle },
+    time::{ Duration, Instant },
 };
 
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
     document::IndexedDocument,
     lsm::{
         LsmIndex,
-        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
+        compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
         snapshot::SharedIndexSnapshot,
     },
     mem::MemIndex,
@@ -39,7 +40,7 @@ pub enum IndexCommand {
         ack: Option<Acknowledgement>,
     },
     AddSegment {
-        segment: ImmutableSegment,
+        segments: Vec<ImmutableSegment>,
         doc_count: u64,
         ack: Option<Acknowledgement>,
     },
@@ -97,13 +98,10 @@ impl IndexWorker {
     pub fn shutdown(mut self) -> io::Result<LsmIndex> {
         self.send(IndexCommand::Shutdown)?;
 
-        let handle = self
-            .handle
+        let handle = self.handle
             .take()
             .ok_or_else(|| io::Error::other("index worker already joined"))?;
-        handle
-            .join()
-            .map_err(|_| io::Error::other("index worker panicked"))?
+        handle.join().map_err(|_| io::Error::other("index worker panicked"))?
     }
 
     // Fire and forget functions
@@ -118,9 +116,9 @@ impl IndexWorker {
         self.send(IndexCommand::DeleteDocument { doc_id, ack: None })
     }
 
-    pub fn add_segment(&self, segment: ImmutableSegment, doc_count: u64) -> io::Result<()> {
+    pub fn add_segment(&self, segments: Vec<ImmutableSegment>, doc_count: u64) -> io::Result<()> {
         self.send(IndexCommand::AddSegment {
-            segment,
+            segments,
             doc_count,
             ack: None,
         })
@@ -136,12 +134,14 @@ impl IndexWorker {
 
         self.send(IndexCommand::PlanCompaction { config, reply })?;
 
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped compaction plan reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "index worker dropped compaction plan reply"
+                )
+            })?
     }
 
     // Waiting functions
@@ -179,11 +179,11 @@ impl IndexWorker {
     }
 
     #[timed(indexing_documents)]
-    pub fn add_segment_wait(&self, segment: ImmutableSegment, doc_count: u64) -> io::Result<()> {
+    pub fn add_segment_wait(&self, segments: Vec<ImmutableSegment>, doc_count: u64) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
         self.send(IndexCommand::AddSegment {
-            segment,
+            segments,
             doc_count,
             ack: Some(ack),
         })?;
@@ -218,19 +218,20 @@ impl IndexWorker {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::SegmentCount { reply })?;
 
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped segment count reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "index worker dropped segment count reply"
+                )
+            })?
     }
     //stats
     pub fn get_stats(&self) -> io::Result<IndexingStats> {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::GetStats { reply })?;
-        rx.recv()
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped"))?
+        rx.recv().map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped"))?
     }
 }
 
@@ -241,7 +242,7 @@ fn run_index_worker(
     mut index: LsmIndex,
     analyzer: Analyzer,
     shared: SharedIndexSnapshot,
-    receiver: Receiver<IndexCommand>,
+    receiver: Receiver<IndexCommand>
 ) -> io::Result<LsmIndex> {
     let mut stats = IndexingStats::default();
     let mut docs_since_publish: u64 = 0;
@@ -278,7 +279,7 @@ fn run_index_worker(
                         &shared,
                         &index,
                         &mut docs_since_publish,
-                        &mut last_publish,
+                        &mut last_publish
                     );
                 }
             }
@@ -295,12 +296,8 @@ fn run_index_worker(
                     last_publish = Instant::now();
                 }
             }
-            IndexCommand::AddSegment {
-                segment,
-                doc_count,
-                ack,
-            } => {
-                let outcome = index.add_immutable_segment(segment);
+            IndexCommand::AddSegment { segments, doc_count, ack } => {
+                let outcome = index.add_immutable_segment(segments);
                 let ok = outcome.is_ok();
                 if ok {
                     stats.segments_written += 1;
@@ -313,19 +310,21 @@ fn run_index_worker(
                         &shared,
                         &index,
                         &mut docs_since_publish,
-                        &mut last_publish,
+                        &mut last_publish
                     );
                 }
             }
             IndexCommand::PlanCompaction { config, reply } => {
                 let result = index.plan_compaction(config);
 
-                reply.send(result).map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "compaction plan receiver dropped",
-                    )
-                })?;
+                reply
+                    .send(result)
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "compaction plan receiver dropped"
+                        )
+                    })?;
             }
 
             IndexCommand::InstallCompaction { completed, ack } => {
@@ -341,9 +340,11 @@ fn run_index_worker(
                 }
             }
             IndexCommand::SegmentCount { reply } => {
-                reply.send(Ok(index.segment_count())).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "segment count receiver dropped")
-                })?;
+                reply
+                    .send(Ok(index.segment_count()))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "segment count receiver dropped")
+                    })?;
             }
             IndexCommand::Flush { ack } => {
                 let outcome = index.flush();
@@ -366,9 +367,11 @@ fn run_index_worker(
             IndexCommand::GetStats { reply } => {
                 stats.segment_count = index.segment_count();
                 stats.memtable_term_count = index.memtable_term_count();
-                reply.send(Ok(stats.clone())).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
-                })?;
+                reply
+                    .send(Ok(stats.clone()))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
+                    })?;
             }
         }
     }
@@ -381,7 +384,7 @@ fn maybe_publish_on_threshold(
     shared: &SharedIndexSnapshot,
     index: &LsmIndex,
     docs_since_publish: &mut u64,
-    last_publish: &mut Instant,
+    last_publish: &mut Instant
 ) {
     if *docs_since_publish >= PUBLISH_DOC_THRESHOLD {
         shared.publish(index.snapshot());
@@ -391,25 +394,23 @@ fn maybe_publish_on_threshold(
 }
 
 fn wait_for_acknowledgement(rx: Receiver<io::Result<()>>) -> io::Result<()> {
-    rx.recv().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "index worker dropped acknowledgement",
-        )
-    })?
+    rx
+        .recv()
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "index worker dropped acknowledgement")
+        })?
 }
 
 fn send_acknowledgement(
     acknowledgement: Option<Acknowledgement>,
-    result: io::Result<()>,
+    result: io::Result<()>
 ) -> io::Result<()> {
     if let Some(acknowledgement) = acknowledgement {
-        acknowledgement.send(result).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "acknowledgement receiver dropped",
-            )
-        })?;
+        acknowledgement
+            .send(result)
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "acknowledgement receiver dropped")
+            })?;
     }
 
     Ok(())
@@ -418,7 +419,7 @@ fn send_acknowledgement(
 #[timed(indexing_documents)]
 pub fn build_segment_batch(
     analyzer: &Analyzer,
-    documents: Vec<IndexedDocument>,
+    documents: Vec<IndexedDocument>
 ) -> ImmutableSegment {
     let mut mem = MemIndex::new();
 
@@ -433,17 +434,20 @@ pub fn build_segment_batch(
 pub fn index_batches_parallel(
     worker: &IndexWorker,
     analyzer: Analyzer,
-    batches: Vec<Vec<IndexedDocument>>,
+    batches: Vec<Vec<IndexedDocument>>
 ) -> io::Result<()> {
-    let doc_counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+    let total_docs: u64 = batches
+        .iter()
+        .map(|batch| batch.len() as u64)
+        .sum();
     let segments: Vec<ImmutableSegment> = batches
         .into_par_iter()
         .map(|batch| build_segment_batch(&analyzer, batch))
         .collect();
 
-    for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
-        worker.add_segment_wait(segment, doc_count)?;
-    }
+    // for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
+        worker.add_segment_wait(segments, total_docs)?;
+    // }
 
     Ok(())
 }
@@ -473,7 +477,7 @@ pub fn make_batches<T>(items: Vec<T>, batch_size: usize) -> Vec<Vec<T>> {
 #[timed(indexing_documents)]
 pub fn build_segments_parallel(
     analyzer: Analyzer,
-    batches: Vec<Vec<IndexedDocument>>,
+    batches: Vec<Vec<IndexedDocument>>
 ) -> Vec<ImmutableSegment> {
     batches
         .into_par_iter()
@@ -553,10 +557,7 @@ impl Phase {
     }
 
     pub fn is_running(self) -> bool {
-        matches!(
-            self,
-            Phase::Preparing | Phase::Reindexing | Phase::Swapping | Phase::CatchUp
-        )
+        matches!(self, Phase::Preparing | Phase::Reindexing | Phase::Swapping | Phase::CatchUp)
     }
 }
 
@@ -616,12 +617,14 @@ impl ReindexProgress {
             if Phase::from_u8(current).is_running() {
                 return false;
             }
-            match self.phase.compare_exchange_weak(
-                current,
-                Phase::Preparing as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match
+                self.phase.compare_exchange_weak(
+                    current,
+                    Phase::Preparing as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                )
+            {
                 Ok(_) => {
                     break;
                 }
@@ -645,7 +648,7 @@ impl ReindexProgress {
                 Phase::Preparing as u8,
                 Phase::Reindexing as u8,
                 Ordering::AcqRel,
-                Ordering::Acquire,
+                Ordering::Acquire
             );
             if let Ok(mut t) = self.first_add.lock() {
                 t.get_or_insert_with(Instant::now);
@@ -690,11 +693,7 @@ impl ReindexProgress {
         let phase = self.phase();
         let total = self.total.load(Ordering::Relaxed);
         let raw_done = self.done.load(Ordering::Relaxed);
-        let done = if total > 0 {
-            raw_done.min(total)
-        } else {
-            raw_done
-        };
+        let done = if total > 0 { raw_done.min(total) } else { raw_done };
 
         let percent = if phase == Phase::Complete {
             100

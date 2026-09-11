@@ -8,7 +8,7 @@ INPUT_DIR = "./movie_chunks"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "movies"
 MAX_CHUNKS = 0  # 0 = send all
-SHARD_COUNT = 2
+SHARD_COUNT = 4
 USERNAME = "admin"
 PASSWORD = "secret"
 
@@ -154,6 +154,23 @@ def curl_put(url, body, token):
 #     return result.stdout.strip(), result.returncode
 
 
+def wait_until_searchable(expected_count, token, timeout=30):
+    query = json.dumps({"query": "*", "docs": expected_count})
+    start = time.time()
+    found = 0
+    while time.time() - start < timeout:
+        out, _ = curl_post(
+            f"{BASE_URL}/api/databases/{DB_NAME}/search", query, token)
+        result = json.loads(out)
+        data = result.get("data", [])
+        found = len(data) if isinstance(data, list) else data.get("total", 0)
+        if found >= expected_count:
+            print(
+                f"[INFO] Searchable after {time.time() - start}s ({found}/{expected_count} docs)")
+            return
+    print(f"[WARN] Not fully searchable after {timeout}s ({found}/{expected_count} docs)")
+
+
 def main():
     start_time = time.time()
     print("[INFO] Starting movie uploader...")
@@ -188,7 +205,8 @@ def main():
         f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
     print(f"[INFO] {out}")
 
-    # 4. upload chunks
+    # 4. upload chunks — insert stays batched to disk server-side,
+    #    we just verify each chunk becomes searchable before moving on
     files = sorted(glob.glob(os.path.join(INPUT_DIR, "movies_*.json")))
     if not files:
         print(f"[ERROR] No chunk files found in {
@@ -199,6 +217,7 @@ def main():
         files = files[:MAX_CHUNKS]
 
     print(f"[INFO] Uploading {len(files)} chunk(s)...")
+    total_docs = 0
     for idx, file in enumerate(files, start=1):
         with open(file, "r", encoding="utf-8") as f:
             chunk = json.load(f)
@@ -208,15 +227,12 @@ def main():
         if code != 0:
             print(f"[ERROR] Failed to upload {file}")
             print(out)
-        else:
-            print(
-                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+            continue
 
-    # 5. reindex
-    # print("[INFO] Reindexing...")
-    # out, _ = curl_post(
-    #     f"{BASE_URL}/api/databases/{DB_NAME}/reindex", "", token)
-    # print(f"[INFO] {out}")
+        total_docs += len(chunk)
+        print(
+            f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+        wait_until_searchable(total_docs, token)
 
     duration = time.time() - start_time
     print(f"\n[INFO] Done in {duration:.2f}s.")

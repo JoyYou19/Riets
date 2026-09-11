@@ -478,13 +478,7 @@ impl ShardDb {
         let not_flushed = self.pending >= (batch_size as u32);
         let result = (|| -> Result<InsertReport, CorelamoError> {
             self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
-            info!(self.log, "Documents inserted";
-                "user" => user.clone(),
-                "operation" => "create",
-                "shard_id" => %self.shard_id,
-                "documents" => count,
-                "durable_offset" => self.wal.durable_offset(),
-            );
+           
 
             let db = self
                 .db_mut()
@@ -503,9 +497,9 @@ impl ShardDb {
                 self.pending = 0;
             }
 
-            if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
-                warn!(self.log, "checkpoint write failed"; "error" => %e);
-            }
+            // if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
+            //     warn!(self.log, "checkpoint write failed"; "error" => %e);
+            // }
 
             Ok(report)
         })();
@@ -513,12 +507,13 @@ impl ShardDb {
         match &result {
             Ok(report) => {
                 self.stats.add_documents_indexed(report.inserted as u64);
-                self.publish_stats();
+                // self.publish_stats();
                 info!(self.log, "indexed batch";
                     "shard_id" => %self.shard_id,
                     "documents" => count,
                     "batch_size" => batch_size,
                     "elapsed_ms" => elapsed.as_millis(),
+                    "user"=> user,
                 );
             }
             Err(e) => {
@@ -528,6 +523,7 @@ impl ShardDb {
                     "batch_size" => batch_size,
                     "elapsed_ms" => elapsed.as_millis(),
                     "error" => %e,
+                    "user" => user,
                 );
             }
         }
@@ -664,7 +660,7 @@ impl ShardDb {
                 warn!(self.log, "checkpoint write failed"; "error" => %e);
             }
         }
-        self.publish_stats();
+        // self.publish_stats();
         let elapsed = started.elapsed();
         info!(self.log, "delete batch";
             "user" => user.clone(),
@@ -871,9 +867,9 @@ impl ShardDb {
                     .reset()
                     .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
             }
-            if let Err(e) = self.wal.write_checkpoint(0) {
-                warn!(self.log, "checkpoint write failed"; "error" => %e);
-            }
+            // if let Err(e) = self.wal.write_checkpoint(0) {
+            //     warn!(self.log, "checkpoint write failed"; "error" => %e);
+            // }
         }
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
@@ -953,9 +949,9 @@ impl ShardDb {
                     .reset()
                     .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
             }
-            self.wal
-                .write_checkpoint(0)
-                .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
+            // self.wal
+            //     .write_checkpoint(0)
+            //     .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
         }
         let elapsed = started.elapsed();
         info!(self.log, "upsert batch";
