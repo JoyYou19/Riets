@@ -228,6 +228,15 @@ impl MemIndex {
                 exact.weight.max,
             );
         }
+
+        for exact_index in &document.exact_index {
+            self.add_token(
+                exact_index.text.as_str(),
+                exact_index.xpath,
+                document.doc_id,
+                0,
+            );
+        }
     }
 
     #[timed(indexing_documents)]
