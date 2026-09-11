@@ -22,13 +22,13 @@ pub fn load_jsonl(path: impl AsRef<Path>) -> io::Result<Vec<TestDocument>> {
     let mut docs = Vec::new();
 
     for line in reader.lines() {
-        let line = line?;
+        let mut line = line?;
 
         if line.trim().is_empty() {
             continue;
         }
 
-        let doc: TestDocument = serde_json::from_str(&line)
+        let doc: TestDocument = unsafe { simd_json::from_str(&mut line) }
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
         docs.push(doc);

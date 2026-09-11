@@ -33,7 +33,6 @@ core-backup ={path="../core-backup"}
 uuid = { version = "1.23.4", features = ["v4"] }
 serde = { workspace = true,}
 tokio = { workspace = true }
-serde_json = { version = "1", features = ["preserve_order"] }
 slog ="2"
 slog-async="2"
 slog-term="2"
@@ -50,3 +49,4 @@ parking_lot = "0.12.5"
 tower-http = { version = "0.6", features = ["cors", "decompression-gzip", "compression-full", "trace", "timeout"] }
 tower_governor = "0.8.0"
 governor = "0.10.4"
+simd-json = "0.18.1"

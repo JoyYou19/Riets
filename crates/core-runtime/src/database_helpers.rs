@@ -3,7 +3,8 @@ use std::{collections::HashMap, io, path::Path};
 use core_core::shard_manager::ShardManager;
 use core_protocol::errors::CorelamoError;
 use core_timing::timed;
-use serde_json::json;
+
+use simd_json::{OwnedValue, StaticNode, owned::Object, json};
 use slog::error;
 
 #[timed(database_lifecycle)]
@@ -120,17 +121,17 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-fn format_size_opt(bytes: Option<u64>) -> serde_json::Value {
+fn format_size_opt(bytes: Option<u64>) -> OwnedValue {
     match bytes {
         Some(b) => json!(format_size(b)),
-        None => serde_json::Value::Null,
+        None => OwnedValue::Static(StaticNode::Null),
     }
 }
 
 pub fn compute_disk_usage(
     db_root: &std::path::Path,
     db_name: &str,
-) -> Result<serde_json::Value, CorelamoError> {
+) -> Result<OwnedValue, CorelamoError> {
     if !db_root.exists() {
         return Err(CorelamoError::NotFound(format!(
             "database '{db_name}' not found on disk"
@@ -145,7 +146,7 @@ pub fn compute_disk_usage(
         ("all_fields.toml", "all_fields_toml"),
     ];
     let mut config_total: u64 = 0;
-    let mut config_json = serde_json::Map::new();
+    let mut config_json = Object::new();
     for (filename, key) in config_files {
         let size = file_size_opt(&db_root.join(filename))?;
         if let Some(s) = size {
@@ -185,10 +186,10 @@ pub fn compute_disk_usage(
     let mut logs_total: u64 = 0;
     let mut index_total: u64 = 0;
 
-    let mut documents_per_shard = serde_json::Map::new();
-    let mut wal_per_shard = serde_json::Map::new();
-    let mut logs_per_shard = serde_json::Map::new();
-    let mut index_per_shard = serde_json::Map::new();
+    let mut documents_per_shard = Object::new();
+    let mut wal_per_shard = Object::new();
+    let mut logs_per_shard = Object::new();
+    let mut index_per_shard = Object::new();
 
     for shard_name in &shard_names {
         let shard_root = shards_dir.join(shard_name);

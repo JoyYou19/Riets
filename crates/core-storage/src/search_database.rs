@@ -307,7 +307,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         window_size: usize,
     ) -> io::Result<InsertReport> {
         let mut pipeline = self.begin_import(batch_size, window_size)?;
-
+        pipeline.seen.reserve(inputs.len());
         for (input_index, input) in inputs.into_iter().enumerate() {
             pipeline.push(input, input_index)?;
         }
@@ -350,55 +350,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     #[timed(modifying_documents)]
-    pub fn partial_replace_document(
-        &mut self,
-        external_id: &str,
-        patch: &serde_json::Value,
-    ) -> io::Result<Option<StoredDocument>> {
-        let Some(old_doc) = self.store.get(external_id)? else {
-            return Ok(None);
-        };
-
-        let mut doc_value: serde_json::Value =
-            serde_json::from_slice(&old_doc.source).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("stored document is not valid JSON: {e}"),
-                )
-            })?;
-
-        apply_merge_patch(&mut doc_value, patch);
-
-        let new_source = serde_json::to_vec(&doc_value).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to serialize patched document: {e}"),
-            )
-        })?;
-
-        let mut fields = BTreeMap::new();
-        //gay af bet ok
-        traverse_json(&doc_value, &mut "".to_string(), &mut fields);
-
-        let new_internal_id = self.allocate_internal_id()?;
-        let new_doc = StoredDocument {
-            external_id: external_id.to_string(),
-            internal_id: new_internal_id,
-            source: new_source,
-            fields,
-            format: old_doc.format,
-        };
-
-        self.index_worker
-            .delete_document_wait(old_doc.internal_id)?;
-
-        self.store.put(new_doc.clone())?;
-
-        let indexed = stored_document_to_indexed(&new_doc, &self.policy);
-        self.index_worker.add_indexed_document_wait(indexed)?;
-
-        Ok(Some(new_doc))
-    }
+    
 
     #[timed(modifying_documents)]
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
@@ -630,7 +582,7 @@ fn publish_window(
         if progress.is_cancelled() {
             return Err(io::Error::other("reindex cancelled"));
         }
-        worker.add_segment_wait(segment, count)?;
+        worker.add_segment_wait(vec![segment], count)?;
         progress.add(count);
     }
     Ok(())
@@ -779,13 +731,13 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         let batches = std::mem::take(&mut self.pending_batches);
 
-        let counts: Vec<u64> = batches.iter().map(|batch| batch.len() as u64).collect();
+        let counts: u64 = batches.iter().map(|batch| batch.len() as u64).sum();
 
         let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
 
-        for (segment, count) in segments.into_iter().zip(counts) {
-            self.db.index_worker.add_segment_wait(segment, count)?;
-        }
+        // for (segment, count) in segments.into_iter().zip(counts) {
+            self.db.index_worker.add_segment_wait(segments, counts)?;
+        // }
 
         Ok(())
     }
