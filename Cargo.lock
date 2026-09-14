@@ -648,6 +648,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simd-json",
+ "strsim",
  "thiserror 2.0.18",
  "toml",
  "tracing",

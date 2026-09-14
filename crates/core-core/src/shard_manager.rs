@@ -945,7 +945,7 @@ impl ShardManager {
 
         let (raw_query, exact) = match &command.query {
             QuerySpec::Plain(raw) => (raw.as_str(), false),
-            QuerySpec::Exact { query, exact } => (query.as_str(), *exact),
+            QuerySpec::Exact { value, exact } => (value.as_str(), *exact),
         };
 
         //stupid shit to do so that someone can do shit like "query": {"query": penis, "exact":

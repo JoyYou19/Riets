@@ -8,7 +8,7 @@ use core_index::{
     analyzer::analyzer::Analyzer,
     numeric_columns::NumericBound,
     posting::{
-        PostingList,
+        Posting, PostingList,
         ops::{intersection, union},
     },
     search::{SearchColumns, SearchIndex, SearchStats},
@@ -16,7 +16,7 @@ use core_index::{
 };
 use core_timing::timed;
 
-use crate::{ScoredPosting, SearchHit, TopHit, ast::Query};
+use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, scorer::score_term_hybrid};
 
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
@@ -218,7 +218,13 @@ where
 
     #[timed(search)]
     fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
-        use core_index::posting::Posting;
+        let raw = raw.trim();
+
+        //incase someone did phrase + exact
+        let raw = raw
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(raw);
 
         let words: Vec<&str> = raw.split_whitespace().collect();
         if words.is_empty() {
@@ -548,12 +554,12 @@ where
         match query {
             Query::Term(term) => {
                 let postings = self.execute_term(term, xpath).unwrap_or_default();
-                crate::scorer::score_term_hybrid(self.index, &postings, xpath)
+                score_term_hybrid(self.index, &postings, xpath)
             }
             Query::And(parts) => self.execute_scored_and(parts, xpath),
             _ => {
                 let postings = self.execute(query, xpath);
-                crate::scorer::score_term_hybrid(self.index, &postings, xpath)
+                score_term_hybrid(self.index, &postings, xpath)
             }
         }
     }
