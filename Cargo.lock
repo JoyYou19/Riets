@@ -612,6 +612,7 @@ dependencies = [
  "core-logs",
  "core-timing",
  "criterion",
+ "levenshtein_automata",
  "lz4_flex",
  "memmap2",
  "parking_lot",

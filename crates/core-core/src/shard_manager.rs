@@ -11,10 +11,11 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
+use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyOptions};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{
-    LookupCommand, LookupResponse, QuerySpec, SearchCommand,
+    LookupCommand, LookupResponse, QuerySpec, SearchCommand, default_max_edits,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
@@ -948,23 +949,52 @@ impl ShardManager {
 
         let policy = self.policy.read().clone();
 
-        let (raw_query, exact) = match &command.query {
-            QuerySpec::Plain(raw) => (raw.as_str(), false),
-            QuerySpec::Exact { value, exact } => (value.as_str(), *exact),
-        };
-
-        //stupid shit to do so that someone can do shit like "query": {"query": penis, "exact":
-        //false}
-        let (query, xpaths) = if exact {
-            (
-                Arc::new(Some(Query::Exact(raw_query.to_string()))),
-                Arc::new(policy.exact_xpaths().collect::<Vec<_>>()),
-            )
-        } else {
-            (
-                Arc::new(parse_and_analyze(raw_query, &self.analyzer)?),
+        let (query, xpaths) = match &command.query {
+            QuerySpec::Plain(raw) => (
+                Arc::new(parse_and_analyze(raw, &self.analyzer)?),
                 Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
-            )
+            ),
+            QuerySpec::Exact { value: raw, exact } => {
+                if *exact {
+                    (
+                        Arc::new(Some(Query::Exact(raw.clone()))),
+                        Arc::new(policy.exact_xpaths().collect::<Vec<_>>()),
+                    )
+                } else {
+                    (
+                        Arc::new(parse_and_analyze(raw, &self.analyzer)?),
+                        Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
+                    )
+                }
+            }
+            QuerySpec::Fuzzy {
+                value: raw,
+                fuzzy,
+                fuzziness,
+                prefix_length,
+                max_expansions,
+            } => {
+                if *fuzzy {
+                    let max_edits = fuzziness
+                        .as_ref()
+                        .map(|f| f.resolve(raw))
+                        .unwrap_or_else(|| default_max_edits(raw));
+                    let opts = FuzzyOptions {
+                        max_edits,
+                        prefix_length: prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH),
+                        max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
+                    };
+                    (
+                        Arc::new(Some(Query::Fuzzy(raw.clone(), opts))),
+                        Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
+                    )
+                } else {
+                    (
+                        Arc::new(parse_and_analyze(raw, &self.analyzer)?),
+                        Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
+                    )
+                }
+            }
         };
 
         let filters = resolve_filters(&self.analyzer, command, &policy)?;

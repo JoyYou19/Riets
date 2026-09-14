@@ -1,6 +1,7 @@
 pub mod analyzer;
 pub mod disk;
 pub mod document;
+pub mod fuzzy;
 pub mod lsm;
 pub mod mem;
 pub mod numeric_columns;

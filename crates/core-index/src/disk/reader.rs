@@ -209,6 +209,15 @@ impl SearchIndex for DiskSegment {
         }
     }
 
+    fn terms(&self, xpath: XPathId) -> Vec<String> {
+        let start = self.lower_bound_term("", xpath);
+        self.dictionary[start..]
+            .iter()
+            .take_while(|e| e.xpath == xpath)
+            .map(|e| e.term.clone())
+            .collect()
+    }
+
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: crate::types::XPathId) -> PostingList {
         let start = self.lower_bound_term(prefix, xpath);

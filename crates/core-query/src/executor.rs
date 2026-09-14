@@ -6,6 +6,7 @@ use std::{
 
 use core_index::{
     analyzer::analyzer::Analyzer,
+    fuzzy::FuzzyOptions,
     numeric_columns::NumericBound,
     posting::{
         Posting, PostingList,
@@ -32,6 +33,7 @@ pub enum FieldFilterKind {
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
     },
+    Fuzzy(String, FuzzyOptions),
 }
 
 // Turns the AST into a PostingList or SearchHit
@@ -65,6 +67,7 @@ where
             Query::Or(parts) => self.execute_or(parts, xpath),
             Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
             Query::Exact(term) => Some(self.execute_exact(term, xpath)),
+            Query::Fuzzy(term, opts) => Some(self.execute_fuzzy(term, xpath, *opts)),
         }
     }
 
@@ -216,6 +219,35 @@ where
         PostingList::from_items(result)
     }
 
+    #[timed(search)]
+    fn execute_fuzzy(&self, raw: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        let words: Vec<String> = raw
+            .split_whitespace()
+            .filter_map(|w| {
+                self.analyzer
+                    .analyze_query(w)
+                    .into_iter()
+                    .next()
+                    .map(|t| t.text)
+            })
+            .collect();
+
+        if words.is_empty() {
+            return PostingList::default();
+        }
+
+        let lists: Vec<PostingList> = words
+            .iter()
+            .map(|w| self.index.lookup_fuzzy(w, xpath, opts))
+            .collect();
+
+        let mut iter = lists.into_iter();
+        let mut result = iter.next().unwrap_or_default();
+        for next in iter {
+            result = intersection(&result, &next);
+        }
+        result
+    }
     #[timed(search)]
     fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
         let raw = raw.trim();
@@ -432,6 +464,13 @@ where
 
                 FieldFilterKind::Exact(term) => self
                     .execute_exact(term, filter.xpath)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+
+                FieldFilterKind::Fuzzy(term, opts) => self
+                    .execute_fuzzy(term, filter.xpath, *opts)
                     .items()
                     .iter()
                     .map(|p| p.doc_id)

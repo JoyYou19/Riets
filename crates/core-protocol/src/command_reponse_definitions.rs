@@ -112,10 +112,77 @@ pub struct SearchCommand {
     pub sort: Option<IndexMap<String, SortSpec>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fuzziness {
+    Zero,
+    One,
+    Two,
+    Auto,
+}
+
+pub fn default_max_edits(term: &str) -> u8 {
+    match term.chars().count() {
+        0..=2 => 0,
+        3..=5 => 1,
+        _ => 2,
+    }
+}
+
+impl Fuzziness {
+    pub fn resolve(self, term: &str) -> u8 {
+        match self {
+            Fuzziness::Zero => 0,
+            Fuzziness::One => 1,
+            Fuzziness::Two => 2,
+            Fuzziness::Auto => default_max_edits(term),
+        }
+    }
+
+    fn from_owned(v: &OwnedValue) -> Result<Self, String> {
+        if let Some(n) = v.as_u64() {
+            return match n {
+                0 => Ok(Fuzziness::Zero),
+                1 => Ok(Fuzziness::One),
+                2 => Ok(Fuzziness::Two),
+                other => Err(format!(
+                    "fuzziness must be 0, 1, 2 or \"auto\" (got {other})"
+                )),
+            };
+        }
+        if let Some(s) = v.as_str() {
+            if s.eq_ignore_ascii_case("auto") {
+                return Ok(Fuzziness::Auto);
+            }
+            return Err(format!("fuzziness must be 0, 1, 2 or \"auto\" (got '{s}')"));
+        }
+        Err("fuzziness must be 0, 1, 2 or \"auto\"".to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Fuzziness {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = OwnedValue::deserialize(deserializer)?;
+        Self::from_owned(&v).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum QuerySpec {
     Plain(String),
-    Exact { value: String, exact: bool },
+    Exact {
+        value: String,
+        exact: bool,
+    },
+    Fuzzy {
+        value: String,
+        fuzzy: bool,
+        fuzziness: Option<Fuzziness>,
+        prefix_length: Option<usize>,
+        max_expansions: Option<usize>,
+    },
 }
 
 use std::fmt;
@@ -125,6 +192,7 @@ impl fmt::Display for QuerySpec {
         match self {
             QuerySpec::Plain(q) => write!(f, "{q}"),
             QuerySpec::Exact { value, .. } => write!(f, "{value}"),
+            QuerySpec::Fuzzy { value, .. } => write!(f, "{value}"),
         }
     }
 }
@@ -140,7 +208,15 @@ impl<'de> Deserialize<'de> for QuerySpec {
         match value {
             OwnedValue::String(s) => Ok(QuerySpec::Plain(s)),
             OwnedValue::Object(obj) => {
-                const EXPECTED: &[&str] = &["value", "exact"];
+                //INFO: holly porn
+                const EXPECTED: &[&str] = &[
+                    "value",
+                    "exact",
+                    "fuzzy",
+                    "fuzziness",
+                    "prefix_length",
+                    "max_expansions",
+                ];
 
                 for key in obj.keys() {
                     if !EXPECTED.contains(&key.as_str()) {
@@ -154,34 +230,61 @@ impl<'de> Deserialize<'de> for QuerySpec {
                             }
                         }
                         return Err(serde::de::Error::custom(format!(
-                            "Unknown field '{key}' in query. Expected 'value' and 'exact'."
+                            "Unknown field '{key}' in query. Expected 'value', 'exact', 'fuzzy', 'fuzziness', 'prefix_length', 'max_expansions'."
                         )));
                     }
                 }
 
-                let query = obj
+                let value = obj
                     .get("value")
                     .and_then(OwnedValue::as_str)
                     .ok_or_else(|| {
-                        serde::de::Error::custom(
-                            "Object query form requires a string 'query' field",
-                        )
+                        serde::de::Error::custom("query object requires a string 'value' field")
                     })?
                     .to_string();
 
                 let exact = obj
                     .get("exact")
                     .and_then(OwnedValue::as_bool)
-                    .ok_or_else(|| {
-                        serde::de::Error::custom(
-                            "Object query form requires a boolean 'exact' field",
-                        )
-                    })?;
+                    .unwrap_or(false);
+                let fuzzy = obj
+                    .get("fuzzy")
+                    .and_then(OwnedValue::as_bool)
+                    .unwrap_or(false);
 
-                Ok(QuerySpec::Exact {
-                    value: query,
-                    exact,
-                })
+                if exact && fuzzy {
+                    return Err(serde::de::Error::custom(
+                        "query cannot set both 'exact' and 'fuzzy'",
+                    ));
+                }
+
+                if fuzzy {
+                    let fuzziness = match obj.get("fuzziness") {
+                        Some(v) => {
+                            Some(Fuzziness::from_owned(v).map_err(serde::de::Error::custom)?)
+                        }
+                        None => None,
+                    };
+                    let prefix_length = obj
+                        .get("prefix_length")
+                        .and_then(OwnedValue::as_u64)
+                        .map(|n| n as usize);
+                    let max_expansions = obj
+                        .get("max_expansions")
+                        .and_then(OwnedValue::as_u64)
+                        .map(|n| n as usize);
+                    Ok(QuerySpec::Fuzzy {
+                        value,
+                        fuzzy: true,
+                        fuzziness,
+                        prefix_length,
+                        max_expansions,
+                    })
+                } else if exact {
+                    Ok(QuerySpec::Exact { value, exact: true })
+                } else {
+                    Ok(QuerySpec::Plain(value))
+                }
             }
             other => Err(serde::de::Error::custom(format!(
                 "query must be a string, or an object with 'value' and 'exact' fields (found {})",
@@ -197,7 +300,17 @@ impl Command for SearchCommand {}
 #[serde(untagged)]
 pub enum FilterSpec {
     Plain(String),
-    Exact { value: String, exact: bool },
+    Exact {
+        value: String,
+        exact: bool,
+    },
+    Fuzzy {
+        value: String,
+        fuzzy: bool,
+        fuzziness: Option<Fuzziness>,
+        prefix_length: Option<usize>,
+        max_expansions: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

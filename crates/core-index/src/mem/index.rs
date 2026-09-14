@@ -35,6 +35,14 @@ impl SearchIndex for MemIndex {
         self.lookup_or_empty(term, xpath)
     }
 
+    fn terms(&self, xpath: XPathId) -> Vec<String> {
+        self.terms
+            .keys()
+            .filter(|k| k.xpath == xpath)
+            .map(|k| k.term.clone())
+            .collect()
+    }
+
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
     }

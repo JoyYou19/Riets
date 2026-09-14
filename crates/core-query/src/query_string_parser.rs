@@ -4,7 +4,7 @@ use core_timing::timed;
 use crate::ast::Query;
 use core_index::{analyzer::Analyzer, wildcard::WildcardPattern};
 
-//TODO: pielikt search komandai kko lidzigu sim:
+//TODO: pielikt search komandai kko lidzigu sim preks highlight:
 //  "highlight": {
 //   "fields": {
 //     "content": {
@@ -238,6 +238,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
         Query::Or(subs) => combine(subs, analyzer, Query::Or),
 
         Query::Exact(term) => Some(Query::Exact(term)),
+        Query::Fuzzy(term, opts) => Some(Query::Fuzzy(term.to_lowercase(), opts)),
     }
 }
 

@@ -35,6 +35,15 @@ impl SearchIndex for IndexSnapshot {
         IndexSnapshot::lookup_prefix(self, prefix, xpath)
     }
 
+    fn terms(&self, xpath: XPathId) -> Vec<String> {
+        let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        out.extend(self.mem.terms(xpath));
+        for seg in &self.segments {
+            out.extend(seg.terms(xpath));
+        }
+        out.into_iter().collect()
+    }
+
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup_wildcard(self, pattern, xpath)
     }
