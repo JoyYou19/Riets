@@ -27,7 +27,7 @@ fn describe_parse_error(e: &simd_json::Error) -> String {
         // The document itself isn't valid JSON (bad comma/colon/brace/quote/etc.) -
         return match e.character() {
             Some(c) => format!(
-                "Malformed JSON syntax at character {} (near '{c}'). Check for missing commas, colons, quotes, or braces.",
+                "Malformed JSON syntax at character {} (near '{c}'). Check for missing commas, colons, qubotes, or braces.",
                 e.index()
             ),
             None => format!(

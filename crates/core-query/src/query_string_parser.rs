@@ -243,7 +243,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
 
 #[timed(search)]
 fn analyze_term(word: &str, analyzer: &Analyzer) -> Option<Query> {
-    let mut tokens = analyzer.analyze(word).into_iter().map(|t| t.text);
+    let mut tokens = analyzer.analyze_query(word).into_iter().map(|t| t.text);
     //this is also the check for if returned nothing
     let first = tokens.next()?;
     match tokens.next() {
@@ -279,7 +279,7 @@ fn combine(subs: Vec<Query>, analyzer: &Analyzer, make: fn(Vec<Query>) -> Query)
 fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
     let text = words.join(" ");
     let tokens: Vec<String> = analyzer
-        .analyze(&text)
+        .analyze_query(&text)
         .into_iter()
         .map(|t| t.text)
         .collect();

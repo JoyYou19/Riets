@@ -53,12 +53,7 @@ impl CompactionWorker {
                         "index worker dropped compaction plan reply",
                     )
                 })?? {
-                   
-
-                    let started = std::time::Instant::now();
                     let completed = run_compaction_job(job)?;
-
-                   
 
                     let (ack, install_rx) = std::sync::mpsc::channel();
 

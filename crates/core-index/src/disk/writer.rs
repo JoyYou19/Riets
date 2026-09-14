@@ -111,7 +111,6 @@ pub fn write_segment_to<W: Write + Seek>(
     segment: &ImmutableSegment,
 ) -> io::Result<()> {
     let trace = trace_segment_writer();
-    let total_started = std::time::Instant::now();
 
     write_header(out)?;
 
@@ -119,12 +118,7 @@ pub fn write_segment_to<W: Write + Seek>(
         //  tracing.trace!(time=?started.elapsed(),"segment writer: header took");
     }
 
-    let started = std::time::Instant::now();
-
     let mut dictionary = Vec::new();
-    let mut posting_lists = 0usize;
-    let mut postings_total = 0usize;
-    let mut positions_total = 0usize;
     let mut postings_buf = Vec::with_capacity(64 * 1024);
 
     for (key, postings) in segment.terms() {
@@ -137,14 +131,6 @@ pub fn write_segment_to<W: Write + Seek>(
 
         let postings_len = postings_buf.len() as u32;
 
-        posting_lists += 1;
-        postings_total += postings.len();
-        positions_total += postings
-            .items()
-            .iter()
-            .map(|posting| posting.positions.len())
-            .sum::<usize>();
-
         dictionary.push(TermEntry {
             term: key.term.clone(),
             xpath: key.xpath,
@@ -154,21 +140,13 @@ pub fn write_segment_to<W: Write + Seek>(
         });
     }
 
-    
-
     let doc_lengths_offset = out.stream_position()?;
     write_doc_lengths(out, segment.doc_lengths())?;
     let doc_lengths_end = out.stream_position()?;
 
-    let started = std::time::Instant::now();
-
     let dictionary_offset = out.stream_position()?;
     write_dictionary(out, &dictionary)?;
     let dictionary_end = out.stream_position()?;
-
-   
-
-    let started = std::time::Instant::now();
 
     let columns_offset = out.stream_position()?;
     write_columns(out, segment.columns())?;
@@ -186,7 +164,6 @@ pub fn write_segment_to<W: Write + Seek>(
     write_footer(out, &footer)?;
     let total_bytes = out.stream_position()?;
     core_timing::add_bytes("writing_files", "write_segment_to", file!(), total_bytes);
-    
 
     Ok(())
 }

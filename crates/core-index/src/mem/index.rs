@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use ahash::HashMapExt;
 use core_timing::timed;
@@ -19,6 +19,7 @@ pub struct MemIndex {
     field_stats: BTreeMap<XPathId, FieldStats>,
     columns: NumericColumns,
 }
+
 impl Default for MemIndex {
     fn default() -> Self {
         Self {
@@ -100,7 +101,6 @@ impl MemIndex {
             columns: NumericColumns::new(),
         }
     }
-   
 
     #[timed(indexing_documents)]
     pub fn freeze(self) -> crate::segment::ImmutableSegment {
