@@ -25,6 +25,7 @@ max = 95
 name = "title"
 kind = "Text"
 list = true
+exact= true
 [fields.weight]
 min = 90
 max = 95

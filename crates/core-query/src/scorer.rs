@@ -27,27 +27,9 @@ pub fn score_term_hybrid<S: SearchStats>(
     postings: &PostingList,
     xpath: XPathId,
 ) -> Vec<ScoredPosting> {
-    // let trace = trace_bm25();
-    //let total_started = std::time::Instant::now();
-
-    //let started = std::time::Instant::now();
-
     let n = stats.doc_count(xpath) as f32;
     let df = postings.len() as f32;
     let avgdl = stats.avg_doc_len(xpath);
-
-    /*  if trace {
-      tracing::trace!(
-            xpath=%xpath,
-            docs=n,
-            doc_freq=%df,
-            avg_doc_len=%avgdl,
-            time=?started.elapsed(),
-            "bm25 stats",
-        );
-    }
-    */
-    //  let started = std::time::Instant::now();
 
     let scored: Vec<ScoredPosting> = postings
         .items()
@@ -80,35 +62,8 @@ pub fn score_term_hybrid<S: SearchStats>(
         })
         .collect();
 
-    /*   if trace {
-           tracing::trace!(
-                xpath=%xpath,
-                postings=%postings.len(),
-                scored=%scored.len(),
-                scoring_took=?started.elapsed(),
-                total_took=?total_started.elapsed(),
-
-                "bm25 score",
-            );
-        }
-    */
     scored
 }
-
-// pub fn score_term(postings: &PostingList) -> Vec<ScoredPosting> {
-//     postings
-//         .items()
-//         .iter()
-//         .filter(|p| !p.positions.is_empty())
-//         .map(|p| ScoredPosting {
-//             doc_id: p.doc_id,
-//             positions: Arc::from(p.positions.as_slice()),
-//             score: p.weight as u64 * 1000,
-//             matched_terms: 1,
-//             density: 1.0,
-//         })
-//         .collect()
-// }
 
 #[timed(search)]
 pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPosting> {

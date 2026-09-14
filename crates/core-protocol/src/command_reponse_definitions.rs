@@ -2,8 +2,11 @@
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use simd_json::prelude::*;
 use simd_json::{OwnedValue, json};
 use std::collections::{BTreeMap, HashMap};
+use strsim::levenshtein;
 
 use crate::{
     command_response_helpers::{FieldNode, tree_to_json, unflatten},
@@ -11,9 +14,76 @@ use crate::{
     format::Format,
 };
 
+//helper
+pub fn parse_json_command<T: DeserializeOwned>(body: &str) -> Result<T, CorelamoError> {
+    let mut bytes = body.as_bytes().to_vec();
+    simd_json::from_slice(&mut bytes)
+        .map_err(|e| CorelamoError::InvalidData(describe_parse_error(&e)))
+}
+
+//INFO: fancy hujna lai dabutu smuku error message aaraa
+fn describe_parse_error(e: &simd_json::Error) -> String {
+    if e.is_syntax() {
+        // The document itself isn't valid JSON (bad comma/colon/brace/quote/etc.) -
+        return match e.character() {
+            Some(c) => format!(
+                "Malformed JSON syntax at character {} (near '{c}'). Check for missing commas, colons, quotes, or braces.",
+                e.index()
+            ),
+            None => format!(
+                "Malformed JSON syntax at character {}. Check for missing commas, colons, quotes, or braces.",
+                e.index()
+            ),
+        };
+    }
+
+    let msg = match e.error() {
+        simd_json::ErrorType::Serde(msg) => msg.clone(),
+        _ => e.to_string(),
+    };
+
+    format_unknown_field(&msg).unwrap_or(msg)
+}
+
+fn format_unknown_field(err_str: &str) -> Option<String> {
+    if !err_str.contains("unknown field") {
+        return None;
+    }
+
+    let field_start = err_str.find('`')?;
+    let rest = &err_str[field_start + 1..];
+    let field_end = rest.find('`')?;
+    let bad_field = &rest[..field_end];
+
+    if let Some(expected_idx) = err_str.find("expected one of ") {
+        let expected_str = &err_str[expected_idx + 16..];
+        let expected_fields: Vec<&str> = expected_str
+            .split(',')
+            .map(|s| s.trim().trim_matches('`'))
+            .collect();
+
+        if let Some(best_match) = expected_fields
+            .iter()
+            .min_by_key(|field| levenshtein(bad_field, field))
+        {
+            if levenshtein(bad_field, best_match) <= 3 {
+                return Some(format!(
+                    "Unknown field '{bad_field}'. Did you mean '{best_match}'?"
+                ));
+            }
+        }
+    }
+
+    Some(format!("Unknown field '{bad_field}'."))
+}
+
 //trait Command -> all XXXCommand should have these properties
-pub trait Command: Sized {
-    fn from_json(body: &str) -> Result<Self, CorelamoError>;
+//functions with #derive Deserialize already have this unless you want to customize like in
+//PartialReplace
+pub trait Command: Sized + DeserializeOwned {
+    fn from_json(body: &str) -> Result<Self, CorelamoError> {
+        parse_json_command(body)
+    }
     //fn from_xml(body: &str) -> Result<Self, CorelamoError>;
 
     #[timed(command_parsing)]
@@ -42,11 +112,10 @@ pub struct SearchCommand {
     pub sort: Option<IndexMap<String, SortSpec>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum QuerySpec {
     Plain(String),
-    Exact { query: String, exact: bool },
+    Exact { value: String, exact: bool },
 }
 
 use std::fmt;
@@ -55,10 +124,74 @@ impl fmt::Display for QuerySpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             QuerySpec::Plain(q) => write!(f, "{q}"),
-            QuerySpec::Exact { query, .. } => write!(f, "{query}"),
+            QuerySpec::Exact { value, .. } => write!(f, "{value}"),
         }
     }
 }
+
+//Hand made cuz this our favourite command that needs a lot of care
+impl<'de> Deserialize<'de> for QuerySpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = OwnedValue::deserialize(deserializer)?;
+
+        match value {
+            OwnedValue::String(s) => Ok(QuerySpec::Plain(s)),
+            OwnedValue::Object(obj) => {
+                const EXPECTED: &[&str] = &["value", "exact"];
+
+                for key in obj.keys() {
+                    if !EXPECTED.contains(&key.as_str()) {
+                        if let Some(best_match) =
+                            EXPECTED.iter().min_by_key(|field| levenshtein(key, field))
+                        {
+                            if levenshtein(key, best_match) <= 3 {
+                                return Err(serde::de::Error::custom(format!(
+                                    "Unknown field '{key}' in query. Did you mean '{best_match}'?"
+                                )));
+                            }
+                        }
+                        return Err(serde::de::Error::custom(format!(
+                            "Unknown field '{key}' in query. Expected 'value' and 'exact'."
+                        )));
+                    }
+                }
+
+                let query = obj
+                    .get("value")
+                    .and_then(OwnedValue::as_str)
+                    .ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "Object query form requires a string 'query' field",
+                        )
+                    })?
+                    .to_string();
+
+                let exact = obj
+                    .get("exact")
+                    .and_then(OwnedValue::as_bool)
+                    .ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "Object query form requires a boolean 'exact' field",
+                        )
+                    })?;
+
+                Ok(QuerySpec::Exact {
+                    value: query,
+                    exact,
+                })
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "query must be a string, or an object with 'value' and 'exact' fields (found {})",
+                other.value_type()
+            ))),
+        }
+    }
+}
+
+impl Command for SearchCommand {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -119,37 +252,13 @@ impl ResponseData for SearchResponse {
     // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {}
 }
 
-impl Command for SearchCommand {
-    #[timed(command_parsing)]
-    fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let mut bytes = body.as_bytes().to_vec();
-        simd_json::from_slice(&mut bytes).map_err(CorelamoError::from)
-    }
-
-    // fn from_xml(body: &str) -> Result<Self, CorelamoError> {
-    //     todo!()
-    // }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
 pub struct RetrieveCommand {
     pub ids: Vec<String>,
 }
 
-impl Command for RetrieveCommand {
-    // TODO: accept more shapes later, e.g. {"ids": [...]}
-    #[timed(command_parsing)]
-    fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let mut bytes = body.as_bytes().to_vec();
-        let ids: Vec<String> = simd_json::from_slice(&mut bytes)
-            .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
-        Ok(RetrieveCommand { ids })
-    }
-
-    // fn from_xml(body: &str) -> Result<Self, CorelamoError> {
-    //     todo!();
-    // }
-}
+impl Command for RetrieveCommand {}
 
 pub struct RetrieveResponse {
     documents: Vec<(String, Vec<u8>)>,
@@ -202,10 +311,13 @@ impl ResponseData for RetrieveResponse {
     // }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
 pub struct DeleteCommand {
     pub ids: Vec<String>,
 }
+
+impl Command for DeleteCommand {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -214,14 +326,7 @@ pub struct LookupCommand {
     pub return_fields: Option<IndexMap<String, bool>>,
 }
 
-impl Command for LookupCommand {
-    #[timed(command_parsing)]
-    fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let mut bytes = body.as_bytes().to_vec();
-        simd_json::from_slice(&mut bytes).map_err(CorelamoError::from)
-    }
-}
-
+impl Command for LookupCommand {}
 pub struct LookupResponse {
     pub docs: Vec<(String, FieldNode)>,
     pub not_found: Vec<String>,
@@ -263,19 +368,7 @@ pub struct GetLogsRequest {
     pub date: Option<String>,
 }
 
-impl Command for DeleteCommand {
-    #[timed(command_parsing)]
-    fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let mut bytes = body.as_bytes().to_vec();
-        let ids: Vec<String> = simd_json::from_slice(&mut bytes)
-            .map_err(|_| CorelamoError::InvalidData("expected JSON array of ids".to_string()))?;
-        Ok(DeleteCommand { ids })
-    }
-
-    // fn from_xml(body: &str) -> Result<Self, CorelamoError> {
-    //     todo!();
-    // }
-}
+impl Command for GetLogsRequest {}
 
 pub struct LoginResponse {
     pub token: String,
@@ -293,7 +386,8 @@ pub struct PartialReplaceItem {
     pub patch: simd_json::OwnedValue,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
 pub struct PartialReplaceCommand {
     pub items: Vec<PartialReplaceItem>,
 }
@@ -304,20 +398,18 @@ pub struct ParsedPartialReplace {
 }
 
 impl Command for PartialReplaceCommand {
-    #[timed(command_parsing)]
     fn from_json(body: &str) -> Result<Self, CorelamoError> {
-        let mut bytes = body.as_bytes().to_vec();
-        let items: Vec<PartialReplaceItem> = simd_json::from_slice(&mut bytes).map_err(|e| {
-            CorelamoError::InvalidData(format!("invalid partial-replace request: {e}"))
-        })?;
+        // Go through the shared fancy-error path first...
+        let cmd: Self = parse_json_command(body)?;
 
-        if items.is_empty() {
+        // ...then layer this command's own semantic validation on top.
+        if cmd.items.is_empty() {
             return Err(CorelamoError::InvalidData(
                 "partial-replace requires at least one document".into(),
             ));
         }
 
-        Ok(PartialReplaceCommand { items })
+        Ok(cmd)
     }
 }
 
@@ -327,11 +419,15 @@ pub struct RenameDatabaseRequest {
     pub name: String,
 }
 
+impl Command for RenameDatabaseRequest {}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateDatabaseRequest {
     pub shard_count: Option<u16>,
 }
+
+impl Command for CreateDatabaseRequest {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -340,8 +436,12 @@ pub struct TimingsRequest {
     pub file: Option<String>,
 }
 
+impl Command for TimingsRequest {}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InfoWordsRequest {
     pub words: Vec<String>,
 }
+
+impl Command for InfoWordsRequest {}

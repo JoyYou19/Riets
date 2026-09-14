@@ -60,8 +60,8 @@ impl From<CorelamoError> for std::io::Error {
             | CorelamoError::UnknownRole(msg)
             | CorelamoError::Unauthorized(msg)
             | CorelamoError::Internal(msg)
-            |CorelamoError::Busy(msg)
-            |CorelamoError::FailedToEx(msg)=>Error::other(msg)
+            | CorelamoError::Busy(msg)
+            | CorelamoError::FailedToEx(msg) => Error::other(msg),
         }
     }
 }
