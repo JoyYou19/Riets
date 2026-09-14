@@ -456,8 +456,11 @@ impl ShardDb {
     ) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
         let count = inputs.len();
-
-        self.pending += count as u32;
+        let total_bytes: u64 = inputs
+            .iter()
+            .map(|d| d.source.len() as u64)
+            .sum();
+        core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
         let batch_size = self.options.runtime.indexing_batch_size;
 
         let window_size = self.options.runtime.indexing_window_size;
@@ -708,7 +711,7 @@ impl ShardDb {
         // reopen against the new index
         self.start()?;
         std::fs::remove_dir_all(&old_root).ok();
-        self.publish_stats();
+        // self.publish_stats();
         info!(self.log, "reindex committed";
             "shard_id" => %self.shard_id,
             "generation" => self.generation,

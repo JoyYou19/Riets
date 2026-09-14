@@ -14,6 +14,53 @@
 //! subscriber installed, and it aggregates instead of emitting one
 //! event/span per call. Use it alongside `#[tracing::instrument]` if you
 //! also want per-call spans in your existing tracing output.
+//!
+//! ## Byte-rate tracking
+//!
+//! Raw per-call averages are misleading for batch functions: a call that
+//! processes a small batch and one that processes a huge batch at the
+//! *same underlying speed* will show wildly different `avg` numbers,
+//! because `avg` is per-*call*, not per-*unit-of-work*. Document counts
+//! don't fix this either — a batch of tiny documents and a batch of huge
+//! documents can have the same doc count but very different amounts of
+//! actual work. Bytes processed is the number that's actually comparable
+//! across differently-sized batches and differently-sized documents.
+//!
+//! A function can report how many bytes it processed via [`add_bytes`],
+//! called once per invocation, anywhere inside a `#[timed]`-wrapped body,
+//! using the same category/name/file the macro generates. This adds an
+//! `MB/s`-or-`KB/s` rate column to the report that stays stable
+//! regardless of batch size or document size.
+//!
+//! ```ignore
+//! #[timed(inserting)]
+//! pub fn insert(&mut self, inputs: Vec<DocumentInput>) -> io::Result<()> {
+//!     let bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
+//!     core_timing::add_bytes("inserting", "insert", file!(), bytes);
+//!     // ... actual insert work ...
+//! }
+//! ```
+//!
+//! Functions that don't report bytes keep behaving exactly as before
+//! (rate column shows `-`).
+//!
+//! ## Baseline semantics
+//!
+//! The baseline is frozen once a function has accumulated **both** at
+//! least [`BASELINE_MIN_CALLS`] calls **and** at least
+//! [`BASELINE_MIN_ELAPSED_NS`] of total recorded time — not just call
+//! count. A function called millions of times per second would otherwise
+//! freeze its baseline a few microseconds into a run, against a cold,
+//! unrepresentative sample; gating on elapsed time as well means the
+//! baseline reflects some real amount of warmed-up work.
+//!
+//! For byte-tracked functions, the baseline is a **rate** (bytes/sec) and
+//! drift is the percent change in that rate — **positive means faster
+//! than baseline**, negative means slower. For functions with no bytes
+//! reported, the baseline falls back to average call duration, but drift
+//! is still expressed on the same "positive = faster" scale (i.e. it's
+//! `(baseline_avg - current_avg) / baseline_avg`), so the sign is
+//! consistent everywhere in the report.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -21,11 +68,14 @@ use std::time::Duration;
 
 pub use core_timing_macros::timed;
 
-/// Once a function has been called this many times, its average at that
-/// point is frozen as the "baseline" for that function — later reports
-/// show the current average's drift from it. Tune this if your call
-/// volumes are much lower/higher than a few dozen per run.
-pub const BASELINE_SAMPLE_SIZE: u64 = 20;
+/// Minimum number of calls before a baseline can be frozen.
+pub const BASELINE_MIN_CALLS: u64 = 20;
+
+/// Minimum total recorded time (ns) before a baseline can be frozen, in
+/// addition to `BASELINE_MIN_CALLS`. Prevents a high-frequency function
+/// from freezing its baseline against a handful of cold-start
+/// microseconds. 500ms by default.
+pub const BASELINE_MIN_ELAPSED_NS: u64 = 500_000_000;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FnStats {
@@ -33,12 +83,30 @@ pub struct FnStats {
     pub total_ns: u64,
     pub min_ns: u64,
     pub max_ns: u64,
-    /// Average duration (ns) as of the `BASELINE_SAMPLE_SIZE`-th call.
-    /// `None` until that many calls have happened.
+
+    /// Total bytes of work done across all calls (e.g. bytes of document
+    /// source data inserted), if the call site reports it via
+    /// [`add_bytes`]. Zero if never reported.
+    pub total_bytes: u64,
+
+    /// Average call duration (ns) as of the point the baseline froze.
+    /// Used as the baseline when no bytes are tracked. `None` until the
+    /// baseline conditions are met.
     pub baseline_avg_ns: Option<f64>,
+    /// Throughput (bytes/sec) as of the point the baseline froze. Used as
+    /// the baseline when bytes *are* tracked. `None` until the baseline
+    /// conditions are met, or if no bytes were ever reported.
+    pub baseline_bytes_rate: Option<f64>,
 }
 
 impl FnStats {
+    fn empty() -> Self {
+        FnStats {
+            min_ns: u64::MAX,
+            ..Default::default()
+        }
+    }
+
     pub fn avg_ns(&self) -> f64 {
         if self.count == 0 {
             0.0
@@ -47,14 +115,33 @@ impl FnStats {
         }
     }
 
-    /// Percent change of the current average vs. the frozen baseline
-    /// average. `None` if there's no baseline yet.
-    pub fn drift_pct(&self) -> Option<f64> {
-        let baseline = self.baseline_avg_ns?;
-        if baseline <= 0.0 {
+    /// Current throughput in bytes/sec, if this function has ever
+    /// reported bytes. `None` if no bytes were reported or no time has
+    /// elapsed yet.
+    pub fn bytes_per_sec(&self) -> Option<f64> {
+        if self.total_bytes == 0 || self.total_ns == 0 {
             return None;
         }
-        Some((self.avg_ns() - baseline) / baseline * 100.0)
+        Some(self.total_bytes as f64 / (self.total_ns as f64 / 1_000_000_000.0))
+    }
+
+    /// Percent change vs. the frozen baseline, on a "positive = faster"
+    /// scale regardless of whether the comparison is rate-based or
+    /// duration-based under the hood. `None` if there's no baseline yet.
+    pub fn drift_pct(&self) -> Option<f64> {
+        if let Some(baseline_rate) = self.baseline_bytes_rate {
+            let current_rate = self.bytes_per_sec()?;
+            if baseline_rate <= 0.0 {
+                return None;
+            }
+            return Some((current_rate - baseline_rate) / baseline_rate * 100.0);
+        }
+        let baseline_avg = self.baseline_avg_ns?;
+        if baseline_avg <= 0.0 {
+            return None;
+        }
+        let current_avg = self.avg_ns();
+        Some((baseline_avg - current_avg) / baseline_avg * 100.0)
     }
 }
 
@@ -79,6 +166,12 @@ fn filename_only(file: &'static str) -> &'static str {
 /// directly. `file` is expected to be the output of the builtin `file!()`
 /// macro at the call site — full path in, only the filename is kept.
 ///
+/// If the same call already reported bytes via [`add_bytes`] before
+/// returning, that's folded into this call's baseline once both baseline
+/// conditions (`BASELINE_MIN_CALLS`, `BASELINE_MIN_ELAPSED_NS`) are met —
+/// call `add_bytes` *before* the function returns (i.e. anywhere in the
+/// body) so it's visible here.
+///
 /// Note: this takes a plain `Mutex<HashMap<..>>` lock per call, which is
 /// fine for dev-time profiling. If you end up applying `#[timed]` to a
 /// function called millions of times per second across many shard
@@ -88,13 +181,7 @@ pub fn record(category: &'static str, name: &'static str, file: &'static str, el
     let file = filename_only(file);
     let ns = elapsed.as_nanos() as u64;
     let mut map = registry().lock().unwrap();
-    let entry = map.entry((category, name, file)).or_insert(FnStats {
-        count: 0,
-        total_ns: 0,
-        min_ns: u64::MAX,
-        max_ns: 0,
-        baseline_avg_ns: None,
-    });
+    let entry = map.entry((category, name, file)).or_insert_with(FnStats::empty);
     entry.count += 1;
     entry.total_ns += ns;
     if ns < entry.min_ns {
@@ -103,9 +190,39 @@ pub fn record(category: &'static str, name: &'static str, file: &'static str, el
     if ns > entry.max_ns {
         entry.max_ns = ns;
     }
-    if entry.count == BASELINE_SAMPLE_SIZE {
+    if entry.baseline_avg_ns.is_none()
+        && entry.count >= BASELINE_MIN_CALLS
+        && entry.total_ns >= BASELINE_MIN_ELAPSED_NS
+    {
         entry.baseline_avg_ns = Some(entry.avg_ns());
+        if entry.total_bytes > 0 {
+            entry.baseline_bytes_rate = entry.bytes_per_sec();
+        }
     }
+}
+
+/// Reports how many bytes of work a `#[timed]`-wrapped function did on
+/// top of just how long it took, so the report can show a stable
+/// `MB/s`/`KB/s` rate instead of a per-call average that's skewed by
+/// batch or document size.
+///
+/// Call this once per invocation, anywhere inside the function body,
+/// using the *same* `category`/`name`/`file` the `#[timed(category)]`
+/// attribute on that function would generate (`file` should just be
+/// `file!()` at the call site — same as the macro uses). If a function is
+/// called from multiple call sites with different labels, make sure the
+/// label passed here matches whichever one is actually active.
+///
+/// If a call errors out or only partially completes its work, report the
+/// bytes actually processed (e.g. only the documents that succeeded),
+/// not the bytes requested — otherwise the rate is optimistic. Be
+/// consistent about this across call sites that feed into the same
+/// category, so `MB/s` means the same thing on every row.
+pub fn add_bytes(category: &'static str, name: &'static str, file: &'static str, bytes: u64) {
+    let file = filename_only(file);
+    let mut map = registry().lock().unwrap();
+    let entry = map.entry((category, name, file)).or_insert_with(FnStats::empty);
+    entry.total_bytes += bytes;
 }
 
 type CategoryEntries = Vec<(&'static str, &'static str, FnStats)>; // (name, file, stats)
@@ -168,8 +285,8 @@ pub fn snapshot_filtered<S: AsRef<str>>(
         .collect()
 }
 
-/// Clear all recorded stats (including baselines) — useful between
-/// benchmark runs.
+/// Clear all recorded stats (including baselines and byte counters) —
+/// useful between benchmark runs.
 pub fn reset() {
     registry().lock().unwrap().clear();
 }
@@ -217,6 +334,16 @@ fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
 
     let mut out = String::new();
     for (category, entries) in categories {
+        // Drop orphaned entries: created by an add_bytes() call whose
+        // (category, name, file) never matched a #[timed] call, so
+        // count stays 0 and min_ns is stuck at its u64::MAX sentinel.
+        // These carry no timing data and would print garbage (a bogus
+        // multi-billion-second "max").
+        let entries: CategoryEntries = entries.into_iter().filter(|(_, _, s)| s.count > 0).collect();
+        if entries.is_empty() {
+            continue;
+        }
+
         out.push_str(&format!("== {category} ==\n"));
 
         // Column widths sized to this category's actual content, so a
@@ -236,18 +363,25 @@ fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
             .max("file".len());
 
         out.push_str(&format!(
-            "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>24}\n",
-            "function", "file", "calls", "total", "avg", "min", "max", "vs baseline",
+            "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>14} {:>24}\n",
+            "function", "file", "calls", "total", "avg", "min", "max", "rate", "vs baseline",
         ));
         for (name, file, s) in entries {
-            let drift = match (s.drift_pct(), s.baseline_avg_ns) {
-                (Some(pct), Some(baseline)) => {
-                    format!("{:+.1}% (was {})", pct, fmt_duration(baseline as u64))
+            let rate = match s.bytes_per_sec() {
+                Some(bps) => fmt_bytes_rate(bps),
+                None => "-".to_string(),
+            };
+            let drift = match s.drift_pct() {
+                Some(pct) if s.baseline_bytes_rate.is_some() => {
+                    format!("{:+.1}% (was {})", pct, fmt_bytes_rate(s.baseline_bytes_rate.unwrap()))
                 }
-                _ => format!("(<{BASELINE_SAMPLE_SIZE} calls)"),
+                Some(pct) => {
+                    format!("{:+.1}% (was {})", pct, fmt_duration(s.baseline_avg_ns.unwrap() as u64))
+                }
+                None => "(warming up)".to_string(),
             };
             out.push_str(&format!(
-                "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>24}\n",
+                "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>14} {:>24}\n",
                 name,
                 file,
                 s.count,
@@ -255,6 +389,7 @@ fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
                 fmt_duration(s.avg_ns() as u64),
                 fmt_duration(s.min_ns),
                 fmt_duration(s.max_ns),
+                rate,
                 drift,
             ));
         }
@@ -311,5 +446,15 @@ fn fmt_duration(ns: u64) -> String {
         format!("{:.2}ms", ns as f64 / 1_000_000.0)
     } else {
         format!("{:.2}s", ns as f64 / 1_000_000_000.0)
+    }
+}
+
+fn fmt_bytes_rate(bytes_per_sec: f64) -> String {
+    if bytes_per_sec >= 1_048_576.0 {
+        format!("{:.1} MB/s", bytes_per_sec / 1_048_576.0)
+    } else if bytes_per_sec >= 1024.0 {
+        format!("{:.1} KB/s", bytes_per_sec / 1024.0)
+    } else {
+        format!("{bytes_per_sec:.0} B/s")
     }
 }

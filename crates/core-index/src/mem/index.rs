@@ -12,14 +12,23 @@ use crate::types::{DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct MemIndex {
-    terms: HashMap<TermKey, PostingList>,
-    doc_lengths: HashMap<(DocId, XPathId), u32>,
+    terms: ahash::HashMap<TermKey, PostingList>,
+    doc_lengths: ahash::HashMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     columns: NumericColumns,
 }
-
+impl Default for MemIndex {
+    fn default() -> Self {
+        Self {
+            terms: ahash::HashMap::default(),
+            doc_lengths: ahash::HashMap::default(),
+            field_stats: BTreeMap::new(),
+            columns: NumericColumns::default(),
+        }
+    }
+}
 impl SearchIndex for MemIndex {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup_or_empty(term, xpath)
@@ -85,12 +94,13 @@ impl SearchStats for MemIndex {
 impl MemIndex {
     pub fn new() -> Self {
         Self {
-            terms: HashMap::new(),
-            doc_lengths: HashMap::new(),
+            terms: ahash::HashMap::new(),
+            doc_lengths: ahash::HashMap::new(),
             field_stats: BTreeMap::new(),
             columns: NumericColumns::new(),
         }
     }
+   
 
     #[timed(indexing_documents)]
     pub fn freeze(self) -> crate::segment::ImmutableSegment {
@@ -249,7 +259,7 @@ impl MemIndex {
         stats.doc_count += 1;
         stats.total_doc_len += len as u64;
 
-        let mut grouped = HashMap::<String, Vec<u32>>::new();
+        let mut grouped = ahash::HashMap::<String, Vec<u32>>::default();
         for (position, word) in words.iter().enumerate() {
             grouped
                 .entry((*word).to_string())

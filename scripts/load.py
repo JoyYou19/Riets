@@ -47,21 +47,18 @@ FIELDS = [
 
 
 def build_policy():
-    """xpath is positional: FIELDS order defines it. id goes last."""
     out = [
         '[[fields]]\n'
         'name = "id"\n'
-        f'xpath = {len(FIELDS)}\n'
-        'index = "IdAuto"\n'
+        'kind = "IdAuto"\n'
         'list = true\n'
         '[fields.weight]\nmin = 90\nmax = 95\n'
     ]
-    for pos, (_, name, index, stem, lo, hi) in enumerate(FIELDS):
+    for _, name, index, stem, lo, hi in FIELDS:
         out.append(
             '[[fields]]\n'
             f'name     = "{name}"\n'
-            f'xpath    = {pos}\n'
-            f'index    = "{index}"\n'
+            f'kind     = "{index}"\n'
             'list     = true\n'
             f'stemming = "{stem}"\n'
             f'[fields.weight]\nmin = {lo}\nmax = {hi}\n'
@@ -77,70 +74,70 @@ def human(n):
     return f"{n:.1f} TiB"
 
 
-def download(url, dest):
-    """Resumable download."""
-    try:
-        req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=60) as r:
-            expected = int(r.headers.get("Content-Length") or 0)
-    except Exception:
-        expected = 0
+# def download(url, dest):
+#     """Resumable download."""
+#     try:
+#         req = urllib.request.Request(url, method="HEAD")
+#         with urllib.request.urlopen(req, timeout=60) as r:
+#             expected = int(r.headers.get("Content-Length") or 0)
+#     except Exception:
+#         expected = 0
 
-    have = os.path.getsize(dest) if os.path.exists(dest) else 0
-    if expected and have == expected:
-        print(f"[info] {dest} already downloaded ({human(have)})")
-        return
-    if not expected and have:
-        print(f"[info] {dest} exists ({human(have)}), keeping it")
-        return
+#     have = os.path.getsize(dest) if os.path.exists(dest) else 0
+#     if expected and have == expected:
+#         print(f"[info] {dest} already downloaded ({human(have)})")
+#         return
+#     if not expected and have:
+#         print(f"[info] {dest} exists ({human(have)}), keeping it")
+#         return
 
-    for attempt in range(5):
-        headers, mode = {}, "wb"
-        if have:
-            headers["Range"] = f"bytes={have}-"
-            mode = "ab"
-            print(f"[info] resuming at {human(have)}")
-        try:
-            with urllib.request.urlopen(
-                    urllib.request.Request(url, headers=headers), timeout=120) as r:
-                if have and r.status == 200:
-                    have, mode = 0, "wb"          # server ignored Range
-                start, last = time.monotonic(), 0.0
-                with open(dest, mode) as fh:
-                    while True:
-                        block = r.read(512 * 1024)
-                        if not block:
-                            break
-                        fh.write(block)
-                        have += len(block)
-                        now = time.monotonic()
-                        if now - last > 1.0:
-                            last = now
-                            rate = have / max(now - start, 1e-9)
-                            pct = f"{100.0 * have / expected:5.1f}%" if expected else "  ?  "
-                            sys.stderr.write(f"\r[down] {pct}  {human(have)}  {human(rate)}/s   ")
-                            sys.stderr.flush()
-            sys.stderr.write("\n")
-            print(f"[info] downloaded {human(os.path.getsize(dest))}")
-            return
-        except (urllib.error.URLError, OSError) as e:
-            sys.stderr.write("\n")
-            print(f"[warn] attempt {attempt + 1} failed: {e}")
-            have = os.path.getsize(dest) if os.path.exists(dest) else 0
-            time.sleep(2 ** attempt)
+#     for attempt in range(5):
+#         headers, mode = {}, "wb"
+#         if have:
+#             headers["Range"] = f"bytes={have}-"
+#             mode = "ab"
+#             print(f"[info] resuming at {human(have)}")
+#         try:
+#             with urllib.request.urlopen(
+#                     urllib.request.Request(url, headers=headers), timeout=120) as r:
+#                 if have and r.status == 200:
+#                     have, mode = 0, "wb"          # server ignored Range
+#                 start, last = time.monotonic(), 0.0
+#                 with open(dest, mode) as fh:
+#                     while True:
+#                         block = r.read(512 * 1024)
+#                         if not block:
+#                             break
+#                         fh.write(block)
+#                         have += len(block)
+#                         now = time.monotonic()
+#                         if now - last > 1.0:
+#                             last = now
+#                             rate = have / max(now - start, 1e-9)
+#                             pct = f"{100.0 * have / expected:5.1f}%" if expected else "  ?  "
+#                             sys.stderr.write(f"\r[down] {pct}  {human(have)}  {human(rate)}/s   ")
+#                             sys.stderr.flush()
+#             sys.stderr.write("\n")
+#             print(f"[info] downloaded {human(os.path.getsize(dest))}")
+#             return
+#         except (urllib.error.URLError, OSError) as e:
+#             sys.stderr.write("\n")
+#             print(f"[warn] attempt {attempt + 1} failed: {e}")
+#             have = os.path.getsize(dest) if os.path.exists(dest) else 0
+#             time.sleep(2 ** attempt)
 
-    sys.exit(f"[error] could not download {url}")
+#     sys.exit(f"[error] could not download {url}")
 
 
-def unzip(archive, member):
-    if os.path.exists(member):
-        print(f"[info] {member} already extracted")
-        return
-    print(f"[info] extracting {archive}")
-    with zipfile.ZipFile(archive) as z:
-        z.extractall(".")
-    if not os.path.exists(member):
-        sys.exit(f"[error] {member} not found inside {archive}")
+# def unzip(archive, member):
+#     if os.path.exists(member):
+#         print(f"[info] {member} already extracted")
+#         return
+#     print(f"[info] extracting {archive}")
+#     with zipfile.ZipFile(archive) as z:
+#         z.extractall(".")
+#     if not os.path.exists(member):
+#         sys.exit(f"[error] {member} not found inside {archive}")
 
 
 class Server:
@@ -193,11 +190,11 @@ class Server:
 
 
 def main():
-    if ARCHIVE:
-        download(URL, ARCHIVE)
-        unzip(ARCHIVE, DATAFILE)
-    else:
-        download(URL, DATAFILE)
+    # if ARCHIVE:
+    #     download(URL, ARCHIVE)
+    #     unzip(ARCHIVE, DATAFILE)
+    # else:
+    #     download(URL, DATAFILE)
 
     total_bytes = os.path.getsize(DATAFILE)
     print(f"[info] source {DATAFILE} ({human(total_bytes)})")

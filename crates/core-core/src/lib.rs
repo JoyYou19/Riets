@@ -13,7 +13,7 @@ pub mod shard_manager_helpers;
 
 #[timed(shard_manager)]
 pub fn shard_for(external_id: &str, num_shards: u16) -> u16 {
-    use std::collections::hash_map::DefaultHasher;
+    
     use std::hash::{Hash, Hasher};
 
     //INFO: if there is a single shard it will always go to it
@@ -21,7 +21,7 @@ pub fn shard_for(external_id: &str, num_shards: u16) -> u16 {
         return 0;
     }
 
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = ahash::AHasher::default();
     external_id.hash(&mut hasher);
     //The math of seperation type beat
     (hasher.finish() % num_shards as u64) as u16

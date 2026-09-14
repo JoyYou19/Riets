@@ -179,7 +179,11 @@ impl IndexWorker {
     }
 
     #[timed(indexing_documents)]
-    pub fn add_segment_wait(&self, segments: Vec<ImmutableSegment>, doc_count: u64) -> io::Result<()> {
+    pub fn add_segment_wait(
+        &self,
+        segments: Vec<ImmutableSegment>,
+        doc_count: u64
+    ) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
         self.send(IndexCommand::AddSegment {
@@ -259,6 +263,14 @@ fn run_index_worker(
                 let ok = outcome.is_ok();
                 if ok {
                     stats.total_documents_indexed += 1;
+                }
+                if docs_since_publish % 1000 == 0 {
+                    core_timing::add_bytes(
+                        "indexing_documents",
+                        "memtable_growth",
+                        file!(),
+                        index.memtable_term_count() as u64
+                    );
                 }
                 send_acknowledgement(ack, outcome)?;
                 if ok {
@@ -434,7 +446,7 @@ pub fn index_batches_parallel(
         .collect();
 
     // for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
-        worker.add_segment_wait(segments, total_docs)?;
+    worker.add_segment_wait(segments, total_docs)?;
     // }
 
     Ok(())
