@@ -53,20 +53,12 @@ impl CompactionWorker {
                         "index worker dropped compaction plan reply",
                     )
                 })?? {
-                    tracing::info!(
-                        job_id = job.job_id,
-                        segments = job.selected.len(),
-                        "compaction planned"
-                    );
+                   
 
                     let started = std::time::Instant::now();
                     let completed = run_compaction_job(job)?;
 
-                    tracing::info!(
-                        job_id = completed.job_id,
-                        elapsed_ms = started.elapsed().as_millis(),
-                        "compaction finished"
-                    );
+                   
 
                     let (ack, install_rx) = std::sync::mpsc::channel();
 

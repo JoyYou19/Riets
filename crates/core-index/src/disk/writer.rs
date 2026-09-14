@@ -154,15 +154,7 @@ pub fn write_segment_to<W: Write + Seek>(
         });
     }
 
-    if trace {
-        tracing::trace!(
-            posting_lists=%posting_lists,
-            posting_total=%postings_total,
-            positions_total=%positions_total,
-            time=?started.elapsed(),
-            "segment writer wrote postings",
-        );
-    }
+    
 
     let doc_lengths_offset = out.stream_position()?;
     write_doc_lengths(out, segment.doc_lengths())?;
@@ -174,13 +166,7 @@ pub fn write_segment_to<W: Write + Seek>(
     write_dictionary(out, &dictionary)?;
     let dictionary_end = out.stream_position()?;
 
-    if trace {
-        tracing::trace!(
-            time=?started.elapsed(),
-            dictionary=%dictionary.len(),
-            "segment writer wrote in dictionary",
-        );
-    }
+   
 
     let started = std::time::Instant::now();
 
@@ -198,14 +184,9 @@ pub fn write_segment_to<W: Write + Seek>(
         term_count: dictionary.len() as u32,
     };
     write_footer(out, &footer)?;
-
-    if trace {
-        tracing::trace!(
-            time=?started.elapsed(),
-            total=?total_started.elapsed(),
-            "segment writer wrote footer"
-        );
-    }
+    let total_bytes = out.stream_position()?;
+    core_timing::add_bytes("writing_files", "write_segment_to", file!(), total_bytes);
+    
 
     Ok(())
 }

@@ -466,6 +466,8 @@ impl ShardHandle {
         inputs: Vec<DocumentInput>,
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
+        let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
+    core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
         self.call(|resp| ShardCmd::Insert { user, inputs, resp })
             .await?
     }

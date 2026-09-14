@@ -28,7 +28,7 @@ moka = "0.12.16"
 slog-scope = "4.4.1"
 rayon = "1.12.0"
 simd-json = "0.18.1"
-
+ahash="0.8"
 
 [features]
 timing = [

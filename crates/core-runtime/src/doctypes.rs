@@ -138,7 +138,13 @@ fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy, ) -> Pars
     let results: Vec<Result<DocumentInput, DocFailure>> = raw_items
         .par_iter()
         .enumerate()
-        .map(|(index, raw)|{let mut path_buf = String::with_capacity(64); parse_one(index, raw, policy, &mut path_buf)})
+        .map_init(
+            || String::with_capacity(64),
+            |path_buf, (index, raw)| {
+                path_buf.clear();
+                parse_one(index, raw, policy, path_buf)
+            },
+        )
         .collect();
 
     let mut docs = Vec::with_capacity(results.len());
@@ -169,7 +175,7 @@ fn parse_one(index: usize, value: &Value, policy: &IndexPolicy, path_buf:&mut St
 
     let mut fields = BTreeMap::new();
     path_buf.clear();
-    traverse_json(value, &mut "".to_string(), &mut fields);
+    traverse_json(value, path_buf, &mut fields);
     validate_numeric_fields(&fields, policy).map_err(|reason| DocFailure::at(index, reason))?;
 
     let external_id =

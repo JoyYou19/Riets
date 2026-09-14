@@ -109,6 +109,7 @@ impl Wal {
             }
             g.durable_offset = g.written_offset;
         }
+        core_timing::add_bytes("wal", "append", file!(), buf.len() as u64);
         Ok(offset)
     }
 
