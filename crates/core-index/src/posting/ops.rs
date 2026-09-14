@@ -2,6 +2,7 @@ use core_timing::timed;
 
 use crate::posting::{Posting, PostingList};
 
+
 #[timed(search)]
 pub fn union(left: &PostingList, right: &PostingList) -> PostingList {
     let mut result = Vec::new();
@@ -22,10 +23,18 @@ pub fn union(left: &PostingList, right: &PostingList) -> PostingList {
                 j += 1;
             }
             std::cmp::Ordering::Equal => {
-                let mut positions = a[i].positions.clone();
-                positions.extend_from_slice(&b[j].positions);
-                positions.sort_unstable();
-                positions.dedup();
+                let mut positions = Vec::with_capacity(a[i].positions.len() + b[j].positions.len());
+                let (pa, pb) = (&a[i].positions, &b[j].positions);
+                let (mut x, mut y) = (0, 0);
+                while x < pa.len() && y < pb.len() {
+                    match pa[x].cmp(&pb[y]) {
+                        std::cmp::Ordering::Less => { positions.push(pa[x]); x += 1; }
+                        std::cmp::Ordering::Greater => { positions.push(pb[y]); y += 1; }
+                        std::cmp::Ordering::Equal => { positions.push(pa[x]); x += 1; y += 1; }
+                    }
+                }
+                positions.extend_from_slice(&pa[x..]);
+                positions.extend_from_slice(&pb[y..]);
 
                 result.push(Posting::with_weight(
                     a[i].doc_id,
