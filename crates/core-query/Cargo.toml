@@ -14,7 +14,7 @@ timing = ["core-timing/timing", "core-index/timing"]
 [dev-dependencies]
 criterion = { workspace = true }
 core-testkit = { path = "../core-testkit" }
-tracing="0.1.44"
+
 [[bench]]
 name = "query_bench"
 harness = false
