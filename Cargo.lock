@@ -612,6 +612,7 @@ dependencies = [
  "core-logs",
  "core-timing",
  "criterion",
+ "fst",
  "levenshtein_automata",
  "lz4_flex",
  "memmap2",
@@ -1114,6 +1115,12 @@ name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
+
+[[package]]
+name = "fst"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
 
 [[package]]
 name = "futures-channel"
@@ -1752,6 +1759,9 @@ name = "levenshtein_automata"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c2cdeb66e45e9f36bfad5bbdb4d2384e70936afbee843c6f6543f0c551ebb25"
+dependencies = [
+ "fst",
+]
 
 [[package]]
 name = "libc"

@@ -9,21 +9,18 @@ use core_timing::timed;
 use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
-        format::{SegmentFooter, SegmentHeader, TermEntry},
+        format::{SegmentFooter, SegmentHeader},
     },
     numeric_columns::{NumericColumns, NumericValue},
     posting::PostingList,
     segment::ImmutableSegment,
+    term_dict::{TermDict, TermMeta},
     types::{DocId, TermKey, XPathId},
 };
 
 /*
 * Writes an ImmutableSegment to disk
 */
-
-fn trace_segment_writer() -> bool {
-    std::env::var_os("CORELAMO_TRACE_SEGMENT_WRITER").is_some()
-}
 
 fn write_u8(out: &mut impl Write, value: u8) -> io::Result<()> {
     out.write_all(&[value])
@@ -35,11 +32,6 @@ fn write_u32(out: &mut impl Write, value: u32) -> io::Result<()> {
 
 fn write_u64(out: &mut impl Write, value: u64) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
-}
-
-fn write_string(out: &mut impl Write, value: &str) -> io::Result<()> {
-    write_u32(out, value.len() as u32)?;
-    out.write_all(value.as_bytes())
 }
 
 fn write_header(out: &mut impl Write) -> io::Result<()> {
@@ -58,15 +50,22 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
     write_u32(out, footer.term_count)
 }
 
-fn write_dictionary(out: &mut impl Write, entries: &[TermEntry]) -> io::Result<()> {
-    write_u32(out, entries.len() as u32)?;
+fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io::Result<()> {
+    write_u32(out, fields.len() as u32)?;
 
-    for entry in entries {
-        write_string(out, &entry.term)?;
-        write_u32(out, entry.xpath)?;
-        write_u64(out, entry.postings_offset)?;
-        write_u32(out, entry.postings_len)?;
-        write_u32(out, entry.doc_freq)?;
+    for (xpath, dict) in fields {
+        write_u32(out, *xpath)?;
+        write_u32(out, dict.len() as u32)?;
+
+        let fst = dict.fst_bytes();
+        write_u64(out, fst.len() as u64)?;
+        out.write_all(fst)?;
+
+        for meta in dict.metas() {
+            write_u64(out, meta.postings_offset)?;
+            write_u32(out, meta.postings_len)?;
+            write_u32(out, meta.doc_freq)?;
+        }
     }
 
     Ok(())
@@ -110,42 +109,22 @@ pub fn write_segment_to<W: Write + Seek>(
     out: &mut W,
     segment: &ImmutableSegment,
 ) -> io::Result<()> {
-    let trace = trace_segment_writer();
-
     write_header(out)?;
 
-    if trace {
-        //  tracing.trace!(time=?started.elapsed(),"segment writer: header took");
-    }
-
-    let mut dictionary = Vec::new();
-    let mut postings_buf = Vec::with_capacity(64 * 1024);
+    let mut writer: FieldWriter<&str> = FieldWriter::new();
 
     for (key, postings) in segment.terms() {
-        postings_buf.clear();
-
-        let postings_offset = out.stream_position()?;
-
-        encode_posting_list(&mut postings_buf, postings);
-        out.write_all(&postings_buf)?;
-
-        let postings_len = postings_buf.len() as u32;
-
-        dictionary.push(TermEntry {
-            term: key.term.clone(),
-            xpath: key.xpath,
-            postings_offset,
-            postings_len,
-            doc_freq: postings.len() as u32,
-        });
+        writer.push(out, key.xpath, key.term.as_str(), postings)?;
     }
+
+    let (fields, term_count) = writer.finish()?;
 
     let doc_lengths_offset = out.stream_position()?;
     write_doc_lengths(out, segment.doc_lengths())?;
     let doc_lengths_end = out.stream_position()?;
 
     let dictionary_offset = out.stream_position()?;
-    write_dictionary(out, &dictionary)?;
+    write_dictionary(out, &fields)?;
     let dictionary_end = out.stream_position()?;
 
     let columns_offset = out.stream_position()?;
@@ -159,8 +138,9 @@ pub fn write_segment_to<W: Write + Seek>(
         dictionary_len: dictionary_end - dictionary_offset,
         columns_offset,
         columns_len: columns_end - columns_offset,
-        term_count: dictionary.len() as u32,
+        term_count,
     };
+
     write_footer(out, &footer)?;
     let total_bytes = out.stream_position()?;
     core_timing::add_bytes("writing_files", "write_segment_to", file!(), total_bytes);
@@ -229,32 +209,21 @@ pub fn write_merged_segment_to<W: Write + Seek>(
 ) -> io::Result<()> {
     write_header(out)?;
 
-    let mut dictionary = Vec::new();
-    let mut postings_buf = Vec::with_capacity(64 * 1024);
+    let mut writer: FieldWriter<String> = FieldWriter::new();
 
     for (key, postings) in terms {
-        postings_buf.clear();
-
-        let postings_offset = out.stream_position()?;
-        encode_posting_list(&mut postings_buf, &postings);
-        out.write_all(&postings_buf)?;
-        let postings_len = postings_buf.len() as u32;
-
-        dictionary.push(TermEntry {
-            term: key.term,
-            xpath: key.xpath,
-            postings_offset,
-            postings_len,
-            doc_freq: postings.len() as u32,
-        });
+        let xpath = key.xpath;
+        writer.push(out, xpath, key.term, &postings)?;
     }
+
+    let (fields, term_count) = writer.finish()?;
 
     let doc_lengths_offset = out.stream_position()?;
     write_doc_lengths(out, doc_lengths)?;
     let doc_lengths_end = out.stream_position()?;
 
     let dictionary_offset = out.stream_position()?;
-    write_dictionary(out, &dictionary)?;
+    write_dictionary(out, &fields)?;
     let dictionary_end = out.stream_position()?;
 
     let columns_offset = out.stream_position()?;
@@ -268,8 +237,79 @@ pub fn write_merged_segment_to<W: Write + Seek>(
         dictionary_len: dictionary_end - dictionary_offset,
         columns_offset,
         columns_len: columns_end - columns_offset,
-        term_count: dictionary.len() as u32,
+        term_count,
     };
 
     write_footer(out, &footer)
+}
+
+// Streams postings out while grouping terms into one FST per field.
+// Terms MUST arrive in ascending (xpath, term)
+struct FieldWriter<K> {
+    fields: Vec<(XPathId, TermDict)>,
+    current: Option<XPathId>,
+    entries: Vec<(K, TermMeta)>,
+    postings_buf: Vec<u8>,
+    term_count: u32,
+}
+
+impl<K: AsRef<[u8]>> FieldWriter<K> {
+    fn new() -> Self {
+        Self {
+            fields: Vec::new(),
+            current: None,
+            entries: Vec::new(),
+            postings_buf: Vec::with_capacity(64 * 1024),
+            term_count: 0,
+        }
+    }
+
+    // Encodes one term's postings at the current position and records where they
+    // landed, closing the previous field's FST when the xpath changes.
+    fn push<W: Write + Seek>(
+        &mut self,
+        out: &mut W,
+        xpath: XPathId,
+        term: K,
+        postings: &PostingList,
+    ) -> io::Result<()> {
+        if self.current != Some(xpath) {
+            self.close_field()?;
+            self.current = Some(xpath);
+        }
+
+        self.postings_buf.clear();
+
+        let postings_offset = out.stream_position()?;
+        encode_posting_list(&mut self.postings_buf, postings);
+        out.write_all(&self.postings_buf)?;
+
+        self.entries.push((
+            term,
+            TermMeta {
+                postings_offset,
+                postings_len: self.postings_buf.len() as u32,
+                doc_freq: postings.len() as u32,
+            },
+        ));
+
+        self.term_count += 1;
+
+        Ok(())
+    }
+
+    // Builds the FST for the field we were accumulating, if any.
+    fn close_field(&mut self) -> io::Result<()> {
+        if let Some(xpath) = self.current.take() {
+            self.fields
+                .push((xpath, TermDict::build(self.entries.drain(..))?));
+        }
+
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<(Vec<(XPathId, TermDict)>, u32)> {
+        self.close_field()?;
+        Ok((self.fields, self.term_count))
+    }
 }

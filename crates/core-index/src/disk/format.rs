@@ -9,9 +9,16 @@
 //! +------------------------+
 //! | doc_lengths            |  u32 count, then (u64 doc_id, u32 xpath, u32 len)*
 //! +------------------------+
-//! | dictionary             |  u32 count, then TermEntry*
+//! | dictionary             |  u32 field_count, then per field:
+//! |    (now with the FST)  |
+//! |                        |    u32 xpath, u32 term_count, u64 fst_len,
+//! |                        |    fst_bytes[fst_len],
+//! |                        |    (u64 postings_offset, u32 postings_len,
+//! |                        |     u32 doc_freq) * term_count
+//! |                        |  the FST maps term bytes -> ord, and the
+//! |                        |  fixed width meta array is indexed by that ord
 //! +------------------------+
-//! | columns                |  u32 xpath_count, then per xpath:false
+//! | columns                |  u32 xpath_count, then per xpath:
 //! |                        |    u32 xpath, u32 entry_count,
 //! |                        |    (u8 kind, u64 value_bits, u64 doc_id)*
 //! +------------------------+
@@ -20,10 +27,8 @@
 //! +------------------------+
 //! ```
 
-use crate::types::XPathId;
-
 pub const MAGIC: [u8; 8] = *b"CLIDX001";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 pub const HEADER_LEN: usize = 8 + 4;
 pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4;
@@ -41,15 +46,6 @@ impl SegmentHeader {
             version: VERSION,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TermEntry {
-    pub term: String,
-    pub xpath: XPathId,
-    pub postings_offset: u64,
-    pub postings_len: u32,
-    pub doc_freq: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

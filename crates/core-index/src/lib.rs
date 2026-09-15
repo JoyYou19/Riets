@@ -8,5 +8,6 @@ pub mod numeric_columns;
 pub mod posting;
 pub mod search;
 pub mod segment;
+pub mod term_dict;
 pub mod types;
 pub mod wildcard;

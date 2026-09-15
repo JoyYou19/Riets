@@ -67,6 +67,7 @@ where
             Query::Or(parts) => self.execute_or(parts, xpath),
             Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
             Query::Exact(term) => Some(self.execute_exact(term, xpath)),
+
             Query::Fuzzy(term, opts) => Some(self.execute_fuzzy(term, xpath, *opts)),
         }
     }
@@ -79,19 +80,21 @@ where
     // Query a term
     #[timed(search)]
     fn execute_term(&self, term: &str, xpath: XPathId) -> Option<PostingList> {
-        let analyzed = self.analyzer.analyze(term);
-        let token = analyzed.first()?;
+        if term.is_empty() {
+            return None;
+        }
 
-        Some(self.index.lookup(&token.text, xpath))
+        Some(self.index.lookup(term, xpath))
     }
 
     // Prefix query, so for example if we do dat* would find database etc.
     #[timed(search)]
     fn execute_prefix(&self, prefix: &str, xpath: XPathId) -> Option<PostingList> {
-        let analyzed = self.analyzer.analyze(prefix);
-        let token = analyzed.first()?;
+        if prefix.is_empty() {
+            return None;
+        }
 
-        Some(self.index.lookup_prefix(&token.text, xpath))
+        Some(self.index.lookup_prefix(prefix, xpath))
     }
 
     // Wildcard query, for now, we are not analyzing this, might change later
@@ -172,16 +175,7 @@ where
             return PostingList::default();
         }
 
-        let analyzed_terms: Vec<String> = terms
-            .iter()
-            .filter_map(|term| self.analyzer.analyze(term).first().map(|t| t.text.clone()))
-            .collect();
-
-        if analyzed_terms.len() != terms.len() {
-            return PostingList::default();
-        }
-
-        let lists: Vec<PostingList> = analyzed_terms
+        let lists: Vec<PostingList> = terms
             .iter()
             .map(|term| self.index.lookup(term, xpath))
             .collect();

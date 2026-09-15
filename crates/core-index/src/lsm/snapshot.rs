@@ -7,6 +7,7 @@ use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
+    fuzzy::FuzzyOptions,
     mem::MemIndex,
     numeric_columns::{NumericBound, NumericValue},
     posting::{DeleteSet, PostingList, ops::union_many},
@@ -46,6 +47,10 @@ impl SearchIndex for IndexSnapshot {
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup_wildcard(self, pattern, xpath)
+    }
+
+    fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        IndexSnapshot::lookup_fuzzy(self, term, xpath, opts)
     }
 }
 
@@ -168,6 +173,19 @@ impl IndexSnapshot {
 
         for segment in &self.segments {
             lists.push(segment.lookup_wildcard(pattern, xpath));
+        }
+
+        self.apply_deletes(union_many(lists.iter()))
+    }
+
+    #[timed(search)]
+    pub fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        let mut lists = Vec::new();
+
+        lists.push(self.mem.lookup_fuzzy(term, xpath, opts));
+
+        for segment in &self.segments {
+            lists.push(segment.lookup_fuzzy(term, xpath, opts));
         }
 
         self.apply_deletes(union_many(lists.iter()))

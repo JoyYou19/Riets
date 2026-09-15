@@ -8,21 +8,22 @@ use memmap2::Mmap;
 use crate::{
     disk::{
         codec::{read_var_u16, read_var_u32, read_var_u64},
-        format::{FOOTER_LEN, MAGIC, SegmentFooter, TermEntry, VERSION},
+        format::{FOOTER_LEN, MAGIC, SegmentFooter, VERSION},
     },
+    fuzzy::FuzzyOptions,
     numeric_columns::{NumericBound, NumericColumns, NumericValue},
     posting::{Posting, PostingList},
     search::{SearchColumns, SearchIndex, SearchStats},
+    term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
     types::{DocId, FieldStats, TermKey, XPathId},
 };
 
 // Read only disk segment.
 // Segmetn file layout is roughly [header][posting bytes][dictionary bytes][footer]
 // the whole file is MMAPED we are cool 🤘
-#[derive(Debug)]
 pub struct DiskSegment {
     mmap: Mmap,
-    dictionary: Vec<TermEntry>,
+    dictionary: TermDictionary,
     //TODO: we should look into this, if doc_lengths takes up too much RAM wikipedia-scale then we
     //could cache this
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
@@ -97,7 +98,7 @@ impl DiskSegment {
 
         let field_stats = build_field_stats(&doc_lengths);
 
-        let dictionary = read_dictionary(&mmap, &footer)?;
+        let dictionary = read_term_dictionary(&mmap, &footer)?;
         let columns = read_columns(&mmap, &footer)?;
 
         Ok(Self {
@@ -119,16 +120,18 @@ impl DiskSegment {
 
     //bro yo zis so good function
     pub fn iter_terms(&self) -> impl Iterator<Item = (TermKey, PostingList)> + '_ {
-        self.dictionary.iter().map(|entry| {
-            let postings = self.read_postings(entry);
-            (TermKey::new(entry.term.clone(), entry.xpath), postings)
+        let this = self;
+        self.dictionary.fields().flat_map(move |(xpath, dict)| {
+            dict.entries()
+                .into_iter()
+                .map(move |(term, meta)| (TermKey::new(term, xpath), this.read_postings(meta)))
         })
     }
 
     // Decodes the postings, specifically for the purpose of reading what is inside the actual data
-    fn read_postings(&self, entry: &TermEntry) -> PostingList {
-        let start = entry.postings_offset as usize;
-        let len = entry.postings_len as usize;
+    fn read_postings(&self, meta: TermMeta) -> PostingList {
+        let start = meta.postings_offset as usize;
+        let len = meta.postings_len as usize;
 
         let Some(end) = start.checked_add(len) else {
             return PostingList::default();
@@ -138,19 +141,13 @@ impl DiskSegment {
             return PostingList::default();
         }
 
-        read_posting_list(&self.mmap[start..end], entry.doc_freq).unwrap_or_default()
-    }
-
-    // Finds the first dictionary position where we simply check if it is bigger than the target
-    fn lower_bound_term(&self, term: &str, xpath: crate::types::XPathId) -> usize {
-        self.dictionary
-            .partition_point(|entry| (entry.xpath, entry.term.as_str()) < (xpath, term))
+        read_posting_list(&self.mmap[start..end], meta.doc_freq).unwrap_or_default()
     }
 
     // Reads posting the same way as the original function, but into a buffer
-    fn read_postings_into(&self, entry: &TermEntry, out: &mut Vec<Posting>) {
-        let start = entry.postings_offset as usize;
-        let len = entry.postings_len as usize;
+    fn read_postings_into(&self, meta: TermMeta, out: &mut Vec<Posting>) {
+        let start = meta.postings_offset as usize;
+        let len = meta.postings_len as usize;
 
         let Some(end) = start.checked_add(len) else {
             return;
@@ -160,7 +157,7 @@ impl DiskSegment {
             return;
         }
 
-        let _ = read_posting_list_into(&self.mmap[start..end], entry.doc_freq, out);
+        let _ = read_posting_list_into(&self.mmap[start..end], meta.doc_freq, out);
     }
 }
 
@@ -197,38 +194,38 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
 }
 
 // We need to search this segment for sure
+// We need to search this segment for sure
 impl SearchIndex for DiskSegment {
     #[timed(search)]
     fn lookup(&self, term: &str, xpath: crate::types::XPathId) -> PostingList {
-        match self
-            .dictionary
-            .binary_search_by(|entry| (entry.xpath, entry.term.as_str()).cmp(&(xpath, term)))
-        {
-            Ok(index) => self.read_postings(&self.dictionary[index]),
-            Err(_) => PostingList::default(),
+        match self.dictionary.get(xpath, term) {
+            Some(meta) => self.read_postings(meta),
+            None => PostingList::default(),
         }
     }
 
     fn terms(&self, xpath: XPathId) -> Vec<String> {
-        let start = self.lower_bound_term("", xpath);
-        self.dictionary[start..]
-            .iter()
-            .take_while(|e| e.xpath == xpath)
-            .map(|e| e.term.clone())
-            .collect()
+        self.dictionary
+            .field(xpath)
+            .map(|dict| {
+                dict.entries()
+                    .into_iter()
+                    .map(|(term, _)| term)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
     }
 
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: crate::types::XPathId) -> PostingList {
-        let start = self.lower_bound_term(prefix, xpath);
+        let Some(dict) = self.dictionary.field(xpath) else {
+            return PostingList::default();
+        };
+
         let mut postings = Vec::new();
 
-        for entry in &self.dictionary[start..] {
-            if entry.xpath != xpath || !entry.term.starts_with(prefix) {
-                break;
-            }
-
-            self.read_postings_into(entry, &mut postings);
+        for (_, meta) in dict.prefix(prefix) {
+            self.read_postings_into(meta, &mut postings);
         }
 
         PostingList::from_items(postings)
@@ -244,22 +241,32 @@ impl SearchIndex for DiskSegment {
             return self.lookup_prefix(pattern.prefix(), xpath);
         }
 
-        let prefix = pattern.prefix();
-        let start = self.lower_bound_term(prefix, xpath);
+        let Some(dict) = self.dictionary.field(xpath) else {
+            return PostingList::default();
+        };
+
         let mut postings = Vec::new();
 
-        for entry in &self.dictionary[start..] {
-            if entry.xpath != xpath {
-                break;
+        // prefix("") yields every term in the field, which is what a leading
+        // "*" wildcard needs.
+        for (term, meta) in dict.prefix(pattern.prefix()) {
+            if pattern.matches(&term) {
+                self.read_postings_into(meta, &mut postings);
             }
+        }
 
-            if !prefix.is_empty() && !entry.term.starts_with(prefix) {
-                break;
-            }
+        PostingList::from_items(postings)
+    }
 
-            if pattern.matches(&entry.term) {
-                self.read_postings_into(entry, &mut postings);
-            }
+    fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        let Some(dict) = self.dictionary.field(xpath) else {
+            return PostingList::default();
+        };
+
+        let mut postings = Vec::new();
+
+        for (_, meta) in dict.fuzzy(term, opts) {
+            self.read_postings_into(meta, &mut postings);
         }
 
         PostingList::from_items(postings)
@@ -411,7 +418,11 @@ fn read_doc_lengths(
     Ok(doc_lengths)
 }
 
-fn read_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Vec<TermEntry>> {
+// One field is [xpath][term_count][fst_len][fst bytes][TermMeta * term_count].
+// The FST maps term bytes to an ord, and that ord indexes the metas array.
+// One field is [xpath][term_count][fst_len][fst bytes][TermMeta * term_count].
+// The FST maps term bytes to an ord, and that ord indexes the metas array.
+fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<TermDictionary> {
     let start = footer.dictionary_offset as usize;
     let len = footer.dictionary_len as usize;
 
@@ -430,28 +441,57 @@ fn read_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Vec<TermE
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
-    let count = cursor.read_u32()? as usize;
+    let field_count = cursor.read_u32()? as usize;
 
-    if count != footer.term_count as usize {
+    // Every field costs at least xpath + term_count + fst_len.
+    if field_count.saturating_mul(16) > len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dictionary field count exceeds section size",
+        ));
+    }
+
+    let mut dictionary = TermDictionary::new();
+    let mut term_count = 0usize;
+
+    for _ in 0..field_count {
+        let xpath = cursor.read_u32()?;
+        let field_terms = cursor.read_u32()? as usize;
+        let fst_len = cursor.read_u64()? as usize;
+
+        let fst_bytes = cursor.take(fst_len)?.to_vec();
+
+        // Check the metas actually fit before reserving, so a bogus count in a
+        // corrupt file cannot make us allocate gigabytes.
+        if field_terms.saturating_mul(TERM_META_LEN) > cursor.remaining() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "dictionary term count exceeds section size",
+            ));
+        }
+
+        let mut metas = Vec::with_capacity(field_terms);
+
+        for _ in 0..field_terms {
+            metas.push(TermMeta {
+                postings_offset: cursor.read_u64()?,
+                postings_len: cursor.read_u32()?,
+                doc_freq: cursor.read_u32()?,
+            });
+        }
+
+        dictionary.insert_field(xpath, TermDict::from_parts(fst_bytes, metas)?);
+        term_count += field_terms;
+    }
+
+    if term_count != footer.term_count as usize {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "dictionary term count mismatch",
         ));
     }
 
-    let mut entries = Vec::with_capacity(count);
-
-    for _ in 0..count {
-        entries.push(TermEntry {
-            term: cursor.read_string()?,
-            xpath: cursor.read_u32()?,
-            postings_offset: cursor.read_u64()?,
-            postings_len: cursor.read_u32()?,
-            doc_freq: cursor.read_u32()?,
-        });
-    }
-
-    Ok(entries)
+    Ok(dictionary)
 }
 
 fn read_columns(bytes: &[u8], footer: &SegmentFooter) -> io::Result<NumericColumns> {
@@ -547,14 +587,6 @@ impl<'a> Cursor<'a> {
         Ok(value)
     }
 
-    // WARN: Keep in mind the utf8 encoding brodie
-    fn read_string(&mut self) -> io::Result<String> {
-        let len = self.read_u32()? as usize;
-        let bytes = self.take(len)?;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8 term"))
-    }
-
     fn take(&mut self, len: usize) -> io::Result<&'a [u8]> {
         let end = self.offset + len;
 
@@ -568,6 +600,10 @@ impl<'a> Cursor<'a> {
         let slice = &self.bytes[self.offset..end];
         self.offset = end;
         Ok(slice)
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
     }
 }
 
