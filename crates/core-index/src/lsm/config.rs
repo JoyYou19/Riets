@@ -20,7 +20,7 @@ impl Default for IndexRuntimeConfig {
         Self {
             flush_threshold: 1_000_000,
             indexing_window_size: 4,
-            indexing_batch_size: 100_000,
+            indexing_batch_size: 10_000,
             compaction: CompactionConfig::default(),
         }
     }

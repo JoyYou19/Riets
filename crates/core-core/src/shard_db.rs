@@ -464,6 +464,7 @@ impl ShardDb {
         let batch_size = self.options.runtime.indexing_batch_size;
 
         let window_size = self.options.runtime.indexing_window_size;
+        self.pending +=count as u32;
         let not_flushed = self.pending >= (batch_size as u32);
         let result = (|| -> Result<InsertReport, CorelamoError> {
             self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
