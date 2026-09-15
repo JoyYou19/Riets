@@ -5,6 +5,7 @@ use core_timing::timed;
 use crate::{
     analyzer::analyzer::Analyzer,
     disk::{reader::DiskSegment, writer::write_segment},
+    fuzzy::FuzzyOptions,
     lsm::{
         IndexSnapshot,
         compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
@@ -39,6 +40,10 @@ impl SearchIndex for LsmIndex {
         self.snapshot().lookup(term, xpath)
     }
 
+    fn terms(&self, xpath: XPathId) -> Vec<String> {
+        self.snapshot().terms(xpath)
+    }
+
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_prefix(prefix, xpath)
@@ -47,6 +52,11 @@ impl SearchIndex for LsmIndex {
     #[timed(search)]
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_wildcard(pattern, xpath)
+    }
+
+    #[timed(search)]
+    fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        self.snapshot().lookup_fuzzy(term, xpath, opts)
     }
 }
 

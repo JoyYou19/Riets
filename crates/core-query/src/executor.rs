@@ -2,6 +2,7 @@ use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, HashSet }, u32 };
 
 use core_index::{
     analyzer::analyzer::Analyzer,
+    fuzzy::FuzzyOptions,
     numeric_columns::NumericBound,
     posting::{ Posting, PostingList, ops::{ intersection, union } },
     search::{ SearchColumns, SearchIndex, SearchStats },
@@ -25,6 +26,7 @@ pub enum FieldFilterKind {
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
     },
+    Fuzzy(String, FuzzyOptions),
 }
 
 // Turns the AST into a PostingList or SearchHit
@@ -52,6 +54,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
             Query::Or(parts) => self.execute_or(parts, xpath),
             Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
             Query::Exact(term) => Some(self.execute_exact(term, xpath)),
+
+            Query::Fuzzy(term, opts) => Some(self.execute_fuzzy(term, xpath, *opts)),
         }
     }
 
@@ -63,8 +67,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     // Query a term
     #[timed(search)]
     fn execute_term(&self, term: &str, xpath: XPathId) -> Option<PostingList> {
-        // let analyzed = self.analyzer.analyze(term);
-        // let token = analyzed.first()?;
+        if term.is_empty() {
+            return None;
+        }
 
         Some(self.index.lookup(term, xpath))
     }
@@ -72,8 +77,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     // Prefix query, so for example if we do dat* would find database etc.
     #[timed(search)]
     fn execute_prefix(&self, prefix: &str, xpath: XPathId) -> Option<PostingList> {
-        // let analyzed = self.analyzer.analyze(prefix);
-        // let token = analyzed.first()?;
+        if prefix.is_empty() {
+            return None;
+        }
 
         Some(self.index.lookup_prefix(prefix, xpath))
     }
@@ -156,21 +162,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
             return PostingList::default();
         }
 
-        let analyzed_terms: Vec<String> = terms
-            .iter()
-            .filter_map(|term|
-                self.analyzer
-                    .analyze(term)
-                    .first()
-                    .map(|t| t.text.clone())
-            )
-            .collect();
-
-        if analyzed_terms.len() != terms.len() {
-            return PostingList::default();
-        }
-
-        let lists: Vec<PostingList> = analyzed_terms
+        let lists: Vec<PostingList> = terms
             .iter()
             .map(|term| self.index.lookup(term, xpath))
             .collect();
@@ -208,6 +200,35 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
         PostingList::from_items(result)
     }
 
+    #[timed(search)]
+    fn execute_fuzzy(&self, raw: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        let words: Vec<String> = raw
+            .split_whitespace()
+            .filter_map(|w| {
+                self.analyzer
+                    .analyze_query(w)
+                    .into_iter()
+                    .next()
+                    .map(|t| t.text)
+            })
+            .collect();
+
+        if words.is_empty() {
+            return PostingList::default();
+        }
+
+        let lists: Vec<PostingList> = words
+            .iter()
+            .map(|w| self.index.lookup_fuzzy(w, xpath, opts))
+            .collect();
+
+        let mut iter = lists.into_iter();
+        let mut result = iter.next().unwrap_or_default();
+        for next in iter {
+            result = intersection(&result, &next);
+        }
+        result
+    }
     #[timed(search)]
     fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
         let raw = raw.trim();
@@ -438,6 +459,29 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                         .iter()
                         .map(|p| p.doc_id)
                         .collect(),
+                    None => HashSet::new(),
+                },
+                FieldFilterKind::Range { lo, hi } => self
+                    .index
+                    .column_range(filter.xpath, *lo, *hi)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+
+                FieldFilterKind::Exact(term) => self
+                    .execute_exact(term, filter.xpath)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+
+                FieldFilterKind::Fuzzy(term, opts) => self
+                    .execute_fuzzy(term, filter.xpath, *opts)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
             };
 
             restrict = Some(match restrict {

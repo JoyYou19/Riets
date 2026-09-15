@@ -1,9 +1,12 @@
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::policy::FieldKind;
+use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyOptions};
 use core_index::numeric_columns::{parse_float, parse_integer, parse_numeric_range};
 use core_index::types::XPathId;
-use core_protocol::command_reponse_definitions::{FilterSpec, SearchCommand, SortOrderRequest};
+use core_protocol::command_reponse_definitions::{
+    FilterSpec, SearchCommand, SortOrderRequest, default_max_edits,
+};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::{FieldFilter, FieldFilterKind};
@@ -32,50 +35,86 @@ pub fn resolve_filters(
                     .find(|f| &f.name == field)
                     .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
 
-                let (raw, exact) = match spec {
-                    FilterSpec::Plain(term) => (term.as_str(), false),
-                    FilterSpec::Exact { value, exact } => (value.as_str(), *exact),
-                };
-
-                if raw.trim().is_empty() {
-                    continue;
-                }
-
-                let (xpath, kind) = if exact {
-                    let exact_xpath = field_pol.exact_xpath(&policy).ok_or_else(|| {
-                        CorelamoError::InvalidData(format!(
-                            "field '{field}' has no exact index (add 'exact = true' to its policy)"
-                        ))
-                    })?;
-                    (exact_xpath, FieldFilterKind::Exact(raw.to_string()))
-                } else {
-                    let kind = match field_pol.kind {
-                        FieldKind::Text => FieldFilterKind::Text(parse_and_analyze(raw, analyzer)?),
-                        FieldKind::Integer => {
-                            let range = parse_numeric_range(raw, parse_integer).map_err(|e| {
-                                CorelamoError::InvalidData(format!(
-                                    "invalid filter '{raw}' on numeric field '{field}': {e}"
-                                ))
-                            })?;
-                            FieldFilterKind::Range {
-                                lo: range.lo,
-                                hi: range.hi,
-                            }
+                let (xpath, kind) = match spec {
+                    FilterSpec::Plain(term) => {
+                        if term.trim().is_empty() {
+                            continue;
                         }
-                        FieldKind::Float => {
-                            let range = parse_numeric_range(raw, parse_float).map_err(|e| {
-                                CorelamoError::InvalidData(format!(
-                                    "invalid filter '{raw}' on numeric field '{field}': {e}"
-                                ))
-                            })?;
-                            FieldFilterKind::Range {
-                                lo: range.lo,
-                                hi: range.hi,
+                        let kind = match field_pol.kind {
+                            FieldKind::Text => {
+                                FieldFilterKind::Text(parse_and_analyze(term.as_str(), analyzer)?)
                             }
+                            FieldKind::Integer => {
+                                let range = parse_numeric_range(term.as_str(), parse_integer).map_err(|e| {
+                                    CorelamoError::InvalidData(format!(
+                                        "invalid filter '{term}' on numeric field '{field}': {e}"
+                                    ))
+                                })?;
+                                FieldFilterKind::Range {
+                                    lo: range.lo,
+                                    hi: range.hi,
+                                }
+                            }
+                            FieldKind::Float => {
+                                let range = parse_numeric_range(term.as_str(), parse_float).map_err(|e| {
+                                    CorelamoError::InvalidData(format!(
+                                        "invalid filter '{term}' on numeric field '{field}': {e}"
+                                    ))
+                                })?;
+                                FieldFilterKind::Range {
+                                    lo: range.lo,
+                                    hi: range.hi,
+                                }
+                            }
+                            _ => return Err(CorelamoError::PathNotIndexed(field.clone())),
+                        };
+                        (field_pol.xpath(&policy), kind)
+                    }
+                    FilterSpec::Exact { value, exact } => {
+                        if !*exact {
+                            return Err(CorelamoError::InvalidData(format!(
+                                "exact filter on '{field}' must set 'exact: true'"
+                            )));
                         }
-                        _ => return Err(CorelamoError::PathNotIndexed(field.clone())),
-                    };
-                    (field_pol.xpath(&policy), kind)
+                        if value.trim().is_empty() {
+                            continue;
+                        }
+                        let exact_xpath = field_pol.exact_xpath(&policy).ok_or_else(|| {
+                            CorelamoError::InvalidData(format!(
+                                "field '{field}' has no exact index (add 'exact = true' to its policy)"
+                            ))
+                        })?;
+                        (exact_xpath, FieldFilterKind::Exact(value.clone()))
+                    }
+                    FilterSpec::Fuzzy {
+                        value,
+                        fuzzy,
+                        fuzziness,
+                        prefix_length,
+                        max_expansions,
+                    } => {
+                        if !*fuzzy {
+                            return Err(CorelamoError::InvalidData(format!(
+                                "fuzzy filter on '{field}' must set 'fuzzy: true'"
+                            )));
+                        }
+                        if value.trim().is_empty() {
+                            continue;
+                        }
+                        let max_edits = fuzziness
+                            .as_ref()
+                            .map(|f| f.resolve(value))
+                            .unwrap_or_else(|| default_max_edits(value));
+                        let opts = FuzzyOptions {
+                            max_edits,
+                            prefix_length: prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH),
+                            max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
+                        };
+                        (
+                            field_pol.xpath(&policy),
+                            FieldFilterKind::Fuzzy(value.clone(), opts),
+                        )
+                    }
                 };
 
                 resolved.insert(field.clone(), FieldFilter { xpath, kind });

@@ -132,6 +132,7 @@ impl QueryPlanner {
             }
 
             Query::Exact(_) => {}
+            Query::Fuzzy(..) => {}
         }
     }
 }

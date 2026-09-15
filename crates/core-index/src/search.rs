@@ -1,4 +1,7 @@
+use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
+
 use crate::{
+    fuzzy::{FuzzyOptions, candidates_within_one, split_prefix},
     numeric_columns::{NumericBound, NumericValue},
     posting::PostingList,
     types::{DocId, XPathId},
@@ -11,6 +14,44 @@ pub trait SearchIndex {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList;
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList;
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList;
+
+    //All indexed terms for a field (for the fuzzy automaton scan).
+    fn terms(&self, xpath: XPathId) -> Vec<String>;
+
+    //Docs whose indexed term is within `opts.max_edits` of `term`.
+    fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        let mut items = Vec::new();
+        items.extend_from_slice(self.lookup(term, xpath).items());
+
+        if opts.max_edits == 0 {
+            return PostingList::from_items(items);
+        }
+
+        let (prefix, suffix) = split_prefix(term, opts.prefix_length);
+        if suffix.is_empty() {
+            return PostingList::from_items(items);
+        }
+
+        if opts.max_edits == 1 {
+            // d=1: candidate generation is bounded and fast
+            for candidate in candidates_within_one(suffix) {
+                let full = format!("{prefix}{candidate}");
+                items.extend_from_slice(self.lookup(&full, xpath).items());
+            }
+        } else {
+            let builder = LevenshteinAutomatonBuilder::new(opts.max_edits, true);
+            let dfa = builder.build_dfa(suffix);
+
+            for t in self.terms(xpath) {
+                if let Some(rest) = t.strip_prefix(prefix) {
+                    if let Distance::Exact(_) = dfa.eval(rest) {
+                        items.extend_from_slice(self.lookup(&t, xpath).items());
+                    }
+                }
+            }
+        }
+        PostingList::from_items(items)
+    }
 }
 
 // How are these documents going to be scored? Used for BM25, is needed for the math equation
