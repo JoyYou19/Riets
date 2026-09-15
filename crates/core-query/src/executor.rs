@@ -1,16 +1,23 @@
-use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, HashSet }, u32 };
+use std::{
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, HashSet},
+    u32,
+};
 
 use core_index::{
     analyzer::analyzer::Analyzer,
     fuzzy::FuzzyOptions,
     numeric_columns::NumericBound,
-    posting::{ Posting, PostingList, ops::{ intersection, union } },
-    search::{ SearchColumns, SearchIndex, SearchStats },
-    types::{ DocId, XPathId },
+    posting::{
+        Posting, PostingList,
+        ops::{intersection, union},
+    },
+    search::{SearchColumns, SearchIndex, SearchStats},
+    types::{DocId, XPathId},
 };
 use core_timing::timed;
 
-use crate::{ ScoredPosting, SearchHit, TopHit, ast::Query, scorer::score_term_hybrid };
+use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, scorer::score_term_hybrid};
 
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
@@ -30,7 +37,10 @@ pub enum FieldFilterKind {
 }
 
 // Turns the AST into a PostingList or SearchHit
-pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
+pub struct QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats,
+{
     // Which index are we searching?
     index: &'a I,
 
@@ -39,7 +49,10 @@ pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
     analyzer: &'a Analyzer,
 }
 
-impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColumns {
+impl<'a, I> QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats + SearchColumns,
+{
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self { index, analyzer }
     }
@@ -349,10 +362,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
             }
         }
 
-        let mut hits: Vec<SearchHit> = heap
-            .into_iter()
-            .map(|hit| hit.0)
-            .collect();
+        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
 
         hits.sort_by(|a, b| {
             b.score
@@ -371,7 +381,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
         &self,
         query: &Query,
         xpaths: impl IntoIterator<Item = XPathId>,
-        k: usize
+        k: usize,
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -386,9 +396,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor = existing.distance_factor.max(
-                            hit.distance_factor
-                        );
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -405,10 +414,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
             }
         }
 
-        let mut hits: Vec<SearchHit> = heap
-            .into_iter()
-            .map(|hit| hit.0)
-            .collect();
+        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
 
         hits.sort_by(|a, b| {
             b.score
@@ -423,7 +429,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     #[timed(search)]
     pub fn resolve_filters(
         &self,
-        filters: &HashMap<String, FieldFilter>
+        filters: &HashMap<String, FieldFilter>,
     ) -> Option<HashSet<DocId>> {
         if filters.is_empty() {
             return None;
@@ -433,28 +439,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
 
         for filter in filters.values() {
             let matched: HashSet<DocId> = match &filter.kind {
-                FieldFilterKind::Text(query) =>
-                    match query {
-                        Some(query) =>
-                            self
-                                .execute(query, filter.xpath)
-                                .items()
-                                .iter()
-                                .map(|p| p.doc_id)
-                                .collect(),
-                        None => HashSet::new(),
-                    }
-                FieldFilterKind::Range { lo, hi } =>
-                    self.index
-                        .column_range(filter.xpath, *lo, *hi)
-                        .items()
-                        .iter()
-                        .map(|p| p.doc_id)
-                        .collect(),
-
-                FieldFilterKind::Exact(term) =>
-                    self
-                        .execute_exact(term, filter.xpath)
+                FieldFilterKind::Text(query) => match query {
+                    Some(query) => self
+                        .execute(query, filter.xpath)
                         .items()
                         .iter()
                         .map(|p| p.doc_id)
@@ -503,7 +490,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
         query: Option<&Query>,
         xpaths: impl IntoIterator<Item = XPathId>,
         k: usize,
-        restrict: Option<&HashSet<DocId>>
+        restrict: Option<&HashSet<DocId>>,
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -554,9 +541,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
-                        existing.distance_factor = existing.distance_factor.max(
-                            hit.distance_factor
-                        );
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -571,7 +557,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     pub fn search_all_xpaths(
         &self,
         query: &Query,
-        xpaths: impl IntoIterator<Item = XPathId>
+        xpaths: impl IntoIterator<Item = XPathId>,
     ) -> Vec<SearchHit> {
         use std::collections::BTreeMap;
 
@@ -584,9 +570,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor = existing.distance_factor.max(
-                            hit.distance_factor
-                        );
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -689,10 +674,7 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
         }
     }
 
-    let mut hits: Vec<SearchHit> = heap
-        .into_iter()
-        .map(|hit| hit.0)
-        .collect();
+    let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
 
     hits.sort_by(|a, b| {
         b.score
