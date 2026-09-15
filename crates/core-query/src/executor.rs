@@ -63,19 +63,19 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     // Query a term
     #[timed(search)]
     fn execute_term(&self, term: &str, xpath: XPathId) -> Option<PostingList> {
-        let analyzed = self.analyzer.analyze(term);
-        let token = analyzed.first()?;
+        // let analyzed = self.analyzer.analyze(term);
+        // let token = analyzed.first()?;
 
-        Some(self.index.lookup(&token.text, xpath))
+        Some(self.index.lookup(term, xpath))
     }
 
     // Prefix query, so for example if we do dat* would find database etc.
     #[timed(search)]
     fn execute_prefix(&self, prefix: &str, xpath: XPathId) -> Option<PostingList> {
-        let analyzed = self.analyzer.analyze(prefix);
-        let token = analyzed.first()?;
+        // let analyzed = self.analyzer.analyze(prefix);
+        // let token = analyzed.first()?;
 
-        Some(self.index.lookup_prefix(&token.text, xpath))
+        Some(self.index.lookup_prefix(prefix, xpath))
     }
 
     // Wildcard query, for now, we are not analyzing this, might change later
