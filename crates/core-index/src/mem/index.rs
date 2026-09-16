@@ -42,7 +42,16 @@ impl SearchIndex for MemIndex {
             .map(|k| k.term.clone())
             .collect()
     }
-
+    // No TermMeta here — MemIndex stores full PostingLists directly, so
+    // doc_freq is just the stored list's length. Uses the private lookup()
+    // (returns &PostingList, no clone) rather than lookup_or_empty, since
+    // there's no need to clone the whole posting list just to read its len.
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+        self.terms
+            .get(&TermKey::new(term, xpath))
+            .map(|list| list.len() as u32)
+            .unwrap_or(0)
+    }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
     }

@@ -17,7 +17,7 @@ pub trait SearchIndex {
 
     //All indexed terms for a field (for the fuzzy automaton scan).
     fn terms(&self, xpath: XPathId) -> Vec<String>;
-
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32;
     //Docs whose indexed term is within `opts.max_edits` of `term`.
     fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
         let mut items = Vec::new();

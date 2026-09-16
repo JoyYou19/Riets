@@ -58,6 +58,10 @@ impl SearchIndex for LsmIndex {
     fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
         self.snapshot().lookup_fuzzy(term, xpath, opts)
     }
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+        self.snapshot().doc_freq(term, xpath)
+    }
+
 }
 
 impl SearchColumns for LsmIndex {

@@ -26,9 +26,10 @@ pub fn score_term_hybrid<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
     xpath: XPathId,
+    ture_df:f32
 ) -> Vec<ScoredPosting> {
     let n = stats.doc_count(xpath) as f32;
-    let df = postings.len() as f32;
+    let df = ture_df;
     let avgdl = stats.avg_doc_len(xpath);
 
     let scored: Vec<ScoredPosting> = postings

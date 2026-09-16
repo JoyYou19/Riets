@@ -52,6 +52,27 @@ impl SearchIndex for IndexSnapshot {
     fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
         IndexSnapshot::lookup_fuzzy(self, term, xpath, opts)
     }
+    // Sum across every segment — mirrors how lookup() unions postings across
+    // mem + all segments. A term's true corpus-wide doc_freq has to account
+    // for every segment it appears in, not just the first one checked.
+    //
+    // NOTE: this is an upper-bound estimate, not exact — it doesn't apply
+    // `apply_deletes` the way lookup() does, since doing that would require
+    // materializing postings (defeating the whole point of a cheap df probe).
+    // A doc deleted from one segment but still counted in that segment's
+    // TermMeta.doc_freq will inflate this slightly. Fine for selectivity
+    // ordering (a heuristic), NOT fine to feed into true_df for BM25's IDF
+    // without awareness of that skew — worth flagging which use this ends up
+    // serving before wiring it into score_term_hybrid.
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+        let mut total = self.mem.doc_freq(term, xpath);
+
+        for segment in self.segments.iter() {
+            total = total.saturating_add(segment.doc_freq(term, xpath));
+        }
+
+        total
+    }
 }
 
 impl SearchColumns for IndexSnapshot {
