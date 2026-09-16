@@ -6,7 +6,7 @@ use core_protocol::command_reponse_definitions::{SearchCommand, SortOrderRequest
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::FieldFilter;
-use core_query::resolver::resolve_field_filter;
+use core_query::resolver::compile_field_filter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ pub struct SortField {
 }
 
 //NAHUJ SITO FUNKCIJU match match?
-pub fn resolve_filters(
+pub fn compile_filters(
     analyzer: &Analyzer,
     command: &SearchCommand,
     policy: &IndexPolicy,
@@ -28,7 +28,7 @@ pub fn resolve_filters(
 
     let mut resolved = HashMap::with_capacity(filters.len());
     for (field, spec) in filters {
-        if let Some(filter) = resolve_field_filter(field, spec, analyzer, policy)? {
+        if let Some(filter) = compile_field_filter(field, spec, analyzer, policy)? {
             resolved.insert(field.clone(), filter);
         }
     }

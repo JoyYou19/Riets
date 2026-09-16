@@ -16,7 +16,7 @@ use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
-use core_query::resolver::resolve_query;
+use core_query::resolver::compile_query;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -32,7 +32,7 @@ use std::time::{Duration, SystemTime};
 use std::{fs, u8};
 use tokio::task::JoinSet;
 
-use crate::shard_manager_helpers::{order_blended, resolve_filters, resolve_sorts};
+use crate::shard_manager_helpers::{compile_filters, order_blended, resolve_sorts};
 
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
@@ -49,10 +49,6 @@ pub struct ShardManager {
 
 impl ShardManager {
     const DEFAULT_QUEUE_DEPTH: usize = 256;
-
-    pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
-        self.db_stats.record_search(failed, elapsed);
-    }
 
     #[timed(database_lifecycle)]
     pub fn create(
@@ -946,10 +942,10 @@ impl ShardManager {
 
         let policy = self.policy.read().clone();
 
-        let (query, xpaths) = resolve_query(&command.query, &self.analyzer, &policy)?;
+        let (query, xpaths) = compile_query(&command.query, &self.analyzer, &policy)?;
         let query = Arc::new(query);
 
-        let filters = resolve_filters(&self.analyzer, command, &policy)?;
+        let filters = compile_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
 
         let sort_xpaths: Option<Arc<Vec<XPathId>>> = sorts
@@ -977,7 +973,7 @@ impl ShardManager {
                         window,
                     )
                 } else {
-                    //just relevance
+                    //else just relevance
                     let hits =
                         handle.rank_top_k((*query).as_ref(), filters.as_deref(), &xpaths, fetch)?;
                     Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
@@ -985,6 +981,7 @@ impl ShardManager {
             });
         }
 
+        //join results
         let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
@@ -1057,6 +1054,7 @@ impl ShardManager {
             });
         }
 
+        //join results
         let mut resolved: Vec<Option<SearchDocumentHit>> = vec![None; page_len];
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
@@ -1081,6 +1079,10 @@ impl ShardManager {
             return Err(e);
         }
         Ok(resolved.into_iter().flatten().collect())
+    }
+
+    pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
+        self.db_stats.record_search(failed, elapsed);
     }
 
     //viss ar backups

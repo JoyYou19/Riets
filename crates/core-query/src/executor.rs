@@ -221,7 +221,7 @@ where
         PostingList::from_items(result)
     }
 
-    #[timed(search)]
+    //Kindof the fuzzy entry point the whole porno logic starts here
     #[timed(search)]
     fn execute_fuzzy(
         &self,
@@ -252,6 +252,7 @@ where
         result
     }
 
+    //Splits the string into fuzzable words split by white space and lowercased
     #[timed(search)]
     fn fuzzy_words(&self, raw: &str) -> Vec<String> {
         raw.split_whitespace()
@@ -450,10 +451,7 @@ where
     }
 
     #[timed(search)]
-    pub fn resolve_filters(
-        &self,
-        filters: &HashMap<String, FieldFilter>,
-    ) -> Option<HashSet<DocId>> {
+    pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldFilter>) -> Option<HashSet<DocId>> {
         if filters.is_empty() {
             return None;
         }
@@ -768,6 +766,7 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
     hits
 }
 
+//derives how much a word can be fuzzed basically
 fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {
     FuzzyOptions {
         max_edits: fuzziness.resolve(word),

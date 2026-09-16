@@ -30,7 +30,7 @@ pub enum MatchOp {
     },
 }
 
-pub fn resolve_query(
+pub fn compile_query(
     spec: &MatchSpec,
     analyzer: &Analyzer,
     policy: &IndexPolicy,
@@ -43,7 +43,7 @@ pub fn resolve_query(
     Ok((query, Arc::new(xpaths)))
 }
 
-pub fn resolve_field_filter(
+pub fn compile_field_filter(
     field_name: &str,
     spec: &MatchSpec,
     analyzer: &Analyzer,
