@@ -1,12 +1,7 @@
 use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, HashSet }, u32 };
 
 use core_index::{
-    analyzer::analyzer::Analyzer,
-    fuzzy::FuzzyOptions,
-    numeric_columns::NumericBound,
-    posting::{ Posting, PostingList, ops::{ intersection, union } },
-    search::{ SearchColumns, SearchIndex, SearchStats },
-    types::{ DocId, XPathId },
+    analyzer::analyzer::Analyzer, fuzzy::FuzzyOptions, numeric_columns::NumericBound, posting::{ Posting, PostingList, ops::{ intersect_ids, intersection, restrict_to, union } }, search::{ SearchColumns, SearchIndex, SearchStats }, types::{ DocId, XPathId },
 };
 use core_timing::timed;
 
@@ -608,56 +603,72 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     }
 
     #[timed(search)]
-   fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
-    // Phase 1: cheap doc-id intersection to find surviving candidates,
-    // ordered smallest-doc_freq-first so expensive lists are only fetched
-    // if a rarer term hasn't already emptied the intersection.
-    let mut ordered: Vec<&Query> = parts.iter().collect();
-    ordered.sort_by_key(|part| match part {
-        Query::Term(term) => self.index.doc_freq(term, xpath),
-        _ => u32::MAX,
-    });
+ #[timed(search)]
+fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
+    struct TermFetch<'a> {
+        term: Option<&'a str>,
+        postings: PostingList,
+        doc_freq: u32,
+    }
 
-    let mut candidate_ids: Option<PostingList> = None;
-    for part in &ordered {
-        let Some(list) = self.execute_optional(part, xpath) else { continue; };
-        if list.is_empty() {
+    let mut fetched: Vec<TermFetch> = Vec::with_capacity(parts.len());
+
+    for part in parts {
+        let (term, postings, doc_freq) = match part {
+            Query::Term(term) => {
+                let postings = self.execute_term(term, xpath).unwrap_or_default();
+                let doc_freq = self.index.doc_freq(term, xpath);
+                (Some(term.as_str()), postings, doc_freq)
+            }
+            _ => (None, self.execute_optional(part, xpath).unwrap_or_default(), u32::MAX),
+        };
+
+        if postings.is_empty() {
             return Vec::new();
         }
-        candidate_ids = Some(match candidate_ids {
-            Some(current) => {
-                let next = intersection(&current, &list);
-                if next.is_empty() {
-                    return Vec::new();
-                }
-                next
-            }
-            None => list,
-        });
+
+        fetched.push(TermFetch { term, postings, doc_freq });
     }
-    let Some(candidate_ids) = candidate_ids else {
+
+    if fetched.is_empty() {
         return Vec::new();
-    };
+    }
 
-    // Phase 2: score each term against the restricted candidate set, using
-    // true_df from the *unrestricted* term, then combine terms.
+    fetched.sort_by_key(|f| f.doc_freq);
+
+    // Phase 1: doc-ids only. Seeded from the rarest term's ids (no clone of
+    // its posting list), then narrowed by each remaining term.
+    let mut candidates: Vec<DocId> = fetched[0]
+        .postings
+        .items()
+        .iter()
+        .map(|p| p.doc_id)
+        .collect();
+
+    for f in &fetched[1..] {
+        candidates = intersect_ids(&candidates, &f.postings);
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+    }
+
+    // Phase 2: restrict each term to the candidates, keeping that term's own
+    // positions/weights, and score with its true (unrestricted) doc_freq.
     let mut term_scores: Option<Vec<ScoredPosting>> = None;
-    for part in &ordered {
-        let Query::Term(term) = part else { continue; }; // non-term parts skipped — no per-term score path for these yet
 
-        let full_postings = self.execute_term(term, xpath).unwrap_or_default();
-        // intersection() against candidate_ids IS the restriction — no
-        // separate restrict_to_doc_ids needed.
-        let restricted = intersection(&full_postings, &candidate_ids);
+    for f in &fetched {
+        if f.term.is_none() {
+            continue; // nested And/Or/Phrase parts filter but don't score — see note
+        }
+
+        let restricted = restrict_to(&f.postings, &candidates);
         if restricted.is_empty() {
             continue;
         }
 
-        let true_df = self.index.doc_freq(term, xpath) as f32;
-
         term_scores = Some(match term_scores {
             Some(acc) => crate::scorer::scored_and(&acc, &restricted),
-            None => score_term_hybrid(self.index, &restricted, xpath, true_df),
+            None => score_term_hybrid(self.index, &restricted, xpath, f.doc_freq as f32),
         });
     }
 

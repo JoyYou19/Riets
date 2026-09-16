@@ -1,6 +1,6 @@
 mod ast;
 pub mod executor;
-pub mod planner;
+
 pub mod query_string_parser;
 mod scored_posting;
 mod scorer;

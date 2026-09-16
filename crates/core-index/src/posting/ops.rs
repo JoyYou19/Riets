@@ -1,5 +1,5 @@
 use core_timing::timed;
-
+use std::{cmp::Reverse, collections::BinaryHeap};
 use crate::{posting::{Posting, PostingList}, types::DocId};
 
 
@@ -154,11 +154,83 @@ fn exponent_search_to(slice: &[Posting], start: usize, target: DocId) -> usize {
 }
 #[timed(search)]
 pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> PostingList {
-    let mut items = Vec::new();
+    let sources: Vec<&[Posting]> = lists
+        .into_iter()
+        .map(|l| l.items())
+        .filter(|s| !s.is_empty())
+        .collect();
 
-    for list in lists {
-        items.extend_from_slice(list.items());
+    match sources.len() {
+        0 => return PostingList::default(),
+        1 => return PostingList::from_sorted(sources[0].to_vec()),
+        _ => {}
     }
 
-    PostingList::from_items(items)
+    let total: usize = sources.iter().map(|s| s.len()).sum();
+    let mut out: Vec<Posting> = Vec::with_capacity(total);
+
+    // (doc_id, source index, offset) — Reverse for min-heap on doc_id.
+    let mut heap: BinaryHeap<Reverse<(DocId, usize, usize)>> =
+        BinaryHeap::with_capacity(sources.len());
+    for (i, s) in sources.iter().enumerate() {
+        heap.push(Reverse((s[0].doc_id, i, 0)));
+    }
+
+    while let Some(Reverse((_, i, offset))) = heap.pop() {
+        out.push(sources[i][offset].clone());
+        let next = offset + 1;
+        if next < sources[i].len() {
+            heap.push(Reverse((sources[i][next].doc_id, i, next)));
+        }
+    }
+
+    // Output is sorted by doc_id but the same doc can appear in several
+    // segments, so duplicates are real here — from_sorted merges them.
+    PostingList::from_sorted(out)
+}
+/// Restricts `postings` to the doc_ids in `candidates`, keeping
+/// `postings`' own positions and weights. Driven from `candidates`
+/// (expected to be the smaller side) galloping into `postings`.
+///
+/// Distinct from `intersection`: the output always carries the
+/// left/`postings` side's payload, never the candidate side's.
+#[timed(search)]
+pub fn restrict_to(postings: &PostingList, candidates: &[DocId]) -> PostingList {
+    let p = postings.items();
+    let mut result = Vec::with_capacity(candidates.len().min(p.len()));
+    let mut cursor = 0usize;
+
+    for &doc_id in candidates {
+        if cursor >= p.len() {
+            break;
+        }
+        cursor = exponent_search_to(p, cursor, doc_id);
+        if cursor < p.len() && p[cursor].doc_id == doc_id {
+            result.push(p[cursor].clone());
+            cursor += 1;
+        }
+    }
+
+    PostingList::from_sorted(result)
+}
+/// Doc-id-only intersection for candidate generation. Carries no
+/// positions or weights, so no per-match position cloning.
+#[timed(search)]
+pub fn intersect_ids(ids: &[DocId], postings: &PostingList) -> Vec<DocId> {
+    let p = postings.items();
+    let mut result = Vec::with_capacity(ids.len().min(p.len()));
+    let mut cursor = 0usize;
+
+    for &doc_id in ids {
+        if cursor >= p.len() {
+            break;
+        }
+        cursor = exponent_search_to(p, cursor, doc_id);
+        if cursor < p.len() && p[cursor].doc_id == doc_id {
+            result.push(doc_id);
+            cursor += 1;
+        }
+    }
+
+    result
 }
