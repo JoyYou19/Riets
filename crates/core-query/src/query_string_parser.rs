@@ -238,7 +238,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
         Query::Or(subs) => combine(subs, analyzer, Query::Or),
 
         Query::Exact(term) => Some(Query::Exact(term)),
-        Query::Fuzzy(term, opts) => Some(Query::Fuzzy(term.to_lowercase(), opts)),
+        Query::Fuzzy(term, fuzziness, spec) => Some(Query::Fuzzy(term, fuzziness, spec)),
     }
 }
 

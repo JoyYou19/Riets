@@ -1,11 +1,11 @@
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::policy::FieldKind;
-use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyOptions};
+use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
 use core_index::numeric_columns::{parse_float, parse_integer, parse_numeric_range};
 use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{
-    FilterSpec, SearchCommand, SortOrderRequest, default_max_edits,
+    FilterSpec, Fuzziness, SearchCommand, SortOrderRequest,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
@@ -20,6 +20,7 @@ pub struct SortField {
     pub ratio: u8,
 }
 
+//NAHUJ SITO FUNKCIJU match match?
 pub fn resolve_filters(
     analyzer: &Analyzer,
     command: &SearchCommand,
@@ -101,18 +102,18 @@ pub fn resolve_filters(
                         if value.trim().is_empty() {
                             continue;
                         }
-                        let max_edits = fuzziness
-                            .as_ref()
-                            .map(|f| f.resolve(value))
-                            .unwrap_or_else(|| default_max_edits(value));
-                        let opts = FuzzyOptions {
-                            max_edits,
+                        let spec = FuzzySpec {
+                            //DEFAULTS for fuzzification machine
                             prefix_length: prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH),
                             max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
                         };
                         (
                             field_pol.xpath(&policy),
-                            FieldFilterKind::Fuzzy(value.clone(), opts),
+                            FieldFilterKind::Fuzzy(
+                                value.clone(),
+                                fuzziness.unwrap_or(Fuzziness::Auto),
+                                spec,
+                            ),
                         )
                     }
                 };

@@ -11,11 +11,11 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
-use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyOptions};
+use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{
-    LookupCommand, LookupResponse, QuerySpec, SearchCommand, default_max_edits,
+    Fuzziness, LookupCommand, LookupResponse, QuerySpec, SearchCommand,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::query_string_parser::parse_and_analyze;
@@ -962,6 +962,7 @@ impl ShardManager {
                     )
                 } else {
                     (
+                        //kaads pidaras nr 1 ielika exact:false blad
                         Arc::new(parse_and_analyze(raw, &self.analyzer)?),
                         Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
                     )
@@ -975,21 +976,21 @@ impl ShardManager {
                 max_expansions,
             } => {
                 if *fuzzy {
-                    let max_edits = fuzziness
-                        .as_ref()
-                        .map(|f| f.resolve(raw))
-                        .unwrap_or_else(|| default_max_edits(raw));
-                    let opts = FuzzyOptions {
-                        max_edits,
+                    let spec = FuzzySpec {
                         prefix_length: prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH),
                         max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
                     };
                     (
-                        Arc::new(Some(Query::Fuzzy(raw.clone(), opts))),
+                        Arc::new(Some(Query::Fuzzy(
+                            raw.clone(),
+                            fuzziness.unwrap_or(Fuzziness::Auto),
+                            spec,
+                        ))),
                         Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
                     )
                 } else {
                     (
+                        //kaads pidaras nr 2 ielika fuzzy:false blad
                         Arc::new(parse_and_analyze(raw, &self.analyzer)?),
                         Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
                     )

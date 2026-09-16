@@ -10,6 +10,37 @@ pub struct FuzzyOptions {
     pub max_expansions: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FuzzySpec {
+    pub prefix_length: usize,
+    pub max_expansions: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzyExpansion {
+    pub term: String,
+    pub edits: u8,
+    pub doc_freq: u32,
+}
+
+impl FuzzyExpansion {
+    pub fn new(term: impl Into<String>, edits: u8, doc_freq: u32) -> Self {
+        Self {
+            term: term.into(),
+            edits,
+            doc_freq,
+        }
+    }
+}
+
+pub fn default_max_edits(term: &str) -> u8 {
+    match term.chars().count() {
+        0..=3 => 0,
+        4..=6 => 1,
+        _ => 2,
+    }
+}
+
 //prefixword -> (prefix word) based on prefix_chars
 pub fn split_prefix(term: &str, prefix_chars: usize) -> (&str, &str) {
     let byte = term

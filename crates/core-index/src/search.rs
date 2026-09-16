@@ -1,7 +1,7 @@
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
 
 use crate::{
-    fuzzy::{FuzzyOptions, candidates_within_one, split_prefix},
+    fuzzy::{FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix},
     numeric_columns::{NumericBound, NumericValue},
     posting::PostingList,
     types::{DocId, XPathId},
@@ -19,37 +19,53 @@ pub trait SearchIndex {
     fn terms(&self, xpath: XPathId) -> Vec<String>;
 
     //Docs whose indexed term is within `opts.max_edits` of `term`.
-    fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
-        let mut items = Vec::new();
-        items.extend_from_slice(self.lookup(term, xpath).items());
+    fn fuzzy_expansions(
+        &self,
+        term: &str,
+        xpath: XPathId,
+        opts: FuzzyOptions,
+    ) -> Vec<FuzzyExpansion> {
+        let mut out = vec![FuzzyExpansion::new(term, 0, 0)];
 
         if opts.max_edits == 0 {
-            return PostingList::from_items(items);
+            return out;
         }
 
         let (prefix, suffix) = split_prefix(term, opts.prefix_length);
+
         if suffix.is_empty() {
-            return PostingList::from_items(items);
+            return out;
         }
 
         if opts.max_edits == 1 {
-            // d=1: candidate generation is bounded and fast
+            // d=1: candidate generation is bounded and fast.
             for candidate in candidates_within_one(suffix) {
-                let full = format!("{prefix}{candidate}");
-                items.extend_from_slice(self.lookup(&full, xpath).items());
+                out.push(FuzzyExpansion::new(format!("{prefix}{candidate}"), 1, 0));
             }
         } else {
             let builder = LevenshteinAutomatonBuilder::new(opts.max_edits, true);
             let dfa = builder.build_dfa(suffix);
 
             for t in self.terms(xpath) {
-                if let Some(rest) = t.strip_prefix(prefix) {
-                    if let Distance::Exact(_) = dfa.eval(rest) {
-                        items.extend_from_slice(self.lookup(&t, xpath).items());
-                    }
+                if let Some(rest) = t.strip_prefix(prefix)
+                    && let Distance::Exact(edits) = dfa.eval(rest)
+                {
+                    out.push(FuzzyExpansion::new(t, edits, 0));
                 }
             }
         }
+
+        out
+    }
+
+    //Docs whose indexed term is within `opts.max_edits` of `term`.
+    fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
+        let mut items = Vec::new();
+
+        for expansion in self.fuzzy_expansions(term, xpath, opts) {
+            items.extend_from_slice(self.lookup(&expansion.term, xpath).items());
+        }
+
         PostingList::from_items(items)
     }
 }
