@@ -21,13 +21,14 @@ use core_timing::timed;
 use crate::{
     ScoredPosting, SearchHit, TopHit,
     ast::Query,
+    resolver::MatchOp,
     scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
 };
 
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
     pub xpath: XPathId,
-    pub kind: FieldFilterKind,
+    pub kind: MatchOp,
 }
 
 #[derive(Debug, Clone)]
@@ -461,7 +462,7 @@ where
 
         for filter in filters.values() {
             let matched: HashSet<DocId> = match &filter.kind {
-                FieldFilterKind::Text(query) => match query {
+                MatchOp::Query(query) => match query {
                     Some(query) => self
                         .execute(query, filter.xpath)
                         .items()
@@ -470,23 +471,9 @@ where
                         .collect(),
                     None => HashSet::new(),
                 },
-                FieldFilterKind::Range { lo, hi } => self
+                MatchOp::Range { lo, hi } => self
                     .index
                     .column_range(filter.xpath, *lo, *hi)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
-
-                FieldFilterKind::Exact(term) => self
-                    .execute_exact(term, filter.xpath)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
-
-                FieldFilterKind::Fuzzy(term, fuzziness, spec) => self
-                    .execute_fuzzy(term, filter.xpath, *fuzziness, *spec)
                     .items()
                     .iter()
                     .map(|p| p.doc_id)

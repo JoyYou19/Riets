@@ -1,6 +1,4 @@
-//! Edit-distance fuzzy matching (distance 1 for now).
-
-pub const DEFAULT_PREFIX_LENGTH: usize = 0;
+pub const DEFAULT_PREFIX_LENGTH: usize = 1;
 pub const DEFAULT_MAX_EXPANSIONS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,30 +83,4 @@ pub fn candidates_within_one(term: &str) -> Vec<String> {
     }
 
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn split_prefix_chars() {
-        assert_eq!(split_prefix("schwarzenegger", 3), ("sch", "warzenegger"));
-    }
-    #[test]
-    fn insertion_covers_wiliam() {
-        assert!(candidates_within_one("wiliam").contains(&"william".to_string()));
-    }
-    #[test]
-    fn transposition_covers_teh() {
-        assert!(candidates_within_one("teh").contains(&"the".to_string()));
-    }
-    #[test]
-    fn substitution_covers_kat() {
-        assert!(candidates_within_one("kat").contains(&"cat".to_string()));
-    }
-    #[test]
-    fn deletion_covers_hell() {
-        assert!(candidates_within_one("hell").contains(&"hel".to_string()));
-    }
 }

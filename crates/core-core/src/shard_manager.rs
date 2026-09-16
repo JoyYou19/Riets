@@ -11,15 +11,12 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
-use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
-use core_protocol::command_reponse_definitions::{
-    Fuzziness, LookupCommand, LookupResponse, QuerySpec, SearchCommand,
-};
+use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
-use core_query::query_string_parser::parse_and_analyze;
-use core_query::{Query, SearchHit};
+use core_query::SearchHit;
+use core_query::resolver::resolve_query;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -949,54 +946,8 @@ impl ShardManager {
 
         let policy = self.policy.read().clone();
 
-        let (query, xpaths) = match &command.query {
-            QuerySpec::Plain(raw) => (
-                Arc::new(parse_and_analyze(raw, &self.analyzer)?),
-                Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
-            ),
-            QuerySpec::Exact { value: raw, exact } => {
-                if *exact {
-                    (
-                        Arc::new(Some(Query::Exact(raw.clone()))),
-                        Arc::new(policy.exact_xpaths().collect::<Vec<_>>()),
-                    )
-                } else {
-                    (
-                        //kaads pidaras nr 1 ielika exact:false blad
-                        Arc::new(parse_and_analyze(raw, &self.analyzer)?),
-                        Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
-                    )
-                }
-            }
-            QuerySpec::Fuzzy {
-                value: raw,
-                fuzzy,
-                fuzziness,
-                prefix_length,
-                max_expansions,
-            } => {
-                if *fuzzy {
-                    let spec = FuzzySpec {
-                        prefix_length: prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH),
-                        max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
-                    };
-                    (
-                        Arc::new(Some(Query::Fuzzy(
-                            raw.clone(),
-                            fuzziness.unwrap_or(Fuzziness::Auto),
-                            spec,
-                        ))),
-                        Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
-                    )
-                } else {
-                    (
-                        //kaads pidaras nr 2 ielika fuzzy:false blad
-                        Arc::new(parse_and_analyze(raw, &self.analyzer)?),
-                        Arc::new(policy.searchable_xpaths().collect::<Vec<_>>()),
-                    )
-                }
-            }
-        };
+        let (query, xpaths) = resolve_query(&command.query, &self.analyzer, &policy)?;
+        let query = Arc::new(query);
 
         let filters = resolve_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
