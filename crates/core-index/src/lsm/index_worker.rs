@@ -421,7 +421,7 @@ pub fn build_segment_batch(
     analyzer: &Analyzer,
     documents: Vec<IndexedDocument>
 ) -> ImmutableSegment {
-    let mut mem = MemIndex::new();
+    let mut mem = MemIndex::with_capacity(documents.len(), documents.len() * 8);
 
     for document in documents {
         mem.add_indexed_document(analyzer, &document);

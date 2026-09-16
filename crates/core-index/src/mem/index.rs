@@ -109,6 +109,14 @@ impl MemIndex {
             columns: NumericColumns::new(),
         }
     }
+    pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
+        Self {
+            terms: ahash::HashMap::with_capacity(expected_terms),
+            doc_lengths: ahash::HashMap::with_capacity(expected_docs),
+            field_stats: BTreeMap::new(),
+            columns: NumericColumns::new(),
+        }
+    }
 
     #[timed(indexing_documents)]
     pub fn freeze(self) -> crate::segment::ImmutableSegment {
@@ -205,7 +213,7 @@ impl MemIndex {
         stats.doc_count += 1;
         stats.total_doc_len += len as u64;
 
-        let mut grouped = ahash::HashMap::<String, Vec<u32>>::new();
+       let mut grouped = ahash::HashMap::<String, Vec<u32>>::with_capacity(tokens.len()); 
 
         for token in tokens {
             grouped.entry(token.text).or_default().push(token.position);

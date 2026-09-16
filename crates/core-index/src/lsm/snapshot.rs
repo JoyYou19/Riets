@@ -22,8 +22,8 @@ use crate::{
 */
 #[derive(Default, Clone)]
 pub struct IndexSnapshot {
-    mem: MemIndex,
-    segments: Vec<Arc<dyn SearchReader + Send + Sync>>,
+    mem: Arc<MemIndex>,
+    segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
     deleted: DeleteSet,
 }
 
@@ -39,7 +39,7 @@ impl SearchIndex for IndexSnapshot {
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         out.extend(self.mem.terms(xpath));
-        for seg in &self.segments {
+        for seg in self.segments.iter() {
             out.extend(seg.terms(xpath));
         }
         out.into_iter().collect()
@@ -65,7 +65,7 @@ impl SearchColumns for IndexSnapshot {
 
         lists.push(self.mem.column_range(xpath, lo, hi));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.column_range(xpath, lo, hi));
         }
 
@@ -74,7 +74,7 @@ impl SearchColumns for IndexSnapshot {
 
     fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
         let mut out = self.mem.column_values(xpath);
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             out.extend(segment.column_values(xpath));
         }
         out
@@ -85,7 +85,7 @@ impl SearchStats for IndexSnapshot {
     fn doc_count(&self, xpath: XPathId) -> u64 {
         let mut total = self.mem.doc_count(xpath);
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             total += segment.doc_count(xpath);
         }
 
@@ -97,7 +97,7 @@ impl SearchStats for IndexSnapshot {
             return Some(len);
         }
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             if let Some(len) = segment.doc_len(doc_id, xpath) {
                 return Some(len);
             }
@@ -109,7 +109,7 @@ impl SearchStats for IndexSnapshot {
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         let mut total = self.mem.total_doc_len(xpath);
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             total += segment.total_doc_len(xpath);
         }
 
@@ -119,8 +119,8 @@ impl SearchStats for IndexSnapshot {
 
 impl IndexSnapshot {
     pub fn new(
-        mem: MemIndex,
-        segments: Vec<Arc<dyn SearchReader + Send + Sync>>,
+        mem: Arc<MemIndex>,
+        segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
         deleted: DeleteSet,
     ) -> Self {
         Self {
@@ -145,7 +145,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_or_empty(term, xpath));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup(term, xpath));
         }
 
@@ -158,7 +158,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_prefix(prefix, xpath));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup_prefix(prefix, xpath));
         }
 
@@ -171,7 +171,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_wildcard(pattern, xpath));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup_wildcard(pattern, xpath));
         }
 
@@ -184,7 +184,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_fuzzy(term, xpath, opts));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup_fuzzy(term, xpath, opts));
         }
 
