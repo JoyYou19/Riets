@@ -1,23 +1,27 @@
 use core_index::{
     analyzer::analyzer::Analyzer,
-    fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec },
-    numeric_columns::NumericBound,
-    posting::{ Posting, PostingList, ops::{ intersect_ids, intersection, restrict_to, union } },
-    search::{ SearchColumns, SearchIndex, SearchStats },
-    types::{ DocId, XPathId },
+    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
+    posting::{
+        Posting, PostingList,
+        ops::{intersect_ids, intersection, restrict_to, union},
+    },
+    search::{SearchColumns, SearchIndex, SearchStats},
+    types::{DocId, XPathId},
 };
-use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, HashSet, hash_map::Entry }, u32 };
+use std::{
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
+    u32,
+};
 
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting,
-    SearchHit,
-    TopHit,
+    ScoredPosting, SearchHit, TopHit,
     ast::Query,
     resolver::MatchOp,
-    scorer::{ fuzzy_decay, score_term_hybrid },
+    scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
 };
 
 #[derive(Debug, Clone)]
@@ -27,7 +31,10 @@ pub struct FieldFilter {
 }
 
 // Turns the AST into a PostingList or SearchHit
-pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
+pub struct QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats,
+{
     // Which index are we searching?
     index: &'a I,
 
@@ -36,7 +43,10 @@ pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
     analyzer: &'a Analyzer,
 }
 
-impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColumns {
+impl<'a, I> QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats + SearchColumns,
+{
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self { index, analyzer }
     }
@@ -207,7 +217,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec
+        spec: FuzzySpec,
     ) -> PostingList {
         let words = self.fuzzy_words(raw);
 
@@ -217,7 +227,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
 
         let lists: Vec<PostingList> = words
             .iter()
-            .map(|w| { self.index.lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec)) })
+            .map(|w| {
+                self.index
+                    .lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec))
+            })
             .collect();
 
         let mut iter = lists.into_iter();
@@ -362,10 +375,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
             }
         }
 
-        let mut hits: Vec<SearchHit> = heap
-            .into_iter()
-            .map(|hit| hit.0)
-            .collect();
+        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
 
         hits.sort_by(|a, b| {
             b.score
@@ -384,7 +394,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
         &self,
         query: &Query,
         xpaths: impl IntoIterator<Item = XPathId>,
-        k: usize
+        k: usize,
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -399,9 +409,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor = existing.distance_factor.max(
-                            hit.distance_factor
-                        );
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -418,10 +427,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
             }
         }
 
-        let mut hits: Vec<SearchHit> = heap
-            .into_iter()
-            .map(|hit| hit.0)
-            .collect();
+        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
 
         hits.sort_by(|a, b| {
             b.score
@@ -443,24 +449,22 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
 
         for filter in filters.values() {
             let matched: HashSet<DocId> = match &filter.kind {
-                MatchOp::Query(query) =>
-                    match query {
-                        Some(query) =>
-                            self
-                                .execute(query, filter.xpath)
-                                .items()
-                                .iter()
-                                .map(|p| p.doc_id)
-                                .collect(),
-                        None => HashSet::new(),
-                    }
-                MatchOp::Range { lo, hi } =>
-                    self.index
-                        .column_range(filter.xpath, *lo, *hi)
+                MatchOp::Query(query) => match query {
+                    Some(query) => self
+                        .execute(query, filter.xpath)
                         .items()
                         .iter()
                         .map(|p| p.doc_id)
                         .collect(),
+                    None => HashSet::new(),
+                },
+                MatchOp::Range { lo, hi } => self
+                    .index
+                    .column_range(filter.xpath, *lo, *hi)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
             };
 
             restrict = Some(match restrict {
@@ -482,7 +486,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
         query: Option<&Query>,
         xpaths: impl IntoIterator<Item = XPathId>,
         k: usize,
-        restrict: Option<&HashSet<DocId>>
+        restrict: Option<&HashSet<DocId>>,
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -533,9 +537,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
-                        existing.distance_factor = existing.distance_factor.max(
-                            hit.distance_factor
-                        );
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -550,7 +553,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     pub fn search_all_xpaths(
         &self,
         query: &Query,
-        xpaths: impl IntoIterator<Item = XPathId>
+        xpaths: impl IntoIterator<Item = XPathId>,
     ) -> Vec<SearchHit> {
         use std::collections::BTreeMap;
 
@@ -563,9 +566,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor = existing.distance_factor.max(
-                            hit.distance_factor
-                        );
+                        existing.distance_factor =
+                            existing.distance_factor.max(hit.distance_factor);
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -606,13 +608,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     }
 
     #[timed(search)]
-    #[timed(search)]
     fn execute_scored_fuzzy(
         &self,
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec
+        spec: FuzzySpec,
     ) -> Vec<ScoredPosting> {
         let words = self.fuzzy_words(raw);
 
@@ -640,7 +641,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
 
                 scored_buf.clear();
                 let true_df = self.index.doc_freq(&expansion.term, xpath) as f32;
-                score_term_hybrid(self.index, &postings, xpath, true_df);
+                score_term_into(
+                    self.index,
+                    &postings,
+                    xpath,
+                    true_df,
+                    &mut doc_len,
+                    &mut scored_buf,
+                );
 
                 let decay = fuzzy_decay(expansion.edits);
 
@@ -692,14 +700,22 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
                     let doc_freq = self.index.doc_freq(term, xpath);
                     (Some(term.as_str()), postings, doc_freq)
                 }
-                _ => (None, self.execute_optional(part, xpath).unwrap_or_default(), u32::MAX),
+                _ => (
+                    None,
+                    self.execute_optional(part, xpath).unwrap_or_default(),
+                    u32::MAX,
+                ),
             };
 
             if postings.is_empty() {
                 return Vec::new();
             }
 
-            fetched.push(TermFetch { term, postings, doc_freq });
+            fetched.push(TermFetch {
+                term,
+                postings,
+                doc_freq,
+            });
         }
 
         if fetched.is_empty() {
@@ -710,7 +726,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
 
         // Phase 1: doc-ids only. Seeded from the rarest term's ids (no clone of
         // its posting list), then narrowed by each remaining term.
-        let mut candidates: Vec<DocId> = fetched[0].postings
+        let mut candidates: Vec<DocId> = fetched[0]
+            .postings
             .items()
             .iter()
             .map(|p| p.doc_id)
@@ -784,10 +801,7 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
         }
     }
 
-    let mut hits: Vec<SearchHit> = heap
-        .into_iter()
-        .map(|hit| hit.0)
-        .collect();
+    let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
 
     hits.sort_by(|a, b| {
         b.score
