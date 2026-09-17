@@ -1,31 +1,23 @@
-use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, HashSet }, u32 };
-
-use core_index::{
-    analyzer::analyzer::Analyzer, fuzzy::FuzzyOptions, numeric_columns::NumericBound, posting::{ Posting, PostingList, ops::{ intersect_ids, intersection, restrict_to, union } }, search::{ SearchColumns, SearchIndex, SearchStats }, types::{ DocId, XPathId },
-use std::{
-    cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
-    u32,
-};
-
 use core_index::{
     analyzer::analyzer::Analyzer,
-    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
-    posting::{
-        Posting, PostingList,
-        ops::{intersection, union},
-    },
-    search::{SearchColumns, SearchIndex, SearchStats},
-    types::{DocId, XPathId},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec },
+    numeric_columns::NumericBound,
+    posting::{ Posting, PostingList, ops::{ intersect_ids, intersection, restrict_to, union } },
+    search::{ SearchColumns, SearchIndex, SearchStats },
+    types::{ DocId, XPathId },
 };
+use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, HashSet, hash_map::Entry }, u32 };
+
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit,
+    ScoredPosting,
+    SearchHit,
+    TopHit,
     ast::Query,
     resolver::MatchOp,
-    scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
+    scorer::{ fuzzy_decay, score_term_hybrid },
 };
 
 #[derive(Debug, Clone)]
@@ -215,7 +207,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec,
+        spec: FuzzySpec
     ) -> PostingList {
         let words = self.fuzzy_words(raw);
 
@@ -225,10 +217,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
 
         let lists: Vec<PostingList> = words
             .iter()
-            .map(|w| {
-                self.index
-                    .lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec))
-            })
+            .map(|w| { self.index.lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec)) })
             .collect();
 
         let mut iter = lists.into_iter();
@@ -454,22 +443,24 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
 
         for filter in filters.values() {
             let matched: HashSet<DocId> = match &filter.kind {
-                MatchOp::Query(query) => match query {
-                    Some(query) => self
-                        .execute(query, filter.xpath)
+                MatchOp::Query(query) =>
+                    match query {
+                        Some(query) =>
+                            self
+                                .execute(query, filter.xpath)
+                                .items()
+                                .iter()
+                                .map(|p| p.doc_id)
+                                .collect(),
+                        None => HashSet::new(),
+                    }
+                MatchOp::Range { lo, hi } =>
+                    self.index
+                        .column_range(filter.xpath, *lo, *hi)
                         .items()
                         .iter()
                         .map(|p| p.doc_id)
                         .collect(),
-                    None => HashSet::new(),
-                },
-                MatchOp::Range { lo, hi } => self
-                    .index
-                    .column_range(filter.xpath, *lo, *hi)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
             };
 
             restrict = Some(match restrict {
@@ -615,19 +606,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColu
     }
 
     #[timed(search)]
- #[timed(search)]
-fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
-    struct TermFetch<'a> {
-        term: Option<&'a str>,
-        postings: PostingList,
-        doc_freq: u32,
-    }
+    #[timed(search)]
     fn execute_scored_fuzzy(
         &self,
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec,
+        spec: FuzzySpec
     ) -> Vec<ScoredPosting> {
         let words = self.fuzzy_words(raw);
 
@@ -654,12 +639,13 @@ fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosti
                 let postings = self.index.lookup(&expansion.term, xpath);
 
                 scored_buf.clear();
-                score_term_into(self.index, &postings, xpath, &mut doc_len, &mut scored_buf);
+                let true_df = self.index.doc_freq(&expansion.term, xpath) as f32;
+                score_term_hybrid(self.index, &postings, xpath, true_df);
 
                 let decay = fuzzy_decay(expansion.edits);
 
                 for mut scored in scored_buf.drain(..) {
-                    scored.score = (scored.score as f32 * decay) as u64;
+                    scored.score = ((scored.score as f32) * decay) as u64;
 
                     match acc.entry(scored.doc_id) {
                         Entry::Occupied(mut slot) => {
@@ -692,71 +678,73 @@ fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosti
 
     #[timed(search)]
     fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
-        let mut lists = Vec::new();
+        struct TermFetch<'a> {
+            term: Option<&'a str>,
+            postings: PostingList,
+            doc_freq: u32,
+        }
+        let mut fetched: Vec<TermFetch> = Vec::with_capacity(parts.len());
 
-    let mut fetched: Vec<TermFetch> = Vec::with_capacity(parts.len());
+        for part in parts {
+            let (term, postings, doc_freq) = match part {
+                Query::Term(term) => {
+                    let postings = self.execute_term(term, xpath).unwrap_or_default();
+                    let doc_freq = self.index.doc_freq(term, xpath);
+                    (Some(term.as_str()), postings, doc_freq)
+                }
+                _ => (None, self.execute_optional(part, xpath).unwrap_or_default(), u32::MAX),
+            };
 
-    for part in parts {
-        let (term, postings, doc_freq) = match part {
-            Query::Term(term) => {
-                let postings = self.execute_term(term, xpath).unwrap_or_default();
-                let doc_freq = self.index.doc_freq(term, xpath);
-                (Some(term.as_str()), postings, doc_freq)
+            if postings.is_empty() {
+                return Vec::new();
             }
-            _ => (None, self.execute_optional(part, xpath).unwrap_or_default(), u32::MAX),
-        };
 
-        if postings.is_empty() {
+            fetched.push(TermFetch { term, postings, doc_freq });
+        }
+
+        if fetched.is_empty() {
             return Vec::new();
         }
 
-        fetched.push(TermFetch { term, postings, doc_freq });
-    }
+        fetched.sort_by_key(|f| f.doc_freq);
 
-    if fetched.is_empty() {
-        return Vec::new();
-    }
+        // Phase 1: doc-ids only. Seeded from the rarest term's ids (no clone of
+        // its posting list), then narrowed by each remaining term.
+        let mut candidates: Vec<DocId> = fetched[0].postings
+            .items()
+            .iter()
+            .map(|p| p.doc_id)
+            .collect();
 
-    fetched.sort_by_key(|f| f.doc_freq);
-
-    // Phase 1: doc-ids only. Seeded from the rarest term's ids (no clone of
-    // its posting list), then narrowed by each remaining term.
-    let mut candidates: Vec<DocId> = fetched[0]
-        .postings
-        .items()
-        .iter()
-        .map(|p| p.doc_id)
-        .collect();
-
-    for f in &fetched[1..] {
-        candidates = intersect_ids(&candidates, &f.postings);
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-    }
-
-    // Phase 2: restrict each term to the candidates, keeping that term's own
-    // positions/weights, and score with its true (unrestricted) doc_freq.
-    let mut term_scores: Option<Vec<ScoredPosting>> = None;
-
-    for f in &fetched {
-        if f.term.is_none() {
-            continue; // nested And/Or/Phrase parts filter but don't score — see note
+        for f in &fetched[1..] {
+            candidates = intersect_ids(&candidates, &f.postings);
+            if candidates.is_empty() {
+                return Vec::new();
+            }
         }
 
-        let restricted = restrict_to(&f.postings, &candidates);
-        if restricted.is_empty() {
-            continue;
+        // Phase 2: restrict each term to the candidates, keeping that term's own
+        // positions/weights, and score with its true (unrestricted) doc_freq.
+        let mut term_scores: Option<Vec<ScoredPosting>> = None;
+
+        for f in &fetched {
+            if f.term.is_none() {
+                continue; // nested And/Or/Phrase parts filter but don't score — see note
+            }
+
+            let restricted = restrict_to(&f.postings, &candidates);
+            if restricted.is_empty() {
+                continue;
+            }
+
+            term_scores = Some(match term_scores {
+                Some(acc) => crate::scorer::scored_and(&acc, &restricted),
+                None => score_term_hybrid(self.index, &restricted, xpath, f.doc_freq as f32),
+            });
         }
 
-        term_scores = Some(match term_scores {
-            Some(acc) => crate::scorer::scored_and(&acc, &restricted),
-            None => score_term_hybrid(self.index, &restricted, xpath, f.doc_freq as f32),
-        });
+        term_scores.unwrap_or_default()
     }
-
-    term_scores.unwrap_or_default()
-} 
 }
 
 #[timed(search)]

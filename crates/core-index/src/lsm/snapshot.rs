@@ -72,8 +72,7 @@ impl SearchIndex for IndexSnapshot {
         }
 
         total
-
-    fn fuzzy_expansions(
+    }    fn fuzzy_expansions(
         &self,
         term: &str,
         xpath: XPathId,

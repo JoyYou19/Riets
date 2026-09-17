@@ -1,9 +1,9 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use core_index::{
     posting::PostingList,
     search::SearchStats,
-    types::{DocId, Position, XPathId},
+    types::{Position, XPathId},
 };
 use core_timing::timed;
 
@@ -28,53 +28,42 @@ pub fn score_term_hybrid<S: SearchStats>(
     xpath: XPathId,
     ture_df:f32
 ) -> Vec<ScoredPosting> {
-    let mut out = Vec::with_capacity(postings.len());
-    let mut doc_len = HashMap::new();
-
-    score_term_into(stats, postings, xpath, &mut doc_len, &mut out);
-
-    out
-}
-
-pub fn score_term_into<S: SearchStats>(
-    stats: &S,
-    postings: &PostingList,
-    xpath: XPathId,
-    doc_len: &mut HashMap<DocId, f32>,
-    out: &mut Vec<ScoredPosting>,
-) {
     let n = stats.doc_count(xpath) as f32;
     let df = ture_df;
     let avgdl = stats.avg_doc_len(xpath);
 
-    for p in postings.items().iter().filter(|p| !p.positions.is_empty()) {
-        let policy_weight = p.weight as f32;
+    let scored: Vec<ScoredPosting> = postings
+        .items()
+        .iter()
+        .filter(|p| !p.positions.is_empty())
+        .map(|p| {
+            let policy_weight = p.weight as f32;
 
-        let bm25 = if n > 0.0 && df > 0.0 && avgdl > 0.0 {
-            let tf = p.positions.len() as f32;
+            let bm25 = if n > 0.0 && df > 0.0 && avgdl > 0.0 {
+                let tf = p.positions.len() as f32;
+                let dl = stats.doc_len(p.doc_id, xpath).unwrap_or(avgdl as u32) as f32;
 
-            let dl = *doc_len
-                .entry(p.doc_id)
-                .or_insert_with(|| stats.doc_len(p.doc_id, xpath).unwrap_or(avgdl as u32) as f32);
+                let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+                let norm = 1.0 - BM25_B + BM25_B * (dl / avgdl);
 
-            let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-            let norm = 1.0 - BM25_B + BM25_B * (dl / avgdl);
+                idf * ((tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm) + 1 as f32)
+            } else {
+                1.0
+            };
 
-            idf * ((tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm) + 1 as f32)
-        } else {
-            1.0
-        };
+            let hybrid = policy_weight * bm25.max(0.001);
 
-        let hybrid = policy_weight * bm25.max(0.001);
+            ScoredPosting {
+                doc_id: p.doc_id,
+                positions: Arc::from(p.positions.as_slice()),
+                score: (hybrid * SCORE_SCALE) as u64,
+                matched_terms: 1,
+                density: 1.0,
+            }
+        })
+        .collect();
 
-        out.push(ScoredPosting {
-            doc_id: p.doc_id,
-            positions: Arc::from(p.positions.as_slice()),
-            score: (hybrid * SCORE_SCALE) as u64,
-            matched_terms: 1,
-            density: 1.0,
-        });
-    }
+    scored
 }
 
 #[timed(search)]
@@ -141,10 +130,6 @@ fn make_pair(few_is_left: bool, few_pos: Position, other_pos: Position) -> Close
             distance,
         }
     }
-}
-
-pub fn fuzzy_decay(edits: u8) -> f32 {
-    1.0 / (1.0 + edits as f32)
 }
 
 //WARN: es esmu valters es uzrakstiju kko kas nav optimals plz help me:
@@ -236,4 +221,7 @@ fn closest_window_probe(left: &[Position], right: &[Position]) -> Option<Closest
     }
 
     best
+}
+pub fn fuzzy_decay(edits: u8) -> f32 {
+    1.0 / (1.0 + edits as f32)
 }
