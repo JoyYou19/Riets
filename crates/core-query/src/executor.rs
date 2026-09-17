@@ -7,7 +7,6 @@ use std::{
 use core_index::{
     analyzer::analyzer::Analyzer,
     fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
-    numeric_columns::NumericBound,
     posting::{
         Posting, PostingList,
         ops::{intersection, union},
@@ -31,17 +30,6 @@ pub struct FieldFilter {
     pub kind: MatchOp,
 }
 
-#[derive(Debug, Clone)]
-pub enum FieldFilterKind {
-    Text(Option<Query>),
-    Exact(String),
-    Range {
-        lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
-    },
-    Fuzzy(String, Fuzziness, FuzzySpec),
-}
-
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
 where
@@ -63,6 +51,7 @@ where
         Self { index, analyzer }
     }
 
+    //Vai dokuments vispar der querijam
     #[timed(search)]
     fn execute_optional(&self, query: &Query, xpath: XPathId) -> Option<PostingList> {
         match query {
@@ -588,7 +577,7 @@ where
         by_doc.into_values().collect()
     }
 
-    // Converts a query
+    //vai der + relevance
     #[timed(search)]
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
         match query {
