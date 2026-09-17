@@ -8,6 +8,7 @@ use std::{fs, io};
 
 use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
+use core_index::lsm::IndexSnapshot;
 use core_index::search::SearchColumns;
 use core_protocol::command_reponse_definitions::LookupResponse;
 use core_query::executor::FieldFilter;
@@ -213,6 +214,29 @@ impl ShardHandle {
         Ok(out)
     }
 
+    fn rank_candidates(
+        &self,
+        snapshot: &IndexSnapshot,
+        query: Option<&Query>,
+        filters: Option<&HashMap<String, FieldFilter>>,
+        xpaths: &[XPathId],
+        k: usize,
+    ) -> Vec<SearchHit> {
+        if k == 0 {
+            return Vec::new();
+        }
+
+        let executor = QueryExecutor::new(snapshot, &self.analyzer);
+        let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
+
+        executor.search_all_xpaths_top_k_restricted(
+            query,
+            xpaths.iter().copied(),
+            k,
+            restrict.as_ref(),
+        )
+    }
+
     #[timed(search)]
     pub fn rank_top_k(
         &self,
@@ -222,19 +246,7 @@ impl ShardHandle {
         k: usize,
     ) -> Result<Vec<SearchHit>, CorelamoError> {
         let snapshot = self.shared.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-
-        let restrict = match filters {
-            Some(filtr) => executor.resolve_filters(filtr),
-            None => None,
-        };
-
-        Ok(executor.search_all_xpaths_top_k_restricted(
-            query,
-            xpaths.iter().copied(),
-            k,
-            restrict.as_ref(),
-        ))
+        Ok(self.rank_candidates(&snapshot, query, filters, xpaths, k))
     }
 
     #[timed(search)]
@@ -251,25 +263,11 @@ impl ShardHandle {
         }
 
         let snapshot = self.shared.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
-
-        let restrict = match filters {
-            Some(filtr) => executor.resolve_filters(filtr),
-            None => None,
-        };
-
-        // gets the top candidates based on relevance + filters
-        let candidates = executor.search_all_xpaths_top_k_restricted(
-            query,
-            xpaths.iter().copied(),
-            window,
-            restrict.as_ref(),
-        );
+        let candidates = self.rank_candidates(&snapshot, query, filters, xpaths, window);
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Build doc -> numeric value maps straight from the columns
         let mut columns: Vec<HashMap<DocId, f64>> = Vec::with_capacity(sort_xpaths.len());
         for &xpath in sort_xpaths {
             let map: HashMap<DocId, f64> = snapshot
@@ -467,7 +465,7 @@ impl ShardHandle {
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
         let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
-    core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
+        core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
         self.call(|resp| ShardCmd::Insert { user, inputs, resp })
             .await?
     }

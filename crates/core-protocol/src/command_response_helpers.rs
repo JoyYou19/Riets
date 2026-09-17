@@ -1,7 +1,7 @@
 use core_timing::timed;
 use indexmap::IndexMap;
-use simd_json::{OwnedValue, StaticNode, owned::Object};
 use simd_json::prelude::*;
+use simd_json::{OwnedValue, StaticNode, owned::Object};
 use std::collections::BTreeMap;
 
 use crate::errors::CorelamoError;
@@ -120,7 +120,9 @@ pub fn apply_merge_patch(target: &mut OwnedValue, patch: &OwnedValue) {
                     if patch_value.is_null() {
                         target_obj.remove(key);
                     } else {
-                        let entry = target_obj.entry(key.clone()).or_insert(OwnedValue::Static(StaticNode::Null));
+                        let entry = target_obj
+                            .entry(key.clone())
+                            .or_insert(OwnedValue::Static(StaticNode::Null));
                         apply_merge_patch(entry, patch_value);
                     }
                 }

@@ -5,8 +5,6 @@ use core_index::types::{DocId, Position};
 pub struct ScoredPosting {
     pub doc_id: DocId,
     pub positions: Arc<[Position]>,
-    // pub weight_sum: u32,
-    //
     pub score: u64,
     pub matched_terms: usize,
     pub density: f32,

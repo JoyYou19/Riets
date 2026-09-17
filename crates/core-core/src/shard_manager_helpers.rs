@@ -1,16 +1,12 @@
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::policy::FieldKind;
-use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyOptions};
-use core_index::numeric_columns::{parse_float, parse_integer, parse_numeric_range};
 use core_index::types::XPathId;
-use core_protocol::command_reponse_definitions::{
-    FilterSpec, SearchCommand, SortOrderRequest, default_max_edits,
-};
+use core_protocol::command_reponse_definitions::{SearchCommand, SortOrderRequest};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
-use core_query::executor::{FieldFilter, FieldFilterKind};
-use core_query::query_string_parser::parse_and_analyze;
+use core_query::executor::FieldFilter;
+use core_query::resolver::compile_field_filter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -20,109 +16,24 @@ pub struct SortField {
     pub ratio: u8,
 }
 
-pub fn resolve_filters(
+//NAHUJ SITO FUNKCIJU match match?
+pub fn compile_filters(
     analyzer: &Analyzer,
     command: &SearchCommand,
     policy: &IndexPolicy,
 ) -> Result<Option<Arc<HashMap<String, FieldFilter>>>, CorelamoError> {
-    match command.filters.as_ref() {
-        Some(fs) => {
-            let mut resolved = HashMap::with_capacity(fs.len());
-            for (field, spec) in fs {
-                let field_pol = policy
-                    .fields
-                    .iter()
-                    .find(|f| &f.name == field)
-                    .ok_or_else(|| CorelamoError::PathNotIndexed(field.clone()))?;
+    let Some(filters) = command.filters.as_ref() else {
+        return Ok(None);
+    };
 
-                let (xpath, kind) = match spec {
-                    FilterSpec::Plain(term) => {
-                        if term.trim().is_empty() {
-                            continue;
-                        }
-                        let kind = match field_pol.kind {
-                            FieldKind::Text => {
-                                FieldFilterKind::Text(parse_and_analyze(term.as_str(), analyzer)?)
-                            }
-                            FieldKind::Integer => {
-                                let range = parse_numeric_range(term.as_str(), parse_integer).map_err(|e| {
-                                    CorelamoError::InvalidData(format!(
-                                        "invalid filter '{term}' on numeric field '{field}': {e}"
-                                    ))
-                                })?;
-                                FieldFilterKind::Range {
-                                    lo: range.lo,
-                                    hi: range.hi,
-                                }
-                            }
-                            FieldKind::Float => {
-                                let range = parse_numeric_range(term.as_str(), parse_float).map_err(|e| {
-                                    CorelamoError::InvalidData(format!(
-                                        "invalid filter '{term}' on numeric field '{field}': {e}"
-                                    ))
-                                })?;
-                                FieldFilterKind::Range {
-                                    lo: range.lo,
-                                    hi: range.hi,
-                                }
-                            }
-                            _ => return Err(CorelamoError::PathNotIndexed(field.clone())),
-                        };
-                        (field_pol.xpath(&policy), kind)
-                    }
-                    FilterSpec::Exact { value, exact } => {
-                        if !*exact {
-                            return Err(CorelamoError::InvalidData(format!(
-                                "exact filter on '{field}' must set 'exact: true'"
-                            )));
-                        }
-                        if value.trim().is_empty() {
-                            continue;
-                        }
-                        let exact_xpath = field_pol.exact_xpath(&policy).ok_or_else(|| {
-                            CorelamoError::InvalidData(format!(
-                                "field '{field}' has no exact index (add 'exact = true' to its policy)"
-                            ))
-                        })?;
-                        (exact_xpath, FieldFilterKind::Exact(value.clone()))
-                    }
-                    FilterSpec::Fuzzy {
-                        value,
-                        fuzzy,
-                        fuzziness,
-                        prefix_length,
-                        max_expansions,
-                    } => {
-                        if !*fuzzy {
-                            return Err(CorelamoError::InvalidData(format!(
-                                "fuzzy filter on '{field}' must set 'fuzzy: true'"
-                            )));
-                        }
-                        if value.trim().is_empty() {
-                            continue;
-                        }
-                        let max_edits = fuzziness
-                            .as_ref()
-                            .map(|f| f.resolve(value))
-                            .unwrap_or_else(|| default_max_edits(value));
-                        let opts = FuzzyOptions {
-                            max_edits,
-                            prefix_length: prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH),
-                            max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
-                        };
-                        (
-                            field_pol.xpath(&policy),
-                            FieldFilterKind::Fuzzy(value.clone(), opts),
-                        )
-                    }
-                };
-
-                resolved.insert(field.clone(), FieldFilter { xpath, kind });
-            }
-            Ok(Some(Arc::new(resolved)))
+    let mut resolved = HashMap::with_capacity(filters.len());
+    for (field, spec) in filters {
+        if let Some(filter) = compile_field_filter(field, spec, analyzer, policy)? {
+            resolved.insert(field.clone(), filter);
         }
-        None => Ok(None),
     }
+
+    Ok(Some(Arc::new(resolved)))
 }
 
 pub fn resolve_sorts(

@@ -1,4 +1,5 @@
-use core_index::fuzzy::FuzzyOptions;
+use core_index::fuzzy::FuzzySpec;
+use core_protocol::command_reponse_definitions::Fuzziness;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Query {
@@ -9,6 +10,6 @@ pub enum Query {
     Or(Vec<Query>),
     Phrase(Vec<String>),
     Exact(String),
-    Fuzzy(String, FuzzyOptions),
+    Fuzzy(String, Fuzziness, FuzzySpec),
     // Not(Box<Query>),
 }

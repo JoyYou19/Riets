@@ -4,8 +4,8 @@ use core_timing::timed;
 
 use crate::{
     analyzer::analyzer::Analyzer,
-    disk::{ reader::DiskSegment, writer::write_segment },
-    fuzzy::FuzzyOptions,
+    disk::{reader::DiskSegment, writer::write_segment},
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
     lsm::{
         IndexSnapshot,
         compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
@@ -62,6 +62,15 @@ impl SearchIndex for LsmIndex {
         self.snapshot().doc_freq(term, xpath)
     }
 
+
+    fn fuzzy_expansions(
+        &self,
+        term: &str,
+        xpath: XPathId,
+        opts: FuzzyOptions,
+    ) -> Vec<FuzzyExpansion> {
+        self.snapshot().fuzzy_expansions(term, xpath, opts)
+    }
 }
 
 impl SearchColumns for LsmIndex {

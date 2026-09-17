@@ -10,12 +10,12 @@ use crate::{
         codec::{ read_var_u16, read_var_u32, read_var_u64 },
         format::{ FOOTER_LEN, MAGIC, SegmentFooter, VERSION },
     },
-    fuzzy::FuzzyOptions,
-    numeric_columns::{ NumericBound, NumericColumns, NumericValue },
-    posting::{ Posting, PostingList },
-    search::{ SearchColumns, SearchIndex, SearchStats },
-    term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta },
-    types::{ DocId, FieldStats, TermKey, XPathId },
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
+    numeric_columns::{NumericBound, NumericColumns, NumericValue},
+    posting::{Posting, PostingList},
+    search::{SearchColumns, SearchIndex, SearchStats},
+    term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
+    types::{DocId, FieldStats, TermKey, XPathId},
 };
 
 // Read only disk segment.
@@ -277,6 +277,23 @@ impl SearchIndex for DiskSegment {
         }
 
         PostingList::from_items(postings)
+    }
+
+    fn fuzzy_expansions(
+        &self,
+        term: &str,
+        xpath: XPathId,
+        opts: FuzzyOptions,
+    ) -> Vec<FuzzyExpansion> {
+        self.dictionary
+            .field(xpath)
+            .map(|dict| {
+                dict.fuzzy_expansions(term, opts)
+                    .into_iter()
+                    .map(|(expansion, _)| expansion)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

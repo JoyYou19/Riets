@@ -5,7 +5,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use std::fmt;
 use strsim::levenshtein;
 
 use crate::{
@@ -104,8 +105,8 @@ pub trait ResponseData {
 #[serde(deny_unknown_fields)]
 //TODO: numbers exact-match
 pub struct SearchCommand {
-    pub query: QuerySpec,
-    pub filters: Option<HashMap<String, FilterSpec>>,
+    pub query: MatchSpec,
+    pub filters: Option<IndexMap<String, MatchSpec>>,
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,
@@ -169,128 +170,123 @@ impl<'de> Deserialize<'de> for Fuzziness {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum QuerySpec {
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchSpec {
     Plain(String),
-    Exact {
-        value: String,
-        exact: bool,
-    },
+    Exact(String),
     Fuzzy {
         value: String,
-        fuzzy: bool,
         fuzziness: Option<Fuzziness>,
         prefix_length: Option<usize>,
         max_expansions: Option<usize>,
     },
 }
 
-use std::fmt;
-
-impl fmt::Display for QuerySpec {
+impl fmt::Display for MatchSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            QuerySpec::Plain(q) => write!(f, "{q}"),
-            QuerySpec::Exact { value, .. } => write!(f, "{value}"),
-            QuerySpec::Fuzzy { value, .. } => write!(f, "{value}"),
-        }
+        // used by the search handler for its "N hit(s) for '...'" message
+        f.write_str(self.value())
     }
 }
 
-//Hand made cuz this our favourite command that needs a lot of care
-impl<'de> Deserialize<'de> for QuerySpec {
+impl MatchSpec {
+    pub fn value(&self) -> &str {
+        match self {
+            MatchSpec::Plain(value) | MatchSpec::Exact(value) => value,
+            MatchSpec::Fuzzy { value, .. } => value,
+        }
+    }
+
+    pub fn is_blank(&self) -> bool {
+        self.value().trim().is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for MatchSpec {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         let value = OwnedValue::deserialize(deserializer)?;
+        deserialize_match_spec(&value).map_err(serde::de::Error::custom)
+    }
+}
 
-        match value {
-            OwnedValue::String(s) => Ok(QuerySpec::Plain(s)),
-            OwnedValue::Object(obj) => {
-                //INFO: holly porn
-                const EXPECTED: &[&str] = &[
-                    "value",
-                    "exact",
-                    "fuzzy",
-                    "fuzziness",
-                    "prefix_length",
-                    "max_expansions",
-                ];
+const MATCH_SPEC_KEYS: &[&str] = &[
+    "value",
+    "exact",
+    "fuzzy",
+    "fuzziness",
+    "prefix_length",
+    "max_expansions",
+];
 
-                for key in obj.keys() {
-                    if !EXPECTED.contains(&key.as_str()) {
-                        if let Some(best_match) =
-                            EXPECTED.iter().min_by_key(|field| levenshtein(key, field))
-                        {
-                            if levenshtein(key, best_match) <= 3 {
-                                return Err(serde::de::Error::custom(format!(
-                                    "Unknown field '{key}' in query. Did you mean '{best_match}'?"
-                                )));
-                            }
-                        }
-                        return Err(serde::de::Error::custom(format!(
-                            "Unknown field '{key}' in query. Expected 'value', 'exact', 'fuzzy', 'fuzziness', 'prefix_length', 'max_expansions'."
-                        )));
-                    }
+//Hand made cuz this our favourite command that needs a lot of care
+fn deserialize_match_spec(value: &OwnedValue) -> Result<MatchSpec, String> {
+    match value {
+        OwnedValue::String(raw) => Ok(MatchSpec::Plain(raw.clone())),
+
+        OwnedValue::Object(obj) => {
+            for key in obj.keys() {
+                if MATCH_SPEC_KEYS.contains(&key.as_str()) {
+                    continue;
                 }
+                return Err(
+                    match MATCH_SPEC_KEYS
+                        .iter()
+                        .min_by_key(|known| levenshtein(key, known))
+                        .filter(|best| levenshtein(key, best) <= 3)
+                    {
+                        Some(best) => format!("Unknown field '{key}'. Did you mean '{best}'?"),
+                        None => format!(
+                            "Unknown field '{key}'. Expected one of: {}.",
+                            MATCH_SPEC_KEYS.join(", ")
+                        ),
+                    },
+                );
+            }
 
-                let value = obj
-                    .get("value")
-                    .and_then(OwnedValue::as_str)
-                    .ok_or_else(|| {
-                        serde::de::Error::custom("query object requires a string 'value' field")
-                    })?
-                    .to_string();
+            let value = obj
+                .get("value")
+                .and_then(OwnedValue::as_str)
+                .ok_or("match object requires a string 'value' field")?
+                .to_string();
 
-                let exact = obj
-                    .get("exact")
-                    .and_then(OwnedValue::as_bool)
-                    .unwrap_or(false);
-                let fuzzy = obj
-                    .get("fuzzy")
-                    .and_then(OwnedValue::as_bool)
-                    .unwrap_or(false);
+            let exact = obj
+                .get("exact")
+                .and_then(OwnedValue::as_bool)
+                .unwrap_or(false);
+            let fuzzy = obj
+                .get("fuzzy")
+                .and_then(OwnedValue::as_bool)
+                .unwrap_or(false);
 
-                if exact && fuzzy {
-                    return Err(serde::de::Error::custom(
-                        "query cannot set both 'exact' and 'fuzzy'",
-                    ));
-                }
-
-                if fuzzy {
-                    let fuzziness = match obj.get("fuzziness") {
-                        Some(v) => {
-                            Some(Fuzziness::from_owned(v).map_err(serde::de::Error::custom)?)
-                        }
+            match (exact, fuzzy) {
+                (true, true) => Err("match cannot set both 'exact' and 'fuzzy'".to_string()),
+                (true, false) => Ok(MatchSpec::Exact(value)),
+                (false, true) => Ok(MatchSpec::Fuzzy {
+                    value,
+                    fuzziness: match obj.get("fuzziness") {
+                        Some(v) => Some(Fuzziness::from_owned(v)?),
                         None => None,
-                    };
-                    let prefix_length = obj
+                    },
+                    prefix_length: obj
                         .get("prefix_length")
                         .and_then(OwnedValue::as_u64)
-                        .map(|n| n as usize);
-                    let max_expansions = obj
+                        .map(|n| n as usize),
+                    max_expansions: obj
                         .get("max_expansions")
                         .and_then(OwnedValue::as_u64)
-                        .map(|n| n as usize);
-                    Ok(QuerySpec::Fuzzy {
-                        value,
-                        fuzzy: true,
-                        fuzziness,
-                        prefix_length,
-                        max_expansions,
-                    })
-                } else if exact {
-                    Ok(QuerySpec::Exact { value, exact: true })
-                } else {
-                    Ok(QuerySpec::Plain(value))
-                }
+                        .map(|n| n as usize),
+                }),
+                (false, false) => Ok(MatchSpec::Plain(value)),
             }
-            other => Err(serde::de::Error::custom(format!(
-                "query must be a string, or an object with 'value' and 'exact' fields (found {})",
-                other.value_type()
-            ))),
         }
+
+        other => Err(format!(
+            "match must be a string, or an object with a 'value' field (found {})",
+            other.value_type()
+        )),
     }
 }
 
