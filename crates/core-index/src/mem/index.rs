@@ -42,7 +42,16 @@ impl SearchIndex for MemIndex {
             .map(|k| k.term.clone())
             .collect()
     }
-
+    // No TermMeta here — MemIndex stores full PostingLists directly, so
+    // doc_freq is just the stored list's length. Uses the private lookup()
+    // (returns &PostingList, no clone) rather than lookup_or_empty, since
+    // there's no need to clone the whole posting list just to read its len.
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+        self.terms
+            .get(&TermKey::new(term, xpath))
+            .map(|list| list.len() as u32)
+            .unwrap_or(0)
+    }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
     }
@@ -105,6 +114,14 @@ impl MemIndex {
         Self {
             terms: ahash::HashMap::new(),
             doc_lengths: ahash::HashMap::new(),
+            field_stats: BTreeMap::new(),
+            columns: NumericColumns::new(),
+        }
+    }
+    pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
+        Self {
+            terms: ahash::HashMap::with_capacity(expected_terms),
+            doc_lengths: ahash::HashMap::with_capacity(expected_docs),
             field_stats: BTreeMap::new(),
             columns: NumericColumns::new(),
         }
@@ -205,7 +222,7 @@ impl MemIndex {
         stats.doc_count += 1;
         stats.total_doc_len += len as u64;
 
-        let mut grouped = ahash::HashMap::<String, Vec<u32>>::new();
+       let mut grouped = ahash::HashMap::<String, Vec<u32>>::with_capacity(tokens.len()); 
 
         for token in tokens {
             grouped.entry(token.text).or_default().push(token.position);

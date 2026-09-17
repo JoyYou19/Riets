@@ -12,6 +12,11 @@ pub struct Analyzer {
     analyzer: TextAnalyzer,
     literal_symbols: HashSet<char>,
 }
+use std::cell::RefCell;
+
+thread_local! {
+    static LOCAL_ANALYZER: RefCell<Option<TextAnalyzer>> = RefCell::new(None);
+}
 
 impl std::fmt::Debug for Analyzer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -59,7 +64,9 @@ impl Analyzer {
 
     #[timed(indexing_documents)]
     pub fn analyze(&self, input: &str) -> Vec<Token> {
-        let mut analyzer = self.analyzer.clone();
+         LOCAL_ANALYZER.with(|cell| {
+            let mut local = cell.borrow_mut();
+        let  analyzer = local.get_or_insert_with(|| self.analyzer.clone());
         let mut stream = analyzer.token_stream(input);
         let mut output = Vec::new();
 
@@ -73,6 +80,7 @@ impl Analyzer {
         }
 
         output
+    })
     }
 
     //For search same thing like spider-man spiderman the same thing is in index so it would match

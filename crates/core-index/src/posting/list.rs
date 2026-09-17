@@ -1,13 +1,10 @@
 use core_timing::timed;
 
-use crate::{
-    posting::Posting,
-    types::{DocId, Position},
-};
+use crate::{ posting::Posting, types::{ DocId, Position } };
 
 /*
-* A Posting List, this is needed so we can sord by doc_id and merge duplicate docs
-*/
+ * A Posting List, this is needed so we can sord by doc_id and merge duplicate docs
+ */
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PostingList {
     items: Vec<Posting>,
@@ -20,49 +17,41 @@ impl PostingList {
 
     #[timed(search)]
     /// Like `from_items`, but REQUIRES items already sorted by doc_id.
-    pub fn from_sorted(mut items: Vec<Posting>) -> Self {
+    pub fn from_sorted(items: Vec<Posting>) -> Self {
+        // Callers that produce strictly-increasing doc_ids (every intersection
+        // and restriction in ops.rs) hit this path: no duplicates to merge, and
+        // positions are already sorted coming out of the index, so there is
+        // nothing to do but take ownership.
+        let has_duplicates = items.windows(2).any(|w| w[0].doc_id == w[1].doc_id);
+        if !has_duplicates {
+            return Self { items };
+        }
+
         let mut merged: Vec<Posting> = Vec::with_capacity(items.len());
-        for item in items.drain(..) {
+        for item in items {
             if let Some(last) = merged.last_mut() {
                 if last.doc_id == item.doc_id {
                     last.positions.extend_from_slice(&item.positions);
                     last.weight = last.weight.max(item.weight);
+                    // Only a posting that actually absorbed another can have
+                    // out-of-order or duplicate positions.
+                    last.positions.sort_unstable();
+                    last.positions.dedup();
                     continue;
                 }
             }
             merged.push(item);
         }
-        for posting in &mut merged {
-            posting.positions.sort_unstable();
-            posting.positions.dedup();
-        }
+
         Self { items: merged }
     }
 
     #[timed(search)]
     pub fn from_items(mut items: Vec<Posting>) -> Self {
-        items.sort_by_key(|p| p.doc_id);
-
-        let mut merged: Vec<Posting> = Vec::new();
-
-        for item in items {
-            if let Some(last) = merged.last_mut()
-                && last.doc_id == item.doc_id
-            {
-                last.positions.extend_from_slice(&item.positions);
-                last.weight = last.weight.max(item.weight);
-                continue;
-            }
-
-            merged.push(item);
+        if !items.is_sorted_by_key(|p| p.doc_id) {
+            items.sort_by_key(|p| p.doc_id);
         }
-
-        for posting in &mut merged {
-            posting.positions.sort_unstable();
-            posting.positions.dedup();
-        }
-
-        Self { items: merged }
+        Self::from_sorted(items)
     }
 
     #[timed(indexing_documents)]
@@ -75,8 +64,7 @@ impl PostingList {
             }
 
             if last.doc_id < doc_id {
-                self.items
-                    .push(Posting::with_weight(doc_id, vec![position], weight));
+                self.items.push(Posting::with_weight(doc_id, vec![position], weight));
                 return;
             }
         }
@@ -87,8 +75,7 @@ impl PostingList {
                 self.items[index].weight = self.items[index].weight.max(weight);
             }
             Err(index) => {
-                self.items
-                    .insert(index, Posting::with_weight(doc_id, vec![position], weight));
+                self.items.insert(index, Posting::with_weight(doc_id, vec![position], weight));
             }
         }
     }
@@ -107,8 +94,7 @@ impl PostingList {
             }
 
             if last.doc_id < doc_id {
-                self.items
-                    .push(Posting::with_weight(doc_id, positions, weight));
+                self.items.push(Posting::with_weight(doc_id, positions, weight));
                 return;
             }
         }
@@ -119,8 +105,7 @@ impl PostingList {
                 self.items[index].weight = self.items[index].weight.max(weight);
             }
             Err(index) => {
-                self.items
-                    .insert(index, Posting::with_weight(doc_id, positions, weight));
+                self.items.insert(index, Posting::with_weight(doc_id, positions, weight));
             }
         }
     }

@@ -22,8 +22,8 @@ use crate::{
 */
 #[derive(Default, Clone)]
 pub struct IndexSnapshot {
-    mem: MemIndex,
-    segments: Vec<Arc<dyn SearchReader + Send + Sync>>,
+    mem: Arc<MemIndex>,
+    segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
     deleted: DeleteSet,
 }
 
@@ -39,7 +39,7 @@ impl SearchIndex for IndexSnapshot {
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         out.extend(self.mem.terms(xpath));
-        for seg in &self.segments {
+        for seg in self.segments.iter() {
             out.extend(seg.terms(xpath));
         }
         out.into_iter().collect()
@@ -52,6 +52,26 @@ impl SearchIndex for IndexSnapshot {
     fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
         IndexSnapshot::lookup_fuzzy(self, term, xpath, opts)
     }
+    // Sum across every segment — mirrors how lookup() unions postings across
+    // mem + all segments. A term's true corpus-wide doc_freq has to account
+    // for every segment it appears in, not just the first one checked.
+    //
+    // NOTE: this is an upper-bound estimate, not exact — it doesn't apply
+    // `apply_deletes` the way lookup() does, since doing that would require
+    // materializing postings (defeating the whole point of a cheap df probe).
+    // A doc deleted from one segment but still counted in that segment's
+    // TermMeta.doc_freq will inflate this slightly. Fine for selectivity
+    // ordering (a heuristic), NOT fine to feed into true_df for BM25's IDF
+    // without awareness of that skew — worth flagging which use this ends up
+    // serving before wiring it into score_term_hybrid.
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+        let mut total = self.mem.doc_freq(term, xpath);
+
+        for segment in self.segments.iter() {
+            total = total.saturating_add(segment.doc_freq(term, xpath));
+        }
+
+        total
 
     fn fuzzy_expansions(
         &self,
@@ -99,7 +119,7 @@ impl SearchColumns for IndexSnapshot {
 
         lists.push(self.mem.column_range(xpath, lo, hi));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.column_range(xpath, lo, hi));
         }
 
@@ -108,7 +128,7 @@ impl SearchColumns for IndexSnapshot {
 
     fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
         let mut out = self.mem.column_values(xpath);
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             out.extend(segment.column_values(xpath));
         }
         out
@@ -119,7 +139,7 @@ impl SearchStats for IndexSnapshot {
     fn doc_count(&self, xpath: XPathId) -> u64 {
         let mut total = self.mem.doc_count(xpath);
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             total += segment.doc_count(xpath);
         }
 
@@ -131,7 +151,7 @@ impl SearchStats for IndexSnapshot {
             return Some(len);
         }
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             if let Some(len) = segment.doc_len(doc_id, xpath) {
                 return Some(len);
             }
@@ -143,7 +163,7 @@ impl SearchStats for IndexSnapshot {
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         let mut total = self.mem.total_doc_len(xpath);
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             total += segment.total_doc_len(xpath);
         }
 
@@ -153,8 +173,8 @@ impl SearchStats for IndexSnapshot {
 
 impl IndexSnapshot {
     pub fn new(
-        mem: MemIndex,
-        segments: Vec<Arc<dyn SearchReader + Send + Sync>>,
+        mem: Arc<MemIndex>,
+        segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
         deleted: DeleteSet,
     ) -> Self {
         Self {
@@ -179,7 +199,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_or_empty(term, xpath));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup(term, xpath));
         }
 
@@ -192,7 +212,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_prefix(prefix, xpath));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup_prefix(prefix, xpath));
         }
 
@@ -205,7 +225,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_wildcard(pattern, xpath));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup_wildcard(pattern, xpath));
         }
 
@@ -218,7 +238,7 @@ impl IndexSnapshot {
 
         lists.push(self.mem.lookup_fuzzy(term, xpath, opts));
 
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             lists.push(segment.lookup_fuzzy(term, xpath, opts));
         }
 

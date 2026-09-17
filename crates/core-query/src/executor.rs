@@ -1,3 +1,7 @@
+use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, HashSet }, u32 };
+
+use core_index::{
+    analyzer::analyzer::Analyzer, fuzzy::FuzzyOptions, numeric_columns::NumericBound, posting::{ Posting, PostingList, ops::{ intersect_ids, intersection, restrict_to, union } }, search::{ SearchColumns, SearchIndex, SearchStats }, types::{ DocId, XPathId },
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
@@ -31,10 +35,7 @@ pub struct FieldFilter {
 }
 
 // Turns the AST into a PostingList or SearchHit
-pub struct QueryExecutor<'a, I>
-where
-    I: SearchIndex + SearchStats,
-{
+pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
     // Which index are we searching?
     index: &'a I,
 
@@ -43,10 +44,7 @@ where
     analyzer: &'a Analyzer,
 }
 
-impl<'a, I> QueryExecutor<'a, I>
-where
-    I: SearchIndex + SearchStats + SearchColumns,
-{
+impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchColumns {
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self { index, analyzer }
     }
@@ -108,34 +106,34 @@ where
     // 4. Intersects progressively
     #[timed(search)]
     fn execute_and(&self, parts: &[Query], xpath: XPathId) -> Option<PostingList> {
-        let mut lists = Vec::new();
+        let mut ordered: Vec<&Query> = parts.iter().collect();
+        ordered.sort_by_key(|part| {
+            match part {
+                Query::Term(term) => self.index.doc_freq(term, xpath),
+                _ => u32::MAX, // non-term subclauses (nested And/Or/Phrase) fetch last
+            }
+        });
 
-        for part in parts {
+        let mut result: Option<PostingList> = None;
+        for part in ordered {
             let Some(list) = self.execute_optional(part, xpath) else {
                 continue;
             };
-
             if list.is_empty() {
                 return Some(PostingList::default());
             }
-
-            lists.push(list);
+            result = Some(match result {
+                Some(current) => {
+                    let next = intersection(&current, &list);
+                    if next.is_empty() {
+                        return Some(next);
+                    }
+                    next
+                }
+                None => list,
+            });
         }
-
-        if lists.is_empty() {
-            return None;
-        }
-
-        lists.sort_by_key(|list| list.len());
-
-        let mut iter = lists.into_iter();
-        let mut result = iter.next().unwrap();
-
-        for next in iter {
-            result = intersection(&result, &next);
-        }
-
-        Some(result)
+        result.or(Some(PostingList::default()))
     }
 
     // Boolean OR
@@ -375,7 +373,10 @@ where
             }
         }
 
-        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+        let mut hits: Vec<SearchHit> = heap
+            .into_iter()
+            .map(|hit| hit.0)
+            .collect();
 
         hits.sort_by(|a, b| {
             b.score
@@ -394,7 +395,7 @@ where
         &self,
         query: &Query,
         xpaths: impl IntoIterator<Item = XPathId>,
-        k: usize,
+        k: usize
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -409,8 +410,9 @@ where
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
+                        existing.distance_factor = existing.distance_factor.max(
+                            hit.distance_factor
+                        );
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -427,7 +429,10 @@ where
             }
         }
 
-        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+        let mut hits: Vec<SearchHit> = heap
+            .into_iter()
+            .map(|hit| hit.0)
+            .collect();
 
         hits.sort_by(|a, b| {
             b.score
@@ -486,7 +491,7 @@ where
         query: Option<&Query>,
         xpaths: impl IntoIterator<Item = XPathId>,
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&HashSet<DocId>>
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -537,8 +542,9 @@ where
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
+                        existing.distance_factor = existing.distance_factor.max(
+                            hit.distance_factor
+                        );
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -553,7 +559,7 @@ where
     pub fn search_all_xpaths(
         &self,
         query: &Query,
-        xpaths: impl IntoIterator<Item = XPathId>,
+        xpaths: impl IntoIterator<Item = XPathId>
     ) -> Vec<SearchHit> {
         use std::collections::BTreeMap;
 
@@ -566,8 +572,9 @@ where
                     .and_modify(|existing| {
                         existing.matched_terms += hit.matched_terms;
                         existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
+                        existing.distance_factor = existing.distance_factor.max(
+                            hit.distance_factor
+                        );
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -583,7 +590,8 @@ where
         match query {
             Query::Term(term) => {
                 let postings = self.execute_term(term, xpath).unwrap_or_default();
-                score_term_hybrid(self.index, &postings, xpath)
+                let true_df = self.index.doc_freq(term, xpath) as f32;
+                score_term_hybrid(self.index, &postings, xpath, true_df)
             }
             Query::And(parts) => self.execute_scored_and(parts, xpath),
 
@@ -592,12 +600,28 @@ where
             }
             _ => {
                 let postings = self.execute(query, xpath);
-                score_term_hybrid(self.index, &postings, xpath)
+                // No single term here (Or/Phrase/Wildcard/Fuzzy) — doc_freq()
+                // needs one term string, and none of these variants reduce to
+                // one. Falling back to the restricted list's own length, same
+                // as before this change. This is a real simplification (not
+                // true corpus-wide df for whatever compound query this is) but
+                // it's a separate, pre-existing approximation from the
+                // restrict_to_doc_ids bug this true_df param was added to fix,
+                // which specifically hits Query::Term inside an And.
+                let true_df = postings.len() as f32;
+                score_term_hybrid(self.index, &postings, xpath, true_df)
             }
         }
     }
 
     #[timed(search)]
+ #[timed(search)]
+fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
+    struct TermFetch<'a> {
+        term: Option<&'a str>,
+        postings: PostingList,
+        doc_freq: u32,
+    }
     fn execute_scored_fuzzy(
         &self,
         raw: &str,
@@ -670,40 +694,69 @@ where
     fn execute_scored_and(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
         let mut lists = Vec::new();
 
-        for part in parts {
-            let Some(postings) = self.execute_optional(part, xpath) else {
-                continue;
-            };
+    let mut fetched: Vec<TermFetch> = Vec::with_capacity(parts.len());
 
-            if postings.is_empty() {
-                return Vec::new();
+    for part in parts {
+        let (term, postings, doc_freq) = match part {
+            Query::Term(term) => {
+                let postings = self.execute_term(term, xpath).unwrap_or_default();
+                let doc_freq = self.index.doc_freq(term, xpath);
+                (Some(term.as_str()), postings, doc_freq)
             }
+            _ => (None, self.execute_optional(part, xpath).unwrap_or_default(), u32::MAX),
+        };
 
-            lists.push(postings);
-        }
-
-        if lists.is_empty() {
+        if postings.is_empty() {
             return Vec::new();
         }
 
-        lists.sort_by_key(|postings| postings.len());
+        fetched.push(TermFetch { term, postings, doc_freq });
+    }
 
-        let mut iter = lists.into_iter();
-        let first = iter.next().unwrap();
+    if fetched.is_empty() {
+        return Vec::new();
+    }
 
-        // let mut result = crate::scorer::score_term_hybrid(self.index, &first, xpath);
+    fetched.sort_by_key(|f| f.doc_freq);
 
-        let mut result = first;
-        for postings in iter {
-            result = intersection(&result, &postings);
-            if result.is_empty() {
-                return Vec::new();
-            }
+    // Phase 1: doc-ids only. Seeded from the rarest term's ids (no clone of
+    // its posting list), then narrowed by each remaining term.
+    let mut candidates: Vec<DocId> = fetched[0]
+        .postings
+        .items()
+        .iter()
+        .map(|p| p.doc_id)
+        .collect();
+
+    for f in &fetched[1..] {
+        candidates = intersect_ids(&candidates, &f.postings);
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+    }
+
+    // Phase 2: restrict each term to the candidates, keeping that term's own
+    // positions/weights, and score with its true (unrestricted) doc_freq.
+    let mut term_scores: Option<Vec<ScoredPosting>> = None;
+
+    for f in &fetched {
+        if f.term.is_none() {
+            continue; // nested And/Or/Phrase parts filter but don't score — see note
         }
 
-        // score only the final surviving set, once
-        crate::scorer::score_term_hybrid(self.index, &result, xpath)
+        let restricted = restrict_to(&f.postings, &candidates);
+        if restricted.is_empty() {
+            continue;
+        }
+
+        term_scores = Some(match term_scores {
+            Some(acc) => crate::scorer::scored_and(&acc, &restricted),
+            None => score_term_hybrid(self.index, &restricted, xpath, f.doc_freq as f32),
+        });
     }
+
+    term_scores.unwrap_or_default()
+} 
 }
 
 #[timed(search)]
@@ -743,7 +796,10 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
         }
     }
 
-    let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+    let mut hits: Vec<SearchHit> = heap
+        .into_iter()
+        .map(|hit| hit.0)
+        .collect();
 
     hits.sort_by(|a, b| {
         b.score

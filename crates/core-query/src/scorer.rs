@@ -26,6 +26,7 @@ pub fn score_term_hybrid<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
     xpath: XPathId,
+    ture_df:f32
 ) -> Vec<ScoredPosting> {
     let mut out = Vec::with_capacity(postings.len());
     let mut doc_len = HashMap::new();
@@ -43,7 +44,7 @@ pub fn score_term_into<S: SearchStats>(
     out: &mut Vec<ScoredPosting>,
 ) {
     let n = stats.doc_count(xpath) as f32;
-    let df = postings.len() as f32;
+    let df = ture_df;
     let avgdl = stats.avg_doc_len(xpath);
 
     for p in postings.items().iter().filter(|p| !p.positions.is_empty()) {
@@ -78,14 +79,24 @@ pub fn score_term_into<S: SearchStats>(
 
 #[timed(search)]
 pub fn scored_and(left: &[ScoredPosting], right: &PostingList) -> Vec<ScoredPosting> {
-    let mut result = Vec::new();
+    let b = right.items();
+    let mut result = Vec::with_capacity(left.len().min(b.len()));
+    let mut j = 0usize;
 
+    // Both sides are sorted by doc_id, so one sequential merge replaces
+    // |left| random binary searches — same output, sequential memory access.
     for l in left {
-        let Ok(i) = right.items().binary_search_by_key(&l.doc_id, |p| p.doc_id) else {
+        while j < b.len() && b[j].doc_id < l.doc_id {
+            j += 1;
+        }
+        if j >= b.len() {
+            break;
+        }
+        if b[j].doc_id != l.doc_id {
             continue;
-        };
+        }
 
-        let r = &right.items()[i];
+        let r = &b[j];
 
         let mut positions = l.positions.clone();
         let mut density = l.density;

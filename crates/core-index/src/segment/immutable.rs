@@ -25,7 +25,12 @@ impl SearchIndex for ImmutableSegment {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup_or_empty(term, xpath)
     }
-
+    #[timed(search)]
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+        self.lookup(term, xpath)
+            .map(|list| list.len() as u32)
+            .unwrap_or(0)
+    }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.terms
             .range(TermKey::new("", xpath)..)
