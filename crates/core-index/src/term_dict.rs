@@ -18,7 +18,7 @@ use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
 
 use crate::{
-    fuzzy::{FuzzyOptions, split_prefix},
+    fuzzy::{FuzzyExpansion, FuzzyOptions, split_prefix},
     types::XPathId,
 };
 
@@ -170,27 +170,51 @@ impl TermDict {
         out
     }
 
+    /// Terms within `opts.max_edits` of `term`, ascending, metadata flattened to
+    /// just the term name.
     pub fn fuzzy(&self, term: &str, opts: FuzzyOptions) -> Vec<(String, TermMeta)> {
+        self.fuzzy_expansions(term, opts)
+            .into_iter()
+            .map(|(expansion, meta)| (expansion.term, meta))
+            .collect()
+    }
+
+    /// Terms within `opts.max_edits` of `term`, ascending, each with the number
+    /// of edits that got it there and its metadata.
+    ///
+    /// When there is no fixed prefix this walks the FST with a Levenshtein
+    /// automaton, which prunes whole subtrees as soon as no key below them can
+    /// still be in range - so cost scales with matches, not with vocabulary.
+    ///
+    /// NOTE: an exact hit is always included (distance 0 is within any distance).
+    /// Callers that also look the term up exactly can rely on the posting merge
+    /// to dedupe.
+    pub fn fuzzy_expansions(
+        &self,
+        term: &str,
+        opts: FuzzyOptions,
+    ) -> Vec<(FuzzyExpansion, TermMeta)> {
         let Some(map) = self.map.as_ref() else {
             return Vec::new();
         };
 
+        let exact = |edits: u8| -> Vec<(FuzzyExpansion, TermMeta)> {
+            match self.get(term) {
+                Some(meta) => vec![(FuzzyExpansion::new(term, edits, meta.doc_freq), meta)],
+                None => Vec::new(),
+            }
+        };
+
         // d=0 is just an exact lookup.
         if opts.max_edits == 0 {
-            return match self.get(term) {
-                Some(meta) => vec![(term.to_string(), meta)],
-                None => Vec::new(),
-            };
+            return exact(0);
         }
 
         let (prefix, suffix) = split_prefix(term, opts.prefix_length);
 
-        //no possible fuzz after the prefix -> just the query term
+        // The whole query is pinned, so fuzziness has nothing left to chew on.
         if suffix.is_empty() {
-            return match self.get(term) {
-                Some(meta) => vec![(term.to_string(), meta)],
-                None => Vec::new(),
-            };
+            return exact(0);
         }
 
         // transposition = true keeps the current Damerau behaviour.
@@ -200,19 +224,29 @@ impl TermDict {
         let mut out = Vec::new();
 
         if prefix.is_empty() {
-            //Fast path: no fixed prefix, so let the FST walk the automaton.
-            let mut stream = map.search(dfa).into_stream();
+            // Fast path: no fixed prefix, so let the FST walk the automaton.
+            // `search_with_state` hands back the automaton state per match, and
+            // that is where the exact edit count comes from. We pass `&dfa`
+            // (fst has `impl Automaton for &A`) so `dfa` stays usable here -
+            // `levenshtein_automata::DFA` is not Clone.
+            let mut stream = map.search_with_state(&dfa).into_stream();
 
-            while let Some((t, ord)) = stream.next() {
+            while let Some((t, ord, state)) = stream.next() {
+                let Distance::Exact(edits) = dfa.distance(state) else {
+                    continue;
+                };
+
                 let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
-                out.push((String::from_utf8_lossy(t).into_owned(), meta));
+                let term = String::from_utf8_lossy(t).into_owned();
+
+                out.push((FuzzyExpansion::new(term, edits, meta.doc_freq), meta));
             }
 
             return out;
         }
 
-        //Fixed prefix: the key range is already narrow, so scan it and
-        //evaluate the automaton against each key's suffix.
+        // Fixed prefix: the key range is already narrow, so scan it and
+        // evaluate the automaton against each key's suffix.
         let mut stream = map.range().ge(prefix.as_bytes()).into_stream();
 
         while let Some((t, ord)) = stream.next() {
@@ -224,9 +258,9 @@ impl TermDict {
                 break;
             };
 
-            if let Distance::Exact(_) = dfa.eval(rest) {
+            if let Distance::Exact(edits) = dfa.eval(rest) {
                 let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
-                out.push((t.to_string(), meta));
+                out.push((FuzzyExpansion::new(t, edits, meta.doc_freq), meta));
             }
         }
 

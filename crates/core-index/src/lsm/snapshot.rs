@@ -7,7 +7,7 @@ use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
-    fuzzy::FuzzyOptions,
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
     mem::MemIndex,
     numeric_columns::{NumericBound, NumericValue},
     posting::{DeleteSet, PostingList, ops::union_many},
@@ -51,6 +51,40 @@ impl SearchIndex for IndexSnapshot {
 
     fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
         IndexSnapshot::lookup_fuzzy(self, term, xpath, opts)
+    }
+
+    fn fuzzy_expansions(
+        &self,
+        term: &str,
+        xpath: XPathId,
+        opts: FuzzyOptions,
+    ) -> Vec<FuzzyExpansion> {
+        // Per-segment doc frequencies are summed, so the merged ranking key is
+        // the global one rather than whatever a single segment happened to see.
+        let mut out: std::collections::BTreeMap<String, FuzzyExpansion> =
+            std::collections::BTreeMap::new();
+
+        let all = self
+            .mem
+            .fuzzy_expansions(term, xpath, opts)
+            .into_iter()
+            .chain(
+                self.segments
+                    .iter()
+                    .flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts)),
+            );
+
+        for expansion in all {
+            if let Some(existing) = out.get_mut(&expansion.term) {
+                existing.edits = existing.edits.min(expansion.edits);
+                existing.doc_freq = existing.doc_freq.saturating_add(expansion.doc_freq);
+                continue;
+            }
+
+            out.insert(expansion.term.clone(), expansion);
+        }
+
+        out.into_values().collect()
     }
 }
 

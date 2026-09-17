@@ -1,13 +1,12 @@
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
     u32,
 };
 
 use core_index::{
     analyzer::analyzer::Analyzer,
-    fuzzy::FuzzyOptions,
-    numeric_columns::NumericBound,
+    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
     posting::{
         Posting, PostingList,
         ops::{intersection, union},
@@ -15,25 +14,20 @@ use core_index::{
     search::{SearchColumns, SearchIndex, SearchStats},
     types::{DocId, XPathId},
 };
+use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
 
-use crate::{ScoredPosting, SearchHit, TopHit, ast::Query, scorer::score_term_hybrid};
+use crate::{
+    ScoredPosting, SearchHit, TopHit,
+    ast::Query,
+    resolver::MatchOp,
+    scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
+};
 
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
     pub xpath: XPathId,
-    pub kind: FieldFilterKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum FieldFilterKind {
-    Text(Option<Query>),
-    Exact(String),
-    Range {
-        lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
-    },
-    Fuzzy(String, FuzzyOptions),
+    pub kind: MatchOp,
 }
 
 // Turns the AST into a PostingList or SearchHit
@@ -57,6 +51,7 @@ where
         Self { index, analyzer }
     }
 
+    //Vai dokuments vispar der querijam
     #[timed(search)]
     fn execute_optional(&self, query: &Query, xpath: XPathId) -> Option<PostingList> {
         match query {
@@ -68,7 +63,9 @@ where
             Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
             Query::Exact(term) => Some(self.execute_exact(term, xpath)),
 
-            Query::Fuzzy(term, opts) => Some(self.execute_fuzzy(term, xpath, *opts)),
+            Query::Fuzzy(term, fuzziness, spec) => {
+                Some(self.execute_fuzzy(term, xpath, *fuzziness, *spec))
+            }
         }
     }
 
@@ -213,18 +210,16 @@ where
         PostingList::from_items(result)
     }
 
+    //Kindof the fuzzy entry point the whole porno logic starts here
     #[timed(search)]
-    fn execute_fuzzy(&self, raw: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
-        let words: Vec<String> = raw
-            .split_whitespace()
-            .filter_map(|w| {
-                self.analyzer
-                    .analyze_query(w)
-                    .into_iter()
-                    .next()
-                    .map(|t| t.text)
-            })
-            .collect();
+    fn execute_fuzzy(
+        &self,
+        raw: &str,
+        xpath: XPathId,
+        fuzziness: Fuzziness,
+        spec: FuzzySpec,
+    ) -> PostingList {
+        let words = self.fuzzy_words(raw);
 
         if words.is_empty() {
             return PostingList::default();
@@ -232,7 +227,10 @@ where
 
         let lists: Vec<PostingList> = words
             .iter()
-            .map(|w| self.index.lookup_fuzzy(w, xpath, opts))
+            .map(|w| {
+                self.index
+                    .lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec))
+            })
             .collect();
 
         let mut iter = lists.into_iter();
@@ -242,6 +240,21 @@ where
         }
         result
     }
+
+    //Splits the string into fuzzable words split by white space and lowercased
+    #[timed(search)]
+    fn fuzzy_words(&self, raw: &str) -> Vec<String> {
+        raw.split_whitespace()
+            .filter_map(|w| {
+                self.analyzer
+                    .analyze_query(w)
+                    .into_iter()
+                    .next()
+                    .map(|t| t.text)
+            })
+            .collect()
+    }
+
     #[timed(search)]
     fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
         let raw = raw.trim();
@@ -427,10 +440,7 @@ where
     }
 
     #[timed(search)]
-    pub fn resolve_filters(
-        &self,
-        filters: &HashMap<String, FieldFilter>,
-    ) -> Option<HashSet<DocId>> {
+    pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldFilter>) -> Option<HashSet<DocId>> {
         if filters.is_empty() {
             return None;
         }
@@ -439,7 +449,7 @@ where
 
         for filter in filters.values() {
             let matched: HashSet<DocId> = match &filter.kind {
-                FieldFilterKind::Text(query) => match query {
+                MatchOp::Query(query) => match query {
                     Some(query) => self
                         .execute(query, filter.xpath)
                         .items()
@@ -448,23 +458,9 @@ where
                         .collect(),
                     None => HashSet::new(),
                 },
-                FieldFilterKind::Range { lo, hi } => self
+                MatchOp::Range { lo, hi } => self
                     .index
                     .column_range(filter.xpath, *lo, *hi)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
-
-                FieldFilterKind::Exact(term) => self
-                    .execute_exact(term, filter.xpath)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
-
-                FieldFilterKind::Fuzzy(term, opts) => self
-                    .execute_fuzzy(term, filter.xpath, *opts)
                     .items()
                     .iter()
                     .map(|p| p.doc_id)
@@ -581,7 +577,7 @@ where
         by_doc.into_values().collect()
     }
 
-    // Converts a query
+    //vai der + relevance
     #[timed(search)]
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
         match query {
@@ -590,11 +586,84 @@ where
                 score_term_hybrid(self.index, &postings, xpath)
             }
             Query::And(parts) => self.execute_scored_and(parts, xpath),
+
+            Query::Fuzzy(raw, fuzziness, spec) => {
+                self.execute_scored_fuzzy(raw, xpath, *fuzziness, *spec)
+            }
             _ => {
                 let postings = self.execute(query, xpath);
                 score_term_hybrid(self.index, &postings, xpath)
             }
         }
+    }
+
+    #[timed(search)]
+    fn execute_scored_fuzzy(
+        &self,
+        raw: &str,
+        xpath: XPathId,
+        fuzziness: Fuzziness,
+        spec: FuzzySpec,
+    ) -> Vec<ScoredPosting> {
+        let words = self.fuzzy_words(raw);
+
+        if words.is_empty() {
+            return Vec::new();
+        }
+
+        // doc_id -> (accumulated hit, bitmask of which query words have hit it)
+        let mut acc: HashMap<DocId, (ScoredPosting, u64)> = HashMap::new();
+
+        // Reused across every expansion; the length cache is shared for the whole
+        // query. Allocating these per expansion was most of the regression.
+        let mut scored_buf: Vec<ScoredPosting> = Vec::new();
+        let mut doc_len: HashMap<DocId, f32> = HashMap::new();
+
+        for (word_index, word) in words.iter().enumerate() {
+            let opts = fuzzy_options(word, fuzziness, spec);
+            let bit = 1u64 << word_index;
+
+            let mut expansions = self.index.fuzzy_expansions(word, xpath, opts);
+            rank_and_cap(&mut expansions, spec.max_expansions);
+
+            for expansion in expansions {
+                let postings = self.index.lookup(&expansion.term, xpath);
+
+                scored_buf.clear();
+                score_term_into(self.index, &postings, xpath, &mut doc_len, &mut scored_buf);
+
+                let decay = fuzzy_decay(expansion.edits);
+
+                for mut scored in scored_buf.drain(..) {
+                    scored.score = (scored.score as f32 * decay) as u64;
+
+                    match acc.entry(scored.doc_id) {
+                        Entry::Occupied(mut slot) => {
+                            let (hit, mask) = slot.get_mut();
+
+                            if scored.score > hit.score {
+                                hit.positions = scored.positions.clone();
+                                hit.density = hit.density.max(scored.density);
+                            }
+
+                            hit.score = hit.score.saturating_add(scored.score);
+                            hit.matched_terms = hit.matched_terms.saturating_add(1);
+                            *mask |= bit;
+                        }
+                        Entry::Vacant(slot) => {
+                            slot.insert((scored, bit));
+                        }
+                    }
+                }
+            }
+        }
+        // Same result set as `execute_fuzzy`: every word must have hit the doc.
+        let all_words = (1u64 << words.len()) - 1;
+
+        acc.into_values()
+            .filter(|(_, mask)| *mask == all_words)
+            .map(|(hit, _)| hit)
+            .collect()
     }
 
     #[timed(search)]
@@ -684,4 +753,27 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
     });
 
     hits
+}
+
+//derives how much a word can be fuzzed basically
+fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {
+    FuzzyOptions {
+        max_edits: fuzziness.resolve(word),
+        prefix_length: spec.prefix_length,
+        max_expansions: spec.max_expansions,
+    }
+}
+
+fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize) {
+    expansions.sort_by(|a, b| {
+        a.edits
+            .cmp(&b.edits)
+            .then_with(|| b.doc_freq.cmp(&a.doc_freq))
+            .then_with(|| a.term.cmp(&b.term))
+    });
+
+    // 0 means "no cap", so callers have an escape hatch.
+    if max_expansions > 0 {
+        expansions.truncate(max_expansions);
+    }
 }

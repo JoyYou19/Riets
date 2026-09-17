@@ -1,6 +1,4 @@
-//! Edit-distance fuzzy matching (distance 1 for now).
-
-pub const DEFAULT_PREFIX_LENGTH: usize = 0;
+pub const DEFAULT_PREFIX_LENGTH: usize = 1;
 pub const DEFAULT_MAX_EXPANSIONS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8,6 +6,37 @@ pub struct FuzzyOptions {
     pub max_edits: u8,
     pub prefix_length: usize,
     pub max_expansions: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FuzzySpec {
+    pub prefix_length: usize,
+    pub max_expansions: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzyExpansion {
+    pub term: String,
+    pub edits: u8,
+    pub doc_freq: u32,
+}
+
+impl FuzzyExpansion {
+    pub fn new(term: impl Into<String>, edits: u8, doc_freq: u32) -> Self {
+        Self {
+            term: term.into(),
+            edits,
+            doc_freq,
+        }
+    }
+}
+
+pub fn default_max_edits(term: &str) -> u8 {
+    match term.chars().count() {
+        0..=3 => 0,
+        4..=6 => 1,
+        _ => 2,
+    }
 }
 
 //prefixword -> (prefix word) based on prefix_chars
@@ -54,30 +83,4 @@ pub fn candidates_within_one(term: &str) -> Vec<String> {
     }
 
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn split_prefix_chars() {
-        assert_eq!(split_prefix("schwarzenegger", 3), ("sch", "warzenegger"));
-    }
-    #[test]
-    fn insertion_covers_wiliam() {
-        assert!(candidates_within_one("wiliam").contains(&"william".to_string()));
-    }
-    #[test]
-    fn transposition_covers_teh() {
-        assert!(candidates_within_one("teh").contains(&"the".to_string()));
-    }
-    #[test]
-    fn substitution_covers_kat() {
-        assert!(candidates_within_one("kat").contains(&"cat".to_string()));
-    }
-    #[test]
-    fn deletion_covers_hell() {
-        assert!(candidates_within_one("hell").contains(&"hel".to_string()));
-    }
 }

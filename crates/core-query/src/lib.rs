@@ -2,6 +2,7 @@ mod ast;
 pub mod executor;
 pub mod planner;
 pub mod query_string_parser;
+pub mod resolver;
 mod scored_posting;
 mod scorer;
 mod search_hit;
