@@ -624,6 +624,12 @@ where
         }
     }
 
+    //INFO: Norca sito hujnu centaas izprast kkur 1h, seit visam ir jabut safe, ne passaprotami,
+    //bet safe robezaas
+
+    //optimizations:
+    //      Posting:
+    //    pub positions: SmallVec<[Position; INLINE_POSITIONS]>,
     #[timed(search)]
     fn execute_scored_fuzzy(
         &self,
@@ -632,32 +638,46 @@ where
         fuzziness: Fuzziness,
         spec: FuzzySpec,
     ) -> Vec<ScoredPosting> {
+        //"butman and robin" -> "butman" "robin"
         let words = self.fuzzy_words(raw);
 
         if words.is_empty() {
             return Vec::new();
         }
 
-        // doc_id -> (accumulated hit, bitmask of which query words have hit it)
+        //blad ja kaads iedeva 64 vardu queriju mums overflow notiks fuck that shit fuzzy taapat
+        //buutu par leenu
+        if words.len() >= 64 {
+            return Vec::new();
+        }
+
+        // doc_id -> (scored_hit + a 0000000011 number that represents how many words matched in the
+        // query with X changes)
         let mut acc: HashMap<DocId, (ScoredPosting, u64)> = HashMap::new();
 
-        // Reused across every expansion; the length cache is shared for the whole
-        // query. Allocating these per expansion was most of the regression.
+        //caching look-up-ed values since its the slow part cause some fuzzed expansions could lead
+        //to a different document
         let mut scored_buf: Vec<ScoredPosting> = Vec::new();
         let mut doc_len: HashMap<DocId, f32> = HashMap::new();
 
         for (word_index, word) in words.iter().enumerate() {
+            //how many edits for this word
             let opts = fuzzy_options(word, fuzziness, spec);
             let bit = 1u64 << word_index;
 
+            //guess words based on max edit count
             let mut expansions = self.index.fuzzy_expansions(word, xpath, opts);
+            //best guesses for the words
             rank_and_cap(&mut expansions, spec.max_expansions);
 
+            //iterate all possible hits
             for expansion in expansions {
+                //                      the long function needs wand
                 let postings = self.index.lookup(&expansion.term, xpath);
 
                 scored_buf.clear();
                 let true_df = self.index.doc_freq(&expansion.term, xpath) as f32;
+                //BM25 scoring
                 score_term_into(
                     self.index,
                     &postings,
@@ -670,6 +690,7 @@ where
                 let decay = fuzzy_decay(expansion.edits);
 
                 for mut scored in scored_buf.drain(..) {
+                    //apply the edit decay to the score
                     scored.score = ((scored.score as f32) * decay) as u64;
 
                     match acc.entry(scored.doc_id) {
@@ -683,6 +704,8 @@ where
 
                             hit.score = hit.score.saturating_add(scored.score);
                             hit.matched_terms = hit.matched_terms.saturating_add(1);
+                            //the first word got a hit, so the next one just "adds" 1 or << 1
+                            //basically
                             *mask |= bit;
                         }
                         Entry::Vacant(slot) => {
@@ -692,7 +715,8 @@ where
                 }
             }
         }
-        // Same result set as `execute_fuzzy`: every word must have hit the doc.
+        //                          number of "1" is the query_word_count \/
+        //remember a few lines above? this shit is basically the 000000011111111
         let all_words = (1u64 << words.len()) - 1;
 
         acc.into_values()
@@ -842,8 +866,11 @@ pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> Fuzzy
 pub fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize) {
     expansions.sort_by(|a, b| {
         a.edits
+            //edit count
             .cmp(&b.edits)
+            //the more documents this appeared in the better
             .then_with(|| b.doc_freq.cmp(&a.doc_freq))
+            //alphabet 3000
             .then_with(|| a.term.cmp(&b.term))
     });
 

@@ -1,6 +1,9 @@
 use core_timing::timed;
 
-use crate::{ posting::Posting, types::{ DocId, Position } };
+use crate::{
+    posting::Posting,
+    types::{DocId, Position},
+};
 
 /*
  * A Posting List, this is needed so we can sord by doc_id and merge duplicate docs
@@ -18,10 +21,6 @@ impl PostingList {
     #[timed(search)]
     /// Like `from_items`, but REQUIRES items already sorted by doc_id.
     pub fn from_sorted(items: Vec<Posting>) -> Self {
-        // Callers that produce strictly-increasing doc_ids (every intersection
-        // and restriction in ops.rs) hit this path: no duplicates to merge, and
-        // positions are already sorted coming out of the index, so there is
-        // nothing to do but take ownership.
         let has_duplicates = items.windows(2).any(|w| w[0].doc_id == w[1].doc_id);
         if !has_duplicates {
             return Self { items };
@@ -64,7 +63,8 @@ impl PostingList {
             }
 
             if last.doc_id < doc_id {
-                self.items.push(Posting::with_weight(doc_id, vec![position], weight));
+                self.items
+                    .push(Posting::with_weight(doc_id, vec![position], weight));
                 return;
             }
         }
@@ -75,7 +75,8 @@ impl PostingList {
                 self.items[index].weight = self.items[index].weight.max(weight);
             }
             Err(index) => {
-                self.items.insert(index, Posting::with_weight(doc_id, vec![position], weight));
+                self.items
+                    .insert(index, Posting::with_weight(doc_id, vec![position], weight));
             }
         }
     }
@@ -94,7 +95,8 @@ impl PostingList {
             }
 
             if last.doc_id < doc_id {
-                self.items.push(Posting::with_weight(doc_id, positions, weight));
+                self.items
+                    .push(Posting::with_weight(doc_id, positions, weight));
                 return;
             }
         }
@@ -105,7 +107,8 @@ impl PostingList {
                 self.items[index].weight = self.items[index].weight.max(weight);
             }
             Err(index) => {
-                self.items.insert(index, Posting::with_weight(doc_id, positions, weight));
+                self.items
+                    .insert(index, Posting::with_weight(doc_id, positions, weight));
             }
         }
     }

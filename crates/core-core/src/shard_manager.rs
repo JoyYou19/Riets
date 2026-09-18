@@ -1366,7 +1366,7 @@ impl ShardManager {
         }
 
         //WARN: bisk porniks saakas
-        const MAX_ANALYSIS_LOSS: usize = 2;
+        const MAX_ANALYSIS_LOSS: usize = 1;
 
         //suggestions per analysed word, before we decide which ones to trust.
         let mut by_word: HashMap<String, Vec<String>> = words
