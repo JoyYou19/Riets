@@ -107,6 +107,7 @@ pub trait ResponseData {
 pub struct SearchCommand {
     pub query: MatchSpec,
     pub filters: Option<IndexMap<String, MatchSpec>>,
+    pub search_fields: Option<Vec<String>>,
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,
@@ -219,6 +220,7 @@ const MATCH_SPEC_KEYS: &[&str] = &[
     "fuzziness",
     "prefix_length",
     "max_expansions",
+    "search_fields",
 ];
 
 //Hand made cuz this our favourite command that needs a lot of care
@@ -554,3 +556,17 @@ pub struct InfoWordsRequest {
 }
 
 impl Command for InfoWordsRequest {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DidYouMeanRequest {
+    pub value: String,
+    pub search_fields: Option<Vec<String>>,
+    //corrections per word ,defaults to 3.
+    pub did_you_mean_count: Option<usize>,
+
+    //0/1/2/auto
+    pub fuzziness: Option<String>,
+}
+
+impl Command for DidYouMeanRequest {}

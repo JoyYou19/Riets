@@ -2,6 +2,7 @@
 pub enum Permission {
     //basic
     Search,
+    DidYouMean,
     Retrieve,
     Lookup,
     Insert,
@@ -47,6 +48,7 @@ impl Permission {
         match s {
             "Search" => Some(Permission::Search),
             "Retrieve" => Some(Permission::Retrieve),
+            "DidYouMean" => Some(Permission::DidYouMean),
             "Lookup" => Some(Permission::Lookup),
             "Insert" => Some(Permission::Insert),
             "Upsert" => Some(Permission::Upsert),
@@ -77,7 +79,7 @@ impl Permission {
             "BackupFull" => Some(Permission::BackupFull),
             "ListBackups" => Some(Permission::ListBackups),
             "BackupIncremental" => Some(Permission::BackupIncremental),
-            "ListUsers" =>Some(Permission::ListUsers),
+            "ListUsers" => Some(Permission::ListUsers),
             _ => None,
         }
     }

@@ -25,6 +25,30 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+pub struct WordSuggestions {
+    pub word: String,
+    pub suggestions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DidYouMeanReport {
+    pub original: String,
+    //best possible correction
+    pub corrected: String,
+    pub words: Vec<WordSuggestions>,
+}
+
+impl DidYouMeanReport {
+    pub fn empty(original: &str) -> Self {
+        DidYouMeanReport {
+            original: original.to_string(),
+            corrected: "".to_string(),
+            words: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct FieldFilter {
     pub xpath: XPathId,
     pub kind: MatchOp,
@@ -219,6 +243,7 @@ where
         fuzziness: Fuzziness,
         spec: FuzzySpec,
     ) -> PostingList {
+        //"butman and robin" -> [butman, robin]
         let words = self.fuzzy_words(raw);
 
         if words.is_empty() {
@@ -244,15 +269,7 @@ where
     //Splits the string into fuzzable words split by white space and lowercased
     #[timed(search)]
     fn fuzzy_words(&self, raw: &str) -> Vec<String> {
-        raw.split_whitespace()
-            .filter_map(|w| {
-                self.analyzer
-                    .analyze_query(w)
-                    .into_iter()
-                    .next()
-                    .map(|t| t.text)
-            })
-            .collect()
+        fuzzable_words(self.analyzer, raw)
     }
 
     #[timed(search)]
@@ -814,7 +831,7 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
 }
 
 //derives how much a word can be fuzzed basically
-fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {
+pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {
     FuzzyOptions {
         max_edits: fuzziness.resolve(word),
         prefix_length: spec.prefix_length,
@@ -822,7 +839,7 @@ fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOpti
     }
 }
 
-fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize) {
+pub fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize) {
     expansions.sort_by(|a, b| {
         a.edits
             .cmp(&b.edits)
@@ -830,8 +847,15 @@ fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize) {
             .then_with(|| a.term.cmp(&b.term))
     });
 
-    // 0 means "no cap", so callers have an escape hatch.
+    //0 means "no cap", so callers have an escape hatch.
     if max_expansions > 0 {
         expansions.truncate(max_expansions);
     }
+}
+
+//fuzzable words for did_you_mean
+pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
+    raw.split_whitespace()
+        .filter_map(|w| analyzer.analyze_query(w).into_iter().next().map(|t| t.text))
+        .collect()
 }
