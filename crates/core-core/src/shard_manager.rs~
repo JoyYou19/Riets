@@ -11,16 +11,12 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
-use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
-use core_protocol::command_reponse_definitions::{
-    DidYouMeanRequest, LookupCommand, LookupResponse, SearchCommand,
-};
+use core_protocol::command_reponse_definitions::{LookupCommand, LookupResponse, SearchCommand};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
-use core_query::executor::{DidYouMeanReport, WordSuggestions};
-use core_query::resolver::{compile_query, parse_fuzziness};
+use core_query::resolver::compile_query;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
@@ -49,6 +45,12 @@ pub struct ShardManager {
     db_stats: Arc<DbStats>,
     backup_dir: PathBuf,
     all_fields: RwLock<AllFields>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WordSuggestions {
+    pub word: String,
+    pub suggestions: Vec<String>,
 }
 
 impl ShardManager {
@@ -946,12 +948,7 @@ impl ShardManager {
 
         let policy = self.policy.read().clone();
 
-        let (query, xpaths) = compile_query(
-            &command.query,
-            command.search_fields.as_deref(),
-            &self.analyzer,
-            &policy,
-        )?;
+        let (query, xpaths) = compile_query(&command.query, &self.analyzer, &policy)?;
         let query = Arc::new(query);
 
         let filters = compile_filters(&self.analyzer, command, &policy)?;
@@ -1284,164 +1281,6 @@ impl ShardManager {
             return Err(e);
         }
         Ok(merged)
-    }
-
-    //INFO: bisk porno funkcija, no analyzer parvers kkadu running par run un piedaavaa fun/gun...
-    //tapec mums te ir max changes 1 prieks taa vai parbaudit analyzed/ne analyzed vardu
-    #[timed(search)]
-    pub async fn did_you_mean(
-        &self,
-        command: &DidYouMeanRequest,
-    ) -> Result<DidYouMeanReport, CorelamoError> {
-        let size = command.did_you_mean_count.unwrap_or(3);
-
-        if command.value.trim().is_empty() || size == 0 {
-            return Ok(DidYouMeanReport::empty(&command.value));
-        }
-
-        let policy = self.policy.read().clone();
-
-        //in which xpaths to search in
-        let xpaths: Arc<Vec<XPathId>> = match &command.search_fields {
-            Some(names) => Arc::new(core_query::resolver::resolve_suggest_xpaths(
-                names, &policy,
-            )?),
-            None => Arc::new(policy.searchable_xpaths().collect()),
-        };
-
-        let fuzziness = parse_fuzziness(command.fuzziness.as_deref())?;
-
-        //in this did_you_mean command we allow the prefix to be 0 since no seach ranking happens
-        //its just the best fuzzed words
-        let spec = FuzzySpec {
-            prefix_length: 0,
-            max_expansions: 0,
-        };
-
-        //convert words to be fuzzable spider-man -> spiderman
-        let words = core_query::fuzzable_words(&self.analyzer, &command.value);
-
-        let mut set = JoinSet::new();
-        for handle in &self.shards {
-            let handle = handle.clone();
-            let value = command.value.clone();
-            let xpaths = Arc::clone(&xpaths);
-
-            set.spawn_blocking(move || handle.suggest_direct(&value, &xpaths, fuzziness, spec));
-        }
-
-        // One merged map per word, so a term's document frequency is the sum
-        // over shards before anything gets ranked.
-        let mut merged: Vec<BTreeMap<String, FuzzyExpansion>> =
-            (0..words.len()).map(|_| BTreeMap::new()).collect();
-
-        let mut first_err = None;
-
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok(Ok(per_word)) => {
-                    for (i, expansions) in per_word.into_iter().enumerate() {
-                        let Some(acc) = merged.get_mut(i) else {
-                            continue;
-                        };
-
-                        for expansion in expansions {
-                            match acc.get_mut(&expansion.term) {
-                                Some(existing) => {
-                                    existing.edits = existing.edits.min(expansion.edits);
-                                    existing.doc_freq =
-                                        existing.doc_freq.saturating_add(expansion.doc_freq);
-                                }
-                                None => {
-                                    acc.insert(expansion.term.clone(), expansion);
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
-                Err(je) if first_err.is_none() => {
-                    first_err = Some(CorelamoError::Internal(format!(
-                        "did-you-mean shard task panicked: {je}"
-                    )));
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(e) = first_err {
-            return Err(e);
-        }
-
-        //WARN: bisk porniks saakas
-        const MAX_ANALYSIS_LOSS: usize = 2;
-
-        //suggestions per analysed word, before we decide which ones to trust.
-        let mut by_word: HashMap<String, Vec<String>> = words
-            .into_iter()
-            .zip(merged)
-            .map(|(word, by_term)| {
-                let mut expansions: Vec<FuzzyExpansion> = by_term.into_values().collect();
-
-                core_query::rank_and_cap(&mut expansions, size);
-
-                (word, expansions.into_iter().map(|e| e.term).collect())
-            })
-            .collect();
-
-        //we need to construct the original sentence (keeping stopwords/no running -> run)
-        let mut pieces: Vec<String> = Vec::new();
-        let mut reported: Vec<WordSuggestions> = Vec::new();
-        let mut changed = false;
-
-        for piece in command.value.split_whitespace() {
-            let Some(token) = self.analyzer.analyze_query(piece).into_iter().next() else {
-                //stopword: not searchable, keep it as typed.
-                pieces.push(piece.to_string());
-                continue;
-            };
-
-            //if a word from suggestions was changed too much we just keep the original
-            let lost = piece
-                .chars()
-                .count()
-                .saturating_sub(token.text.chars().count());
-
-            if lost > MAX_ANALYSIS_LOSS {
-                pieces.push(piece.to_string());
-                continue;
-            }
-
-            let Some(found) = by_word.remove(&token.text) else {
-                pieces.push(piece.to_string());
-                continue;
-            };
-
-            match found.first() {
-                Some(top) => {
-                    changed = true;
-                    pieces.push(top.clone());
-                }
-                None => pieces.push(piece.to_string()),
-            }
-
-            reported.push(WordSuggestions {
-                word: token.text,
-                suggestions: found,
-            });
-        }
-
-        let corrected = if changed {
-            pieces.join(" ")
-        } else {
-            command.value.clone()
-        };
-
-        Ok(DidYouMeanReport {
-            original: command.value.clone(),
-            corrected,
-            words: reported,
-        })
     }
 
     #[timed(restore)]

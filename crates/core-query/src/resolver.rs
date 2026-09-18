@@ -30,17 +30,97 @@ pub enum MatchOp {
     },
 }
 
+pub fn parse_fuzziness(raw: Option<&str>) -> Result<Fuzziness, CorelamoError> {
+    let Some(raw) = raw else {
+        return Ok(Fuzziness::Auto);
+    };
+
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" => Ok(Fuzziness::Auto),
+        "0" => Ok(Fuzziness::Zero),
+        "1" => Ok(Fuzziness::One),
+        "2" => Ok(Fuzziness::Two),
+        other => Err(CorelamoError::InvalidData(format!(
+            "fuzziness must be \"auto\", 0, 1 or 2, got '{other}'"
+        ))),
+    }
+}
+
 pub fn compile_query(
     spec: &MatchSpec,
+    search_fields: Option<&[String]>,
     analyzer: &Analyzer,
     policy: &IndexPolicy,
 ) -> Result<(Option<Query>, Arc<Vec<XPathId>>), CorelamoError> {
     let query = text_query(spec, analyzer)?;
-    let xpaths: Vec<XPathId> = match spec {
-        MatchSpec::Exact(_) => policy.exact_xpaths().collect(),
-        _ => policy.searchable_xpaths().collect(),
+    let xpaths: Vec<XPathId> = match search_fields {
+        Some(names) => resolve_search_xpaths(names, spec, policy)?,
+        None => match spec {
+            MatchSpec::Exact(_) => policy.exact_xpaths().collect(),
+            _ => policy.searchable_xpaths().collect(),
+        },
     };
     Ok((query, Arc::new(xpaths)))
+}
+
+fn resolve_search_xpaths(
+    names: &[String],
+    spec: &MatchSpec,
+    policy: &IndexPolicy,
+) -> Result<Vec<XPathId>, CorelamoError> {
+    let mut out: Vec<XPathId> = Vec::with_capacity(names.len());
+
+    for name in names {
+        let field = policy
+            .fields
+            .iter()
+            .find(|f| &f.name == name)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
+
+        if !field.searchable() && !matches!(spec, MatchSpec::Exact(_)) {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{name}' is not searchable (add 'searchable = true' to its policy and reindex the database)"
+            )));
+        }
+
+        let xpath = text_xpath(spec, policy, field)?;
+
+        if !out.contains(&xpath) {
+            out.push(xpath);
+        }
+    }
+
+    Ok(out)
+}
+
+//basically the same as the resolve_search_xpaths but without exact matching cuz its fuzzy
+pub fn resolve_suggest_xpaths(
+    names: &[String],
+    policy: &IndexPolicy,
+) -> Result<Vec<XPathId>, CorelamoError> {
+    let mut out: Vec<XPathId> = Vec::with_capacity(names.len());
+
+    for name in names {
+        let field = policy
+            .fields
+            .iter()
+            .find(|f| &f.name == name)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
+
+        if !field.searchable() {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{name}' is not searchable (add 'searchable = true' to its policy)"
+            )));
+        }
+
+        let xpath = field.xpath(policy);
+
+        if !out.contains(&xpath) {
+            out.push(xpath);
+        }
+    }
+
+    Ok(out)
 }
 
 pub fn compile_field_filter(
