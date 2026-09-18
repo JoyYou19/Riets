@@ -41,18 +41,23 @@ pub struct ReindexJob {
     pub progress: Arc<ReindexProgress>,
     pub stats: Arc<DbStats>,
 }
-
+pub struct PendingReindexJob {
+    pub rx: Receiver<Result<ReindexParams, CorelamoError>>,
+    pub shard_tx: Sender<ShardCmd>,
+    pub progress: Arc<ReindexProgress>,
+    pub stats: Arc<DbStats>,
+}
 /// One worker by default: a rebuild saturates disk and CPU, so running several
 /// at once makes the whole database slower rather than faster.
 pub struct ReindexPool {
-    tx: Sender<ReindexJob>,
+    tx: Sender<PendingReindexJob>,
     joins: Vec<JoinHandle<()>>,
 }
 
 impl ReindexPool {
     pub fn start(workers: usize) -> Self {
         // let workers = workers.max(workers);
-        let (tx, rx) = bounded::<ReindexJob>(64);
+        let (tx, rx) = bounded::<PendingReindexJob>(64);
         let mut joins = Vec::with_capacity(workers);
 
         for i in 0..workers {
@@ -68,7 +73,7 @@ impl ReindexPool {
     }
 
     #[timed(reindex)]
-    pub fn submit(&self, job: ReindexJob) -> Result<(), CorelamoError> {
+    pub fn submit(&self, job: PendingReindexJob) -> Result<(), CorelamoError> {
         self.tx
             .send(job)
             .map_err(|_| CorelamoError::Internal("reindex pool is not running".into()))
@@ -82,11 +87,21 @@ impl ReindexPool {
     }
 }
 
-fn worker_loop(rx: Receiver<ReindexJob>) {
+fn worker_loop(rx: Receiver<PendingReindexJob>) {
     while let Ok(job) = rx.recv() {
         let started = Instant::now();
 
-        let done = match build_staging_index(&job.params, &job.progress, &job.stats) {
+        let params = match job.rx.recv() {
+            Ok(Ok(p)) => p,
+            Ok(Err(_)) | Err(_) => {
+                job.stats.finish_shard_reindex(false, started.elapsed());
+                continue;
+            }
+        };
+
+        job.stats.add_reindex_total(params.doc_count as u64);
+
+        let done = match build_staging_index(&params, &job.progress, &job.stats) {
             Ok(done) => done,
             Err(_) => {
                 job.stats.finish_shard_reindex(false, started.elapsed());
@@ -94,7 +109,6 @@ fn worker_loop(rx: Receiver<ReindexJob>) {
             }
         };
 
-        // hand the finished build back to the thread that owns the shard state
         let (rtx, rrx) = bounded(1);
         if job
             .shard_tx

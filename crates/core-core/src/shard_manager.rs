@@ -1,6 +1,6 @@
 use crate::ShardDb;
 use crate::metrics::DbStats;
-use crate::reindex::{ReindexJob, ReindexPool};
+use crate::reindex::{PendingReindexJob, ReindexPool};
 use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{self, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
@@ -721,26 +721,15 @@ impl ShardManager {
         if !self.db_stats.begin_reindex(self.shards.len()) {
             return Err(CorelamoError::Busy("reindex already in progress".into()));
         }
-        let mut pending = Vec::with_capacity(self.shards.len());
+
+        //nodod reindex  pool
         for h in &self.shards {
             let (rtx, rrx) = bounded(1);
             h.send_raw(ShardCmd::PrepareReindex { resp: rtx })
                 .map_err(|(e, _)| e)?;
-            pending.push((h, rrx));
-        }
-        //savac params
-        let mut tickets = Vec::with_capacity(pending.len());
-        for (h, rx) in pending {
-            let params = rx
-                .recv()
-                .map_err(|_| CorelamoError::Internal("Shard died during reindex".into()))??;
-            tickets.push((h, params));
-        }
-        //nodod reindex  pool
-        for (h, params) in tickets {
-            self.db_stats.add_reindex_total(params.doc_count as u64);
-            self.reindex_pool.submit(ReindexJob {
-                params,
+
+            self.reindex_pool.submit(PendingReindexJob {
+                rx: rrx,
                 shard_tx: h.command_sender(),
                 progress: Arc::clone(h.progress()),
                 stats: Arc::clone(&self.db_stats),
@@ -753,7 +742,10 @@ impl ShardManager {
     pub fn abort_reindex(&self) {
         for h in &self.shards {
             h.progress().cancel();
-            let _ = fs::remove_dir_all(self.root.join("index.new"));
+        }
+        // staging dirs live under each shard root, not the db root
+        for h in &self.shards {
+            let _ = fs::remove_dir_all(h.shard_root().join("index.new"));
         }
         self.db_stats.reindex_progress().set_phase(Phase::Cancelled);
     }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -141,6 +141,9 @@ pub struct ShardHandle {
 }
 
 impl ShardHandle {
+    pub fn shard_root(&self) -> &std::path::Path {
+        &self.shared.root
+    }
     fn ensure_readable(&self) -> Result<(), CorelamoError> {
         if !self.is_running() {
             return Err(CorelamoError::DatabaseNotRunning(format!(
@@ -736,10 +739,40 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
     while let Ok(first) = rx.recv() {
         batch.push(first);
         batch.extend(rx.try_iter().take(MAX_BATCH - 1));
-        for cmd in batch.drain(..) {
+        let mut queue: VecDeque<ShardCmd> = batch.drain(..).collect();
+        while let Some(cmd) = queue.pop_front() {
             match cmd {
                 ShardCmd::Insert { inputs, resp, user } => {
-                    let _ = resp.send(shard.insert(inputs, user));
+                    // Start collecting consecutive Insert commands
+                    let mut insert_group = vec![(inputs, user.clone())];
+                    let mut responses = vec![resp];
+
+                    // While the next command is also an Insert, pop it and add
+                    while queue
+                        .front()
+                        .map_or(false, |c| matches!(c, ShardCmd::Insert { .. }))
+                    {
+                        let ShardCmd::Insert { inputs, resp, user } = queue.pop_front().unwrap()
+                        else {
+                            unreachable!()
+                        };
+                        insert_group.push((inputs, user));
+                        responses.push(resp);
+                    }
+
+                    // Process the merged group
+                    match shard.insert_batches(insert_group) {
+                        Ok(reports) => {
+                            for (resp, report) in responses.into_iter().zip(reports.into_iter()) {
+                                let _ = resp.send(Ok(report));
+                            }
+                        }
+                        Err(e) => {
+                            for resp in responses {
+                                let _ = resp.send(Err(CorelamoError::Internal(e.to_string())));
+                            }
+                        }
+                    }
                 }
                 ShardCmd::Flush { resp } => {
                     let _ = resp.send(shard.flush());

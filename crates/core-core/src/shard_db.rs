@@ -464,8 +464,13 @@ impl ShardDb {
         let batch_size = self.options.runtime.indexing_batch_size;
 
         let window_size = self.options.runtime.indexing_window_size;
-        self.pending +=count as u32;
+        self.pending += count as u32;
         let not_flushed = self.pending >= (batch_size as u32);
+        let wal_record = WalRecord::Create(inputs);
+        self.wal_append_record(&wal_record)?;
+        let WalRecord::Create(inputs) = wal_record else {
+            return Err(CorelamoError::Internal("unexpected WAL record".into()));
+        };
         let result = (|| -> Result<InsertReport, CorelamoError> {
             self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
 
@@ -515,7 +520,124 @@ impl ShardDb {
         }
         result
     }
+    pub fn insert_batches(
+        &mut self,
+        batches: Vec<(Vec<DocumentInput>, String)>
+    ) -> Result<Vec<InsertReport>, CorelamoError> {
+        let total_count: usize = batches
+            .iter()
+            .map(|(inputs, _)| inputs.len())
+            .sum();
+        let total_bytes: u64 = batches
+            .iter()
+            .flat_map(|(inputs, _)| inputs.iter().map(|d| d.source.len() as u64))
+            .sum();
 
+        core_timing::add_bytes("inserting", "insert_batches", file!(), total_bytes);
+        let user_for_log = batches
+            .first()
+            .map(|(_, u)| u.clone())
+            .unwrap_or_default();
+        // Flatten all inputs while remembering where each batch starts/stops
+        let mut combined = Vec::with_capacity(total_count);
+        let mut spans = Vec::with_capacity(batches.len()); // (start, len)
+        for (inputs, _) in batches {
+            let start = combined.len();
+            combined.extend(inputs);
+            let len = combined.len() - start;
+            spans.push((start, len));
+        }
+
+        let batch_size = self.options.runtime.indexing_batch_size;
+        let window_size = self.options.runtime.indexing_window_size;
+
+        self.pending += total_count as u32;
+        let not_flushed = self.pending >= (batch_size as u32);
+
+        // Single WAL record for all documents, no clone (move in and out, see item 2)
+        let wal_record = WalRecord::Create(combined);
+        self.wal_append_record(&wal_record)?;
+        let WalRecord::Create(combined) = wal_record else {
+            return Err(CorelamoError::Internal("unexpected WAL record".into()));
+        };
+
+        let result = (|| -> Result<InsertReport, CorelamoError> {
+            let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let report = db
+                .put_documents_parallel(combined, batch_size, window_size)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+            if not_flushed {
+                db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+                self.pending = 0;
+                self.wal
+                    .reset()
+                    .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+                self.pending = 0;
+            }
+            Ok(report)
+        })();
+
+        // Split aggregate report back into per‑batch reports using the failure indices
+        let mut per_batch: Vec<InsertReport> = spans
+            .iter()
+            .map(|(_, len)| InsertReport {
+                inserted: *len as u32, // will adjust below
+                failures: Vec::new(),
+            })
+            .collect();
+
+        if let Ok(report) = &result {
+            for failure in &report.failures {
+                // failure.index is the position in the combined input vector
+                if let Some(idx) = failure.index {
+                    for (i, (start, len)) in spans.iter().enumerate() {
+                        if idx >= *start && idx < *start + *len {
+                            per_batch[i].failures.push(failure.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            // inserted = batch size - failures in that batch
+            for (i, span) in spans.iter().enumerate() {
+                per_batch[i].inserted = (span.1 as u32) - (per_batch[i].failures.len() as u32);
+            }
+        }
+
+        // Log once with the first user (or a generic one)
+        
+        let elapsed = std::time::Instant::now().elapsed(); // approximation, use actual start if needed
+        match &result {
+            Ok(_) => {
+                
+                self.stats.add_documents_indexed(total_count as u64);
+                info!(self.log, "indexed batch";
+                 "shard_id" => %self.shard_id,
+                 "documents" => total_count,
+                 "batch_size" => batch_size,
+                 "elapsed_ms" => elapsed.as_millis(),
+                 "user" => user_for_log,
+             );
+            }
+            Err(e) => {
+                error!(self.log, "indexing failed";
+                 "shard_id" => %self.shard_id,
+                 "documents" => total_count,
+                 "batch_size" => batch_size,
+                 "elapsed_ms" => elapsed.as_millis(),
+                 "error" => %e,
+                 "user" => user_for_log,
+             );
+            }
+        }
+
+        // If the whole batch failed, return the error; otherwise per‑batch reports
+        match result {
+            Ok(_) => Ok(per_batch),
+            Err(e) => Err(e),
+        }
+    }
     pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
         let logs_dir = self.root.join("logs");
         if !logs_dir.exists() {
