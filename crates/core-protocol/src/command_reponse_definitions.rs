@@ -562,9 +562,9 @@ impl Command for InfoWordsRequest {}
 pub struct DidYouMeanRequest {
     pub value: String,
     pub search_fields: Option<Vec<String>>,
+
     //corrections per word ,defaults to 3.
     pub did_you_mean_count: Option<usize>,
-
     //0/1/2/auto
     pub fuzziness: Option<String>,
 }
