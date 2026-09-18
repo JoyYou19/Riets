@@ -19,31 +19,44 @@ pub trait SearchIndex {
     fn terms(&self, xpath: XPathId) -> Vec<String>;
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32;
 
-    //Docs whose indexed term is within `opts.max_edits` of `term`.
+    //words within max_edits of input
     fn fuzzy_expansions(
         &self,
         term: &str,
         xpath: XPathId,
         opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
-        let mut out = vec![FuzzyExpansion::new(term, 0, 0)];
+        //woodoo veids kaa defineet mazy funkkciju
+        let existing = |term: String, edits: u8| -> Option<FuzzyExpansion> {
+            let doc_freq = self.doc_freq(&term, xpath);
+
+            (doc_freq > 0).then(|| FuzzyExpansion::new(term, edits, doc_freq))
+        };
+
+        let mut out = Vec::new();
+
+        //theres a slight, minimal chance that our user wrote "batman" correctly
+        out.extend(existing(term.to_string(), 0));
 
         if opts.max_edits == 0 {
             return out;
         }
 
+        //butman -> b   utman
         let (prefix, suffix) = split_prefix(term, opts.prefix_length);
 
         if suffix.is_empty() {
             return out;
         }
 
+        //randomly guessing by one character cheap since its like 26*(word_len+2) or sum
         if opts.max_edits == 1 {
-            // d=1: candidate generation is bounded and fast.
             for candidate in candidates_within_one(suffix) {
-                out.push(FuzzyExpansion::new(format!("{prefix}{candidate}"), 1, 0));
+                out.extend(existing(format!("{prefix}{candidate}"), 1));
             }
         } else {
+            //if distance>2 then we compare the already existing words and how far they are from
+            //"utman"
             let builder = LevenshteinAutomatonBuilder::new(opts.max_edits, true);
             let dfa = builder.build_dfa(suffix);
 
@@ -51,10 +64,14 @@ pub trait SearchIndex {
                 if let Some(rest) = t.strip_prefix(prefix)
                     && let Distance::Exact(edits) = dfa.eval(rest)
                 {
-                    out.push(FuzzyExpansion::new(t, edits, 0));
+                    out.extend(existing(t, edits));
                 }
             }
         }
+
+        //sort correctly
+        out.sort_by(|a, b| a.term.cmp(&b.term).then_with(|| a.edits.cmp(&b.edits)));
+        out.dedup_by(|a, b| a.term == b.term);
 
         out
     }
@@ -64,6 +81,8 @@ pub trait SearchIndex {
         let mut items = Vec::new();
 
         for expansion in self.fuzzy_expansions(term, xpath, opts) {
+            //here it checks wether b + "atman"/ "utman"/ "rtman" is in the dictionary (rtman would
+            //be skipped)
             items.extend_from_slice(self.lookup(&expansion.term, xpath).items());
         }
 

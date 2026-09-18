@@ -12,6 +12,7 @@ pub fn default_policy() -> PolicyStore {
         [
             //basic
             Permission::Search,
+            Permission::DidYouMean,
             Permission::Retrieve,
             Permission::Lookup,
             Permission::Insert,
@@ -72,7 +73,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::GetConfig,
             Permission::SetConfig,
             Permission::Reindex,
-            Permission::AllFields         
+            Permission::AllFields,
         ],
     );
 

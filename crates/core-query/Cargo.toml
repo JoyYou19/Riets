@@ -15,11 +15,3 @@ timing = ["core-timing/timing", "core-index/timing"]
 criterion = { workspace = true }
 core-testkit = { path = "../core-testkit" }
 
-[[bench]]
-name = "query_bench"
-harness = false
-
-
-[[bench]]
-name = "jsonl_bench"
-harness = false

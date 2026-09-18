@@ -17,9 +17,10 @@ use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
     command_reponse_definitions::{
-        Command, CreateDatabaseRequest, DeleteCommand, GetLogsRequest, InfoWordsRequest,
-        LoginResponse, LookupCommand, PartialReplaceCommand, RenameDatabaseRequest,
-        RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, TimingsRequest,
+        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest,
+        InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand,
+        RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        TimingsRequest,
     },
     errors::CorelamoError,
 };
@@ -344,6 +345,78 @@ pub async fn search_handler(
     };
 
     HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
+}
+
+#[timed(search)]
+pub async fn did_you_mean_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::DidYouMean) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    let manager = match state.lookup(&db_name) {
+        Ok(m) => m,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    if !manager.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let body = match require_body(&body) {
+        Ok(b) => b.to_string(),
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let mut buf = body.as_bytes().to_vec();
+    let req: DidYouMeanRequest = match simd_json::from_slice(&mut buf) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(
+                CorelamoError::InvalidData(format!("invalid did-you-mean request: {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+
+    let report = match manager.did_you_mean(&req).await {
+        Ok(r) => r,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    let found: usize = report.words.iter().map(|w| w.suggestions.len()).sum();
+
+    let suggestions: Vec<OwnedValue> = report
+        .words
+        .iter()
+        .map(|w| {
+            json!({
+                "word": w.word,
+                "suggestions": w.suggestions,
+            })
+        })
+        .collect();
+
+    HttpOk::with_data(
+        format!("{found} suggestion(s) for '{}'", report.original),
+        json!({
+            "original": report.original,
+            "corrected": report.corrected,
+            "suggestions": suggestions,
+        }),
+        &ctx,
+    )
+    .into_response()
 }
 
 pub async fn get_all_fields_handler(

@@ -8,9 +8,10 @@ use std::{ fs, io };
 
 use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
+use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
-use core_index::search::SearchColumns;
-use core_protocol::command_reponse_definitions::LookupResponse;
+use core_index::search::{SearchColumns, SearchIndex};
+use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse};
 use core_query::executor::FieldFilter;
 use core_storage::binary_store::{ CompletedSegmentCompaction, SegmentCompactionJob };
 use core_storage::document_store::StoredDocument;
@@ -30,7 +31,7 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{ DocId, ShardId, XPathId };
 use core_protocol::errors::CorelamoError;
-use core_query::{ Query, QueryExecutor, SearchHit };
+use core_query::{Query, QueryExecutor, SearchHit, fuzzable_words};
 use core_storage::search_database::{
     DeleteReport,
     DocumentInput,
@@ -183,7 +184,6 @@ impl ShardHandle {
         self.shared.is_clearing.load(Ordering::Acquire)
     }
 
-    #[timed(search)]
     pub fn info_words_direct(
         &self,
         words: &[String],
@@ -213,6 +213,30 @@ impl ShardHandle {
             });
         }
         Ok(out)
+    }
+
+    pub fn suggest_direct(
+        &self,
+        raw: &str,
+        xpaths: &[XPathId],
+        fuzziness: Fuzziness,
+        spec: FuzzySpec,
+    ) -> Result<Vec<Vec<FuzzyExpansion>>, CorelamoError> {
+        self.ensure_readable()?;
+
+        let snapshot = self.shared.snapshot.get();
+
+        Ok(fuzzable_words(&self.analyzer, raw)
+            .into_iter()
+            .map(|word| {
+                let opts = core_query::fuzzy_options(&word, fuzziness, spec);
+
+                xpaths
+                    .iter()
+                    .flat_map(|&xpath| snapshot.fuzzy_expansions(&word, xpath, opts))
+                    .collect()
+            })
+            .collect())
     }
 
     fn rank_candidates(
