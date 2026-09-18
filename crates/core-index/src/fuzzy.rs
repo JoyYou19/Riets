@@ -1,4 +1,8 @@
-pub const DEFAULT_PREFIX_LENGTH: usize = 1;
+//WARN: stuff like bobin in "robin" wouldnt match if default prefix is set to 1, but it would
+//drastically improve the peformance since we wouldnt need to "guess" the first character, left at 0
+//for now
+
+pub const DEFAULT_PREFIX_LENGTH: usize = 0;
 pub const DEFAULT_MAX_EXPANSIONS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,8 +53,8 @@ pub fn split_prefix(term: &str, prefix_chars: usize) -> (&str, &str) {
     term.split_at(byte)
 }
 
-//All strings within one edit (Damerau-Levenshtein) of `term`.
-//Lowercase ASCII only, matching the lowercased index.
+//every possible strging within one edit distance of our fuzzed suffix
+//utman -> atman , utman,
 pub fn candidates_within_one(term: &str) -> Vec<String> {
     let chars: Vec<char> = term.chars().collect();
     let alphabet: Vec<char> = ('a'..='z').collect();

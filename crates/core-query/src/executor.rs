@@ -219,6 +219,7 @@ where
         fuzziness: Fuzziness,
         spec: FuzzySpec,
     ) -> PostingList {
+        //"butman and robin" -> [butman, robin]
         let words = self.fuzzy_words(raw);
 
         if words.is_empty() {
