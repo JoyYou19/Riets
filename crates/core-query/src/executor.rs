@@ -22,6 +22,7 @@ use crate::{
     ast::Query,
     resolver::MatchOp,
     scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
+    wand::{WandHit, conjunctive_top_k, wand_top_k},
 };
 
 #[derive(Debug, Clone)]
@@ -75,6 +76,105 @@ where
         Self { index, analyzer }
     }
 
+    #[timed(search)]
+    fn fetch_term_postings(&self, terms: &[&str], xpath: XPathId) -> (Vec<PostingList>, Vec<u32>) {
+        let posting_lists: Vec<PostingList> = terms
+            .iter()
+            .map(|term| self.index.lookup(term, xpath))
+            .collect();
+
+        let doc_frequencies = posting_lists
+            .iter()
+            .map(|postings| postings.len() as u32)
+            .collect();
+
+        (posting_lists, doc_frequencies)
+    }
+
+    fn execute_top_k_retrieval(
+        &self,
+        query: &Query,
+        xpath: XPathId,
+        k: usize,
+    ) -> Option<Vec<WandHit>> {
+        match query {
+            Query::Term(term) => {
+                let terms = [term.as_str()];
+                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+
+                Some(wand_top_k(
+                    self.index,
+                    xpath,
+                    &posting_lists,
+                    &doc_frequencies,
+                    k,
+                ))
+            }
+
+            Query::Search(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
+                let terms: Vec<&str> = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Query::Term(term) => Some(term.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+
+                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+
+                Some(wand_top_k(
+                    self.index,
+                    xpath,
+                    &posting_lists,
+                    &doc_frequencies,
+                    k,
+                ))
+            }
+
+            Query::Or(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
+                let terms: Vec<&str> = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Query::Term(term) => Some(term.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+
+                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+
+                Some(wand_top_k(
+                    self.index,
+                    xpath,
+                    &posting_lists,
+                    &doc_frequencies,
+                    k,
+                ))
+            }
+
+            Query::And(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
+                let terms: Vec<&str> = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Query::Term(term) => Some(term.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+
+                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+
+                Some(conjunctive_top_k(
+                    self.index,
+                    xpath,
+                    &posting_lists,
+                    &doc_frequencies,
+                    k,
+                ))
+            }
+
+            _ => None,
+        }
+    }
+
     //Vai dokuments vispar der querijam
     #[timed(search)]
     fn execute_optional(&self, query: &Query, xpath: XPathId) -> Option<PostingList> {
@@ -82,11 +182,13 @@ where
             Query::Term(term) => self.execute_term(term, xpath),
             Query::Prefix(prefix) => self.execute_prefix(prefix, xpath),
             Query::Wildcard(pattern) => Some(self.execute_wildcard(pattern, xpath)),
+
+            Query::Search(parts) => self.execute_or(parts, xpath),
+
             Query::And(parts) => self.execute_and(parts, xpath),
             Query::Or(parts) => self.execute_or(parts, xpath),
             Query::Phrase(terms) => self.execute_phrase_optional(terms, xpath),
             Query::Exact(term) => Some(self.execute_exact(term, xpath)),
-
             Query::Fuzzy(term, fuzziness, spec) => {
                 Some(self.execute_fuzzy(term, xpath, *fuzziness, *spec))
             }
@@ -364,11 +466,54 @@ where
         hits
     }
 
-    // Most basic top K search, searches a single Xpath
+    // TODO: THIS IS OLD WE TEST FIRST
+    // #[timed(search)]
+    // pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
+    //     if k == 0 {
+    //         return Vec::new();
+    //     }
+    //
+    //     let scored = self.execute_scored(query, xpath);
+    //     let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
+    //
+    //     for p in scored {
+    //         let score = ((p.score as f32) / 1000.0) * p.density;
+    //
+    //         let hit = SearchHit {
+    //             doc_id: p.doc_id,
+    //             matched_terms: p.matched_terms,
+    //             weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+    //             distance_factor: p.density,
+    //             score,
+    //         };
+    //
+    //         heap.push(TopHit(hit));
+    //
+    //         if heap.len() > k {
+    //             heap.pop();
+    //         }
+    //     }
+    //
+    //     let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+    //
+    //     hits.sort_by(|a, b| {
+    //         b.score
+    //             .partial_cmp(&a.score)
+    //             .unwrap_or(Ordering::Equal)
+    //             .then_with(|| a.doc_id.cmp(&b.doc_id))
+    //     });
+    //
+    //     hits
+    // }
+
     #[timed(search)]
     pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
+        }
+
+        if let Some(hits) = self.execute_top_k_retrieval(query, xpath, k) {
+            return hits.into_iter().map(wand_hit_to_search_hit).collect();
         }
 
         let scored = self.execute_scored(query, xpath);
@@ -595,7 +740,6 @@ where
     }
 
     //vai der + relevance
-    #[timed(search)]
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
         match query {
             Query::Term(term) => {
@@ -603,21 +747,17 @@ where
                 let true_df = self.index.doc_freq(term, xpath) as f32;
                 score_term_hybrid(self.index, &postings, xpath, true_df)
             }
+
+            Query::Search(parts) => self.execute_scored_search(parts, xpath),
+
             Query::And(parts) => self.execute_scored_and(parts, xpath),
 
             Query::Fuzzy(raw, fuzziness, spec) => {
                 self.execute_scored_fuzzy(raw, xpath, *fuzziness, *spec)
             }
+
             _ => {
                 let postings = self.execute(query, xpath);
-                // No single term here (Or/Phrase/Wildcard/Fuzzy) — doc_freq()
-                // needs one term string, and none of these variants reduce to
-                // one. Falling back to the restricted list's own length, same
-                // as before this change. This is a real simplification (not
-                // true corpus-wide df for whatever compound query this is) but
-                // it's a separate, pre-existing approximation from the
-                // restrict_to_doc_ids bug this true_df param was added to fix,
-                // which specifically hits Query::Term inside an And.
                 let true_df = postings.len() as f32;
                 score_term_hybrid(self.index, &postings, xpath, true_df)
             }
@@ -630,6 +770,43 @@ where
     //optimizations:
     //      Posting:
     //    pub positions: SmallVec<[Position; INLINE_POSITIONS]>,
+    #[timed(search)]
+    fn execute_scored_search(&self, parts: &[Query], xpath: XPathId) -> Vec<ScoredPosting> {
+        let mut by_doc = HashMap::<DocId, ScoredPosting>::new();
+
+        for part in parts {
+            let Query::Term(term) = part else {
+                // INFO: Well support complex Search children separately
+                continue;
+            };
+
+            let postings = self.execute_term(term, xpath).unwrap_or_default();
+
+            let doc_freq = postings.len() as f32;
+
+            let scored = score_term_hybrid(self.index, &postings, xpath, doc_freq);
+
+            for hit in scored {
+                match by_doc.entry(hit.doc_id) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(hit);
+                    }
+
+                    Entry::Occupied(mut entry) => {
+                        let existing = entry.get_mut();
+
+                        existing.score = existing.score.saturating_add(hit.score);
+
+                        existing.matched_terms =
+                            existing.matched_terms.saturating_add(hit.matched_terms);
+                    }
+                }
+            }
+        }
+
+        by_doc.into_values().collect()
+    }
+
     #[timed(search)]
     fn execute_scored_fuzzy(
         &self,
@@ -885,4 +1062,77 @@ pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
     raw.split_whitespace()
         .filter_map(|w| analyzer.analyze_query(w).into_iter().next().map(|t| t.text))
         .collect()
+}
+
+fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
+    SearchHit {
+        doc_id: hit.doc_id,
+        matched_terms: hit.matched_terms,
+        weight_sum: (hit.score / 1000).min(u32::MAX as u64) as u32,
+        distance_factor: 1.0,
+        score: hit.score as f32 / 1000.0,
+    }
+}
+
+#[cfg(test)]
+fn exhaustive_conjunctive_top_k<S: SearchStats>(
+    stats: &S,
+    xpath: XPathId,
+    posting_lists: &[PostingList],
+    doc_frequencies: &[u32],
+    k: usize,
+) -> Vec<WandHit> {
+    use std::collections::HashMap;
+
+    if k == 0 || posting_lists.is_empty() {
+        return Vec::new();
+    }
+
+    let doc_count = stats.doc_count(xpath);
+    let avg_doc_len = stats.avg_doc_len(xpath);
+
+    let required_terms = posting_lists.len();
+
+    let mut scores = HashMap::<DocId, (u64, usize)>::new();
+
+    for (postings, &doc_frequency) in posting_lists.iter().zip(doc_frequencies) {
+        for posting in postings.items() {
+            use crate::scorer::bm25_score_scaled;
+
+            let doc_len = stats
+                .doc_len(posting.doc_id, xpath)
+                .unwrap_or(avg_doc_len as u32);
+
+            let contribution = bm25_score_scaled(
+                posting.positions.len() as u32,
+                posting.weight,
+                doc_len,
+                avg_doc_len,
+                doc_count,
+                doc_frequency,
+            );
+
+            let entry = scores.entry(posting.doc_id).or_insert((0, 0));
+
+            entry.0 = entry.0.saturating_add(contribution);
+
+            entry.1 += 1;
+        }
+    }
+
+    let mut hits: Vec<WandHit> = scores
+        .into_iter()
+        .filter(|(_, (_, matched_terms))| *matched_terms == required_terms)
+        .map(|(doc_id, (score, matched_terms))| WandHit {
+            doc_id,
+            score,
+            matched_terms,
+        })
+        .collect();
+
+    hits.sort_unstable_by(|a, b| b.score.cmp(&a.score).then_with(|| a.doc_id.cmp(&b.doc_id)));
+
+    hits.truncate(k);
+
+    hits
 }

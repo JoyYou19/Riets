@@ -7,6 +7,7 @@ pub mod resolver;
 mod scored_posting;
 mod scorer;
 mod search_hit;
+pub mod wand;
 
 pub use ast::Query;
 pub use scored_posting::ScoredPosting;
