@@ -392,7 +392,7 @@ impl LsmIndex {
         // delete-free, so tombstones can be dropped (same as compact_all did).
         let merged_all = positions.len() == self.segment_handles.len();
 
-        let disk = DiskSegment::open(&completed.output_path)?;
+       let disk = DiskSegment::open(&completed.output_path)?;
         let segs = Arc::make_mut(&mut self.query_segments);
         positions.sort_unstable();
         positions.dedup();

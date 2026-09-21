@@ -712,166 +712,118 @@ pub fn spawn(
     ))
 }
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
-    const MAX_BATCH: usize = 32;
-    let mut batch: Vec<ShardCmd> = Vec::with_capacity(MAX_BATCH);
-
-    while let Ok(first) = rx.recv() {
-        batch.push(first);
-        batch.extend(rx.try_iter().take(MAX_BATCH - 1));
-        let mut queue: VecDeque<ShardCmd> = batch.drain(..).collect();
-         while let Some(cmd) = queue.pop_front() {
-            match cmd {
-                ShardCmd::Insert { inputs, resp, user } => {
-                     // Start collecting consecutive Insert commands
-                     let mut insert_group = vec![(inputs, user.clone())];
-                     let mut responses = vec![resp];
-
-                     // While the next command is also an Insert, pop it and add
-                     while queue.front().map_or(false, |c| matches!(c, ShardCmd::Insert { .. })) {
-                         let ShardCmd::Insert { inputs, resp, user } = queue.pop_front().unwrap() else {
-                             unreachable!()
-                         };
-                         insert_group.push((inputs, user));
-                         responses.push(resp);
-                     }
-
-                     // Process the merged group
-                     match shard.insert_batches(insert_group) {
-                         Ok(reports) => {
-                             for (resp, report) in responses.into_iter().zip(reports.into_iter()) {
-                                 let _ = resp.send(Ok(report));
-                             }
-                         }
-                         Err(e) => {
-                             for resp in responses {
-                                 let _ = resp.send(Err(CorelamoError::Internal(e.to_string())));
-                             }
-                         }
-                     }
-                 }
-                ShardCmd::Flush { resp } => {
-                    let _ = resp.send(shard.flush());
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            ShardCmd::Insert { inputs, resp, user } => {
+                let _ = resp.send(shard.insert(inputs, user));
+            }
+            ShardCmd::Flush { resp } => {
+                let _ = resp.send(shard.flush());
+            }
+            ShardCmd::SetConfig { options, resp, user } => {
+                let _ = resp.send(shard.set_options(options, user));
+            }
+            ShardCmd::SetPolicy { policy, resp, user } => {
+                let _ = resp.send(shard.set_policy(policy, user));
+            }
+            ShardCmd::Upsert { inputs, resp, user } => {
+                let _ = resp.send(shard.upsert(inputs, user));
+            }
+            ShardCmd::Replace { inputs, resp, user } => {
+                let _ = resp.send(shard.replace(inputs, user));
+            }
+            ShardCmd::Delete { ids, resp, user } => {
+                let _ = resp.send(shard.delete(ids, user));
+            }
+            ShardCmd::PrepareReindex { resp } => {
+                let _ = resp.send(shard.prepare_reindex());
+            }
+            ShardCmd::CommitReindex { done, resp } => {
+                let _ = resp.send(shard.commit_reindex(done));
+            }
+            ShardCmd::Start { policy, options, resp } => {
+                shard.apply_config(policy, options);
+                let result = shard.start();
+                shared.is_running.store(result.is_ok(), Ordering::Release);
+                let _ = resp.send(result);
+            }
+            ShardCmd::Stop { resp } => {
+                let result = shard.stop();
+                shared.is_running.store(false, Ordering::Release);
+                let _ = resp.send(result);
+            }
+            ShardCmd::Shutdown { resp } => {
+                let result = shard.stop();
+                shared.is_running.store(false, Ordering::Release);
+                let _ = resp.send(result);
+                return;
+            }
+            ShardCmd::Clear { resp } => {
+                shared.is_clearing.store(true, Ordering::Release);
+                let result = shard.clear();
+                shared.is_clearing.store(false, Ordering::Release);
+                let _ = resp.send(result);
+            }
+            ShardCmd::BackupFull { shard_backup_path, backup_id, resp, user } => {
+                shared.is_backing_up.store(true, Ordering::Release);
+                let result = shard.backup_full(user, shard_backup_path, backup_id);
+                shared.is_backing_up.store(false, Ordering::Release);
+                if let Ok(manifest) = &result {
+                    *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) =
+                        Some(manifest.backup_id.clone());
+                    shared.last_backup_at.store(manifest.created_at, Ordering::Release);
                 }
-                ShardCmd::SetConfig { options, resp, user } => {
-                    let _ = resp.send(shard.set_options(options, user));
+                let _ = resp.send(result);
+            }
+            ShardCmd::BackupIncremental { shard_backup_path, backup_id, user, resp } => {
+                if shared
+                    .last_backup_id
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_none()
+                {
+                    let _ = resp.send(Err(CorelamoError::Internal(
+                        "no previous backup found for incremental backup".into(),
+                    )));
+                    continue;
                 }
-                ShardCmd::SetPolicy { policy, resp, user } => {
-                    let _ = resp.send(shard.set_policy(policy, user));
+                shared.is_backing_up.store(true, Ordering::Release);
+                let segment_dir = shard.root().join("documents");
+                let result =
+                    shard.backup_incremental(shard_backup_path, backup_id, user, segment_dir);
+                shared.is_backing_up.store(false, Ordering::Release);
+                if let Ok(Some(manifest)) = &result {
+                    *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) =
+                        Some(manifest.backup_id.clone());
+                    shared.last_backup_at.store(manifest.created_at, Ordering::Release);
                 }
-                ShardCmd::Upsert { inputs, resp, user } => {
-                    let _ = resp.send(shard.upsert(inputs, user));
-                }
-                ShardCmd::Replace { inputs, resp, user } => {
-                    let _ = resp.send(shard.replace(inputs, user));
-                }
-                ShardCmd::Delete { ids, resp, user } => {
-                    let _ = resp.send(shard.delete(ids, user));
-                }
-                ShardCmd::PrepareReindex { resp } => {
-                    let _ = resp.send(shard.prepare_reindex());
-                }
-                ShardCmd::CommitReindex { done, resp } => {
-                    let _ = resp.send(shard.commit_reindex(done));
-                }
-                ShardCmd::Start { policy, options, resp } => {
-                    shard.apply_config(policy, options);
-                    let result = shard.start();
-                    shared.is_running.store(result.is_ok(), Ordering::Release);
-                    let _ = resp.send(result);
-                }
-                ShardCmd::Stop { resp } => {
-                    let result = shard.stop();
-                    shared.is_running.store(false, Ordering::Release);
-                    let _ = resp.send(result);
-                }
-                ShardCmd::Shutdown { resp } => {
-                    let result = shard.stop();
-                    shared.is_running.store(false, Ordering::Release);
-                    let _ = resp.send(result);
-                    return;
-                }
-                ShardCmd::Clear { resp } => {
-                    shared.is_clearing.store(true, Ordering::Release);
-                    let result = shard.clear();
-                    shared.is_clearing.store(false, Ordering::Release);
-                    let _ = resp.send(result);
-                }
-                ShardCmd::BackupFull { shard_backup_path, backup_id, resp, user } => {
-                    shared.is_backing_up.store(true, Ordering::Release);
-                    let result = shard.backup_full(user, shard_backup_path, backup_id);
-                    shared.is_backing_up.store(false, Ordering::Release);
-                    if let Ok(manifest) = &result {
-                        *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) = Some(
-                            manifest.backup_id.clone()
-                        );
-                        shared.last_backup_at.store(manifest.created_at, Ordering::Release);
-                    }
-                    let _ = resp.send(result);
-                }
-                ShardCmd::BackupIncremental { shard_backup_path, backup_id, user, resp } => {
-                    if
-                        shared.last_backup_id
-                            .read()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .is_none()
-                    {
-                        let _ = resp.send(
-                            Err(
-                                CorelamoError::Internal(
-                                    "no previous backup found for incremental backup".into()
-                                )
-                            )
-                        );
-                        continue;
-                    }
-                    shared.is_backing_up.store(true, Ordering::Release);
-                    let segment_dir = shard.root().join("documents");
-                    let result = shard.backup_incremental(
-                        shard_backup_path,
-                        backup_id,
-                        user,
-                        segment_dir
-                    );
-                    shared.is_backing_up.store(false, Ordering::Release);
-                    match &result {
-                        Ok(Some(manifest)) => {
-                            *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) =
-                                Some(manifest.backup_id.clone());
-                            shared.last_backup_at.store(manifest.created_at, Ordering::Release);
-                        }
-                        Ok(None) => {}
-                        Err(_) => {}
-                    }
-                    let _ = resp.send(result);
-                }
-
-                ShardCmd::Restore { user, resp, backup_id } => {
-                    shared.is_restoring.store(true, Ordering::Release);
-                    let result = shard.restore_backup(&backup_id, user);
-                    shared.is_restoring.store(false, Ordering::Release);
-                    let _ = resp.send(result);
-                }
-                ShardCmd::ListBackups { resp } => {
-                    let _ = resp.send(shard.list_backups());
-                }
-                ShardCmd::DeleteBackup { backup_id, user, resp } => {
-                    let _ = resp.send(shard.delete_backup(&backup_id, user));
-                }
-                ShardCmd::DeleteBackupAuto { cutoff, resp } => {
-                    let _ = resp.send(shard.delete_backups_old(cutoff));
-                }
-                ShardCmd::PlanSegmentCompaction { dead_ratio_threshold, reply } => {
-                    let job = shard.plan_segment_compaction(dead_ratio_threshold);
-                    let _ = reply.send(job);
-                }
-                ShardCmd::InstallSegmentCompaction { completed, ack } => {
-                    let result = shard.install_segment_compaction_cmd(completed);
-                    if let Some(ack) = ack {
-                        let _ = ack.send(result);
-                    }
+                let _ = resp.send(result);
+            }
+            ShardCmd::Restore { user, resp, backup_id } => {
+                shared.is_restoring.store(true, Ordering::Release);
+                let result = shard.restore_backup(&backup_id, user);
+                shared.is_restoring.store(false, Ordering::Release);
+                let _ = resp.send(result);
+            }
+            ShardCmd::ListBackups { resp } => {
+                let _ = resp.send(shard.list_backups());
+            }
+            ShardCmd::DeleteBackup { backup_id, user, resp } => {
+                let _ = resp.send(shard.delete_backup(&backup_id, user));
+            }
+            ShardCmd::DeleteBackupAuto { cutoff, resp } => {
+                let _ = resp.send(shard.delete_backups_old(cutoff));
+            }
+            ShardCmd::PlanSegmentCompaction { dead_ratio_threshold, reply } => {
+                let job = shard.plan_segment_compaction(dead_ratio_threshold);
+                let _ = reply.send(job);
+            }
+            ShardCmd::InstallSegmentCompaction { completed, ack } => {
+                let result = shard.install_segment_compaction_cmd(completed);
+                if let Some(ack) = ack {
+                    let _ = ack.send(result);
                 }
             }
         }
     }
-    let _ = shard.stop();
 }
