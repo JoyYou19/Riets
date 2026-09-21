@@ -5,7 +5,7 @@ use core_index::{
         Posting, PostingList,
         ops::{intersect_ids, intersection, restrict_to, union},
     },
-    search::{SearchColumns, SearchIndex, SearchStats},
+    search::{SearchColumns, SearchIndex, SearchStats, TermPostings},
     types::{DocId, XPathId},
 };
 use std::{
@@ -77,18 +77,11 @@ where
     }
 
     #[timed(search)]
-    fn fetch_term_postings(&self, terms: &[&str], xpath: XPathId) -> (Vec<PostingList>, Vec<u32>) {
-        let posting_lists: Vec<PostingList> = terms
+    fn fetch_term_postings(&self, terms: &[&str], xpath: XPathId) -> Vec<TermPostings> {
+        terms
             .iter()
-            .map(|term| self.index.lookup(term, xpath))
-            .collect();
-
-        let doc_frequencies = posting_lists
-            .iter()
-            .map(|postings| postings.len() as u32)
-            .collect();
-
-        (posting_lists, doc_frequencies)
+            .map(|term| self.index.lookup_term(term, xpath))
+            .collect()
     }
 
     fn execute_top_k_retrieval(
@@ -96,19 +89,14 @@ where
         query: &Query,
         xpath: XPathId,
         k: usize,
+        restrict: Option<&HashSet<DocId>>,
     ) -> Option<Vec<WandHit>> {
         match query {
             Query::Term(term) => {
                 let terms = [term.as_str()];
-                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+                let postings = self.fetch_term_postings(&terms, xpath);
 
-                Some(wand_top_k(
-                    self.index,
-                    xpath,
-                    &posting_lists,
-                    &doc_frequencies,
-                    k,
-                ))
+                Some(wand_top_k(self.index, xpath, &postings, k, restrict))
             }
 
             Query::Search(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
@@ -120,15 +108,9 @@ where
                     })
                     .collect();
 
-                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+                let postings = self.fetch_term_postings(&terms, xpath);
 
-                Some(wand_top_k(
-                    self.index,
-                    xpath,
-                    &posting_lists,
-                    &doc_frequencies,
-                    k,
-                ))
+                Some(wand_top_k(self.index, xpath, &postings, k, restrict))
             }
 
             Query::Or(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
@@ -140,15 +122,9 @@ where
                     })
                     .collect();
 
-                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+                let postings = self.fetch_term_postings(&terms, xpath);
 
-                Some(wand_top_k(
-                    self.index,
-                    xpath,
-                    &posting_lists,
-                    &doc_frequencies,
-                    k,
-                ))
+                Some(conjunctive_top_k(self.index, xpath, &postings, k, restrict))
             }
 
             Query::And(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
@@ -160,15 +136,9 @@ where
                     })
                     .collect();
 
-                let (posting_lists, doc_frequencies) = self.fetch_term_postings(&terms, xpath);
+                let postings = self.fetch_term_postings(&terms, xpath);
 
-                Some(conjunctive_top_k(
-                    self.index,
-                    xpath,
-                    &posting_lists,
-                    &doc_frequencies,
-                    k,
-                ))
+                Some(conjunctive_top_k(self.index, xpath, &postings, k, restrict))
             }
 
             _ => None,
@@ -506,47 +476,40 @@ where
     //     hits
     // }
 
-    #[timed(search)]
     pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
-        if k == 0 {
+        self.search_top_k_restricted(query, xpath, k, None)
+    }
+
+    fn search_top_k_restricted(
+        &self,
+        query: &Query,
+        xpath: XPathId,
+        k: usize,
+        restrict: Option<&HashSet<DocId>>,
+    ) -> Vec<SearchHit> {
+        if k == 0 || restrict.is_some_and(|docs| docs.is_empty()) {
             return Vec::new();
         }
 
-        if let Some(hits) = self.execute_top_k_retrieval(query, xpath, k) {
+        if let Some(hits) = self.execute_top_k_retrieval(query, xpath, k, restrict) {
             return hits.into_iter().map(wand_hit_to_search_hit).collect();
         }
 
+        // Complex-query fallback.
         let scored = self.execute_scored(query, xpath);
-        let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
 
-        for p in scored {
-            let score = ((p.score as f32) / 1000.0) * p.density;
-
-            let hit = SearchHit {
+        let hits = scored
+            .into_iter()
+            .filter(|p| restrict.is_none_or(|allowed| allowed.contains(&p.doc_id)))
+            .map(|p| SearchHit {
                 doc_id: p.doc_id,
                 matched_terms: p.matched_terms,
                 weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
                 distance_factor: p.density,
-                score,
-            };
+                score: ((p.score as f32) / 1000.0) * p.density,
+            });
 
-            heap.push(TopHit(hit));
-
-            if heap.len() > k {
-                heap.pop();
-            }
-        }
-
-        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
-
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.doc_id.cmp(&b.doc_id))
-        });
-
-        hits
+        top_k_from_hits(hits, k)
     }
 
     // INFO: Currently we might want to think about other ways of implementing the idea
@@ -650,57 +613,53 @@ where
         k: usize,
         restrict: Option<&HashSet<DocId>>,
     ) -> Vec<SearchHit> {
-        if k == 0 {
+        if k == 0 || restrict.is_some_and(|docs| docs.is_empty()) {
             return Vec::new();
         }
 
         let Some(query) = query else {
-            let Some(allowed) = restrict else {
-                return Vec::new();
+            return match restrict {
+                Some(allowed) => {
+                    let hits = allowed.iter().copied().map(|doc_id| SearchHit {
+                        doc_id,
+                        matched_terms: 0,
+                        weight_sum: 0,
+                        distance_factor: 1.0,
+                        score: 0.0,
+                    });
+
+                    top_k_from_hits(hits, k)
+                }
+
+                None => Vec::new(),
             };
-            let mut ids: Vec<DocId> = allowed.iter().copied().collect();
-            ids.sort();
-            return ids
-                .into_iter()
-                .take(k)
-                .map(|doc_id| SearchHit {
-                    doc_id,
-                    matched_terms: 0,
-                    weight_sum: 0,
-                    distance_factor: 0.0,
-                    score: 1.0,
-                })
-                .collect();
         };
 
-        if restrict.is_some_and(|s| s.is_empty()) {
+        let xpaths: Vec<XPathId> = xpaths.into_iter().collect();
+
+        if xpaths.is_empty() {
             return Vec::new();
+        }
+
+        if xpaths.len() == 1 {
+            return self.search_top_k_restricted(query, xpaths[0], k, restrict);
         }
 
         let mut by_doc = HashMap::<DocId, SearchHit>::new();
 
         for xpath in xpaths {
-            let scored = self.execute_scored(query, xpath);
-            for p in scored {
-                if let Some(allowed) = restrict {
-                    if !allowed.contains(&p.doc_id) {
-                        continue;
-                    }
-                }
-                let hit = SearchHit {
-                    doc_id: p.doc_id,
-                    matched_terms: p.matched_terms,
-                    weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
-                    distance_factor: p.density,
-                    score: ((p.score as f32) / 1000.0) * p.density,
-                };
+            for hit in self.search_top_k_restricted(query, xpath, k, restrict) {
                 by_doc
                     .entry(hit.doc_id)
                     .and_modify(|existing| {
-                        existing.matched_terms += hit.matched_terms;
+                        existing.matched_terms =
+                            existing.matched_terms.saturating_add(hit.matched_terms);
+
                         existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
+
                         existing.distance_factor =
                             existing.distance_factor.max(hit.distance_factor);
+
                         existing.score += hit.score;
                     })
                     .or_insert(hit);
@@ -744,8 +703,9 @@ where
         match query {
             Query::Term(term) => {
                 let postings = self.execute_term(term, xpath).unwrap_or_default();
-                let true_df = self.index.doc_freq(term, xpath) as f32;
-                score_term_hybrid(self.index, &postings, xpath, true_df)
+                let doc_freq = postings.len() as f32;
+
+                score_term_hybrid(self.index, &postings, xpath, doc_freq)
             }
 
             Query::Search(parts) => self.execute_scored_search(parts, xpath),
@@ -909,20 +869,23 @@ where
             postings: PostingList,
             doc_freq: u32,
         }
+
         let mut fetched: Vec<TermFetch> = Vec::with_capacity(parts.len());
 
         for part in parts {
             let (term, postings, doc_freq) = match part {
                 Query::Term(term) => {
                     let postings = self.execute_term(term, xpath).unwrap_or_default();
-                    let doc_freq = self.index.doc_freq(term, xpath);
+
+                    let doc_freq = postings.len() as u32;
+
                     (Some(term.as_str()), postings, doc_freq)
                 }
-                _ => (
-                    None,
-                    self.execute_optional(part, xpath).unwrap_or_default(),
-                    u32::MAX,
-                ),
+
+                _ => {
+                    let postings = self.execute_optional(part, xpath).unwrap_or_default();
+                    (None, postings, u32::MAX)
+                }
             };
 
             if postings.is_empty() {
@@ -940,45 +903,57 @@ where
             return Vec::new();
         }
 
-        fetched.sort_by_key(|f| f.doc_freq);
+        fetched.sort_by_key(|f| f.postings.len());
 
-        // Phase 1: doc-ids only. Seeded from the rarest term's ids (no clone of
-        // its posting list), then narrowed by each remaining term.
         let mut candidates: Vec<DocId> = fetched[0]
             .postings
             .items()
             .iter()
-            .map(|p| p.doc_id)
+            .map(|posting| posting.doc_id)
             .collect();
 
         for f in &fetched[1..] {
             candidates = intersect_ids(&candidates, &f.postings);
+
             if candidates.is_empty() {
                 return Vec::new();
             }
         }
 
-        // Phase 2: restrict each term to the candidates, keeping that term's own
-        // positions/weights, and score with its true (unrestricted) doc_freq.
-        let mut term_scores: Option<Vec<ScoredPosting>> = None;
+        let mut by_doc = HashMap::<DocId, ScoredPosting>::with_capacity(candidates.len());
 
         for f in &fetched {
             if f.term.is_none() {
-                continue; // nested And/Or/Phrase parts filter but don't score — see note
+                continue;
             }
 
             let restricted = restrict_to(&f.postings, &candidates);
+
             if restricted.is_empty() {
                 continue;
             }
 
-            term_scores = Some(match term_scores {
-                Some(acc) => crate::scorer::scored_and(&acc, &restricted),
-                None => score_term_hybrid(self.index, &restricted, xpath, f.doc_freq as f32),
-            });
+            let scored = score_term_hybrid(self.index, &restricted, xpath, f.doc_freq as f32);
+
+            for hit in scored {
+                match by_doc.entry(hit.doc_id) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(hit);
+                    }
+
+                    Entry::Occupied(mut entry) => {
+                        let existing = entry.get_mut();
+
+                        existing.score = existing.score.saturating_add(hit.score);
+
+                        existing.matched_terms =
+                            existing.matched_terms.saturating_add(hit.matched_terms);
+                    }
+                }
+            }
         }
 
-        term_scores.unwrap_or_default()
+        by_doc.into_values().collect()
     }
 }
 
