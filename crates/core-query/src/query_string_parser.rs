@@ -212,7 +212,8 @@ pub fn parse_query(input: &str) -> Result<Option<Query>, CorelamoError> {
     let mut parser = Parser::new(tokens);
     let items = parser.parse_sequence(Closer::Eof)?;
 
-    //finally we only have xxx AND xxx ADN xxx
+    //finally we only have [xxx, xxx, xxx]
+    //we make it into AND(xxx,xxx,xxx)
     //TODO: elastic offers a default operator to be AND/OR
     let query = make_and(items);
 

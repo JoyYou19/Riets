@@ -351,7 +351,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     #[timed(modifying_documents)]
-    #[timed(modifying_documents)]
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
             self.index_worker
