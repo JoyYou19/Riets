@@ -672,7 +672,7 @@ where
 
             //iterate all possible hits
             for expansion in expansions {
-                //                      the long function needs wand
+                //                      the long function needs wand kip
                 let postings = self.index.lookup(&expansion.term, xpath);
 
                 scored_buf.clear();
