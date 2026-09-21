@@ -37,6 +37,7 @@ impl Ord for NumericValue {
         match (self, other) {
             (NumericValue::Int(a), NumericValue::Int(b)) => a.cmp(b),
             (NumericValue::Float(a), NumericValue::Float(b)) => a.total_cmp(b),
+            //this is kind of a bug but no field will habe both integer and float
             (NumericValue::Int(_), NumericValue::Float(_)) => Ordering::Less,
             (NumericValue::Float(_), NumericValue::Int(_)) => Ordering::Greater,
         }

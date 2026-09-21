@@ -719,36 +719,40 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
         batch.push(first);
         batch.extend(rx.try_iter().take(MAX_BATCH - 1));
         let mut queue: VecDeque<ShardCmd> = batch.drain(..).collect();
-         while let Some(cmd) = queue.pop_front() {
+        while let Some(cmd) = queue.pop_front() {
             match cmd {
                 ShardCmd::Insert { inputs, resp, user } => {
-                     // Start collecting consecutive Insert commands
-                     let mut insert_group = vec![(inputs, user.clone())];
-                     let mut responses = vec![resp];
+                    // Start collecting consecutive Insert commands
+                    let mut insert_group = vec![(inputs, user.clone())];
+                    let mut responses = vec![resp];
 
-                     // While the next command is also an Insert, pop it and add
-                     while queue.front().map_or(false, |c| matches!(c, ShardCmd::Insert { .. })) {
-                         let ShardCmd::Insert { inputs, resp, user } = queue.pop_front().unwrap() else {
-                             unreachable!()
-                         };
-                         insert_group.push((inputs, user));
-                         responses.push(resp);
-                     }
+                    // While the next command is also an Insert, pop it and add
+                    while queue
+                        .front()
+                        .map_or(false, |c| matches!(c, ShardCmd::Insert { .. }))
+                    {
+                        let ShardCmd::Insert { inputs, resp, user } = queue.pop_front().unwrap()
+                        else {
+                            unreachable!()
+                        };
+                        insert_group.push((inputs, user));
+                        responses.push(resp);
+                    }
 
-                     // Process the merged group
-                     match shard.insert_batches(insert_group) {
-                         Ok(reports) => {
-                             for (resp, report) in responses.into_iter().zip(reports.into_iter()) {
-                                 let _ = resp.send(Ok(report));
-                             }
-                         }
-                         Err(e) => {
-                             for resp in responses {
-                                 let _ = resp.send(Err(CorelamoError::Internal(e.to_string())));
-                             }
-                         }
-                     }
-                 }
+                    // Process the merged group
+                    match shard.insert_batches(insert_group) {
+                        Ok(reports) => {
+                            for (resp, report) in responses.into_iter().zip(reports.into_iter()) {
+                                let _ = resp.send(Ok(report));
+                            }
+                        }
+                        Err(e) => {
+                            for resp in responses {
+                                let _ = resp.send(Err(CorelamoError::Internal(e.to_string())));
+                            }
+                        }
+                    }
+                }
                 ShardCmd::Flush { resp } => {
                     let _ = resp.send(shard.flush());
                 }
