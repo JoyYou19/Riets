@@ -76,7 +76,7 @@ impl<'a> Iterator for MergedTerms<'a> {
                 }
             }
 
-            let merged = self.deleted.filter(&PostingList::from_items(items));
+            let merged = self.deleted.filter(&PostingList::from_sorted(items));
             if !merged.is_empty() {
                 return Some((min_key, merged));
             }

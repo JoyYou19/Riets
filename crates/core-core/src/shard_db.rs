@@ -472,8 +472,7 @@ impl ShardDb {
             return Err(CorelamoError::Internal("unexpected WAL record".into()));
         };
         let result = (|| -> Result<InsertReport, CorelamoError> {
-            self.wal_append_record(&WalRecord::Create(inputs.clone()))?;
-
+           
             let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
             let report = db
                 .put_documents_parallel(inputs, batch_size, window_size)

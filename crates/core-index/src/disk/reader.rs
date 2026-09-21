@@ -10,12 +10,12 @@ use crate::{
         codec::{ read_var_u16, read_var_u32, read_var_u64 },
         format::{ FOOTER_LEN, MAGIC, SegmentFooter, VERSION },
     },
-    fuzzy::{FuzzyExpansion, FuzzyOptions},
-    numeric_columns::{NumericBound, NumericColumns, NumericValue},
-    posting::{Posting, PostingList},
-    search::{SearchColumns, SearchIndex, SearchStats},
-    term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    numeric_columns::{ NumericBound, NumericColumns, NumericValue },
+    posting::{ Posting, PostingList },
+    search::{ SearchColumns, SearchIndex, SearchStats },
+    term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta },
+    types::{ DocId, FieldStats, TermKey, XPathId },
 };
 
 // Read only disk segment.
@@ -26,6 +26,7 @@ pub struct DiskSegment {
     dictionary: TermDictionary,
     //TODO: we should look into this, if doc_lengths takes up too much RAM wikipedia-scale then we
     //could cache this
+    doc_range: Option<(DocId, DocId)>,
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     columns: NumericColumns,
@@ -96,7 +97,10 @@ impl DiskSegment {
         validate_footer(&mmap, &footer)?;
 
         let doc_lengths = read_doc_lengths(&mmap, &footer)?;
-
+        let doc_range = doc_lengths
+            .first_key_value()
+            .zip(doc_lengths.last_key_value())
+            .map(|((lo, _), (hi, _))| (lo.0, hi.0));
         let field_stats = build_field_stats(&doc_lengths);
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
@@ -106,6 +110,7 @@ impl DiskSegment {
             mmap,
             dictionary,
             doc_lengths,
+            doc_range,
             field_stats,
             columns,
         })
@@ -117,6 +122,9 @@ impl DiskSegment {
 
     pub fn columns(&self) -> &NumericColumns {
         &self.columns
+    }
+        fn doc_range(&self) -> Option<(DocId, DocId)> {
+        self.doc_range
     }
 
     //bro yo zis so good function
@@ -204,13 +212,13 @@ impl SearchIndex for DiskSegment {
             None => PostingList::default(),
         }
     }
-   #[timed(search)]
+    #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.dictionary
             .get(xpath, term)
             .map(|meta| meta.doc_freq)
             .unwrap_or(0)
-    } 
+    }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.dictionary
             .field(xpath)
@@ -283,7 +291,7 @@ impl SearchIndex for DiskSegment {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         self.dictionary
             .field(xpath)

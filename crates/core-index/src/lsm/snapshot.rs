@@ -134,12 +134,17 @@ impl SearchStats for IndexSnapshot {
         total
     }
 
-    fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {
+        fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {
         if let Some(len) = self.mem.doc_len(doc_id, xpath) {
             return Some(len);
         }
 
         for segment in self.segments.iter() {
+            if let Some((lo, hi)) = segment.doc_range() {
+                if doc_id < lo || doc_id > hi {
+                    continue;
+                }
+            }
             if let Some(len) = segment.doc_len(doc_id, xpath) {
                 return Some(len);
             }
