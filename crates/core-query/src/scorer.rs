@@ -17,6 +17,66 @@ const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
 const SCORE_SCALE: f32 = 1000.0;
 
+pub fn bm25_score(
+    tf: u32,
+    weight: u16,
+    doc_len: u32,
+    avg_doc_len: f32,
+    doc_count: u64,
+    doc_frequency: u32,
+) -> f32 {
+    if tf == 0 || doc_count == 0 || doc_frequency == 0 || avg_doc_len <= 0.0 {
+        return 0.0;
+    }
+
+    let n = doc_count as f32;
+    let df = doc_frequency as f32;
+    let tf = tf as f32;
+    let dl = doc_len as f32;
+
+    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+
+    let norm = 1.0 - BM25_B + BM25_B * (dl / avg_doc_len);
+
+    let tf_component = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);
+
+    weight as f32 * idf * (tf_component + 1.0)
+}
+
+// I just put this function here so we automatically multiply, I can already see ways of me messing
+// this up in the future
+pub fn bm25_score_scaled(
+    tf: u32,
+    weight: u16,
+    doc_len: u32,
+    avg_doc_len: f32,
+    doc_count: u64,
+    doc_freq: u32,
+) -> u64 {
+    (bm25_score(tf, weight, doc_len, avg_doc_len, doc_count, doc_freq) * SCORE_SCALE) as u64
+}
+
+// Returns a safe upper bound on the BM25 score that this term can contribute to any document. I
+// took this code from our generative friend, and honestly, I have no clue how it measures
+// anything, but if this is what they use in ElasticSearch then we use it as well. At least for
+// now.
+pub fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
+    if doc_count == 0 || doc_frequency == 0 || max_weight == 0 {
+        return 0;
+    }
+
+    let n = doc_count as f32;
+    let df = doc_frequency as f32;
+
+    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+
+    let max_tf_component = BM25_K1 + 1.0;
+
+    let max_score = max_weight as f32 * idf * (max_tf_component + 1.0);
+
+    (max_score * SCORE_SCALE).ceil() as u64
+}
+
 // fn trace_bm25() -> bool {
 //     std::env::var_os("CORELAMO_TRACE_BM25").is_some()
 // }
@@ -30,37 +90,30 @@ pub fn score_term_into<S: SearchStats>(
     doc_len: &mut HashMap<DocId, f32>,
     out: &mut Vec<ScoredPosting>,
 ) {
-    let n = stats.doc_count(xpath) as f32;
-    let df = true_df;
-    let avgdl = stats.avg_doc_len(xpath);
+    let doc_count = stats.doc_count(xpath);
+    let doc_frequency = true_df as u32;
+    let avg_doc_len = stats.avg_doc_len(xpath);
 
-    for p in postings.items().iter().filter(|p| !p.positions.is_empty()) {
-        let policy_weight = p.weight as f32;
+    for posting in postings.items().iter().filter(|p| !p.positions.is_empty()) {
+        let dl = *doc_len.entry(posting.doc_id).or_insert_with(|| {
+            stats
+                .doc_len(posting.doc_id, xpath)
+                .unwrap_or(avg_doc_len as u32) as f32
+        });
 
-        let bm25 = if n > 0.0 && df > 0.0 && avgdl > 0.0 {
-            let tf = p.positions.len() as f32;
-
-            // Cached per (doc, xpath): in a fuzzy query the same doc shows up in
-            // many expansions, and re-asking SearchStats for its length every
-            // time was most of the regression.
-            let dl = *doc_len
-                .entry(p.doc_id)
-                .or_insert_with(|| stats.doc_len(p.doc_id, xpath).unwrap_or(avgdl as u32) as f32);
-
-            let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-            let norm = 1.0 - BM25_B + BM25_B * (dl / avgdl);
-
-            idf * ((tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm) + 1 as f32)
-        } else {
-            1.0
-        };
-
-        let hybrid = policy_weight * bm25.max(0.001);
+        let score = bm25_score_scaled(
+            posting.positions.len() as u32,
+            posting.weight,
+            dl as u32,
+            avg_doc_len,
+            doc_count,
+            doc_frequency,
+        );
 
         out.push(ScoredPosting {
-            doc_id: p.doc_id,
-            positions: Arc::from(p.positions.as_slice()),
-            score: (hybrid * SCORE_SCALE) as u64,
+            doc_id: posting.doc_id,
+            positions: Arc::from(posting.positions.as_slice()),
+            score,
             matched_terms: 1,
             density: 1.0,
         });

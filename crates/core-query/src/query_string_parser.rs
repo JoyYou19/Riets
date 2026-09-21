@@ -184,6 +184,14 @@ fn make_or(mut items: Vec<Query>) -> Query {
     }
 }
 
+fn make_search(mut items: Vec<Query>) -> Query {
+    match items.len() {
+        0 => Query::Search(Vec::new()),
+        1 => items.pop().unwrap(),
+        _ => Query::Search(items),
+    }
+}
+
 //decide between prefix (dat*), a wildcard (da?ab*e), or just a word
 #[timed(search)]
 fn classify_word(word: &str) -> Query {
@@ -215,11 +223,11 @@ pub fn parse_query(input: &str) -> Result<Option<Query>, CorelamoError> {
     //finally we only have [xxx, xxx, xxx]
     //we make it into AND(xxx,xxx,xxx)
     //TODO: elastic offers a default operator to be AND/OR
-    let query = make_and(items);
+    let query = make_search(items);
 
     // "" () {} count as emtpy/invalid
     match &query {
-        Query::And(inner) | Query::Or(inner) if inner.is_empty() => Ok(None),
+        Query::Search(inner) | Query::And(inner) | Query::Or(inner) if inner.is_empty() => Ok(None),
         _ => Ok(Some(query)),
     }
 }
@@ -235,6 +243,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
         Query::Prefix(p) => non_empty(p.to_lowercase()).map(Query::Prefix),
         Query::Wildcard(p) => non_empty(p.to_lowercase()).map(Query::Wildcard),
 
+        Query::Search(subs) => combine(subs, analyzer, Query::Search),
         Query::And(subs) => combine(subs, analyzer, Query::And),
         Query::Or(subs) => combine(subs, analyzer, Query::Or),
 
