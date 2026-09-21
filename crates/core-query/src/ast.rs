@@ -6,6 +6,9 @@ pub enum Query {
     Term(String),
     Prefix(String),
     Wildcard(String),
+
+    Search(Vec<Query>),
+
     And(Vec<Query>),
     Or(Vec<Query>),
     Phrase(Vec<String>),

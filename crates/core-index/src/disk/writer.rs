@@ -26,6 +26,10 @@ fn write_u8(out: &mut impl Write, value: u8) -> io::Result<()> {
     out.write_all(&[value])
 }
 
+fn write_u16(out: &mut impl Write, value: u16) -> io::Result<()> {
+    out.write_all(&value.to_le_bytes())
+}
+
 fn write_u32(out: &mut impl Write, value: u32) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
 }
@@ -65,6 +69,7 @@ fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io:
             write_u64(out, meta.postings_offset)?;
             write_u32(out, meta.postings_len)?;
             write_u32(out, meta.doc_freq)?;
+            write_u16(out, meta.max_weight)?;
         }
     }
 
@@ -290,6 +295,7 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
                 postings_offset,
                 postings_len: self.postings_buf.len() as u32,
                 doc_freq: postings.len() as u32,
+                max_weight: postings.max_weight(),
             },
         ));
 

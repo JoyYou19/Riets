@@ -25,10 +25,15 @@
 //! | footer                 |  doc_lengths_offset/len, dictionary_offset/len,
 //! |                        |  columns_offset/len, term_count           (52 bytes)
 //! +------------------------+
+//! //! |    (now with the FST)  |
+//! |                        |    u32 xpath, u32 term_count, u64 fst_len,
+//! |                        |    fst_bytes[fst_len],
+//! |                        |    (u64 postings_offset, u32 postings_len,
+//! |                        |     u32 doc_freq, u16 max_weight) * term_count
 //! ```
 
 pub const MAGIC: [u8; 8] = *b"CLIDX001";
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 pub const HEADER_LEN: usize = 8 + 4;
 pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4;

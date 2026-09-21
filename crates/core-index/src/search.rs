@@ -8,10 +8,25 @@ use crate::{
     wildcard::WildcardPattern,
 };
 
+#[derive(Debug, Clone)]
+pub struct TermPostings {
+    pub postings: PostingList,
+    pub doc_freq: u32,
+    pub max_weight: u16,
+}
+
 // Every searchable segment should implement this, simply functions that we are going to need for
 // every type of segment either it is Immutable, Snapshot or in Memory
 pub trait SearchIndex {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList;
+    fn lookup_term(&self, term: &str, xpath: XPathId) -> TermPostings {
+        let postings = self.lookup(term, xpath);
+        TermPostings {
+            doc_freq: postings.len() as u32,
+            max_weight: postings.max_weight(),
+            postings,
+        }
+    }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList;
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList;
 

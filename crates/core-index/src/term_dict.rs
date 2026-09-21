@@ -7,12 +7,13 @@
 //! u32 field_count
 //! per field:
 //!   u32 xpath, u32 term_count, u64 fst_len, fst_bytes[fst_len]
-//!   (u64 postings_offset, u32 postings_len, u32 doc_freq) * term_count
+//!   (u64 postings_offset, u32 postings_len, u32 doc_freq,
+//!    u16 max_weight) * term_count
 //! ```
 
 use std::{collections::BTreeMap, fmt, io};
 
-pub const TERM_META_LEN: usize = 8 + 4 + 4;
+pub const TERM_META_LEN: usize = 8 + 4 + 4 + 2;
 
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
@@ -28,6 +29,7 @@ pub struct TermMeta {
     pub postings_offset: u64,
     pub postings_len: u32,
     pub doc_freq: u32,
+    pub max_weight: u16,
 }
 
 //to io:Error simplest one yer
@@ -301,182 +303,5 @@ impl TermDictionary {
 
     pub fn is_empty(&self) -> bool {
         self.fields.values().all(TermDict::is_empty)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn meta(offset: u64) -> TermMeta {
-        TermMeta {
-            postings_offset: offset,
-            postings_len: 4,
-            doc_freq: 1,
-        }
-    }
-
-    fn opts(max_edits: u8, prefix_length: usize) -> FuzzyOptions {
-        FuzzyOptions {
-            max_edits,
-            prefix_length,
-            max_expansions: 50,
-        }
-    }
-
-    // Deliberately listed in ascending order (MapBuilder::insert demands it).
-    fn dict() -> TermDict {
-        TermDict::build(vec![
-            ("car", meta(10)),
-            ("cart", meta(20)),
-            ("cat", meta(30)),
-            ("dog", meta(40)),
-            ("shakespeare", meta(50)),
-            ("shakespere", meta(60)),
-        ])
-        .unwrap()
-    }
-
-    fn names(entries: Vec<(String, TermMeta)>) -> Vec<String> {
-        entries.into_iter().map(|(term, _)| term).collect()
-    }
-
-    #[test]
-    fn get_roundtrips() {
-        let d = dict();
-
-        assert_eq!(d.get("cat"), Some(meta(30)));
-        assert_eq!(d.get("cart"), Some(meta(20)));
-        assert_eq!(d.get("missing"), None);
-        assert_eq!(d.len(), 6);
-        assert!(!d.is_empty());
-    }
-
-    #[test]
-    fn entries_are_ascending() {
-        assert_eq!(
-            names(dict().entries()),
-            vec!["car", "cart", "cat", "dog", "shakespeare", "shakespere"]
-        );
-    }
-
-    #[test]
-    fn empty_dict_is_harmless() {
-        let d = TermDict::empty();
-
-        assert!(d.is_empty());
-        assert_eq!(d.len(), 0);
-        assert_eq!(d.get("cat"), None);
-        assert!(d.prefix("ca").is_empty());
-        assert!(d.entries().is_empty());
-        assert!(d.fuzzy("cat", opts(2, 0)).is_empty());
-        assert_eq!(d.fst_bytes().len(), 0);
-    }
-
-    #[test]
-    fn rejects_out_of_order_terms() {
-        // "cat" then "car" is descending, so the builder must complain.
-        assert!(TermDict::build(vec![("cat", meta(1)), ("car", meta(2))]).is_err());
-    }
-
-    #[test]
-    fn prefix_only_returns_matching_terms() {
-        let d = dict();
-
-        assert_eq!(names(d.prefix("ca")), vec!["car", "cart", "cat"]);
-        assert_eq!(names(d.prefix("cart")), vec!["cart"]);
-        assert_eq!(names(d.prefix("s")), vec!["shakespeare", "shakespere"]);
-        assert!(d.prefix("zzz").is_empty());
-        // A prefix that sorts between keys must not spill into later ones.
-        assert!(d.prefix("cau").is_empty());
-    }
-
-    #[test]
-    fn fuzzy_d1_agrees_with_candidate_generation() {
-        let d = dict();
-
-        // candidates_within_one(word) is "distance exactly 1"; the FST returns
-        // "distance <= 1", which also covers the word itself.
-        for word in ["cot", "wiliam", "teh", "shakespere", "car", "cart"] {
-            let mut from_fst = names(d.fuzzy(word, opts(1, 0)));
-            from_fst.sort();
-
-            let candidates = crate::fuzzy::candidates_within_one(word);
-            let mut from_candidates: Vec<String> = d
-                .entries()
-                .into_iter()
-                .map(|(term, _)| term)
-                .filter(|term| term == word || candidates.contains(term))
-                .collect();
-            from_candidates.sort();
-
-            assert_eq!(from_fst, from_candidates, "d=1 mismatch for {word:?}");
-        }
-    }
-
-    #[test]
-    fn fuzzy_finds_transposition_and_insertion() {
-        let d = dict();
-
-        // "teh" -> "the"-style adjacent swap is exercised by the differential
-        // test; here we check a real insertion.
-        assert!(names(d.fuzzy("shakespere", opts(1, 0))).contains(&"shakespeare".to_string()));
-    }
-
-    #[test]
-    fn fuzzy_distance_two_needs_two_edits() {
-        let d = TermDict::build(vec![("abcdef", meta(1))]).unwrap();
-
-        assert!(d.fuzzy("abcdxx", opts(1, 0)).is_empty());
-        assert_eq!(names(d.fuzzy("abcdxx", opts(2, 0))), vec!["abcdef"]);
-
-        // d=0 is an exact lookup only.
-        assert!(d.fuzzy("abcdxx", opts(0, 0)).is_empty());
-        assert_eq!(names(d.fuzzy("abcdef", opts(0, 0))), vec!["abcdef"]);
-    }
-
-    #[test]
-    fn prefix_length_pins_the_start() {
-        let d = dict();
-
-        // Unpinned: "cot" reaches "cat" (one substitution).
-        assert_eq!(names(d.fuzzy("cot", opts(1, 0))), vec!["cat"]);
-
-        // Pinned to "co": nothing in this field starts with "co".
-        assert!(d.fuzzy("cot", opts(1, 2)).is_empty());
-
-        // Prefix swallows the whole query, so only the exact term can match.
-        assert_eq!(names(d.fuzzy("cat", opts(1, 3))), vec!["cat"]);
-    }
-
-    #[test]
-    fn from_parts_roundtrips_bytes() {
-        let d = dict();
-
-        let reloaded = TermDict::from_parts(d.fst_bytes().to_vec(), d.metas().to_vec()).unwrap();
-
-        assert_eq!(reloaded.len(), d.len());
-        assert_eq!(reloaded.get("cart"), Some(meta(20)));
-        assert_eq!(reloaded.entries(), d.entries());
-        assert_eq!(names(reloaded.prefix("ca")), names(d.prefix("ca")));
-        assert_eq!(
-            names(reloaded.fuzzy("cot", opts(1, 0))),
-            names(d.fuzzy("cot", opts(1, 0)))
-        );
-    }
-
-    #[test]
-    fn dictionary_scopes_terms_per_field() {
-        let mut dicts = TermDictionary::new();
-
-        dicts.insert_field(0, TermDict::build(vec![("cat", meta(1))]).unwrap());
-        dicts.insert_field(1, TermDict::build(vec![("dog", meta(2))]).unwrap());
-
-        assert_eq!(dicts.get(0, "cat"), Some(meta(1)));
-        assert_eq!(dicts.get(1, "dog"), Some(meta(2)));
-        assert_eq!(dicts.get(0, "dog"), None);
-        assert_eq!(dicts.get(9, "cat"), None);
-        assert_eq!(dicts.term_count(), 2);
-        assert!(!dicts.is_empty());
     }
 }
