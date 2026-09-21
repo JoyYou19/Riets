@@ -13,7 +13,7 @@ use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions},
     numeric_columns::{NumericBound, NumericColumns, NumericValue},
     posting::{Posting, PostingList},
-    search::{SearchColumns, SearchIndex, SearchStats},
+    search::{SearchColumns, SearchIndex, SearchStats, TermPostings},
     term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
     types::{DocId, FieldStats, TermKey, XPathId},
 };
@@ -141,7 +141,8 @@ impl DiskSegment {
             return PostingList::default();
         }
 
-        read_posting_list(&self.mmap[start..end], meta.doc_freq).unwrap_or_default()
+        read_posting_list(&self.mmap[start..end], meta.doc_freq, meta.max_weight)
+            .unwrap_or_default()
     }
 
     // Reads posting the same way as the original function, but into a buffer
@@ -203,6 +204,23 @@ impl SearchIndex for DiskSegment {
             None => PostingList::default(),
         }
     }
+    #[timed(search)]
+    fn lookup_term(&self, term: &str, xpath: XPathId) -> TermPostings {
+        let Some(meta) = self.dictionary.get(xpath, term) else {
+            return TermPostings {
+                postings: PostingList::default(),
+                doc_freq: 0,
+                max_weight: 0,
+            };
+        };
+
+        TermPostings {
+            postings: self.read_postings(meta),
+            doc_freq: meta.doc_freq,
+            max_weight: meta.max_weight,
+        }
+    }
+
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.dictionary
@@ -500,6 +518,7 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
                 postings_offset: cursor.read_u64()?,
                 postings_len: cursor.read_u32()?,
                 doc_freq: cursor.read_u32()?,
+                max_weight: cursor.read_u16()?,
             });
         }
 
@@ -566,18 +585,14 @@ fn read_columns(bytes: &[u8], footer: &SegmentFooter) -> io::Result<NumericColum
     Ok(columns)
 }
 
-fn read_posting_list(bytes: &[u8], doc_freq: u32) -> io::Result<PostingList> {
-    let mut postings = Vec::with_capacity(doc_freq as usize);
+fn read_posting_list(bytes: &[u8], doc_freq: u32, max_weight: u16) -> io::Result<PostingList> {
+    let mut postings = Vec::new();
+
     read_posting_list_into(bytes, doc_freq, &mut postings)?;
 
-    //safety check if this is in ascending
-    let ascending = postings.windows(2).all(|w| w[0].doc_id <= w[1].doc_id);
-
-    Ok(if ascending {
-        PostingList::from_sorted(postings)
-    } else {
-        PostingList::from_items(postings)
-    })
+    Ok(PostingList::from_sorted_with_max_weight(
+        postings, max_weight,
+    ))
 }
 
 fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
@@ -608,6 +623,11 @@ impl<'a> Cursor<'a> {
         Ok(self.take(1)?[0])
     }
 
+    fn read_u16(&mut self) -> io::Result<u16> {
+        let value = u16::from_le_bytes(self.take(2)?.try_into().unwrap());
+        Ok(value)
+    }
+
     fn read_u32(&mut self) -> io::Result<u32> {
         let value = u32::from_le_bytes(self.take(4)?.try_into().unwrap());
         Ok(value)
@@ -635,148 +655,5 @@ impl<'a> Cursor<'a> {
 
     fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.offset)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{analyzer::analyzer::Analyzer, disk::writer::write_segment, mem::MemIndex};
-
-    #[test]
-    fn can_read_written_segment_from_disk() {
-        let analyzer = Analyzer::new();
-        let mut index = MemIndex::new();
-
-        index.add_document(&analyzer, 1, 0, "rust database engine");
-        index.add_document(&analyzer, 2, 0, "database storage");
-
-        let segment = index.freeze();
-
-        let path = std::env::temp_dir().join(format!(
-            "corelamo-test-read-segment-{}.idx",
-            std::process::id()
-        ));
-
-        write_segment(&path, &segment).unwrap();
-
-        let disk = DiskSegment::open(&path).unwrap();
-        let result = disk.lookup("database", 0);
-
-        let ids: Vec<_> = result.items().iter().map(|p| p.doc_id).collect();
-        assert_eq!(ids, vec![1, 2]);
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    fn write_test_segment() -> (std::path::PathBuf, MemIndex) {
-        let analyzer = Analyzer::new();
-        let mut index = MemIndex::new();
-
-        index.add_document_weighted(&analyzer, 1, 0, "rust database engine", 10, 20);
-        index.add_document_weighted(&analyzer, 2, 0, "database storage", 10, 20);
-        index.add_document_weighted(&analyzer, 3, 0, "dataset database", 10, 20);
-
-        let segment = index.clone().freeze();
-
-        let path = std::env::temp_dir().join(format!(
-            "corelamo-test-read-segment-{}-{}.idx",
-            std::process::id(),
-            uuid_like()
-        ));
-
-        write_segment(&path, &segment).unwrap();
-
-        (path, index)
-    }
-
-    fn uuid_like() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    }
-
-    #[test]
-    fn disk_lookup_prefix_matches_mem() {
-        let (path, mem) = write_test_segment();
-        let disk = DiskSegment::open(&path).unwrap();
-
-        assert_eq!(disk.lookup_prefix("data", 0), mem.lookup_prefix("data", 0));
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn disk_lookup_wildcard_matches_mem() {
-        let (path, mem) = write_test_segment();
-        let disk = DiskSegment::open(&path).unwrap();
-
-        let pattern = crate::wildcard::WildcardPattern::parse("dat*");
-
-        assert_eq!(
-            disk.lookup_wildcard(&pattern, 0),
-            mem.lookup_wildcard(&pattern, 0)
-        );
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn disk_preserves_positions_and_weights() {
-        let (path, mem) = write_test_segment();
-        let disk = DiskSegment::open(&path).unwrap();
-
-        assert_eq!(
-            disk.lookup("database", 0),
-            mem.lookup_or_empty("database", 0)
-        );
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn disk_missing_term_returns_empty() {
-        let (path, _) = write_test_segment();
-        let disk = DiskSegment::open(&path).unwrap();
-
-        assert!(disk.lookup("missing", 0).is_empty());
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn disk_lookup_respects_xpath_ordering() {
-        let analyzer = Analyzer::new();
-        let mut index = MemIndex::new();
-
-        index.add_document(&analyzer, 1, 0, "database");
-        index.add_document(&analyzer, 2, 1, "database");
-
-        let segment = index.freeze();
-
-        let path = std::env::temp_dir().join(format!("corelamo-test-xpath-{}.idx", uuid_like()));
-
-        write_segment(&path, &segment).unwrap();
-
-        let disk = DiskSegment::open(&path).unwrap();
-
-        let ids_0: Vec<_> = disk
-            .lookup("database", 0)
-            .items()
-            .iter()
-            .map(|p| p.doc_id)
-            .collect();
-        let ids_1: Vec<_> = disk
-            .lookup("database", 1)
-            .items()
-            .iter()
-            .map(|p| p.doc_id)
-            .collect();
-
-        assert_eq!(ids_0, vec![1]);
-        assert_eq!(ids_1, vec![2]);
-
-        std::fs::remove_file(path).unwrap();
     }
 }

@@ -1,8 +1,11 @@
-use std::{cmp::Ordering, collections::BinaryHeap};
+use std::{
+    cmp::Ordering,
+    collections::{BinaryHeap, HashSet},
+};
 
 use core_index::{
     posting::{PostingList, cursor::PostingCursor},
-    search::SearchStats,
+    search::{SearchStats, TermPostings},
     types::{DocId, XPathId},
 };
 use core_timing::timed;
@@ -23,14 +26,7 @@ pub struct WandTerm<'a> {
 }
 
 impl<'a> WandTerm<'a> {
-    pub fn new(postings: &'a PostingList, doc_freq: u32, doc_count: u64) -> Self {
-        let max_weight = postings
-            .items()
-            .iter()
-            .map(|posting| posting.weight)
-            .max()
-            .unwrap_or(0);
-
+    pub fn new(postings: &'a PostingList, doc_freq: u32, max_weight: u16, doc_count: u64) -> Self {
         Self {
             cursor: PostingCursor::new(postings),
             doc_freq,
@@ -122,24 +118,20 @@ fn finish_heap(heap: BinaryHeap<HeapHit>) -> Vec<WandHit> {
 pub fn wand_top_k<S: SearchStats>(
     stats: &S,
     xpath: XPathId,
-    posting_lists: &[PostingList],
-    doc_frequencies: &[u32],
+    term_postings: &[TermPostings],
     k: usize,
+    restrict: Option<&HashSet<DocId>>,
 ) -> Vec<WandHit> {
-    if k == 0 || posting_lists.is_empty() {
+    if k == 0 || term_postings.is_empty() {
         return Vec::new();
     }
-
-    // FIX: THIS ASSERTION IS ONLY FOR NOW FOR TESTING PORUPSR
-    assert_eq!(posting_lists.len(), doc_frequencies.len());
 
     let doc_count = stats.doc_count(xpath);
     let avg_doc_len = stats.avg_doc_len(xpath);
 
-    let mut terms: Vec<WandTerm<'_>> = posting_lists
+    let mut terms: Vec<WandTerm<'_>> = term_postings
         .iter()
-        .zip(doc_frequencies.iter().copied())
-        .map(|(postings, doc_frequency)| WandTerm::new(postings, doc_frequency, doc_count))
+        .map(|term| WandTerm::new(&term.postings, term.doc_freq, term.max_weight, doc_count))
         .filter(|term| !term.cursor.is_exhausted())
         .collect();
 
@@ -186,33 +178,35 @@ pub fn wand_top_k<S: SearchStats>(
         let smallest_doc = terms[0].cursor.doc_id().unwrap();
 
         if smallest_doc == pivot_doc {
-            let doc_len = stats
-                .doc_len(pivot_doc, xpath)
-                .unwrap_or(avg_doc_len as u32);
+            let allowed = restrict.is_none_or(|docs| docs.contains(&pivot_doc));
 
-            let mut score = 0u64;
-            let mut matched_terms = 0usize;
+            if allowed {
+                let doc_len = stats
+                    .doc_len(pivot_doc, xpath)
+                    .unwrap_or(avg_doc_len as u32);
 
-            for term in &terms {
-                if term.cursor.doc_id() != Some(pivot_doc) {
-                    continue;
+                let mut score = 0u64;
+                let mut matched_terms = 0usize;
+
+                for term in &terms {
+                    if term.cursor.doc_id() == Some(pivot_doc) {
+                        let posting = term.cursor.current().unwrap();
+
+                        score = score.saturating_add(bm25_score_scaled(
+                            posting.positions.len() as u32,
+                            posting.weight,
+                            doc_len,
+                            avg_doc_len,
+                            doc_count,
+                            term.doc_freq,
+                        ));
+
+                        matched_terms += 1;
+                    }
                 }
 
-                let posting = term.cursor.current().unwrap();
-
-                score = score.saturating_add(bm25_score_scaled(
-                    posting.positions.len() as u32,
-                    posting.weight,
-                    doc_len,
-                    avg_doc_len,
-                    doc_count,
-                    term.doc_freq,
-                ));
-
-                matched_terms += 1;
+                push_top_k(&mut heap, pivot_doc, score, matched_terms, k);
             }
-
-            push_top_k(&mut heap, pivot_doc, score, matched_terms, k);
 
             for term in &mut terms {
                 if term.cursor.doc_id() == Some(pivot_doc) {
@@ -235,27 +229,24 @@ pub fn wand_top_k<S: SearchStats>(
 pub fn conjunctive_top_k<S: SearchStats>(
     stats: &S,
     xpath: XPathId,
-    posting_lists: &[PostingList],
-    doc_frequencies: &[u32],
+    term_postings: &[TermPostings],
     k: usize,
+    restrict: Option<&HashSet<DocId>>,
 ) -> Vec<WandHit> {
-    if k == 0 || posting_lists.is_empty() {
+    if k == 0 || term_postings.is_empty() {
         return Vec::new();
     }
 
-    assert_eq!(posting_lists.len(), doc_frequencies.len());
-
-    if posting_lists.iter().any(PostingList::is_empty) {
+    if term_postings.iter().any(|term| term.postings.is_empty()) {
         return Vec::new();
     }
 
     let doc_count = stats.doc_count(xpath);
     let avg_doc_len = stats.avg_doc_len(xpath);
 
-    let mut terms: Vec<WandTerm<'_>> = posting_lists
+    let mut terms: Vec<WandTerm<'_>> = term_postings
         .iter()
-        .zip(doc_frequencies.iter().copied())
-        .map(|(postings, doc_frequency)| WandTerm::new(postings, doc_frequency, doc_count))
+        .map(|term| WandTerm::new(&term.postings, term.doc_freq, term.max_weight, doc_count))
         .collect();
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
@@ -265,8 +256,6 @@ pub fn conjunctive_top_k<S: SearchStats>(
             break;
         }
 
-        // For all terms to match every cursor eventually has to reach at
-        // least the greatest current doc_id
         let target = terms
             .iter()
             .map(|term| term.cursor.doc_id().unwrap())
@@ -281,8 +270,6 @@ pub fn conjunctive_top_k<S: SearchStats>(
             break;
         }
 
-        // A cursor may have jumped beyond target if so, that new document
-        // becomes the next target on the following iteration
         if terms
             .iter()
             .any(|term| term.cursor.doc_id() != Some(target))
@@ -290,24 +277,30 @@ pub fn conjunctive_top_k<S: SearchStats>(
             continue;
         }
 
-        let doc_len = stats.doc_len(target, xpath).unwrap_or(avg_doc_len as u32);
+        // All query terms match this document
+        // Only score it if the external filter allows it
+        let allowed = restrict.is_none_or(|docs| docs.contains(&target));
 
-        let mut score = 0u64;
+        if allowed {
+            let doc_len = stats.doc_len(target, xpath).unwrap_or(avg_doc_len as u32);
 
-        for term in &terms {
-            let posting = term.cursor.current().unwrap();
+            let mut score = 0u64;
 
-            score = score.saturating_add(bm25_score_scaled(
-                posting.positions.len() as u32,
-                posting.weight,
-                doc_len,
-                avg_doc_len,
-                doc_count,
-                term.doc_freq,
-            ));
+            for term in &terms {
+                let posting = term.cursor.current().unwrap();
+
+                score = score.saturating_add(bm25_score_scaled(
+                    posting.positions.len() as u32,
+                    posting.weight,
+                    doc_len,
+                    avg_doc_len,
+                    doc_count,
+                    term.doc_freq,
+                ));
+            }
+
+            push_top_k(&mut heap, target, score, terms.len(), k);
         }
-
-        push_top_k(&mut heap, target, score, terms.len(), k);
 
         for term in &mut terms {
             term.cursor.next();
