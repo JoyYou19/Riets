@@ -480,7 +480,7 @@ impl ShardDb {
 
             if not_flushed {
                 db.flush().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-                self.pending = 0;
+               
                 self.wal
                     .reset()
                     .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
@@ -990,7 +990,9 @@ impl ShardDb {
         completed: CompletedSegmentCompaction
     ) -> io::Result<bool> {
         let db = self.db_mut().map_err(io::Error::other)?;
-        db.mut_store().install_segment_compaction(completed)
+        let result = db.mut_store().install_segment_compaction(completed)?;
+        self.publish_stats();
+        Ok(result)
     }
 
     #[timed(database_lifecycle)]

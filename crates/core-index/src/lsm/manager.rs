@@ -28,7 +28,7 @@ pub struct LsmIndex {
     query_segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
     flush_threshold: usize,
     deleted: DeleteSet,
-
+    delete_generation:u64,
     root: Option<PathBuf>,
     next_segment_id: u64,
     next_compaction_job_id: u64,
@@ -112,6 +112,7 @@ impl LsmIndex {
             query_segments: Arc::new(Vec::new()),
             flush_threshold,
             deleted: DeleteSet::new(),
+            delete_generation:0,
             root: None,
             next_segment_id: 0,
             next_compaction_job_id: 0,
@@ -128,7 +129,8 @@ impl LsmIndex {
         let mut segment_handles = Vec::new();
         let mut query_segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::new();
         let mut next_segment_id = 0;
-
+        let deleted = crate::lsm::deletes::read_deletes(&root)?;
+        // let mut deleted_generation= 
         for path in segment_paths {
             let disk = DiskSegment::open(&path)?;
 
@@ -147,7 +149,7 @@ impl LsmIndex {
             query_segments.push(disk);
         }
 
-        let deleted = crate::lsm::deletes::read_deletes(&root)?;
+        
 
         Ok(Self {
             mem: Arc::new(MemIndex::new()),
@@ -155,6 +157,7 @@ impl LsmIndex {
             query_segments: Arc::new(query_segments),
             flush_threshold,
             deleted,
+            delete_generation:0, //incorrect
             root: Some(root),
             next_segment_id,
             next_compaction_job_id: 0,
@@ -171,7 +174,7 @@ impl LsmIndex {
     ) -> io::Result<()> {
         Arc::make_mut(&mut self.mem).add_document(analyzer, doc_id, xpath, text);
 
-        if self.mem.term_count() >= self.flush_threshold {
+        if self.mem.estimated_size_bytes() >= self.flush_threshold {
             self.flush()?;
         }
 
@@ -186,7 +189,7 @@ impl LsmIndex {
     ) -> io::Result<()> {
         Arc::make_mut(&mut self.mem).add_indexed_document(analyzer, document);
 
-        if self.mem.term_count() >= self.flush_threshold {
+        if self.mem.estimated_size_bytes() >= self.flush_threshold {
             self.flush()?;
         }
 
@@ -344,15 +347,7 @@ impl LsmIndex {
 
         by_size.sort_by_key(|(size, index, _)| (*size, *index));
 
-        let selected: Vec<SegmentHandle> = by_size
-            .iter()
-            .take(config.max_segments_per_compaction)
-            .map(|(_, _, handle)| handle.clone())
-            .collect();
-
-        if selected.len() < 2 {
-            return Ok(None);
-        }
+        
 
         let output_path = root.join(format!("segment-{}.idx", self.next_segment_id));
         self.next_segment_id += 1;
@@ -360,11 +355,47 @@ impl LsmIndex {
         let job_id = self.next_compaction_job_id;
         self.next_compaction_job_id += 1;
 
+        let mut best_run: Option<(usize, usize)> = None; // (start, len) into by_size
+        let mut start = 0usize;
+        while start < by_size.len() {
+            let smallest_in_run = by_size[start].0.max(1);
+            let mut end = start + 1;
+            
+            while end < by_size.len() && end - start < config.max_segments_per_compaction {
+                let candidate_size = by_size[end].0;
+                if candidate_size > smallest_in_run * config.max_segment_ratio {
+                    break;
+                }
+               
+                
+                end += 1;
+            }
+            let len = end - start;
+            if len >= 2 {
+                let better = best_run.map_or(true, |(_, best_len)| len > best_len);
+                if better {
+                    best_run = Some((start, len));
+                }
+            }
+
+            start += 1;
+        }
+         let Some((run_start, run_len)) = best_run else {
+            return Ok(None);
+        };
+
+        let selected: Vec<SegmentHandle> = by_size[run_start..run_start + run_len]
+            .iter()
+            .map(|(_, _, handle)| handle.clone())
+            .collect();
+
+
         Ok(
             Some(CompactionJob {
                 job_id,
                 selected,
                 deleted: self.deleted.clone(),
+                delete_generation:self.delete_generation,
                 output_path,
             })
         )
@@ -396,14 +427,15 @@ impl LsmIndex {
         let segs = Arc::make_mut(&mut self.query_segments);
         positions.sort_unstable();
         positions.dedup();
+        let insert_pos=positions[0];
         for pos in positions.into_iter().rev() {
             self.segment_handles.remove(pos);
             segs.remove(pos);
         }
 
-        self.segment_handles.insert(0, SegmentHandle::Disk(completed.output_path.clone()));
+        self.segment_handles.insert(insert_pos, SegmentHandle::Disk(completed.output_path.clone()));
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
-        segs.insert(0, disk);
+        segs.insert(insert_pos, disk);
 
         let disk_paths: Vec<PathBuf> = self.segment_handles
             .iter()
@@ -423,7 +455,7 @@ impl LsmIndex {
             }
         }
 
-        if merged_all {
+        if merged_all && completed.delete_generation == self.delete_generation{
             self.deleted = DeleteSet::new();
             crate::lsm::deletes::clear_deletes(root)?;
         }
@@ -434,6 +466,7 @@ impl LsmIndex {
     #[timed(modifying_documents)]
     pub fn delete_document(&mut self, doc_id: DocId) -> io::Result<()> {
         self.deleted.delete(doc_id);
+        self.delete_generation+=1;
 
         if let Some(root) = &self.root {
             crate::lsm::deletes::append_delete(root, doc_id)?;

@@ -18,9 +18,9 @@ pub struct IndexRuntimeConfig {
 impl Default for IndexRuntimeConfig {
     fn default() -> Self {
         Self {
-            flush_threshold: 1_000_000,
-            indexing_window_size: 4,
-            indexing_batch_size: 10_000,
+            flush_threshold: 100 * 1024 * 1024,
+            indexing_window_size: 8,
+            indexing_batch_size: 100_000,
             compaction: CompactionConfig::default(),
         }
     }

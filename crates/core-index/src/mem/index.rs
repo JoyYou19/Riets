@@ -18,6 +18,7 @@ pub struct MemIndex {
     doc_lengths: ahash::HashMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     columns: NumericColumns,
+    estimated_bytes:usize,
 }
 
 impl Default for MemIndex {
@@ -27,6 +28,7 @@ impl Default for MemIndex {
             doc_lengths: ahash::HashMap::default(),
             field_stats: BTreeMap::new(),
             columns: NumericColumns::default(),
+            estimated_bytes:0
         }
     }
 }
@@ -116,6 +118,7 @@ impl MemIndex {
             doc_lengths: ahash::HashMap::new(),
             field_stats: BTreeMap::new(),
             columns: NumericColumns::new(),
+            estimated_bytes:0,
         }
     }
     pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
@@ -124,6 +127,7 @@ impl MemIndex {
             doc_lengths: ahash::HashMap::with_capacity(expected_docs),
             field_stats: BTreeMap::new(),
             columns: NumericColumns::new(),
+            estimated_bytes:0,
         }
     }
 
@@ -157,6 +161,15 @@ impl MemIndex {
     ) {
         let key = TermKey::new(term, xpath);
 
+        if !self.terms.contains_key(&key) {
+            self.estimated_bytes += key.term.len() + std::mem::size_of::<TermKey>();
+        }
+        // one position added to a posting: doc_id + one u32 position, plus
+        // per-entry posting overhead (weight, small header). Approximate —
+        // this doesn't need to be exact, just proportional to real growth.
+        self.estimated_bytes +=
+            std::mem::size_of::<DocId>() + std::mem::size_of::<u32>() + std::mem::size_of::<u16>();
+
         self.terms
             .entry(key)
             .or_default()
@@ -173,7 +186,12 @@ impl MemIndex {
         weight: u16,
     ) {
         let key = TermKey::new(term, xpath);
-
+        if !self.terms.contains_key(&key) {
+            self.estimated_bytes += key.term.len() + std::mem::size_of::<TermKey>();
+        }
+        self.estimated_bytes += std::mem::size_of::<DocId>()
+             + std::mem::size_of::<u16>()
+             + positions.len() * std::mem::size_of::<u32>();
         self.terms
             .entry(key)
             .or_default()
@@ -186,6 +204,9 @@ impl MemIndex {
 
     pub fn term_count(&self) -> usize {
         self.terms.len()
+    }
+    pub fn estimated_size_bytes(&self) -> usize {
+        self.estimated_bytes
     }
 
     #[timed(indexing_documents)]

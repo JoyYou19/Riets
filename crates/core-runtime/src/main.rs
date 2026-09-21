@@ -36,7 +36,8 @@ mod doctypes;
 mod handlers;
 mod http_response;
 mod middleware;
-
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[derive(Clone)]
 pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, Arc<ShardManager>>>>,
