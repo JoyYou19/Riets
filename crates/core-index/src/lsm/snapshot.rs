@@ -1,25 +1,22 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::{ Arc, atomic::{ AtomicU64, Ordering } };
 
 use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions },
     mem::MemIndex,
-    numeric_columns::{NumericBound, NumericValue},
-    posting::{DeleteSet, PostingList, ops::union_many},
-    search::{SearchColumns, SearchIndex, SearchReader, SearchStats},
-    types::{DocId, XPathId},
+    numeric_columns::{ NumericBound, NumericValue },
+    posting::{ DeleteSet, PostingList, ops::union_many },
+    search::{ SearchColumns, SearchIndex, SearchReader, SearchStats },
+    types::{ DocId, XPathId },
     wildcard::WildcardPattern,
 };
 
 /*
-* This is a stable view of a current mem + query segments + deletes, so things like querying should
-* go through here
-*/
+ * This is a stable view of a current mem + query segments + deletes, so things like querying should
+ * go through here
+ */
 #[derive(Default, Clone)]
 pub struct IndexSnapshot {
     mem: Arc<MemIndex>,
@@ -67,19 +64,18 @@ impl SearchIndex for IndexSnapshot {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
-        let mut out: std::collections::BTreeMap<String, FuzzyExpansion> =
-            std::collections::BTreeMap::new();
+        let mut out: std::collections::BTreeMap<
+            String,
+            FuzzyExpansion
+        > = std::collections::BTreeMap::new();
 
-        let all = self
-            .mem
+        let all = self.mem
             .fuzzy_expansions(term, xpath, opts)
             .into_iter()
             .chain(
-                self.segments
-                    .iter()
-                    .flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts)),
+                self.segments.iter().flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts))
             );
 
         for expansion in all {
@@ -101,7 +97,7 @@ impl SearchColumns for IndexSnapshot {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> PostingList {
         let mut lists = Vec::new();
 
@@ -163,7 +159,7 @@ impl IndexSnapshot {
     pub fn new(
         mem: Arc<MemIndex>,
         segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
-        deleted: DeleteSet,
+        deleted: DeleteSet
     ) -> Self {
         Self {
             mem,
@@ -183,15 +179,20 @@ impl IndexSnapshot {
 
     #[timed(search)]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
-        let mut lists = Vec::new();
+        let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
 
-        lists.push(self.mem.lookup_or_empty(term, xpath));
+        let segment_lists: Vec<PostingList> = self.segments
+            .iter()
+            .map(|segment| segment.lookup(term, xpath))
+            .collect();
 
-        for segment in self.segments.iter() {
-            lists.push(segment.lookup(term, xpath));
+        let mut lists: Vec<&PostingList> = Vec::with_capacity(1 + segment_lists.len());
+        if let Some(list) = mem_list {
+            lists.push(list);
         }
+        lists.extend(segment_lists.iter());
 
-        self.apply_deletes(union_many(lists.iter()))
+        self.apply_deletes(union_many(lists))
     }
 
     #[timed(search)]
