@@ -1,10 +1,12 @@
 pub mod analyzer;
+pub mod bkd;
 pub mod disk;
 pub mod document;
+pub mod document_values;
 pub mod fuzzy;
 pub mod lsm;
 pub mod mem;
-pub mod numeric_columns;
+pub mod numeric_values;
 pub mod posting;
 pub mod search;
 pub mod segment;

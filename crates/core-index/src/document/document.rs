@@ -1,19 +1,19 @@
 use crate::{
     document::policy::WeightInterval,
-    numeric_columns::NumericValue,
+    numeric_values::NumericValue,
     types::{DocId, XPathId},
 };
 
 // Represents one entry in the database documents
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct IndexedDocument {
     pub doc_id: DocId,
     pub parts: Vec<DocumentPart>,
-    pub columns: Vec<ColumnPart>,
+    pub numeric_points: Vec<NumericPoint>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColumnPart {
+#[derive(Debug, Clone)]
+pub struct NumericPoint {
     pub xpath: XPathId,
     pub value: NumericValue,
 }
@@ -23,12 +23,12 @@ impl IndexedDocument {
         Self {
             doc_id,
             parts: Vec::new(),
-            columns: Vec::new(),
+            numeric_points: Vec::new(),
         }
     }
 
-    pub fn with_column(mut self, xpath: XPathId, value: NumericValue) -> Self {
-        self.columns.push(ColumnPart { xpath, value });
+    pub fn with_numeric_point(mut self, xpath: XPathId, value: NumericValue) -> Self {
+        self.numeric_points.push(NumericPoint { xpath, value });
         self
     }
 

@@ -80,7 +80,7 @@ impl<'a> DocumentConversion for Json<'a> {
         }
 
         //If a single document was given
-       let mut buf = self.body.as_bytes().to_vec();
+        let mut buf = self.body.as_bytes().to_vec();
         let value: Value = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
         let mut docs = Vec::new();
         let mut indices = Vec::new();
@@ -116,7 +116,7 @@ fn parse_raw_items_sequential(raw_items: &[Value], policy: &IndexPolicy) -> Pars
     let mut docs = Vec::with_capacity(raw_items.len());
     let mut indices = Vec::with_capacity(raw_items.len());
     let mut failures = Vec::new();
-    let mut path_buf =String::with_capacity(64);
+    let mut path_buf = String::with_capacity(64);
     for (index, raw) in raw_items.iter().enumerate() {
         match parse_one(index, raw, policy, &mut path_buf) {
             Ok(doc) => {
@@ -134,7 +134,7 @@ fn parse_raw_items_sequential(raw_items: &[Value], policy: &IndexPolicy) -> Pars
 }
 
 #[timed(json_parsing)]
-fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy, ) -> ParseOutcome {
+fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy) -> ParseOutcome {
     let results: Vec<Result<DocumentInput, DocFailure>> = raw_items
         .par_iter()
         .enumerate()
@@ -169,7 +169,12 @@ fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy, ) -> Pars
 }
 
 #[timed(json_parsing)]
-fn parse_one(index: usize, value: &Value, policy: &IndexPolicy, path_buf:&mut String) -> Result<DocumentInput, DocFailure> {
+fn parse_one(
+    index: usize,
+    value: &Value,
+    policy: &IndexPolicy,
+    path_buf: &mut String,
+) -> Result<DocumentInput, DocFailure> {
     let source = simd_json::to_vec(value)
         .map_err(|e| DocFailure::at(index, FailReason::InvalidJson(e.to_string())))?;
 

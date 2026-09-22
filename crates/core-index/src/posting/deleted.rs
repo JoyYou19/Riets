@@ -27,6 +27,13 @@ impl DeleteSet {
         self.deleted.contains(&doc_id)
     }
 
+    pub fn filter_in_place(&self, list: &mut PostingList) {
+        if self.is_empty() {
+            return;
+        }
+        list.retain(|posting| !self.is_deleted(posting.doc_id));
+    }
+
     #[timed(search)]
     pub fn filter(&self, list: &PostingList) -> PostingList {
         if self.is_empty() {

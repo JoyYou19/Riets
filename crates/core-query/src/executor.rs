@@ -5,7 +5,7 @@ use core_index::{
         Posting, PostingList,
         ops::{intersect_ids, intersection, restrict_to, union},
     },
-    search::{SearchColumns, SearchIndex, SearchStats, TermPostings},
+    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
     types::{DocId, XPathId},
 };
 use std::{
@@ -70,7 +70,7 @@ where
 
 impl<'a, I> QueryExecutor<'a, I>
 where
-    I: SearchIndex + SearchStats + SearchColumns,
+    I: SearchIndex + SearchStats + SearchNumeric,
 {
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self { index, analyzer }
@@ -585,7 +585,7 @@ where
                 },
                 MatchOp::Range { lo, hi } => self
                     .index
-                    .column_range(filter.xpath, *lo, *hi)
+                    .numeric_range(filter.xpath, *lo, *hi)
                     .items()
                     .iter()
                     .map(|p| p.doc_id)
@@ -617,6 +617,8 @@ where
             return Vec::new();
         }
 
+        //if query was like ">2000" its not a text query and would automatically be just considered
+        //a filter
         let Some(query) = query else {
             return match restrict {
                 Some(allowed) => {

@@ -114,6 +114,10 @@ impl PostingList {
         }
     }
 
+    pub fn retain(&mut self, mut keep: impl FnMut(&Posting) -> bool) {
+        self.items.retain(|posting| keep(posting));
+    }
+
     #[timed(indexing_documents)]
     pub fn insert_posting(&mut self, doc_id: DocId, mut positions: Vec<Position>, weight: u16) {
         if positions.is_empty() {

@@ -11,7 +11,7 @@ use crate::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
         format::{SegmentFooter, SegmentHeader},
     },
-    numeric_columns::{NumericColumns, NumericValue},
+    numeric_values::{NumericFields, NumericKind},
     posting::PostingList,
     segment::ImmutableSegment,
     term_dict::{TermDict, TermMeta},
@@ -49,8 +49,8 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
     write_u64(out, footer.doc_lengths_len)?;
     write_u64(out, footer.dictionary_offset)?;
     write_u64(out, footer.dictionary_len)?;
-    write_u64(out, footer.columns_offset)?;
-    write_u64(out, footer.columns_len)?;
+    write_u64(out, footer.numeric_fields_offset)?;
+    write_u64(out, footer.numeric_fields_len)?;
     write_u32(out, footer.term_count)
 }
 
@@ -76,25 +76,26 @@ fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io:
     Ok(())
 }
 
-fn write_columns(out: &mut impl Write, columns: &NumericColumns) -> io::Result<()> {
-    write_u32(out, columns.iter().count() as u32)?;
+fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Result<()> {
+    write_u32(out, fields.iter().count() as u32)?;
 
-    for (xpath, column) in columns.iter() {
+    for (xpath, field) in fields.iter() {
         write_u32(out, xpath)?;
-        write_u32(out, column.len() as u32)?;
 
-        for (value, doc_id) in column.entries() {
-            match value {
-                NumericValue::Int(v) => {
-                    write_u8(out, 0)?;
-                    write_u64(out, v as u64)?;
-                }
-                NumericValue::Float(v) => {
-                    write_u8(out, 1)?;
-                    write_u64(out, v.to_bits())?;
-                }
-            }
+        write_u8(out, field.bkd.kind().to_byte())?;
+
+        // BKD: sorted by packed value (range queries).
+        write_u32(out, field.bkd.len() as u32)?;
+        for &(packed, doc_id) in field.bkd.points() {
+            write_u64(out, packed)?;
             write_u64(out, doc_id)?;
+        }
+
+        // DocValues: sorted by doc_id (point lookups).
+        write_u32(out, field.doc_values.len() as u32)?;
+        for &(doc_id, packed) in field.doc_values.entries() {
+            write_u64(out, doc_id)?;
+            write_u64(out, packed)?;
         }
     }
 
@@ -132,17 +133,17 @@ pub fn write_segment_to<W: Write + Seek>(
     write_dictionary(out, &fields)?;
     let dictionary_end = out.stream_position()?;
 
-    let columns_offset = out.stream_position()?;
-    write_columns(out, segment.columns())?;
-    let columns_end = out.stream_position()?;
+    let numeric_fields_offset = out.stream_position()?;
+    write_numeric_fields(out, segment.numeric_fields())?;
+    let numeric_fields_end = out.stream_position()?;
 
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
         dictionary_offset,
         dictionary_len: dictionary_end - dictionary_offset,
-        columns_offset,
-        columns_len: columns_end - columns_offset,
+        numeric_fields_offset,
+        numeric_fields_len: numeric_fields_end - numeric_fields_offset,
         term_count,
     };
 
@@ -197,11 +198,11 @@ pub fn write_merged_segment(
     path: impl AsRef<Path>,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
-    columns: &NumericColumns,
+    numeric_fields: &NumericFields,
 ) -> io::Result<()> {
     let file = File::create(path)?;
     let mut out = BufWriter::new(file);
-    write_merged_segment_to(&mut out, terms, doc_lengths, columns)?;
+    write_merged_segment_to(&mut out, terms, doc_lengths, numeric_fields)?;
     out.flush()
 }
 
@@ -210,7 +211,7 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     out: &mut W,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
-    columns: &NumericColumns,
+    numeric_fields: &NumericFields,
 ) -> io::Result<()> {
     write_header(out)?;
 
@@ -231,17 +232,17 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     write_dictionary(out, &fields)?;
     let dictionary_end = out.stream_position()?;
 
-    let columns_offset = out.stream_position()?;
-    write_columns(out, columns)?;
-    let columns_end = out.stream_position()?;
+    let numeric_fields_offset = out.stream_position()?;
+    write_numeric_fields(out, numeric_fields)?;
+    let numeric_fields_end = out.stream_position()?;
 
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
         dictionary_offset,
         dictionary_len: dictionary_end - dictionary_offset,
-        columns_offset,
-        columns_len: columns_end - columns_offset,
+        numeric_fields_offset,
+        numeric_fields_len: numeric_fields_end - numeric_fields_offset,
         term_count,
     };
 

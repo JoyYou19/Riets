@@ -6,10 +6,10 @@ use core_timing::timed;
 use crate::{
     fuzzy::{ FuzzyExpansion, FuzzyOptions },
     mem::MemIndex,
-    numeric_columns::{ NumericBound, NumericValue },
-    posting::{ DeleteSet, PostingList, ops::union_many },
-    search::{ SearchColumns, SearchIndex, SearchReader, SearchStats },
-    types::{ DocId, XPathId },
+    numeric_values::{NumericBound, NumericValue},
+    posting::{DeleteSet, PostingList, ops::union_many},
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
+    types::{DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -92,8 +92,8 @@ impl SearchIndex for IndexSnapshot {
     }
 }
 
-impl SearchColumns for IndexSnapshot {
-    fn column_range(
+impl SearchNumeric for IndexSnapshot {
+    fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
@@ -101,21 +101,31 @@ impl SearchColumns for IndexSnapshot {
     ) -> PostingList {
         let mut lists = Vec::new();
 
-        lists.push(self.mem.column_range(xpath, lo, hi));
+        lists.push(self.mem.numeric_range(xpath, lo, hi));
 
         for segment in self.segments.iter() {
-            lists.push(segment.column_range(xpath, lo, hi));
+            lists.push(segment.numeric_range(xpath, lo, hi));
         }
 
         self.apply_deletes(union_many(lists.iter()))
     }
 
-    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
-        let mut out = self.mem.column_values(xpath);
-        for segment in self.segments.iter() {
-            out.extend(segment.column_values(xpath));
+    fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
+        if self.deleted.contains(doc_id) {
+            return None;
         }
-        out
+
+        if let Some(value) = self.mem.numeric_value(xpath, doc_id) {
+            return Some(value);
+        }
+
+        for segment in self.segments.iter() {
+            if let Some(value) = segment.numeric_value(xpath, doc_id) {
+                return Some(value);
+            }
+        }
+
+        None
     }
 }
 
@@ -173,13 +183,9 @@ impl IndexSnapshot {
         }
     }
 
-    fn apply_deletes(&self, postings: PostingList) -> PostingList {
-        //small optimization
-        if self.deleted.is_empty() {
-            postings
-        } else {
-            self.deleted.filter(&postings)
-        }
+    fn apply_deletes(&self, mut postings: PostingList) -> PostingList {
+        self.deleted.filter_in_place(&mut postings);
+        postings
     }
 
     #[timed(search)]
