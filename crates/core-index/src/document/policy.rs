@@ -4,7 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::types::XPathId;
+use crate::{
+    numeric_values::{parse_float, parse_integer},
+    types::XPathId,
+};
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
 
@@ -80,10 +83,6 @@ impl FieldPolicy {
 
     pub fn exact(&self) -> bool {
         self.exact
-    }
-
-    pub fn has_number(&self) -> bool {
-        self.kind.has_number()
     }
 
     pub fn has_exact_index(&self) -> bool {
@@ -392,12 +391,8 @@ impl FieldKind {
 
     pub fn validate_value(self, raw: &str) -> Result<(), String> {
         let valid = match self {
-            FieldKind::Integer => raw.trim().parse::<i64>().is_ok(),
-            FieldKind::Float => raw
-                .trim()
-                .parse::<f64>()
-                .map(|value| value.is_finite())
-                .unwrap_or(false),
+            FieldKind::Integer => parse_integer(raw).is_some(),
+            FieldKind::Float => parse_float(raw).is_some(),
             _ => true,
         };
         if valid {

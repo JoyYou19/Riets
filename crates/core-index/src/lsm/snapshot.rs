@@ -115,6 +115,10 @@ impl SearchNumeric for IndexSnapshot {
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
+        if self.deleted.contains(doc_id) {
+            return None;
+        }
+
         if let Some(value) = self.mem.numeric_value(xpath, doc_id) {
             return Some(value);
         }

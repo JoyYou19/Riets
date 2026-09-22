@@ -553,16 +553,9 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
 
     for _ in 0..xpath_count {
         let xpath = cursor.read_u32()?;
-        let kind = match cursor.read_u8()? {
-            0 => NumericKind::Int,
-            1 => NumericKind::Float,
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unknown numeric field kind",
-                ));
-            }
-        };
+        let kind = NumericKind::from_byte(cursor.read_u8()?).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "unknown numeric field kind")
+        })?;
 
         // BKD: packed value order.
         let point_count = cursor.read_u32()? as usize;
@@ -582,8 +575,10 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
             entries.push((doc_id, packed));
         }
 
-        let bkd = Bkd::from_packed(kind, bkd_points);
-        let doc_values = DocValues::from_packed(kind, entries);
+        let bkd = Bkd::from_packed(kind, bkd_points)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let doc_values = DocValues::from_packed(kind, entries)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         fields.insert_field(xpath, NumericField { bkd, doc_values });
     }
 

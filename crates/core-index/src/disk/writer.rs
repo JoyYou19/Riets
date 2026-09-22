@@ -82,12 +82,7 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
     for (xpath, field) in fields.iter() {
         write_u32(out, xpath)?;
 
-        //WARN: debili mos japamaina jo reader parbauda 0/1 tagad, vajag logic
-        let kind = match field.bkd.kind() {
-            NumericKind::Int => 0u8,
-            NumericKind::Float => 1u8,
-        };
-        write_u8(out, kind)?;
+        write_u8(out, field.bkd.kind().to_byte())?;
 
         // BKD: sorted by packed value (range queries).
         write_u32(out, field.bkd.len() as u32)?;

@@ -68,30 +68,8 @@ impl NumericFields {
         self.field(xpath)?.doc_values.get(doc_id)
     }
 
-    //all values for this xpath in this segment
-    pub fn values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
-        self.field(xpath)
-            .map(|field| {
-                field
-                    .doc_values
-                    .entries()
-                    .iter()
-                    .map(|&(doc_id, packed)| (doc_id, unpack(packed, field.doc_values.kind())))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = (XPathId, &NumericField)> + '_ {
         self.fields.iter().map(|(&xpath, field)| (xpath, field))
-    }
-
-    pub fn len(&self) -> usize {
-        self.fields.values().map(|field| field.bkd.len()).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.fields.values().all(|field| field.bkd.is_empty())
     }
 }
 
@@ -139,18 +117,6 @@ impl NumericPoints {
         docs.dedup();
         docs
     }
-
-    pub fn values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
-        self.points.get(&xpath).cloned().unwrap_or_default()
-    }
-
-    pub fn len(&self) -> usize {
-        self.points.values().map(Vec::len).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.points.values().all(Vec::is_empty)
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -180,6 +146,24 @@ pub enum NumericKind {
     #[default]
     Int,
     Float,
+}
+
+//helper for writing reading to disk
+impl NumericKind {
+    pub fn to_byte(self) -> u8 {
+        match self {
+            NumericKind::Int => 0,
+            NumericKind::Float => 1,
+        }
+    }
+
+    pub fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(NumericKind::Int),
+            1 => Some(NumericKind::Float),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for NumericValue {

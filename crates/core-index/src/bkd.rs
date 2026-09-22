@@ -25,8 +25,12 @@ impl Bkd {
         Self { kind, points }
     }
 
-    pub fn from_packed(kind: NumericKind, points: Vec<(u64, DocId)>) -> Self {
-        Self { kind, points }
+    pub fn from_packed(kind: NumericKind, points: Vec<(u64, DocId)>) -> Result<Self, &'static str> {
+        //safety
+        if !points.is_sorted_by_key(|point| point.0) {
+            return Err("bkd points must be sorted by packed value");
+        }
+        Ok(Self { kind, points })
     }
 
     pub fn from_points(points: Vec<(DocId, NumericValue)>) -> Self {

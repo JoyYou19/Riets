@@ -68,14 +68,21 @@ impl DocValues {
         &self.entries
     }
 
-    pub fn from_packed(kind: NumericKind, entries: Vec<(DocId, u64)>) -> Self {
-        let block_first_doc = entries.chunks(BLOCK_SIZE).map(|chunk| chunk[0].0).collect();
+    pub fn from_packed(
+        kind: NumericKind,
+        entries: Vec<(DocId, u64)>,
+    ) -> Result<Self, &'static str> {
+        //safety check
+        if !entries.is_sorted_by_key(|entry| entry.0) {
+            return Err("doc values must be sorted by doc id");
+        }
 
-        Self {
+        let block_first_doc = entries.chunks(BLOCK_SIZE).map(|chunk| chunk[0].0).collect();
+        Ok(Self {
             kind,
             entries,
             block_first_doc,
-        }
+        })
     }
 
     pub fn get(&self, doc_id: DocId) -> Option<NumericValue> {
