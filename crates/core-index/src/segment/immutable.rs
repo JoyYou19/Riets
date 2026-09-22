@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use core_timing::timed;
 
 use crate::{
-    numeric_columns::{NumericBound, NumericColumns, NumericValue},
+    numeric_values::{NumericBound, NumericFields, NumericValue},
     posting::{Posting, PostingList},
-    search::{SearchColumns, SearchIndex, SearchStats},
+    search::{SearchIndex, SearchNumeric, SearchStats},
     types::{DocId, FieldStats, TermKey, XPathId},
     wildcard::WildcardPattern,
 };
@@ -17,7 +17,7 @@ pub struct ImmutableSegment {
     terms: BTreeMap<TermKey, PostingList>,
     doc_lengths: BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
-    columns: NumericColumns,
+    numeric_fields: NumericFields,
 }
 
 // Haha, if we want to search inside of this segment, it must implement, and we do
@@ -48,14 +48,14 @@ impl SearchIndex for ImmutableSegment {
     }
 }
 
-impl SearchColumns for ImmutableSegment {
-    fn column_range(
+impl SearchNumeric for ImmutableSegment {
+    fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
     ) -> PostingList {
-        let docs = self.columns.range(xpath, lo, hi);
+        let docs = self.numeric_fields.range(xpath, lo, hi);
         PostingList::from_items(
             docs.into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
@@ -63,16 +63,8 @@ impl SearchColumns for ImmutableSegment {
         )
     }
 
-    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
-        self.columns
-            .column(xpath)
-            .map(|column| {
-                column
-                    .entries()
-                    .map(|(value, doc_id)| (doc_id, value))
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
+        self.numeric_fields.get(xpath, doc_id)
     }
 }
 
@@ -101,13 +93,13 @@ impl ImmutableSegment {
         terms: BTreeMap<TermKey, PostingList>,
         doc_lengths: BTreeMap<(DocId, XPathId), u32>,
         field_stats: BTreeMap<XPathId, FieldStats>,
-        columns: NumericColumns,
+        numeric_fields: NumericFields,
     ) -> Self {
         Self {
             terms,
             doc_lengths,
             field_stats,
-            columns,
+            numeric_fields,
         }
     }
 
@@ -115,8 +107,8 @@ impl ImmutableSegment {
         &self.doc_lengths
     }
 
-    pub fn columns(&self) -> &NumericColumns {
-        &self.columns
+    pub fn numeric_fields(&self) -> &NumericFields {
+        &self.numeric_fields
     }
 
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {

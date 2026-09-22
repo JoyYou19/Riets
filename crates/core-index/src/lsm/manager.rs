@@ -1,4 +1,4 @@
-use std::{ io, path::PathBuf, sync::Arc };
+use std::{io, path::PathBuf, sync::Arc};
 
 use core_timing::timed;
 
@@ -8,15 +8,15 @@ use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions},
     lsm::{
         IndexSnapshot,
-        compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
+        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
         manifest,
     },
     mem::MemIndex,
-    numeric_columns::{ NumericBound, NumericValue },
-    posting::{ DeleteSet, PostingList },
-    search::{ SearchColumns, SearchIndex, SearchReader, SearchStats },
-    segment::{ ImmutableSegment, SegmentHandle },
-    types::{ DocId, XPathId },
+    numeric_values::{NumericBound, NumericValue},
+    posting::{DeleteSet, PostingList},
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
+    segment::{ImmutableSegment, SegmentHandle},
+    types::{DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -62,7 +62,6 @@ impl SearchIndex for LsmIndex {
         self.snapshot().doc_freq(term, xpath)
     }
 
-
     fn fuzzy_expansions(
         &self,
         term: &str,
@@ -73,20 +72,20 @@ impl SearchIndex for LsmIndex {
     }
 }
 
-impl SearchColumns for LsmIndex {
+impl SearchNumeric for LsmIndex {
     #[timed(search)]
-    fn column_range(
+    fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> PostingList {
-        self.snapshot().column_range(xpath, lo, hi)
+        self.snapshot().numeric_range(xpath, lo, hi)
     }
 
     #[timed(search)]
-    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
-        self.snapshot().column_values(xpath)
+    fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
+        self.snapshot().numeric_value(xpath, doc_id)
     }
 }
 
@@ -132,9 +131,8 @@ impl LsmIndex {
         for path in segment_paths {
             let disk = DiskSegment::open(&path)?;
 
-            if
-                let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) &&
-                let Some(id) = stem
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                && let Some(id) = stem
                     .strip_prefix("segment-")
                     .and_then(|value| value.parse::<u64>().ok())
             {
@@ -167,7 +165,7 @@ impl LsmIndex {
         analyzer: &Analyzer,
         doc_id: DocId,
         xpath: XPathId,
-        text: &str
+        text: &str,
     ) -> io::Result<()> {
         Arc::make_mut(&mut self.mem).add_document(analyzer, doc_id, xpath, text);
 
@@ -182,7 +180,7 @@ impl LsmIndex {
     pub fn add_indexed_document(
         &mut self,
         analyzer: &Analyzer,
-        document: &crate::document::IndexedDocument
+        document: &crate::document::IndexedDocument,
     ) -> io::Result<()> {
         Arc::make_mut(&mut self.mem).add_indexed_document(analyzer, document);
 
@@ -209,7 +207,8 @@ impl LsmIndex {
                     Arc::new(disk)
                 }
                 None => {
-                    self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
+                    self.segment_handles
+                        .push(SegmentHandle::Memory(segment.clone()));
                     segment as Arc<dyn SearchReader + Send + Sync>
                 }
             };
@@ -243,7 +242,8 @@ impl LsmIndex {
                 Arc::new(disk)
             }
             None => {
-                self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
+                self.segment_handles
+                    .push(SegmentHandle::Memory(segment.clone()));
                 segment as Arc<dyn SearchReader + Send + Sync>
             }
         };
@@ -252,7 +252,11 @@ impl LsmIndex {
     }
 
     pub fn snapshot(&self) -> IndexSnapshot {
-        IndexSnapshot::new(self.mem.clone(), self.query_segments.clone(), self.deleted.clone())
+        IndexSnapshot::new(
+            self.mem.clone(),
+            self.query_segments.clone(),
+            self.deleted.clone(),
+        )
     }
 
     pub fn segment_count(&self) -> usize {
@@ -309,11 +313,7 @@ impl LsmIndex {
     #[timed(compaction)]
     fn segment_size_bytes(handle: &SegmentHandle) -> u64 {
         match handle {
-            SegmentHandle::Disk(path) =>
-                std::fs
-                    ::metadata(path)
-                    .map(|m| m.len())
-                    .unwrap_or(0),
+            SegmentHandle::Disk(path) => std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
             //migh need a smarter way but still this is ok for aproximating the segment size
             SegmentHandle::Memory(segment) => segment.terms().len() as u64,
         }
@@ -322,7 +322,7 @@ impl LsmIndex {
     #[timed(compaction)]
     pub fn plan_compaction(
         &mut self,
-        config: CompactionConfig
+        config: CompactionConfig,
     ) -> io::Result<Option<CompactionJob>> {
         if self.segment_count() < config.compact_when_segments_at_least {
             return Ok(None);
@@ -336,7 +336,8 @@ impl LsmIndex {
             return Ok(None);
         };
 
-        let mut by_size: Vec<(u64, usize, SegmentHandle)> = self.segment_handles
+        let mut by_size: Vec<(u64, usize, SegmentHandle)> = self
+            .segment_handles
             .iter()
             .enumerate()
             .map(|(index, handle)| (Self::segment_size_bytes(handle), index, handle.clone()))
@@ -360,14 +361,12 @@ impl LsmIndex {
         let job_id = self.next_compaction_job_id;
         self.next_compaction_job_id += 1;
 
-        Ok(
-            Some(CompactionJob {
-                job_id,
-                selected,
-                deleted: self.deleted.clone(),
-                output_path,
-            })
-        )
+        Ok(Some(CompactionJob {
+            job_id,
+            selected,
+            deleted: self.deleted.clone(),
+            output_path,
+        }))
     }
 
     #[timed(compaction)]
@@ -377,7 +376,8 @@ impl LsmIndex {
         };
 
         // Locate the selected segments wherever they are in the live list.
-        let mut positions: Vec<usize> = completed.selected
+        let mut positions: Vec<usize> = completed
+            .selected
             .iter()
             .filter_map(|handle| self.segment_handles.iter().position(|live| live == handle))
             .collect();
@@ -401,17 +401,17 @@ impl LsmIndex {
             segs.remove(pos);
         }
 
-        self.segment_handles.insert(0, SegmentHandle::Disk(completed.output_path.clone()));
+        self.segment_handles
+            .insert(0, SegmentHandle::Disk(completed.output_path.clone()));
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
         segs.insert(0, disk);
 
-        let disk_paths: Vec<PathBuf> = self.segment_handles
+        let disk_paths: Vec<PathBuf> = self
+            .segment_handles
             .iter()
-            .filter_map(|handle| {
-                match handle {
-                    SegmentHandle::Disk(path) => Some(path.clone()),
-                    SegmentHandle::Memory(_) => None,
-                }
+            .filter_map(|handle| match handle {
+                SegmentHandle::Disk(path) => Some(path.clone()),
+                SegmentHandle::Memory(_) => None,
             })
             .collect();
 

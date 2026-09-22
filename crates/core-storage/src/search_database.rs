@@ -14,7 +14,7 @@ use core_index::{
         },
         snapshot::SharedIndexSnapshot,
     },
-    numeric_columns::{parse_float, parse_integer},
+    numeric_values::{parse_float, parse_integer},
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
@@ -351,7 +351,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     #[timed(modifying_documents)]
-    #[timed(modifying_documents)]
     pub fn delete_document(&mut self, external_id: &str) -> io::Result<()> {
         if let Some(old_doc) = self.store.get(external_id)? {
             self.index_worker
@@ -539,7 +538,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
                     continue;
                 };
                 if let Some(value) = parse_integer(raw) {
-                    indexed = indexed.with_column(field.xpath(policy), value);
+                    indexed = indexed.with_numeric_point(field.xpath(policy), value);
                     if field.searchable() {
                         indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
                     }
@@ -550,7 +549,7 @@ fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> Ind
                     continue;
                 };
                 if let Some(value) = parse_float(raw) {
-                    indexed = indexed.with_column(field.xpath(policy), value);
+                    indexed = indexed.with_numeric_point(field.xpath(policy), value);
                     if field.searchable() {
                         indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
                     }

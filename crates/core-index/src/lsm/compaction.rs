@@ -12,7 +12,7 @@ use core_timing::timed;
 
 use crate::{
     disk::{reader::DiskSegment, writer::write_merged_segment},
-    numeric_columns::NumericColumns,
+    numeric_values::{NumericFields, NumericPoints, unpack},
     posting::{DeleteSet, PostingList},
     segment::{ImmutableSegment, SegmentHandle},
     types::{DocId, TermKey, XPathId},
@@ -33,10 +33,10 @@ impl OpenSegment {
         }
     }
 
-    fn columns(&self) -> &NumericColumns {
+    fn numeric_fields(&self) -> &NumericFields {
         match self {
-            OpenSegment::Disk(d) => d.columns(),
-            OpenSegment::Memory(m) => m.columns(),
+            OpenSegment::Disk(d) => d.numeric_fields(),
+            OpenSegment::Memory(m) => m.numeric_fields(),
         }
     }
 
@@ -111,14 +111,15 @@ pub fn compact_segments_streaming(
         }
     }
 
-    let mut merged_columns = NumericColumns::new();
+    let mut merged_points = NumericPoints::default();
     for segment in &opened {
-        for (xpath, column) in segment.columns().iter() {
-            for (value, doc_id) in column.entries() {
+        for (xpath, field) in segment.numeric_fields().iter() {
+            let kind = field.doc_values.kind();
+            for &(doc_id, packed) in field.doc_values.entries() {
                 if deleted.contains(doc_id) {
                     continue;
                 }
-                merged_columns.insert(xpath, value, doc_id);
+                merged_points.insert(xpath, unpack(packed, kind), doc_id);
             }
         }
     }
@@ -132,7 +133,7 @@ pub fn compact_segments_streaming(
         output_path,
         merged_terms,
         &merged_doc_lengths,
-        &merged_columns,
+        &merged_points.build(),
     )
 }
 
