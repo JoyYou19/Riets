@@ -6,14 +6,16 @@ use core_timing::timed;
 use memmap2::Mmap;
 
 use crate::{
+    bkd::Bkd,
     disk::{
         codec::{read_var_u16, read_var_u32, read_var_u64},
         format::{FOOTER_LEN, MAGIC, SegmentFooter, VERSION},
     },
+    document_values::DocValues,
     fuzzy::{FuzzyExpansion, FuzzyOptions},
-    numeric_columns::{NumericBound, NumericColumns, NumericValue},
+    numeric_values::{NumericBound, NumericField, NumericFields, NumericKind, NumericValue},
     posting::{Posting, PostingList},
-    search::{SearchColumns, SearchIndex, SearchStats, TermPostings},
+    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
     term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
     types::{DocId, FieldStats, TermKey, XPathId},
 };
@@ -28,7 +30,7 @@ pub struct DiskSegment {
     //could cache this
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
-    columns: NumericColumns,
+    numeric_fields: NumericFields,
 }
 
 impl SearchStats for DiskSegment {
@@ -51,14 +53,14 @@ impl SearchStats for DiskSegment {
     }
 }
 
-impl SearchColumns for DiskSegment {
-    fn column_range(
+impl SearchNumeric for DiskSegment {
+    fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
     ) -> PostingList {
-        let docs = self.columns.range(xpath, lo, hi);
+        let docs = self.numeric_fields.range(xpath, lo, hi);
         PostingList::from_items(
             docs.into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
@@ -66,16 +68,8 @@ impl SearchColumns for DiskSegment {
         )
     }
 
-    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
-        self.columns
-            .column(xpath)
-            .map(|column| {
-                column
-                    .entries()
-                    .map(|(value, doc_id)| (doc_id, value))
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
+        self.numeric_fields.get(xpath, doc_id)
     }
 }
 
@@ -99,14 +93,13 @@ impl DiskSegment {
         let field_stats = build_field_stats(&doc_lengths);
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
-        let columns = read_columns(&mmap, &footer)?;
-
+        let numeric_fields = read_numeric_fields(&mmap, &footer)?;
         Ok(Self {
             mmap,
             dictionary,
             doc_lengths,
             field_stats,
-            columns,
+            numeric_fields,
         })
     }
 
@@ -114,8 +107,8 @@ impl DiskSegment {
         &self.doc_lengths
     }
 
-    pub fn columns(&self) -> &NumericColumns {
-        &self.columns
+    pub fn numeric_fields(&self) -> &NumericFields {
+        &self.numeric_fields
     }
 
     //bro yo zis so good function
@@ -339,28 +332,28 @@ fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
         ));
     }
 
-    //extra checks
-    let columns_start = footer.columns_offset as usize;
-    let columns_len = footer.columns_len as usize;
+    //numeric checks
+    let numeric_fields_start = footer.numeric_fields_offset as usize;
+    let numeric_fields_len = footer.numeric_fields_len as usize;
 
-    let Some(columns_end) = columns_start.checked_add(columns_len) else {
+    let Some(numeric_fields_end) = numeric_fields_start.checked_add(numeric_fields_len) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "columns offset overflow",
+            "numeric fields offset overflow",
         ));
     };
 
-    if columns_start < crate::disk::format::HEADER_LEN {
+    if numeric_fields_start < crate::disk::format::HEADER_LEN {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "columns start before segment body",
+            "numeric fields start before segment body",
         ));
     }
 
-    if columns_end > bytes.len() - FOOTER_LEN {
+    if numeric_fields_end > bytes.len() - FOOTER_LEN {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "columns outside segment bounds",
+            "numeric fields outside segment bounds",
         ));
     }
 
@@ -408,8 +401,8 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
         doc_lengths_len: read_u64_at(bytes, start + 8),
         dictionary_offset: read_u64_at(bytes, start + 16),
         dictionary_len: read_u64_at(bytes, start + 24),
-        columns_offset: read_u64_at(bytes, start + 32),
-        columns_len: read_u64_at(bytes, start + 40),
+        numeric_fields_offset: read_u64_at(bytes, start + 32),
+        numeric_fields_len: read_u64_at(bytes, start + 40),
         term_count: read_u32_at(bytes, start + 48),
     })
 }
@@ -536,53 +529,65 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
     Ok(dictionary)
 }
 
-fn read_columns(bytes: &[u8], footer: &SegmentFooter) -> io::Result<NumericColumns> {
-    let start = footer.columns_offset as usize;
-    let len = footer.columns_len as usize;
+fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<NumericFields> {
+    let start = footer.numeric_fields_offset as usize;
+    let len = footer.numeric_fields_len as usize;
 
     let Some(end) = start.checked_add(len) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "columns offset overflow",
+            "numeric fields offset overflow",
         ));
     };
 
     if end > bytes.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "columns outside segment bounds",
+            "numeric fields outside segment bounds",
         ));
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
     let xpath_count = cursor.read_u32()? as usize;
-    let mut columns = NumericColumns::new();
+    let mut fields = NumericFields::default();
 
     for _ in 0..xpath_count {
         let xpath = cursor.read_u32()?;
-        let entry_count = cursor.read_u32()? as usize;
+        let kind = match cursor.read_u8()? {
+            0 => NumericKind::Int,
+            1 => NumericKind::Float,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown numeric field kind",
+                ));
+            }
+        };
 
-        for _ in 0..entry_count {
-            let kind = cursor.read_u8()?;
-            let raw = cursor.read_u64()?;
+        // BKD: packed value order.
+        let point_count = cursor.read_u32()? as usize;
+        let mut bkd_points = Vec::with_capacity(point_count);
+        for _ in 0..point_count {
+            let packed = cursor.read_u64()?;
             let doc_id = cursor.read_u64()?;
-
-            let value = match kind {
-                0 => NumericValue::Int(raw as i64),
-                1 => NumericValue::Float(f64::from_bits(raw)),
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unknown numeric column kind",
-                    ));
-                }
-            };
-
-            columns.insert(xpath, value, doc_id);
+            bkd_points.push((packed, doc_id));
         }
+
+        // DocValues: doc_id order.
+        let entry_count = cursor.read_u32()? as usize;
+        let mut entries = Vec::with_capacity(entry_count);
+        for _ in 0..entry_count {
+            let doc_id = cursor.read_u64()?;
+            let packed = cursor.read_u64()?;
+            entries.push((doc_id, packed));
+        }
+
+        let bkd = Bkd::from_packed(kind, bkd_points);
+        let doc_values = DocValues::from_packed(kind, entries);
+        fields.insert_field(xpath, NumericField { bkd, doc_values });
     }
 
-    Ok(columns)
+    Ok(fields)
 }
 
 fn read_posting_list(bytes: &[u8], doc_freq: u32, max_weight: u16) -> io::Result<PostingList> {

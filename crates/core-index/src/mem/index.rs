@@ -5,9 +5,9 @@ use core_timing::timed;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
-use crate::numeric_columns::{NumericBound, NumericColumns, NumericValue};
+use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
 use crate::posting::{Posting, PostingList};
-use crate::search::{SearchColumns, SearchIndex, SearchStats};
+use crate::search::{SearchIndex, SearchNumeric, SearchStats};
 use crate::types::{DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
@@ -17,7 +17,7 @@ pub struct MemIndex {
     terms: ahash::HashMap<TermKey, PostingList>,
     doc_lengths: ahash::HashMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
-    columns: NumericColumns,
+    numeric_points: NumericPoints,
 }
 
 impl Default for MemIndex {
@@ -26,7 +26,7 @@ impl Default for MemIndex {
             terms: ahash::HashMap::default(),
             doc_lengths: ahash::HashMap::default(),
             field_stats: BTreeMap::new(),
-            columns: NumericColumns::default(),
+            numeric_points: NumericPoints::default(),
         }
     }
 }
@@ -61,14 +61,14 @@ impl SearchIndex for MemIndex {
     }
 }
 
-impl SearchColumns for MemIndex {
-    fn column_range(
+impl SearchNumeric for MemIndex {
+    fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
     ) -> PostingList {
-        let docs = self.columns.range(xpath, lo, hi);
+        let docs = self.numeric_points.range(xpath, lo, hi);
         PostingList::from_items(
             docs.into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
@@ -76,16 +76,8 @@ impl SearchColumns for MemIndex {
         )
     }
 
-    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)> {
-        self.columns
-            .column(xpath)
-            .map(|column| {
-                column
-                    .entries()
-                    .map(|(value, doc_id)| (doc_id, value))
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
+        self.numeric_points.get(xpath, doc_id)
     }
 }
 
@@ -115,7 +107,7 @@ impl MemIndex {
             terms: ahash::HashMap::new(),
             doc_lengths: ahash::HashMap::new(),
             field_stats: BTreeMap::new(),
-            columns: NumericColumns::new(),
+            numeric_points: NumericPoints::default(),
         }
     }
     pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
@@ -123,7 +115,7 @@ impl MemIndex {
             terms: ahash::HashMap::with_capacity(expected_terms),
             doc_lengths: ahash::HashMap::with_capacity(expected_docs),
             field_stats: BTreeMap::new(),
-            columns: NumericColumns::new(),
+            numeric_points: NumericPoints::default(),
         }
     }
 
@@ -133,7 +125,12 @@ impl MemIndex {
         let doc_lengths: BTreeMap<_, _> = self.doc_lengths.into_iter().collect();
         let field_stats = self.field_stats;
 
-        crate::segment::ImmutableSegment::new(terms, doc_lengths, field_stats, self.columns)
+        crate::segment::ImmutableSegment::new(
+            terms,
+            doc_lengths,
+            field_stats,
+            self.numeric_points.build(),
+        )
     }
 
     pub fn add_token(
@@ -222,7 +219,7 @@ impl MemIndex {
         stats.doc_count += 1;
         stats.total_doc_len += len as u64;
 
-       let mut grouped = ahash::HashMap::<String, Vec<u32>>::with_capacity(tokens.len()); 
+        let mut grouped = ahash::HashMap::<String, Vec<u32>>::with_capacity(tokens.len());
 
         for token in tokens {
             grouped.entry(token.text).or_default().push(token.position);
@@ -259,9 +256,9 @@ impl MemIndex {
             }
         }
 
-        for column in &document.columns {
-            self.columns
-                .insert(column.xpath, column.value, document.doc_id);
+        for point in &document.numeric_points {
+            self.numeric_points
+                .insert(point.xpath, point.value, document.doc_id);
         }
     }
 

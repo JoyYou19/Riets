@@ -82,8 +82,8 @@ impl FieldPolicy {
         self.exact
     }
 
-    pub fn has_column(&self) -> bool {
-        self.kind.has_column()
+    pub fn has_number(&self) -> bool {
+        self.kind.has_number()
     }
 
     pub fn has_exact_index(&self) -> bool {
@@ -371,7 +371,7 @@ impl FieldKind {
         matches!(self, FieldKind::Integer | FieldKind::Float)
     }
 
-    pub fn has_column(self) -> bool {
+    pub fn has_number(self) -> bool {
         matches!(
             self,
             FieldKind::Integer | FieldKind::Float | FieldKind::Date

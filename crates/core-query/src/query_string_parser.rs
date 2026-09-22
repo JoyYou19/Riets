@@ -220,14 +220,8 @@ pub fn parse_query(input: &str) -> Result<Option<Query>, CorelamoError> {
     let mut parser = Parser::new(tokens);
     let items = parser.parse_sequence(Closer::Eof)?;
 
-<<<<<<< HEAD
-    //finally we only have [xxx, xxx, xxx]
-    //we make it into AND(xxx,xxx,xxx)
-    //TODO: elastic offers a default operator to be AND/OR
-=======
     // Plain whitespace separated queries are relevance searches
     // Parentheses () are now the ones that specify strict AND braces explicitly handle OR
->>>>>>> 18ef8c0 (Finish WAND changes)
     let query = make_search(items);
 
     // "" () {} count as emtpy/invalid

@@ -10,30 +10,27 @@
 //! | doc_lengths            |  u32 count, then (u64 doc_id, u32 xpath, u32 len)*
 //! +------------------------+
 //! | dictionary             |  u32 field_count, then per field:
-//! |    (now with the FST)  |
-//! |                        |    u32 xpath, u32 term_count, u64 fst_len,
-//! |                        |    fst_bytes[fst_len],
-//! |                        |    (u64 postings_offset, u32 postings_len,
-//! |                        |     u32 doc_freq) * term_count
-//! |                        |  the FST maps term bytes -> ord, and the
-//! |                        |  fixed width meta array is indexed by that ord
-//! +------------------------+
-//! | columns                |  u32 xpath_count, then per xpath:
-//! |                        |    u32 xpath, u32 entry_count,
-//! |                        |    (u8 kind, u64 value_bits, u64 doc_id)*
-//! +------------------------+
-//! | footer                 |  doc_lengths_offset/len, dictionary_offset/len,
-//! |                        |  columns_offset/len, term_count           (52 bytes)
-//! +------------------------+
-//! //! |    (now with the FST)  |
 //! |                        |    u32 xpath, u32 term_count, u64 fst_len,
 //! |                        |    fst_bytes[fst_len],
 //! |                        |    (u64 postings_offset, u32 postings_len,
 //! |                        |     u32 doc_freq, u16 max_weight) * term_count
+//! |                        |  the FST maps term bytes -> ord, and the
+//! |                        |  fixed width meta array is indexed by that ord
+//! +------------------------+
+//! | numeric_fields         |  u32 xpath_count, then per xpath:
+//! |                        |    u32 xpath, u8 kind,
+//! |                        |    u32 bkd_point_count,
+//! |                        |    (u64 packed_value, u64 doc_id) * bkd_point_count,
+//! |                        |    u32 doc_value_entry_count,
+//! |                        |    (u64 doc_id, u64 packed_value) * doc_value_entry_count
+//! +------------------------+
+//! | footer                 |  doc_lengths_offset/len, dictionary_offset/len,
+//! |                        |  numeric_fields_offset/len, term_count  (52 bytes)
+//! +------------------------+
 //! ```
-
+//!
 pub const MAGIC: [u8; 8] = *b"CLIDX001";
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 pub const HEADER_LEN: usize = 8 + 4;
 pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4;
@@ -59,7 +56,7 @@ pub struct SegmentFooter {
     pub doc_lengths_len: u64,
     pub dictionary_offset: u64,
     pub dictionary_len: u64,
-    pub columns_offset: u64,
-    pub columns_len: u64,
+    pub numeric_fields_offset: u64,
+    pub numeric_fields_len: u64,
     pub term_count: u32,
 }

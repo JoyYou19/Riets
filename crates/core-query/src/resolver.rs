@@ -9,9 +9,7 @@ use core_index::{
         policy::{FieldKind, FieldPolicy},
     },
     fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec},
-    numeric_columns::{
-        NumericBound, NumericValue, parse_float, parse_integer, parse_numeric_range,
-    },
+    numeric_values::{NumericBound, NumericRange, NumericValue, parse_float, parse_integer},
     types::XPathId,
 };
 use core_protocol::{
@@ -176,6 +174,118 @@ pub fn compile_field_filter(
         // unchanged: None / Date / Id / IdAuto are not filterable
         _ => Err(CorelamoError::PathNotIndexed(field_name.to_string())),
     }
+}
+
+//vibemaxxing funciton: parsing the query for the foken numbres
+pub fn parse_numeric_range(
+    raw: &str,
+    parse: fn(&str) -> Option<NumericValue>,
+) -> Result<NumericRange, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("empty numeric filter".to_string());
+    }
+
+    if let Some(idx) = s.find("..") {
+        let left = s[..idx].trim();
+        let right = s[idx + 2..].trim();
+        if has_op_prefix(left) || has_op_prefix(right) {
+            return Err(format!(
+                "comparison operators can't be combined with '..' (use '30..40', or '>40'): '{s}'"
+            ));
+        }
+        if left.is_empty() || right.is_empty() {
+            return Err(format!(
+                "'..' requires both bounds, e.g. '30..40' (use '>=30' or '<=40' for one-sided ranges): '{s}'"
+            ));
+        }
+        let lo = NumericBound {
+            value: parse(left).ok_or_else(|| format!("invalid lower bound '{left}'"))?,
+            inclusive: true,
+        };
+        let hi = NumericBound {
+            value: parse(right).ok_or_else(|| format!("invalid upper bound '{right}'"))?,
+            inclusive: true,
+        };
+        if lo.value > hi.value {
+            return Err(format!(
+                "empty range: lower '{left}' is greater than upper '{right}'"
+            ));
+        }
+        return Ok(NumericRange {
+            lo: Some(lo),
+            hi: Some(hi),
+        });
+    }
+
+    let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
+        (">=", r)
+    } else if let Some(r) = s.strip_prefix("<=") {
+        ("<=", r)
+    } else if let Some(r) = s.strip_prefix("==") {
+        ("==", r)
+    } else if let Some(r) = s.strip_prefix('>') {
+        (">", r)
+    } else if let Some(r) = s.strip_prefix('<') {
+        ("<", r)
+    } else if let Some(r) = s.strip_prefix('=') {
+        ("=", r)
+    } else {
+        ("", s)
+    };
+
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Err(format!("missing number after '{op}'"));
+    }
+    let value = parse(rest).ok_or_else(|| format!("invalid number '{rest}'"))?;
+
+    let range = match op {
+        "=" | "==" | "" => {
+            let bound = NumericBound {
+                value,
+                inclusive: true,
+            };
+            NumericRange {
+                lo: Some(bound),
+                hi: Some(bound),
+            }
+        }
+        ">=" => NumericRange {
+            lo: Some(NumericBound {
+                value,
+                inclusive: true,
+            }),
+            hi: None,
+        },
+        ">" => NumericRange {
+            lo: Some(NumericBound {
+                value,
+                inclusive: false,
+            }),
+            hi: None,
+        },
+        "<=" => NumericRange {
+            lo: None,
+            hi: Some(NumericBound {
+                value,
+                inclusive: true,
+            }),
+        },
+        "<" => NumericRange {
+            lo: None,
+            hi: Some(NumericBound {
+                value,
+                inclusive: false,
+            }),
+        },
+        _ => return Err(format!("unknown operator in '{s}'")),
+    };
+    Ok(range)
+}
+
+fn has_op_prefix(t: &str) -> bool {
+    t.starts_with('=') || t.starts_with('>') || t.starts_with('<')
 }
 
 fn text_xpath(

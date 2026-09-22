@@ -2,7 +2,7 @@ use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
 
 use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix},
-    numeric_columns::{NumericBound, NumericValue},
+    numeric_values::{NumericBound, NumericValue},
     posting::PostingList,
     types::{DocId, XPathId},
     wildcard::WildcardPattern,
@@ -122,19 +122,18 @@ pub trait SearchStats {
     }
 }
 
-pub trait SearchColumns {
-    //docs within the [lo, hi]
-    fn column_range(
+pub trait SearchNumeric {
+    //docs within the [lo, hi], ascending
+    fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
     ) -> PostingList;
 
-    //all (doc_id, value) pairs in a column sorting pirposes
-    fn column_values(&self, xpath: XPathId) -> Vec<(DocId, NumericValue)>;
+    fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue>;
 }
 
-pub trait SearchReader: SearchIndex + SearchStats + SearchColumns {}
+pub trait SearchReader: SearchIndex + SearchStats + SearchNumeric {}
 
-impl<T> SearchReader for T where T: SearchIndex + SearchStats + SearchColumns {}
+impl<T> SearchReader for T where T: SearchIndex + SearchStats + SearchNumeric {}
