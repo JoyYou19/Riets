@@ -105,10 +105,4 @@ impl DocValues {
             .ok()
             .map(|offset| unpack(self.entries[start + offset].1, self.kind))
     }
-
-    pub fn values_for(&self, docs: impl IntoIterator<Item = DocId>) -> Vec<(DocId, NumericValue)> {
-        docs.into_iter()
-            .filter_map(|doc_id| self.get(doc_id).map(|value| (doc_id, value)))
-            .collect()
-    }
 }

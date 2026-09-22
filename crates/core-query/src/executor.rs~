@@ -617,8 +617,6 @@ where
             return Vec::new();
         }
 
-        //if query was like ">2000" its not a text query and would automatically be just considered
-        //a filter
         let Some(query) = query else {
             return match restrict {
                 Some(allowed) => {

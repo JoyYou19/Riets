@@ -69,22 +69,6 @@ impl FieldPolicy {
         self.searchable
     }
 
-    pub fn list(&self) -> bool {
-        self.list
-    }
-
-    pub fn weight(&self) -> WeightInterval {
-        self.weight
-    }
-
-    pub fn stemming(&self) -> Option<&str> {
-        self.stemming.as_deref()
-    }
-
-    pub fn exact(&self) -> bool {
-        self.exact
-    }
-
     pub fn has_exact_index(&self) -> bool {
         self.kind == FieldKind::Text && self.exact
     }
@@ -368,13 +352,6 @@ impl FieldKind {
 
     pub fn is_numeric(self) -> bool {
         matches!(self, FieldKind::Integer | FieldKind::Float)
-    }
-
-    pub fn has_number(self) -> bool {
-        matches!(
-            self,
-            FieldKind::Integer | FieldKind::Float | FieldKind::Date
-        )
     }
 
     pub fn label(self) -> &'static str {

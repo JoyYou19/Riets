@@ -122,6 +122,8 @@ pub trait SearchStats {
     }
 }
 
+//WARN: for optimizations sake these functions wont check for deletes, for filtering sorting you
+//have to apply_deletes and then call numeric...
 pub trait SearchNumeric {
     //docs within the [lo, hi], ascending
     fn numeric_range(
