@@ -1,10 +1,10 @@
-use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
+use levenshtein_automata::{ Distance, LevenshteinAutomatonBuilder };
 
 use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix},
     numeric_values::{NumericBound, NumericValue},
     posting::PostingList,
-    types::{DocId, XPathId},
+    types::{ DocId, XPathId },
     wildcard::WildcardPattern,
 };
 
@@ -39,7 +39,7 @@ pub trait SearchIndex {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         //woodoo veids kaa defineet mazy funkkciju
         let existing = |term: String, edits: u8| -> Option<FuzzyExpansion> {
@@ -76,8 +76,9 @@ pub trait SearchIndex {
             let dfa = builder.build_dfa(suffix);
 
             for t in self.terms(xpath) {
-                if let Some(rest) = t.strip_prefix(prefix)
-                    && let Distance::Exact(edits) = dfa.eval(rest)
+                if
+                    let Some(rest) = t.strip_prefix(prefix) &&
+                    let Distance::Exact(edits) = dfa.eval(rest)
                 {
                     out.extend(existing(t, edits));
                 }
@@ -110,7 +111,9 @@ pub trait SearchStats {
     fn doc_count(&self, xpath: XPathId) -> u64;
     fn total_doc_len(&self, xpath: XPathId) -> u64;
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32>;
-
+    fn doc_range(&self) -> Option<(DocId, DocId)> {
+        None
+    }
     fn avg_doc_len(&self, xpath: XPathId) -> f32 {
         let count = self.doc_count(xpath);
 
@@ -118,7 +121,7 @@ pub trait SearchStats {
             return 0.0;
         }
 
-        self.total_doc_len(xpath) as f32 / count as f32
+        (self.total_doc_len(xpath) as f32) / (count as f32)
     }
 }
 
@@ -130,7 +133,7 @@ pub trait SearchNumeric {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> PostingList;
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue>;

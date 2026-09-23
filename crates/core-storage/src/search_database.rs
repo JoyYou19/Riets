@@ -756,14 +756,11 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         self.db.store.put_batch(stored)?;
 
         let docs = std::mem::take(&mut self.current_batch);
-
-        self.pending_batches.push(docs);
+        self.db.index_worker.add_indexed_documents_wait(docs)?;
 
         self.current_store_batch = Vec::with_capacity(self.batch_size);
         self.current_batch = Vec::with_capacity(self.batch_size);
-        if self.pending_batches.len() >= self.window_size {
-            self.flush_window()?;
-        }
+        
 
         Ok(())
     }

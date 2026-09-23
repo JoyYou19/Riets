@@ -1,10 +1,7 @@
 use ahash::HashSet;
 use core_timing::timed;
 
-use crate::{
-    posting::{Posting, PostingList},
-    types::DocId,
-};
+use crate::{ posting::{ Posting, PostingList }, types::DocId };
 
 // Whenever a document gets deleted, a tombstone is created for it
 // this means it won't apear in any queries, and won't be saved to the disk
@@ -39,6 +36,9 @@ impl DeleteSet {
 
     #[timed(search)]
     pub fn filter(&self, list: &PostingList) -> PostingList {
+        if self.is_empty() {
+            return list.clone();
+        }
         let items: Vec<Posting> = list
             .items()
             .iter()

@@ -31,8 +31,8 @@ type SegmentCountReply = Sender<io::Result<usize>>;
 
 // Operate through commands
 pub enum IndexCommand {
-    AddIndexedDocument {
-        document: IndexedDocument,
+    AddIndexedDocuments {
+        documents: Vec<IndexedDocument>,
         ack: Option<Acknowledgement>,
     },
     DeleteDocument {
@@ -105,11 +105,15 @@ impl IndexWorker {
     }
 
     // Fire and forget functions
-    pub fn add_indexed_document(&self, document: IndexedDocument) -> io::Result<()> {
-        self.send(IndexCommand::AddIndexedDocument {
-            document,
+    pub fn add_indexed_documents(&self, documents: Vec<IndexedDocument>) -> io::Result<()> {
+        self.send(IndexCommand::AddIndexedDocuments {
+            documents,
             ack: None,
         })
+    }
+
+    pub fn add_indexed_document(&self, document: IndexedDocument) -> io::Result<()> {
+        self.add_indexed_documents(vec![document])
     }
 
     pub fn delete_document(&self, doc_id: DocId) -> io::Result<()> {
@@ -146,15 +150,19 @@ impl IndexWorker {
 
     // Waiting functions
     #[timed(indexing_documents)]
-    pub fn add_indexed_document_wait(&self, document: IndexedDocument) -> io::Result<()> {
+    pub fn add_indexed_documents_wait(&self, documents: Vec<IndexedDocument>) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
-        self.send(IndexCommand::AddIndexedDocument {
-            document,
+        self.send(IndexCommand::AddIndexedDocuments {
+            documents,
             ack: Some(ack),
         })?;
 
         wait_for_acknowledgement(rx)
+    }
+
+    pub fn add_indexed_document_wait(&self, document: IndexedDocument) -> io::Result<()> {
+        self.add_indexed_documents_wait(vec![document])
     }
 
     #[timed(flushing)]
@@ -258,30 +266,33 @@ fn run_index_worker(
         };
 
         match command {
-            IndexCommand::AddIndexedDocument { document, ack } => {
-                let outcome = index.add_indexed_document(&analyzer, &document);
-                let ok = outcome.is_ok();
-                if ok {
-                    stats.total_documents_indexed += 1;
+            IndexCommand::AddIndexedDocuments { documents, ack } => {
+                let mut outcome = Ok(());
+                let mut added = 0u64;
+                for document in &documents {
+                    if let Err(error) = index.add_indexed_document(&analyzer, document) {
+                        outcome = Err(error);
+                        break;
+                    }
+                    added += 1;
                 }
-                if docs_since_publish % 1000 == 0 {
-                    core_timing::add_bytes(
-                        "indexing_documents",
-                        "memtable_growth",
-                        file!(),
-                        index.memtable_term_count() as u64
-                    );
-                }
+                stats.total_documents_indexed += added;
+                docs_since_publish += added;
+                core_timing::add_bytes(
+                    "indexing_documents",
+                    "memtable_growth",
+                    file!(),
+                    index.memtable_term_count() as u64
+                );
+                // Batches of PUBLISH_DOC_THRESHOLD or more publish before the ack,
+                // so a bulk insert is searchable as soon as the request returns.
+                maybe_publish_on_threshold(
+                    &shared,
+                    &index,
+                    &mut docs_since_publish,
+                    &mut last_publish
+                );
                 send_acknowledgement(ack, outcome)?;
-                if ok {
-                    docs_since_publish += 1;
-                    maybe_publish_on_threshold(
-                        &shared,
-                        &index,
-                        &mut docs_since_publish,
-                        &mut last_publish
-                    );
-                }
             }
             IndexCommand::DeleteDocument { doc_id, ack } => {
                 let outcome = index.delete_document(doc_id);
@@ -374,6 +385,14 @@ fn run_index_worker(
                     })?;
             }
         }
+
+        // Commands arriving faster than PUBLISH_INTERVAL never hit the Timeout
+        // branch above, so the time-based publish is also checked here.
+        if docs_since_publish > 0 && last_publish.elapsed() >= PUBLISH_INTERVAL {
+            shared.publish(index.snapshot());
+            docs_since_publish = 0;
+            last_publish = Instant::now();
+        }
     }
 
     index.flush()?;
@@ -445,9 +464,7 @@ pub fn index_batches_parallel(
         .map(|batch| build_segment_batch(&analyzer, batch))
         .collect();
 
-    // for (segment, doc_count) in segments.into_iter().zip(doc_counts) {
     worker.add_segment_wait(segments, total_docs)?;
-    // }
 
     Ok(())
 }

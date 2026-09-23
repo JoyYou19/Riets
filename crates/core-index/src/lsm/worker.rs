@@ -114,5 +114,6 @@ fn run_compaction_job(job: CompactionJob) -> io::Result<CompletedCompaction> {
         job_id: job.job_id,
         selected: job.selected,
         output_path: job.output_path,
+        delete_generation: job.delete_generation
     })
 }

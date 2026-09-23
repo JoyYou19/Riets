@@ -28,6 +28,7 @@ pub struct DiskSegment {
     dictionary: TermDictionary,
     //TODO: we should look into this, if doc_lengths takes up too much RAM wikipedia-scale then we
     //could cache this
+    doc_range: Option<(DocId, DocId)>,
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
@@ -89,7 +90,10 @@ impl DiskSegment {
         validate_footer(&mmap, &footer)?;
 
         let doc_lengths = read_doc_lengths(&mmap, &footer)?;
-
+        let doc_range = doc_lengths
+            .first_key_value()
+            .zip(doc_lengths.last_key_value())
+            .map(|((lo, _), (hi, _))| (lo.0, hi.0));
         let field_stats = build_field_stats(&doc_lengths);
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
@@ -98,6 +102,7 @@ impl DiskSegment {
             mmap,
             dictionary,
             doc_lengths,
+            doc_range,
             field_stats,
             numeric_fields,
         })
@@ -109,6 +114,9 @@ impl DiskSegment {
 
     pub fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
+    }
+        fn doc_range(&self) -> Option<(DocId, DocId)> {
+        self.doc_range
     }
 
     //bro yo zis so good function
@@ -293,7 +301,7 @@ impl SearchIndex for DiskSegment {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         self.dictionary
             .field(xpath)

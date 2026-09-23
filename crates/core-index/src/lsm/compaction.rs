@@ -76,7 +76,7 @@ impl<'a> Iterator for MergedTerms<'a> {
                 }
             }
 
-            let merged = self.deleted.filter(&PostingList::from_items(items));
+            let merged = self.deleted.filter(&PostingList::from_sorted(items));
             if !merged.is_empty() {
                 return Some((min_key, merged));
             }
@@ -141,13 +141,17 @@ pub fn compact_segments_streaming(
 pub struct CompactionConfig {
     pub max_segments_per_compaction: usize,
     pub compact_when_segments_at_least: usize,
+    pub max_segment_ratio:u64,
+   
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            max_segments_per_compaction: 16,
+            max_segments_per_compaction: 128,
             compact_when_segments_at_least: 16,
+            max_segment_ratio:2
+
         }
     }
 }
@@ -157,6 +161,7 @@ pub struct CompactionJob {
     pub job_id: u64,
     pub selected: Vec<SegmentHandle>,
     pub deleted: DeleteSet,
+    pub delete_generation:u64,
     pub output_path: PathBuf,
 }
 
@@ -165,4 +170,5 @@ pub struct CompletedCompaction {
     pub job_id: u64,
     pub selected: Vec<SegmentHandle>,
     pub output_path: PathBuf,
+    pub delete_generation:u64
 }

@@ -50,3 +50,4 @@ tower-http = { version = "0.6", features = ["cors", "decompression-gzip", "compr
 tower_governor = "0.8.0"
 governor = "0.10.4"
 simd-json = "0.18.1"
+mimalloc = "0.1"
