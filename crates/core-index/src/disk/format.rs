@@ -36,7 +36,7 @@
 //!
 
 //                          ahahahahhahah
-pub const MAGIC: [u8; 8] = *b"NORMUNDS";
+pub const MAGIC: [u8; 8] = *b"BANANA_I";
 pub const VERSION: u32 = 9;
 
 pub const HEADER_LEN: usize = 8 + 4;

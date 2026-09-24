@@ -26,7 +26,8 @@ use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
 
-const MAGIC: &[u8; 8] = b"CDOCLOG4";
+//                  hihi haha part 2
+const MAGIC: &[u8; 8] = b"BANANA_D";
 
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
