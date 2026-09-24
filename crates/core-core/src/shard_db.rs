@@ -535,7 +535,7 @@ impl ShardDb {
         }
         result
     }
-    
+
     pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
         let logs_dir = self.root.join("logs");
         if !logs_dir.exists() {

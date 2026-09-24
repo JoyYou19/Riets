@@ -22,17 +22,16 @@ use core_protocol::{
         RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
         TimingsRequest,
     },
+    document_out::DocumentOut,
     errors::CorelamoError,
 };
+use core_storage::document_projections::id_path_to_strip;
 use core_timing::timed;
 use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
 use slog::{error, info, o};
+use std::{collections::HashMap, sync::Arc};
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
 //authorizations
 use serde::Deserialize;
 #[derive(Deserialize)]
@@ -332,17 +331,20 @@ pub async fn search_handler(
 
     handle.record_search(false, start.elapsed());
     let hit_count = hits.len();
-    let projected: Vec<(String, f32, BTreeMap<String, String>)> = hits
+
+    let policy = handle.policy();
+    let strip_id = id_path_to_strip(
+        policy.id_field().map(|f| f.name.as_str()),
+        command.return_fields.as_ref(),
+    )
+    .map(String::from);
+
+    let docs: Vec<(String, f32, DocumentOut)> = hits
         .into_iter()
-        .map(|hit| (hit.external_id, hit.score, hit.fields))
+        .map(|hit| (hit.external_id, hit.score, hit.doc))
         .collect();
 
-    let resp = match SearchResponse::from_hits(projected) {
-        Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
+    let resp = SearchResponse::new(docs, strip_id);
 
     HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
 }

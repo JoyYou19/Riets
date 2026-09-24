@@ -162,6 +162,33 @@ impl IntoResponse for HttpError {
     }
 }
 
+//jo sis ir atrak :)
+fn envelope_raw(
+    status: StatusCode,
+    title: &str,
+    instance: &str,
+    request_id: Uuid,
+    time_start: Instant,
+    fragment: &[u8],
+) -> Vec<u8> {
+    let time_taken = format!("{:?}", time_start.elapsed());
+    let mut body = Vec::with_capacity(fragment.len() + 256);
+    body.extend_from_slice(b"{\"status\":");
+    body.extend_from_slice(status.as_u16().to_string().as_bytes());
+    body.extend_from_slice(b",\"title\":\"");
+    body.extend_from_slice(escape_json_text(title).as_bytes());
+    body.extend_from_slice(b"\",\"instance\":\"");
+    body.extend_from_slice(escape_json_text(instance).as_bytes());
+    body.extend_from_slice(b"\",\"request_id\":\"");
+    body.extend_from_slice(request_id.to_string().as_bytes());
+    body.extend_from_slice(b"\",\"time_taken\":\"");
+    body.extend_from_slice(escape_json_text(&time_taken).as_bytes());
+    body.extend_from_slice(b"\",\"data\":");
+    body.extend_from_slice(fragment);
+    body.extend_from_slice(b"}");
+    body
+}
+
 pub struct HttpOk {
     pub status: StatusCode,
     pub title: String,
@@ -169,6 +196,7 @@ pub struct HttpOk {
     pub request_id: Uuid,
     pub instance: String,
     pub format: Format,
+    pub pretty: bool,
     pub time_start: Instant,
 }
 
@@ -179,6 +207,7 @@ impl HttpOk {
             title: title.into(),
             data: None,
             request_id: ctx.request_id,
+            pretty: ctx.pretty,
             instance: ctx.instance.clone(),
             format: ctx.format,
             time_start: ctx.time_start,
@@ -191,6 +220,7 @@ impl HttpOk {
             title: title.into(),
             data: None,
             request_id: ctx.request_id,
+            pretty: ctx.pretty,
             instance: ctx.instance.clone(),
             format: ctx.format,
             time_start: ctx.time_start,
@@ -207,6 +237,7 @@ impl HttpOk {
             title: title.into(),
             data: Some(Box::new(SerializableData { data })),
             request_id: ctx.request_id,
+            pretty: ctx.pretty,
             instance: ctx.instance.clone(),
             format: ctx.format,
             time_start: ctx.time_start,
@@ -224,6 +255,7 @@ impl HttpOk {
             title: title.into(),
             data: Some(Box::new(SerializableData { data })),
             request_id: ctx.request_id,
+            pretty: ctx.pretty,
             instance: ctx.instance.clone(),
             format: ctx.format,
             time_start: ctx.time_start,
@@ -238,6 +270,7 @@ impl HttpOk {
             status: StatusCode::OK,
             title: title.into(),
             data: Some(Box::new(data)),
+            pretty: ctx.pretty,
             request_id: ctx.request_id,
             instance: ctx.instance.clone(),
             format: ctx.format,
@@ -264,6 +297,25 @@ impl IntoResponse for HttpOk {
     fn into_response(self) -> Response {
         match self.format {
             Format::JSON => {
+                if !self.pretty {
+                    if let Some(fragment) = self.data.as_ref().and_then(|d| d.to_raw_json()) {
+                        let body = envelope_raw(
+                            self.status,
+                            &self.title,
+                            &self.instance,
+                            self.request_id,
+                            self.time_start,
+                            &fragment,
+                        );
+                        return Response::builder()
+                            .status(self.status)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
+                            .body(Body::from(body))
+                            .unwrap();
+                    }
+                }
+
                 let data_value = match &self.data {
                     Some(d) => match d.to_json() {
                         Ok(v) => Some(v),
@@ -282,7 +334,6 @@ impl IntoResponse for HttpOk {
                 };
 
                 let time_taken = format!("{:?}", self.time_start.elapsed());
-
                 let mut obj = Object::new();
                 obj.insert("status".into(), OwnedValue::from(self.status.as_u16()));
                 obj.insert("title".into(), OwnedValue::String(self.title));
@@ -296,8 +347,12 @@ impl IntoResponse for HttpOk {
                     obj.insert("data".into(), v);
                 }
 
-                let body = simd_json::to_string_pretty(&OwnedValue::Object(obj.into()))
-                    .unwrap_or_else(|_| "{}".to_string());
+                let body = if self.pretty {
+                    simd_json::to_string_pretty(&OwnedValue::Object(obj.into()))
+                } else {
+                    simd_json::to_string(&OwnedValue::Object(obj.into()))
+                }
+                .unwrap_or_else(|_| "{}".to_string());
 
                 Response::builder()
                     .status(self.status)
@@ -305,7 +360,7 @@ impl IntoResponse for HttpOk {
                     .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
                     .body(Body::from(body))
                     .expect("Failed to build response")
-            } //Format::XML => todo!(),
+            }
         }
     }
 }
@@ -357,8 +412,14 @@ impl BatchOutcome {
 
     fn to_value(&self, db_name: &str) -> OwnedValue {
         let mut obj = Object::new();
-        obj.insert(self.success_label.to_string(), OwnedValue::from(self.succeeded));
-        obj.insert("database".to_string(), OwnedValue::String(db_name.to_string()));
+        obj.insert(
+            self.success_label.to_string(),
+            OwnedValue::from(self.succeeded),
+        );
+        obj.insert(
+            "database".to_string(),
+            OwnedValue::String(db_name.to_string()),
+        );
 
         if !self.failures.is_empty() {
             obj.insert(

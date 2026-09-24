@@ -11,7 +11,7 @@ use crate::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
         format::{SegmentFooter, SegmentHeader},
     },
-    numeric_values::{NumericFields, NumericKind},
+    numeric_values::NumericFields,
     posting::PostingList,
     segment::ImmutableSegment,
     term_dict::{TermDict, TermMeta},

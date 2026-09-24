@@ -1,12 +1,17 @@
 use std::{
     collections::{BTreeMap, HashSet},
     io,
+    sync::Arc,
 };
 
-use crate::document_store::{DocumentStore, StoredDocument};
+use crate::{
+    document_projections::{id_path_to_strip, project_document},
+    document_store::{DocumentStore, StoredDocument},
+    json_indexing_helper::flatten_fields,
+};
 use core_index::{
     analyzer::analyzer::Analyzer,
-    document::{IndexPolicy, IndexedDocument, policy::FieldKind},
+    document::{IndexPolicy, IndexedDocument},
     lsm::{
         LsmIndex,
         index_worker::{
@@ -14,13 +19,15 @@ use core_index::{
         },
         snapshot::SharedIndexSnapshot,
     },
-    numeric_values::{parse_float, parse_integer},
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
+
+use crate::json_indexing_helper::indexed_from_fields;
 
 use bincode::{Decode, Encode};
 use core_protocol::{
     command_reponse_definitions::LookupResponse,
+    document_out::DocumentOut,
     errors::{DocFailure, FailReason},
     format::Format,
 };
@@ -51,7 +58,7 @@ pub struct IndexPipeline<'a, S: DocumentStore> {
     batch_size: usize,
     // Number of completed batches before building segments in
     // parallel
-    window_size: usize,
+    //window_size: usize,
 
     // The documents that are waiting to be written to document store
     current_store_batch: Vec<StoredDocument>,
@@ -121,12 +128,12 @@ pub struct DocumentInput {
     pub format: Format, // Stores the format of the document JSON/XML
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct SearchDocumentHit {
     pub external_id: String,
     pub internal_id: DocId,
     pub score: f32,
-    pub fields: BTreeMap<String, String>,
+    pub doc: DocumentOut,
 }
 
 pub struct SearchDocumentResults {
@@ -249,20 +256,18 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     #[timed(inserting)]
     pub fn put_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
-        let doc = StoredDocument {
-            external_id: input.external_id,
-            internal_id: self.allocate_internal_id()?,
-            source: input.source,
-            fields: input.fields,
-            format: input.format,
-        };
-        self.store.put(doc.clone())?;
-
+        let internal_id = self.allocate_internal_id()?;
         if mode == IndexMode::StoreAndIndex {
-            let indexed = stored_document_to_indexed(&doc, &self.policy);
+            let indexed = indexed_from_fields(internal_id, &input.fields, &self.policy);
             self.index_worker.add_indexed_document_wait(indexed)?;
         }
-
+        let doc = StoredDocument {
+            external_id: input.external_id,
+            internal_id,
+            source: Arc::from(input.source),
+            format: input.format,
+        };
+        self.store.put(doc)?;
         Ok(())
     }
 
@@ -288,7 +293,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(IndexPipeline {
             db: self,
             batch_size,
-            window_size,
+            //window_size,
             current_store_batch: Vec::with_capacity(batch_size),
             current_batch: Vec::with_capacity(batch_size),
             pending_batches: Vec::with_capacity(window_size),
@@ -322,8 +327,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(modifying_documents)]
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let internal_id = self.allocate_internal_id()?;
-
-        //INFO: logic if id is auto and some idiot called upsert not insert ;)
         let external_id = if input.external_id.is_empty() {
             internal_id.to_string()
         } else {
@@ -335,18 +338,18 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 .delete_document_wait(old_doc.internal_id)?;
         }
 
+        if mode == IndexMode::StoreAndIndex {
+            let indexed = indexed_from_fields(internal_id, &input.fields, &self.policy);
+            self.index_worker.add_indexed_document_wait(indexed)?;
+        }
+
         let doc = StoredDocument {
             external_id,
             internal_id,
-            source: input.source,
-            fields: input.fields,
+            source: Arc::from(input.source),
             format: input.format,
         };
-        self.store.put(doc.clone())?;
-        if mode == IndexMode::StoreAndIndex {
-            let indexed = stored_document_to_indexed(&doc, &self.policy);
-            self.index_worker.add_indexed_document_wait(indexed)?;
-        }
+        self.store.put(doc)?;
         Ok(())
     }
 
@@ -372,7 +375,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     //lookup-retrieves+filters document based on request
-    #[timed(retrieve_opps)]
+    #[timed(search)]
     pub fn lookup_documents(
         &self,
         ids: &[String],
@@ -383,13 +386,18 @@ impl<S: DocumentStore> SearchDatabase<S> {
         for id in ids {
             match self.get_document(id)? {
                 Some(doc) => found.push((
-                    doc.external_id,
-                    visible_fields(&doc.fields, &self.policy, return_fields),
+                    doc.external_id.clone(),
+                    project_document(&doc, &self.policy, return_fields)?,
                 )),
                 None => not_found.push(id.clone()),
             }
         }
-        LookupResponse::from_hits(found, not_found).map_err(io::Error::other)
+        let id_field = id_path_to_strip(
+            self.policy.id_field().map(|f| f.name.as_str()),
+            return_fields,
+        )
+        .map(String::from);
+        Ok(LookupResponse::new(found, not_found, id_field))
     }
 
     #[timed(search)]
@@ -399,18 +407,16 @@ impl<S: DocumentStore> SearchDatabase<S> {
         return_fields: Option<&IndexMap<String, bool>>,
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let mut results = Vec::new();
-
         for hit in hits {
             if let Some(doc) = self.store.get_by_internal_id(hit.doc_id)? {
                 results.push(SearchDocumentHit {
                     external_id: doc.external_id.clone(),
                     internal_id: doc.internal_id,
                     score: hit.score,
-                    fields: visible_fields(&doc.fields, &self.policy, return_fields),
+                    doc: project_document(&doc, &self.policy, return_fields)?,
                 });
             }
         }
-
         Ok(results)
     }
 
@@ -478,7 +484,17 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 if progress.is_cancelled() {
                     return Err(io::Error::other("reindex cancelled"));
                 }
-                current.push(stored_document_to_indexed(doc, policy));
+
+                let fields = match flatten_fields(&doc.source) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("[reindex] skipping document {}: {e}", doc.external_id);
+                        return Ok(());
+                    }
+                };
+
+                current.push(indexed_from_fields(doc.internal_id, &fields, policy));
+
                 if current.len() >= batch_size {
                     pending.push(std::mem::replace(
                         &mut current,
@@ -498,68 +514,10 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
         self.flush()
     }
-    //Norcha check
-    /// Converts a stored document using the current policy, for queueing.
-    pub fn to_indexed(&self, doc: &StoredDocument) -> IndexedDocument {
-        stored_document_to_indexed(doc, &self.policy)
-    }
 
     pub fn index_stats(&self) -> io::Result<IndexingStats> {
         self.index_worker.get_stats()
     }
-}
-
-#[timed(indexing_documents)]
-fn stored_document_to_indexed(doc: &StoredDocument, policy: &IndexPolicy) -> IndexedDocument {
-    let mut indexed = IndexedDocument::new(doc.internal_id);
-
-    for field in policy.indexed_fields() {
-        match field.kind {
-            FieldKind::Text => {
-                let Some(text) = doc.fields.get(&field.name) else {
-                    continue;
-                };
-                indexed = indexed.with_part(field.xpath(policy), text, field.weight);
-                if let Some(exact_xpath) = field.exact_xpath(policy) {
-                    indexed = indexed.with_exact(exact_xpath, text, field.weight);
-                }
-            }
-            FieldKind::Id => {
-                // | FieldKind::IdAuto => { //ja id ir auto tas kkas lidzigs: kjbdyui2bd7913bu91oub
-                // nu nahuj vinu vajag
-                let Some(text) = doc.fields.get(&field.name) else {
-                    continue;
-                };
-                indexed = indexed.with_exact(field.xpath(policy), text, field.weight);
-            }
-
-            FieldKind::Integer => {
-                let Some(raw) = doc.fields.get(&field.name) else {
-                    continue;
-                };
-                if let Some(value) = parse_integer(raw) {
-                    indexed = indexed.with_numeric_point(field.xpath(policy), value);
-                    if field.searchable() {
-                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
-                    }
-                }
-            }
-            FieldKind::Float => {
-                let Some(raw) = doc.fields.get(&field.name) else {
-                    continue;
-                };
-                if let Some(value) = parse_float(raw) {
-                    indexed = indexed.with_numeric_point(field.xpath(policy), value);
-                    if field.searchable() {
-                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
-                    }
-                }
-            }
-            _ => {} // Date / None / IdAuto : not indexed yet
-        }
-    }
-
-    indexed
 }
 
 #[timed(reindex)]
@@ -587,63 +545,10 @@ fn publish_window(
     Ok(())
 }
 
-pub fn visible_fields(
-    fields: &BTreeMap<String, String>,
-    policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
-) -> BTreeMap<String, String> {
-    fields
-        .iter()
-        .filter(|(path, _)| should_include(path, policy, resolved))
-        .map(|(path, value)| (path.clone(), value.clone()))
-        .collect()
-}
-
-fn should_include(
-    path: &str,
-    policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
-) -> bool {
-    if let Some(rf) = resolved {
-        let mut candidate = path;
-        loop {
-            if let Some(&include) = rf.get(candidate) {
-                return include;
-            }
-            match candidate.rfind('/') {
-                Some(idx) => {
-                    candidate = &candidate[..idx];
-                }
-                None => {
-                    break;
-                }
-            }
-        }
-    }
-
-    let mut candidate = path;
-    loop {
-        if let Some(field) = policy.fields.iter().find(|f| f.name == candidate) {
-            return field.list;
-        }
-        match candidate.rfind('/') {
-            Some(idx) => {
-                candidate = &candidate[..idx];
-            }
-            None => {
-                break;
-            }
-        }
-    }
-
-    false
-}
-
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
         let internal_id = self.db.allocate_internal_id()?;
-
         let external_id = input.external_id;
 
         if self.external_id_exists(&external_id)? {
@@ -656,25 +561,21 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         }
 
         self.seen.insert(external_id.clone());
+        let indexed = indexed_from_fields(internal_id, &input.fields, &self.db.policy);
         let stored = StoredDocument {
             external_id,
             internal_id,
-            source: input.source,
-            fields: input.fields,
+            source: Arc::from(input.source),
             format: input.format,
         };
 
-        let indexed = stored_document_to_indexed(&stored, &self.db.policy);
-
         self.current_store_batch.push(stored);
         self.current_batch.push(indexed);
-
         self.inserted += 1;
 
         if self.current_batch.len() >= self.batch_size {
             self.flush_batch()?;
         }
-
         Ok(())
     }
 
@@ -760,7 +661,6 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         self.current_store_batch = Vec::with_capacity(self.batch_size);
         self.current_batch = Vec::with_capacity(self.batch_size);
-        
 
         Ok(())
     }

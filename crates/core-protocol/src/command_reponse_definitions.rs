@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use strsim::levenshtein;
 
+use crate::command_response_helpers::escape_json_text;
+use crate::document_out::DocumentOut;
 use crate::{
-    command_response_helpers::{FieldNode, tree_to_json, unflatten},
     errors::{CorelamoError, DocFailure},
     format::Format,
 };
@@ -98,7 +99,9 @@ pub trait Command: Sized + DeserializeOwned {
 
 pub trait ResponseData {
     fn to_json(&self) -> Result<OwnedValue, CorelamoError>;
-    //fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error>;
+    fn to_raw_json(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,18 +332,13 @@ pub struct SortSpec {
 }
 
 pub struct SearchResponse {
-    docs: Vec<(String, f32, FieldNode)>,
+    docs: Vec<(String, f32, DocumentOut)>,
+    strip_id: Option<String>,
 }
 
 impl SearchResponse {
-    pub fn from_hits(
-        docs: Vec<(String, f32, BTreeMap<String, String>)>,
-    ) -> Result<Self, CorelamoError> {
-        let mut trees = Vec::with_capacity(docs.len());
-        for (id, score, fields) in docs {
-            trees.push((id, score, unflatten(fields)?));
-        }
-        Ok(Self { docs: trees })
+    pub fn new(docs: Vec<(String, f32, DocumentOut)>, strip_id: Option<String>) -> Self {
+        Self { docs, strip_id }
     }
 }
 
@@ -349,18 +347,36 @@ impl ResponseData for SearchResponse {
         let items: Vec<OwnedValue> = self
             .docs
             .iter()
-            .map(|(id, score, tree)| {
-                json!({
-                    "id": id,
-                    "score": score,
-                    "data": tree_to_json(tree)
-                })
+            .map(|(id, score, doc)| {
+                let data = doc.to_value(self.strip_id.as_deref())?;
+                Ok(json!({ "id": id, "score": score, "data": data }))
             })
-            .collect();
+            .collect::<Result<_, CorelamoError>>()?;
         Ok(OwnedValue::Array(Box::new(items)))
     }
 
-    // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {}
+    fn to_raw_json(&self) -> Option<Vec<u8>> {
+        if self.strip_id.is_some() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64));
+        out.push(b'[');
+        for (i, (id, score, doc)) in self.docs.iter().enumerate() {
+            let bytes = doc.raw_bytes()?;
+            if i > 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(b"{\"id\":\"");
+            out.extend_from_slice(escape_json_text(id).as_bytes());
+            out.extend_from_slice(b"\",\"score\":");
+            out.extend_from_slice(score.to_string().as_bytes());
+            out.extend_from_slice(b",\"data\":");
+            out.extend_from_slice(bytes);
+            out.push(b'}');
+        }
+        out.push(b']');
+        Some(out)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -439,23 +455,22 @@ pub struct LookupCommand {
 
 impl Command for LookupCommand {}
 pub struct LookupResponse {
-    pub docs: Vec<(String, FieldNode)>,
+    pub docs: Vec<(String, DocumentOut)>,
     pub not_found: Vec<String>,
+    strip_id: Option<String>,
 }
 
 impl LookupResponse {
-    pub fn from_hits(
-        docs: Vec<(String, BTreeMap<String, String>)>,
+    pub fn new(
+        docs: Vec<(String, DocumentOut)>,
         not_found: Vec<String>,
-    ) -> Result<Self, CorelamoError> {
-        let mut trees = Vec::with_capacity(docs.len());
-        for (id, fields) in docs {
-            trees.push((id, unflatten(fields)?));
-        }
-        Ok(Self {
-            docs: trees,
+        id_field: Option<String>,
+    ) -> Self {
+        Self {
+            docs,
             not_found,
-        })
+            strip_id: id_field,
+        }
     }
 }
 
@@ -464,12 +479,42 @@ impl ResponseData for LookupResponse {
         let documents: Vec<OwnedValue> = self
             .docs
             .iter()
-            .map(|(id, tree)| json!({ "id": id, "data": tree_to_json(tree) }))
-            .collect();
-        Ok(json!({
-            "documents": documents,
-            "not_found": self.not_found,
-        }))
+            .map(|(id, doc)| {
+                let data = doc.to_value(self.strip_id.as_deref())?;
+                Ok(json!({ "id": id, "data": data }))
+            })
+            .collect::<Result<_, CorelamoError>>()?;
+        Ok(json!({ "documents": documents, "not_found": self.not_found }))
+    }
+
+    fn to_raw_json(&self) -> Option<Vec<u8>> {
+        if self.strip_id.is_some() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64) + 32);
+        out.extend_from_slice(b"{\"documents\":[");
+        for (i, (id, doc)) in self.docs.iter().enumerate() {
+            let bytes = doc.raw_bytes()?;
+            if i > 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(b"{\"id\":\"");
+            out.extend_from_slice(escape_json_text(id).as_bytes());
+            out.extend_from_slice(b"\",\"data\":");
+            out.extend_from_slice(bytes);
+            out.push(b'}');
+        }
+        out.extend_from_slice(b"],\"not_found\":[");
+        for (i, id) in self.not_found.iter().enumerate() {
+            if i > 0 {
+                out.push(b',');
+            }
+            out.push(b'"');
+            out.extend_from_slice(escape_json_text(id).as_bytes());
+            out.push(b'"');
+        }
+        out.extend_from_slice(b"]}");
+        Some(out)
     }
 }
 

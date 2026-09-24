@@ -1,10 +1,10 @@
-use std::sync::{ Arc, atomic::{ AtomicU64, Ordering } };
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
     mem::MemIndex,
     numeric_values::{NumericBound, NumericValue},
     posting::{DeleteSet, PostingList, ops::union_many},
@@ -64,18 +64,19 @@ impl SearchIndex for IndexSnapshot {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
-        let mut out: std::collections::BTreeMap<
-            String,
-            FuzzyExpansion
-        > = std::collections::BTreeMap::new();
+        let mut out: std::collections::BTreeMap<String, FuzzyExpansion> =
+            std::collections::BTreeMap::new();
 
-        let all = self.mem
+        let all = self
+            .mem
             .fuzzy_expansions(term, xpath, opts)
             .into_iter()
             .chain(
-                self.segments.iter().flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts))
+                self.segments
+                    .iter()
+                    .flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts)),
             );
 
         for expansion in all {
@@ -97,7 +98,7 @@ impl SearchNumeric for IndexSnapshot {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> PostingList {
         let mut lists = Vec::new();
 
@@ -140,7 +141,7 @@ impl SearchStats for IndexSnapshot {
         total
     }
 
-        fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {
+    fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {
         if let Some(len) = self.mem.doc_len(doc_id, xpath) {
             return Some(len);
         }
@@ -174,7 +175,7 @@ impl IndexSnapshot {
     pub fn new(
         mem: Arc<MemIndex>,
         segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
-        deleted: DeleteSet
+        deleted: DeleteSet,
     ) -> Self {
         Self {
             mem,
@@ -192,7 +193,8 @@ impl IndexSnapshot {
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
 
-        let segment_lists: Vec<PostingList> = self.segments
+        let segment_lists: Vec<PostingList> = self
+            .segments
             .iter()
             .map(|segment| segment.lookup(term, xpath))
             .collect();
@@ -249,20 +251,17 @@ impl IndexSnapshot {
 #[derive(Clone)]
 pub struct SharedIndexSnapshot {
     inner: Arc<ArcSwap<IndexSnapshot>>,
-    generation: Arc<AtomicU64>,
 }
 
 impl SharedIndexSnapshot {
     pub fn new(snapshot: IndexSnapshot) -> Self {
         Self {
             inner: Arc::new(ArcSwap::new(Arc::new(snapshot))),
-            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub fn clear(&self) {
         self.inner.store(Arc::new(IndexSnapshot::default()));
-        self.generation.fetch_add(1, Ordering::Release);
     }
 
     pub fn empty() -> Self {
@@ -271,11 +270,6 @@ impl SharedIndexSnapshot {
 
     pub fn publish(&self, snapshot: IndexSnapshot) {
         self.inner.store(Arc::new(snapshot));
-        self.generation.fetch_add(1, Ordering::Release);
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Acquire)
     }
 
     pub fn get(&self) -> Arc<IndexSnapshot> {

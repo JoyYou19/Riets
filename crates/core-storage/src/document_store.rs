@@ -1,14 +1,12 @@
 use core_index::types::DocId;
 use core_protocol::format::Format;
 use core_timing::timed;
-use std::{collections::BTreeMap, io};
-
-use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, io, sync::Arc};
 
 pub type ExternalDocId = String;
 pub type InternalDocId = DocId;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredDocument {
     pub external_id: ExternalDocId,
     pub internal_id: InternalDocId,
@@ -16,9 +14,7 @@ pub struct StoredDocument {
     // Format of the original document, JSON/XML
     pub format: Format,
     // Storing the original document as bytes from any of the formats
-    pub source: Vec<u8>,
-
-    pub fields: BTreeMap<String, String>,
+    pub source: Arc<[u8]>,
 }
 
 pub trait DocumentStore {

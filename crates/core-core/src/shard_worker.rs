@@ -14,6 +14,7 @@ use core_index::search::{SearchIndex, SearchNumeric};
 use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse};
 use core_query::executor::FieldFilter;
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
+use core_storage::document_projections::{id_path_to_strip, project_document};
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -34,7 +35,6 @@ use core_protocol::errors::CorelamoError;
 use core_query::{Query, QueryExecutor, SearchHit, fuzzable_words};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
-    visible_fields,
 };
 
 //insane portno kur dazaam komandam ir crossbeam_channel dazam ir oneshot
@@ -405,15 +405,17 @@ impl ShardHandle {
             match doc {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
-                    visible_fields(&doc.fields, policy, return_fields),
+                    project_document(&doc, policy, return_fields)
+                        .map_err(|e| CorelamoError::Internal(e.to_string()))?,
                 )),
                 None => not_found.push(id.clone()),
             }
         }
 
-        LookupResponse::from_hits(found, not_found)
-            .map_err(io::Error::other)
-            .map_err(CorelamoError::from)
+        let strip_id = id_path_to_strip(policy.id_field().map(|f| f.name.as_str()), return_fields)
+            .map(String::from);
+
+        Ok(LookupResponse::new(found, not_found, strip_id))
     }
 
     #[timed(search)]
@@ -455,7 +457,8 @@ impl ShardHandle {
                 external_id: doc.external_id.clone(),
                 internal_id: doc.internal_id,
                 score: hits[i].score,
-                fields: visible_fields(&doc.fields, policy, return_fields),
+                doc: project_document(&doc, policy, return_fields)
+                    .map_err(|e| CorelamoError::Internal(e.to_string()))?,
             });
         }
 
@@ -735,7 +738,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::Flush { resp } => {
                 let _ = resp.send(shard.flush());
             }
-            ShardCmd::SetConfig { options, resp, user } => {
+            ShardCmd::SetConfig {
+                options,
+                resp,
+                user,
+            } => {
                 let _ = resp.send(shard.set_options(options, user));
             }
             ShardCmd::SetPolicy { policy, resp, user } => {
@@ -756,7 +763,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::CommitReindex { done, resp } => {
                 let _ = resp.send(shard.commit_reindex(done));
             }
-            ShardCmd::Start { policy, options, resp } => {
+            ShardCmd::Start {
+                policy,
+                options,
+                resp,
+            } => {
                 shard.apply_config(policy, options);
                 let result = shard.start();
                 shared.is_running.store(result.is_ok(), Ordering::Release);
@@ -779,18 +790,32 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 shared.is_clearing.store(false, Ordering::Release);
                 let _ = resp.send(result);
             }
-            ShardCmd::BackupFull { shard_backup_path, backup_id, resp, user } => {
+            ShardCmd::BackupFull {
+                shard_backup_path,
+                backup_id,
+                resp,
+                user,
+            } => {
                 shared.is_backing_up.store(true, Ordering::Release);
                 let result = shard.backup_full(user, shard_backup_path, backup_id);
                 shared.is_backing_up.store(false, Ordering::Release);
                 if let Ok(manifest) = &result {
-                    *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) =
-                        Some(manifest.backup_id.clone());
-                    shared.last_backup_at.store(manifest.created_at, Ordering::Release);
+                    *shared
+                        .last_backup_id
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(manifest.backup_id.clone());
+                    shared
+                        .last_backup_at
+                        .store(manifest.created_at, Ordering::Release);
                 }
                 let _ = resp.send(result);
             }
-            ShardCmd::BackupIncremental { shard_backup_path, backup_id, user, resp } => {
+            ShardCmd::BackupIncremental {
+                shard_backup_path,
+                backup_id,
+                user,
+                resp,
+            } => {
                 if shared
                     .last_backup_id
                     .read()
@@ -808,13 +833,21 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     shard.backup_incremental(shard_backup_path, backup_id, user, segment_dir);
                 shared.is_backing_up.store(false, Ordering::Release);
                 if let Ok(Some(manifest)) = &result {
-                    *shared.last_backup_id.write().unwrap_or_else(|e| e.into_inner()) =
-                        Some(manifest.backup_id.clone());
-                    shared.last_backup_at.store(manifest.created_at, Ordering::Release);
+                    *shared
+                        .last_backup_id
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(manifest.backup_id.clone());
+                    shared
+                        .last_backup_at
+                        .store(manifest.created_at, Ordering::Release);
                 }
                 let _ = resp.send(result);
             }
-            ShardCmd::Restore { user, resp, backup_id } => {
+            ShardCmd::Restore {
+                user,
+                resp,
+                backup_id,
+            } => {
                 shared.is_restoring.store(true, Ordering::Release);
                 let result = shard.restore_backup(&backup_id, user);
                 shared.is_restoring.store(false, Ordering::Release);
@@ -823,13 +856,20 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::ListBackups { resp } => {
                 let _ = resp.send(shard.list_backups());
             }
-            ShardCmd::DeleteBackup { backup_id, user, resp } => {
+            ShardCmd::DeleteBackup {
+                backup_id,
+                user,
+                resp,
+            } => {
                 let _ = resp.send(shard.delete_backup(&backup_id, user));
             }
             ShardCmd::DeleteBackupAuto { cutoff, resp } => {
                 let _ = resp.send(shard.delete_backups_old(cutoff));
             }
-            ShardCmd::PlanSegmentCompaction { dead_ratio_threshold, reply } => {
+            ShardCmd::PlanSegmentCompaction {
+                dead_ratio_threshold,
+                reply,
+            } => {
                 let job = shard.plan_segment_compaction(dead_ratio_threshold);
                 let _ = reply.send(job);
             }

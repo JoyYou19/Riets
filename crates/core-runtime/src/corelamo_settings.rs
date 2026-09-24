@@ -9,6 +9,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("host", "0.0.0.0"),
     ("port", "6006"),
     ("format", "json"),
+    ("pretty", "true"),
     ("auth", "true"),
     ("max_payload_size", "1024"),
     ("max_request_timeout", "240"),
@@ -201,6 +202,13 @@ pub fn load_or_init_settings(
     }
 
     Ok(settings)
+}
+
+pub fn get_bool(settings: &HashMap<String, String>, key: &str) -> bool {
+    match get(settings, key).to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        _ => false,
+    }
 }
 
 pub fn get(settings: &HashMap<String, String>, key: &str) -> String {

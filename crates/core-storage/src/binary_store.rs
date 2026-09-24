@@ -10,7 +10,6 @@
 //+ check what happens on movies * 10000 + status + search something off about searching
 
 use std::{
-    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -442,12 +441,16 @@ impl DocumentStore for BinaryDocumentStore {
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
 
-            self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
-            self.locations.insert(doc.external_id.clone(), DocLocation {
-                internal_id: doc.internal_id,
-                offset: doc_offset,
-                segment: current_segment,
-            });
+            self.internal_to_external
+                .insert(doc.internal_id, doc.external_id.clone());
+            self.locations.insert(
+                doc.external_id.clone(),
+                DocLocation {
+                    internal_id: doc.internal_id,
+                    offset: doc_offset,
+                    segment: current_segment,
+                },
+            );
 
             self.docs.insert(doc.external_id.clone(), doc);
         }
@@ -588,17 +591,8 @@ impl DocumentStore for BinaryDocumentStore {
 fn write_document(writer: &mut impl Write, doc: &StoredDocument) -> io::Result<()> {
     write_string(writer, &doc.external_id)?;
     write_u64(writer, doc.internal_id)?;
-
     write_u8(writer, doc.format.into())?;
-
     write_bytes(writer, &doc.source)?;
-
-    write_u32(writer, doc.fields.len() as u32)?;
-
-    for (name, value) in &doc.fields {
-        write_string(writer, name)?;
-        write_string(writer, value)?;
-    }
 
     Ok(())
 }
@@ -606,25 +600,13 @@ fn write_document(writer: &mut impl Write, doc: &StoredDocument) -> io::Result<(
 fn read_document(reader: &mut impl Read) -> io::Result<StoredDocument> {
     let external_id = read_string(reader)?;
     let internal_id = read_u64(reader)?;
-
     let format = Format::try_from(read_u8(reader)?).map_err(io::Error::from)?;
-
     let source = read_bytes(reader)?;
-
-    let field_count = read_u32(reader)? as usize;
-    let mut fields = BTreeMap::new();
-
-    for _ in 0..field_count {
-        let name = read_string(reader)?;
-        let value = read_string(reader)?;
-        fields.insert(name, value);
-    }
 
     Ok(StoredDocument {
         external_id,
         internal_id,
-        source,
-        fields,
+        source: Arc::from(source),
         format,
     })
 }
