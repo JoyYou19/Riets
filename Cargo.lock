@@ -724,6 +724,7 @@ dependencies = [
  "indexmap",
  "moka",
  "serde",
+ "simd-json",
  "slog",
  "tokio",
 ]

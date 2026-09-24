@@ -1,9 +1,13 @@
 use std::{
     collections::{BTreeMap, HashSet},
     io,
+    sync::Arc,
 };
 
-use crate::document_store::{DocumentStore, StoredDocument};
+use crate::{
+    document_projections::{id_path_to_strip, project_document},
+    document_store::{DocumentStore, StoredDocument},
+};
 use core_index::{
     analyzer::analyzer::Analyzer,
     document::{IndexPolicy, IndexedDocument, policy::FieldKind},
@@ -21,6 +25,7 @@ use core_index::{
 use bincode::{Decode, Encode};
 use core_protocol::{
     command_reponse_definitions::LookupResponse,
+    document_out::DocumentOut,
     errors::{DocFailure, FailReason},
     format::Format,
 };
@@ -121,12 +126,12 @@ pub struct DocumentInput {
     pub format: Format, // Stores the format of the document JSON/XML
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct SearchDocumentHit {
     pub external_id: String,
     pub internal_id: DocId,
     pub score: f32,
-    pub fields: BTreeMap<String, String>,
+    pub doc: DocumentOut,
 }
 
 pub struct SearchDocumentResults {
@@ -252,7 +257,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let doc = StoredDocument {
             external_id: input.external_id,
             internal_id: self.allocate_internal_id()?,
-            source: input.source,
+            source: Arc::from(input.source),
             fields: input.fields,
             format: input.format,
         };
@@ -338,7 +343,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let doc = StoredDocument {
             external_id,
             internal_id,
-            source: input.source,
+            source: Arc::from(input.source),
             fields: input.fields,
             format: input.format,
         };
@@ -372,7 +377,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     //lookup-retrieves+filters document based on request
-    #[timed(retrieve_opps)]
+    #[timed(search)]
     pub fn lookup_documents(
         &self,
         ids: &[String],
@@ -383,13 +388,18 @@ impl<S: DocumentStore> SearchDatabase<S> {
         for id in ids {
             match self.get_document(id)? {
                 Some(doc) => found.push((
-                    doc.external_id,
-                    visible_fields(&doc.fields, &self.policy, return_fields),
+                    doc.external_id.clone(),
+                    project_document(&doc, &self.policy, return_fields)?,
                 )),
                 None => not_found.push(id.clone()),
             }
         }
-        LookupResponse::from_hits(found, not_found).map_err(io::Error::other)
+        let id_field = id_path_to_strip(
+            self.policy.id_field().map(|f| f.name.as_str()),
+            return_fields,
+        )
+        .map(String::from);
+        Ok(LookupResponse::new(found, not_found, id_field))
     }
 
     #[timed(search)]
@@ -399,18 +409,16 @@ impl<S: DocumentStore> SearchDatabase<S> {
         return_fields: Option<&IndexMap<String, bool>>,
     ) -> io::Result<Vec<SearchDocumentHit>> {
         let mut results = Vec::new();
-
         for hit in hits {
             if let Some(doc) = self.store.get_by_internal_id(hit.doc_id)? {
                 results.push(SearchDocumentHit {
                     external_id: doc.external_id.clone(),
                     internal_id: doc.internal_id,
                     score: hit.score,
-                    fields: visible_fields(&doc.fields, &self.policy, return_fields),
+                    doc: project_document(&doc, &self.policy, return_fields)?,
                 });
             }
         }
-
         Ok(results)
     }
 
@@ -587,58 +595,6 @@ fn publish_window(
     Ok(())
 }
 
-pub fn visible_fields(
-    fields: &BTreeMap<String, String>,
-    policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
-) -> BTreeMap<String, String> {
-    fields
-        .iter()
-        .filter(|(path, _)| should_include(path, policy, resolved))
-        .map(|(path, value)| (path.clone(), value.clone()))
-        .collect()
-}
-
-fn should_include(
-    path: &str,
-    policy: &IndexPolicy,
-    resolved: Option<&IndexMap<String, bool>>,
-) -> bool {
-    if let Some(rf) = resolved {
-        let mut candidate = path;
-        loop {
-            if let Some(&include) = rf.get(candidate) {
-                return include;
-            }
-            match candidate.rfind('/') {
-                Some(idx) => {
-                    candidate = &candidate[..idx];
-                }
-                None => {
-                    break;
-                }
-            }
-        }
-    }
-
-    let mut candidate = path;
-    loop {
-        if let Some(field) = policy.fields.iter().find(|f| f.name == candidate) {
-            return field.list;
-        }
-        match candidate.rfind('/') {
-            Some(idx) => {
-                candidate = &candidate[..idx];
-            }
-            None => {
-                break;
-            }
-        }
-    }
-
-    false
-}
-
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
@@ -659,7 +615,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         let stored = StoredDocument {
             external_id,
             internal_id,
-            source: input.source,
+            source: Arc::from(input.source),
             fields: input.fields,
             format: input.format,
         };
@@ -760,7 +716,6 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         self.current_store_batch = Vec::with_capacity(self.batch_size);
         self.current_batch = Vec::with_capacity(self.batch_size);
-        
 
         Ok(())
     }

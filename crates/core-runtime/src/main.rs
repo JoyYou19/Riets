@@ -43,6 +43,7 @@ pub struct AppState {
     pub databases: Arc<RwLock<HashMap<String, Arc<ShardManager>>>>,
     pub databases_dir: PathBuf,
     pub default_format: Format,
+    pub default_pretty: bool,
     pub auth: Arc<RwLock<AuthService>>,
 }
 
@@ -137,6 +138,7 @@ async fn main() -> io::Result<()> {
     let max_payload_size = corelamo_settings::get_usize(&settings, "max_payload_size");
     let max_request_timeout = corelamo_settings::get_usize(&settings, "max_request_timeout");
     let default_format_str = corelamo_settings::get(&settings, "format");
+    let default_pretty = corelamo_settings::get_bool(&settings, "pretty");
     let enable_auth = corelamo_settings::get(&settings, "auth") != "false";
     info!(log, "auth setting resolved";"info" => %enable_auth);
     let default_format = Format::JSON;
@@ -187,6 +189,7 @@ async fn main() -> io::Result<()> {
     let state = AppState {
         databases: Arc::new(RwLock::new(handles)),
         databases_dir,
+        default_pretty,
         default_format,
         auth,
     };

@@ -442,12 +442,16 @@ impl DocumentStore for BinaryDocumentStore {
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
 
-            self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
-            self.locations.insert(doc.external_id.clone(), DocLocation {
-                internal_id: doc.internal_id,
-                offset: doc_offset,
-                segment: current_segment,
-            });
+            self.internal_to_external
+                .insert(doc.internal_id, doc.external_id.clone());
+            self.locations.insert(
+                doc.external_id.clone(),
+                DocLocation {
+                    internal_id: doc.internal_id,
+                    offset: doc_offset,
+                    segment: current_segment,
+                },
+            );
 
             self.docs.insert(doc.external_id.clone(), doc);
         }
@@ -623,7 +627,7 @@ fn read_document(reader: &mut impl Read) -> io::Result<StoredDocument> {
     Ok(StoredDocument {
         external_id,
         internal_id,
-        source,
+        source: Arc::from(source),
         fields,
         format,
     })

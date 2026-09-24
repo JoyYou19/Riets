@@ -1,75 +1,7 @@
 use core_timing::timed;
-use indexmap::IndexMap;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, StaticNode, owned::Object};
 use std::collections::BTreeMap;
-
-use crate::errors::CorelamoError;
-
-//FieldNode builds a nested structure from a flat BTreeMap<path, value>, rendered
-//to json/xml by the response layer. Built once, consumed once.
-pub enum FieldNode {
-    Leaf(String),
-    Branch(IndexMap<String, FieldNode>),
-}
-
-#[timed(command_parsing)]
-pub fn unflatten(fields: BTreeMap<String, String>) -> Result<FieldNode, CorelamoError> {
-    let mut root = IndexMap::new();
-    for (path, value) in fields {
-        insert_path(&mut root, &path, value)?;
-    }
-    Ok(FieldNode::Branch(root))
-}
-
-fn insert_path(
-    branch: &mut IndexMap<String, FieldNode>,
-    path: &str,
-    value: String,
-) -> Result<(), CorelamoError> {
-    match path.split_once('/') {
-        None => {
-            use indexmap::map::Entry;
-            match branch.entry(path.to_string()) {
-                Entry::Occupied(mut occupied) => {
-                    if matches!(occupied.get(), FieldNode::Branch(_)) {
-                        return Err(CorelamoError::Internal(format!(
-                            "field path collision: '{path}' is both a value and a container"
-                        )));
-                    }
-                    occupied.insert(FieldNode::Leaf(value));
-                    Ok(())
-                }
-                Entry::Vacant(vacant) => {
-                    vacant.insert(FieldNode::Leaf(value));
-                    Ok(())
-                }
-            }
-        }
-        Some((head, rest)) => {
-            let entry = branch
-                .entry(head.to_string())
-                .or_insert_with(|| FieldNode::Branch(IndexMap::new()));
-
-            match entry {
-                FieldNode::Branch(inner) => insert_path(inner, rest, value),
-                FieldNode::Leaf(_) => Err(CorelamoError::Internal(format!(
-                    "field path collision: '{head}' is both a value and a container"
-                ))),
-            }
-        }
-    }
-}
-
-//json from field node
-// TODO: hardcoded "id" key
-pub fn tree_to_json(node: &FieldNode) -> OwnedValue {
-    let obj = match node_to_json(node) {
-        OwnedValue::Object(m) => *m,
-        _ => Object::new(),
-    };
-    OwnedValue::Object(Box::new(obj))
-}
 
 #[timed(json_parsing)]
 pub fn traverse_json(value: &OwnedValue, path: &mut String, fields: &mut BTreeMap<String, String>) {
@@ -98,6 +30,22 @@ pub fn traverse_json(value: &OwnedValue, path: &mut String, fields: &mut BTreeMa
             fields.insert(path.to_string(), value_to_string(other));
         }
     }
+}
+
+pub fn escape_json_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn value_to_string(value: &OwnedValue) -> String {
@@ -130,19 +78,6 @@ pub fn apply_merge_patch(target: &mut OwnedValue, patch: &OwnedValue) {
         }
         _ => {
             *target = patch.clone();
-        }
-    }
-}
-
-fn node_to_json(node: &FieldNode) -> OwnedValue {
-    match node {
-        FieldNode::Leaf(s) => OwnedValue::String(s.clone()),
-        FieldNode::Branch(children) => {
-            let mut obj = Object::new();
-            for (k, child) in children {
-                obj.insert(k.clone().into(), node_to_json(child));
-            }
-            OwnedValue::Object(Box::new(obj))
         }
     }
 }

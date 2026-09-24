@@ -20,43 +20,50 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub format: Format,
+    pub pretty: bool,
     pub request_id: Uuid,
     pub instance: String,
     pub time_start: Instant,
 }
 
-//WARN: hardcodes json here, fix when json done
-fn resolve_format(_state: &AppState, _request: &Request) -> Result<Format, String> {
-    return Ok(Format::JSON);
-    // //TODO: start where xml detected
-    // todo!();
-    // let accept = request
-    //     .headers()
-    //     .get(header::ACCEPT)
-    //     .and_then(|v| v.to_str().ok());
+fn resolve_accept(state: &AppState, request: &Request) -> Result<(Format, Option<bool>), String> {
+    let accept = request
+        .headers()
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok());
 
-    // match accept {
-    //     None => Ok(state.default_format),
-    //     Some(accept) => {
-    //         let first = accept.split(',').next().unwrap_or("").trim();
-    //         let subtype = first
-    //             .split('/')
-    //             .nth(1)
-    //             .unwrap_or("")
-    //             .split(';')
-    //             .next()
-    //             .unwrap_or("")
-    //             .trim();
-    //         if first.is_empty() || subtype.is_empty() || subtype == "*" {
-    //             Ok(state.default_format)
-    //         } else {
-    //             Format::try_from(subtype).map_err(|_| subtype.to_string())
-    //         }
-    //     }
-    // }
+    let mut pretty: Option<bool> = None;
+    if let Some(accept) = accept {
+        for media_range in accept.split(',') {
+            let mut parts = media_range.split(';');
+            let media = parts.next().unwrap_or("").trim();
+            if !media.eq_ignore_ascii_case("application/json")
+                && media != "*/*"
+                && media != "application/*"
+            {
+                continue;
+            }
+            for param in parts {
+                let param = param.trim();
+                let Some((key, value)) = param.split_once('=') else {
+                    continue;
+                };
+                if key.trim().eq_ignore_ascii_case("pretty") {
+                    let value = value.trim();
+                    if value.eq_ignore_ascii_case("false") {
+                        pretty = Some(false);
+                    } else if value.eq_ignore_ascii_case("true") {
+                        pretty = Some(true);
+                    }
+                }
+            }
+        }
+    }
+
+    //HARDCODES JSON
+    Ok((state.default_format, pretty))
 }
 
-//adds request_id and makes the RequestContext for other parts of programm
 pub async fn request_context_middleware(
     State(state): State<AppState>,
     mut request: Request,
@@ -66,19 +73,18 @@ pub async fn request_context_middleware(
     let start = Instant::now();
     let instance = request.uri().path().to_string();
     let log = slog_scope::logger().new(o!("component"=> "middleware"));
-    let format = match resolve_format(&state, &request) {
-        Ok(f) => f,
+    let (format, pretty_override) = match resolve_accept(&state, &request) {
+        Ok(v) => v,
         Err(subtype) => {
-            // format resolution failed — respond using config default so we can
-            // still produce a correctly formatted error response
             let ctx = RequestContext {
                 format: state.default_format,
+                pretty: state.default_pretty,
                 request_id,
                 instance,
                 time_start: start,
             };
             return {
-                warn!(log,"The format is unsupported";"format"=>%subtype);
+                warn!(log, "The format is unsupported"; "format" => %subtype);
                 HttpError::from_corelamo(
                     CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
                     &ctx,
@@ -87,8 +93,10 @@ pub async fn request_context_middleware(
             };
         }
     };
+    let pretty = pretty_override.unwrap_or(state.default_pretty);
     request.extensions_mut().insert(RequestContext {
         format,
+        pretty,
         request_id,
         instance,
         time_start: start,

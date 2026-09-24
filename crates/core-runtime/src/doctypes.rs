@@ -225,7 +225,7 @@ pub fn convert_from_storage(
     let mut skipped = Vec::new();
     for doc in docs {
         if doc.format == format {
-            output.push((doc.external_id.clone(), doc.source.clone()));
+            output.push((doc.external_id.clone(), doc.source.to_vec()));
         } else {
             skipped.push(doc.external_id.clone());
         }
@@ -288,7 +288,7 @@ pub fn parse_partial_replace_to_inputs(
                 continue;
             }
         };
-        let mut buf = doc.source.clone();
+        let mut buf = doc.source.to_vec();
         let mut doc_value: Value = match simd_json::from_slice(&mut buf) {
             Ok(v) => v,
             Err(e) => {

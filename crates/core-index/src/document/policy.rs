@@ -211,6 +211,10 @@ impl IndexPolicy {
             .filter(|field| field.kind != FieldKind::None)
     }
 
+    pub fn has_hidden_fields(&self) -> bool {
+        self.fields.iter().any(|f| !f.list)
+    }
+
     pub fn xpath_of(&self, name: &str) -> Option<XPathId> {
         self.registry.get(name)
     }
@@ -343,7 +347,7 @@ impl FieldKind {
             },
             FieldKind::None => FieldDefaults {
                 searchable: false,
-                list: false,
+                list: true,
                 weight: WeightInterval::DEFAULT,
                 exact: false,
             },
