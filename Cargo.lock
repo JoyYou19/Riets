@@ -526,6 +526,7 @@ dependencies = [
  "hex",
  "rand 0.8.8",
  "sha2",
+ "simd-json",
 ]
 
 [[package]]

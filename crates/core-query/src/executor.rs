@@ -1051,6 +1051,7 @@ fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
     }
 }
 
+/*
 #[cfg(test)]
 fn exhaustive_conjunctive_top_k<S: SearchStats>(
     stats: &S,
@@ -1112,4 +1113,4 @@ fn exhaustive_conjunctive_top_k<S: SearchStats>(
     hits.truncate(k);
 
     hits
-}
+}*/

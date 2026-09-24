@@ -15,8 +15,6 @@ pub struct StoredDocument {
     pub format: Format,
     // Storing the original document as bytes from any of the formats
     pub source: Arc<[u8]>,
-
-    pub fields: BTreeMap<String, String>,
 }
 
 pub trait DocumentStore {
