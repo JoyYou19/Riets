@@ -326,6 +326,10 @@ impl Wal {
         let mut g = self.inner.lock().unwrap();
         g.file.set_len(0)?;
         g.file.seek(SeekFrom::Start(0))?;
+        if let Err(e) = g.file.sync_all() {
+            g.poisoned = true;
+            return Err(e);
+        }
         g.durable_offset = 0;
         g.written_offset = 0;
         Ok(())

@@ -117,6 +117,13 @@ impl NumericPoints {
         docs.dedup();
         docs
     }
+    //TEST
+    
+        pub fn merge(&mut self, other: NumericPoints) {
+        for (xpath, mut points) in other.points {
+            self.points.entry(xpath).or_default().append(&mut points);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

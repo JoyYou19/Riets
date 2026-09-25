@@ -26,6 +26,12 @@ pub struct FieldStats {
     pub doc_count: u64,
     pub total_doc_len: u64,
 }
+impl FieldStats {
+    pub fn add(&mut self, other: &FieldStats) {
+        self.doc_count += other.doc_count;
+        self.total_doc_len += other.total_doc_len;
+    }
+}
 
 // Sharding IDs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]

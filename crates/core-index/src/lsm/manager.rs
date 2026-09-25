@@ -23,8 +23,11 @@ use crate::{
 // Live index of data, this will be flushed in other words put into a persistent
 // memtable, snapshoting, deleting
 pub struct LsmIndex {
-    mem: Arc<MemIndex>,
+    mem: MemIndex,
+    //TEST
+    generations:Vec<Arc<MemIndex>>,
     segment_handles: Vec<SegmentHandle>,
+    generation_bytes: usize,
     query_segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
     flush_threshold: usize,
     deleted: DeleteSet,
@@ -32,8 +35,12 @@ pub struct LsmIndex {
     root: Option<PathBuf>,
     next_segment_id: u64,
     next_compaction_job_id: u64,
+    
 }
-
+const GENERATION_MERGE_RATIO:usize=2;
+fn unwrap_mem(generation: Arc<MemIndex>) -> MemIndex {
+    Arc::try_unwrap(generation).unwrap_or_else(|shared| (*shared).clone())
+}
 impl SearchIndex for LsmIndex {
     #[timed(search)]
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
@@ -106,7 +113,9 @@ impl SearchStats for LsmIndex {
 impl LsmIndex {
     pub fn new(flush_threshold: usize) -> Self {
         Self {
-            mem: Arc::new(MemIndex::new()),
+            mem: MemIndex::new(),
+            generations:Vec::new(),
+            generation_bytes:0,
             segment_handles: Vec::new(),
             query_segments: Arc::new(Vec::new()),
             flush_threshold,
@@ -150,7 +159,9 @@ impl LsmIndex {
         
 
         Ok(Self {
-            mem: Arc::new(MemIndex::new()),
+            mem: MemIndex::new(),
+            generations:Vec::new(),
+            generation_bytes:0,
             segment_handles,
             query_segments: Arc::new(query_segments),
             flush_threshold,
@@ -161,6 +172,48 @@ impl LsmIndex {
             next_compaction_job_id: 0,
         })
     }
+    //TEST
+        #[timed(indexing_documents)]
+        fn seal(&mut self) {
+        if self.mem.term_count() == 0 {
+            return;
+        }
+        let sealed = std::mem::take(&mut self.mem);
+        self.generation_bytes += sealed.estimated_size_bytes();
+        self.generations.push(Arc::new(sealed));
+
+        // Merge the two newest while the older isn't at least RATIO× bigger.
+        while self.generations.len() >= 2 {
+            let n = self.generations.len();
+            if self.generations[n - 2].estimated_size_bytes()
+                > GENERATION_MERGE_RATIO * self.generations[n - 1].estimated_size_bytes()
+            {
+                break;
+            }
+            let newer = unwrap_mem(self.generations.pop().unwrap());
+            let mut older = unwrap_mem(self.generations.pop().unwrap());
+            older.merge_from(newer);
+            self.generations.push(Arc::new(older));
+        }
+    }
+
+    pub fn publish_snapshot(&mut self) -> IndexSnapshot {
+        self.seal();
+        self.build_snapshot(Arc::new(MemIndex::new()))
+    }
+
+    /// Read-only callers only; copies `active`, keep off hot paths.
+    pub fn snapshot(&self) -> IndexSnapshot {
+        self.build_snapshot(Arc::new(self.mem.clone()))
+    }
+
+    fn build_snapshot(&self, mem: Arc<MemIndex>) -> IndexSnapshot {
+        let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> =
+            Vec::with_capacity(self.generations.len() + self.query_segments.len());
+        segments.extend(self.generations.iter().map(|g| g.clone() as Arc<dyn SearchReader + Send + Sync>));
+        segments.extend(self.query_segments.iter().cloned());
+        IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
+    }
 
     #[timed(indexing_documents)]
     pub fn add_document(
@@ -170,7 +223,7 @@ impl LsmIndex {
         xpath: XPathId,
         text: &str,
     ) -> io::Result<()> {
-        Arc::make_mut(&mut self.mem).add_document(analyzer, doc_id, xpath, text);
+        self.mem.add_document(analyzer, doc_id, xpath, text);
 
         if self.mem.estimated_size_bytes() >= self.flush_threshold {
             self.flush()?;
@@ -185,7 +238,7 @@ impl LsmIndex {
         analyzer: &Analyzer,
         document: &crate::document::IndexedDocument,
     ) -> io::Result<()> {
-        Arc::make_mut(&mut self.mem).add_indexed_document(analyzer, document);
+        self.mem.add_indexed_document(analyzer, document);
 
         if self.mem.estimated_size_bytes() >= self.flush_threshold {
             self.flush()?;
@@ -225,14 +278,18 @@ impl LsmIndex {
     // so we can query, share, serialize, compact the data
     #[timed(flushing)]
     pub fn flush(&mut self) -> io::Result<()> {
-        let old_mem = std::mem::take(&mut self.mem);
-
-        if old_mem.term_count() == 0 {
+        self.seal();
+        if self.generations.is_empty() {
             return Ok(());
         }
+        let mut gens = std::mem::take(&mut self.generations).into_iter().map(unwrap_mem);
+        let mut merged = gens.next().unwrap();
+        for newer in gens {
+            merged.merge_from(newer);
+        }
+        self.generation_bytes = 0;
 
-        let mem_index = Arc::try_unwrap(old_mem).unwrap_or_else(|shared| (*shared).clone());
-        let segment = Arc::new(mem_index.freeze());
+        let segment = Arc::new(merged.freeze());
 
         let reader: Arc<dyn SearchReader + Send + Sync> = match &self.root {
             Some(root) => {
@@ -254,13 +311,13 @@ impl LsmIndex {
         Ok(())
     }
 
-    pub fn snapshot(&self) -> IndexSnapshot {
-        IndexSnapshot::new(
-            self.mem.clone(),
-            self.query_segments.clone(),
-            self.deleted.clone(),
-        )
-    }
+    // pub fn snapshot(&self) -> IndexSnapshot {
+    //     IndexSnapshot::new(
+    //         self.mem.clone(),
+    //         self.query_segments.clone(),
+    //         self.deleted.clone(),
+    //     )
+    // }
 
     pub fn segment_count(&self) -> usize {
         self.segment_handles.len()
