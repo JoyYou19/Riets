@@ -156,6 +156,9 @@ impl PostingList {
     pub fn items(&self) -> &[Posting] {
         &self.items
     }
+    pub fn into_items(self) -> Vec<Posting> {
+        self.items
+    }
 
     #[inline]
     pub fn len(&self) -> usize {
