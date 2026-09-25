@@ -513,7 +513,7 @@ impl ShardDb {
         match &result {
             Ok(report) => {
                 self.stats.add_documents_indexed(report.inserted as u64);
-                // self.publish_stats();
+                 self.publish_stats();
                 info!(self.log, "indexed batch";
                     "shard_id" => %self.shard_id,
                     "documents" => count,
@@ -666,7 +666,7 @@ impl ShardDb {
                 warn!(self.log, "checkpoint write failed"; "error" => %e);
             }
         }
-        // self.publish_stats();
+        self.publish_stats();
         let elapsed = started.elapsed();
         info!(self.log, "delete batch";
             "user" => user.clone(),
@@ -738,7 +738,7 @@ impl ShardDb {
         // reopen against the new index
         self.start()?;
         std::fs::remove_dir_all(&old_root).ok();
-        // self.publish_stats();
+        self.publish_stats();
         info!(self.log, "reindex committed";
             "shard_id" => %self.shard_id,
             "generation" => self.generation,

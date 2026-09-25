@@ -380,6 +380,7 @@ impl LsmIndex {
     }
 
     #[timed(compaction)]
+        #[timed(compaction)]
     pub fn plan_compaction(
         &mut self,
         config: CompactionConfig,
@@ -387,76 +388,35 @@ impl LsmIndex {
         if self.segment_count() < config.compact_when_segments_at_least {
             return Ok(None);
         }
-
-        if config.max_segments_per_compaction < 2 {
-            return Ok(None);
-        }
-
         let Some(root) = &self.root else {
             return Ok(None);
         };
 
-        let mut by_size: Vec<(u64, usize, SegmentHandle)> = self
+        // Merge every disk segment into one, in list order (roughly doc_id order).
+        let selected: Vec<SegmentHandle> = self
             .segment_handles
             .iter()
-            .enumerate()
-            .map(|(index, handle)| (Self::segment_size_bytes(handle), index, handle.clone()))
+            .filter(|handle| matches!(handle, SegmentHandle::Disk(_)))
+            .take(config.max_segments_per_compaction)
+            .cloned()
             .collect();
 
-        by_size.sort_by_key(|(size, index, _)| (*size, *index));
-
-        
+        if selected.len() < 2 {
+            return Ok(None);
+        }
 
         let output_path = root.join(format!("segment-{}.idx", self.next_segment_id));
         self.next_segment_id += 1;
-
         let job_id = self.next_compaction_job_id;
         self.next_compaction_job_id += 1;
 
-        let mut best_run: Option<(usize, usize)> = None; // (start, len) into by_size
-        let mut start = 0usize;
-        while start < by_size.len() {
-            let smallest_in_run = by_size[start].0.max(1);
-            let mut end = start + 1;
-            
-            while end < by_size.len() && end - start < config.max_segments_per_compaction {
-                let candidate_size = by_size[end].0;
-                if candidate_size > smallest_in_run * config.max_segment_ratio {
-                    break;
-                }
-               
-                
-                end += 1;
-            }
-            let len = end - start;
-            if len >= 2 {
-                let better = best_run.map_or(true, |(_, best_len)| len > best_len);
-                if better {
-                    best_run = Some((start, len));
-                }
-            }
-
-            start += 1;
-        }
-         let Some((run_start, run_len)) = best_run else {
-            return Ok(None);
-        };
-
-        let selected: Vec<SegmentHandle> = by_size[run_start..run_start + run_len]
-            .iter()
-            .map(|(_, _, handle)| handle.clone())
-            .collect();
-
-
-        Ok(
-            Some(CompactionJob {
-                job_id,
-                selected,
-                deleted: self.deleted.clone(),
-                delete_generation:self.delete_generation,
-                output_path,
-            })
-        )
+        Ok(Some(CompactionJob {
+            job_id,
+            selected,
+            deleted: self.deleted.clone(),
+            delete_generation: self.delete_generation,
+            output_path,
+        }))
     }
 
     #[timed(compaction)]

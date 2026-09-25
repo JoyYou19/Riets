@@ -157,16 +157,15 @@ pub fn compact_segments_streaming(
 pub struct CompactionConfig {
     pub max_segments_per_compaction: usize,
     pub compact_when_segments_at_least: usize,
-    pub max_segment_ratio:u64,
    
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            max_segments_per_compaction: 128,
-            compact_when_segments_at_least: 16,
-            max_segment_ratio:2
+            max_segments_per_compaction: 16,
+            compact_when_segments_at_least: 4,
+            
 
         }
     }

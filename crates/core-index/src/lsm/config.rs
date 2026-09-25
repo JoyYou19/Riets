@@ -20,7 +20,7 @@ impl Default for IndexRuntimeConfig {
         Self {
             flush_threshold:128 * 1024 * 1024, //TAGAD TIE IR MB NEVIS TERMS, labaks memory control
             indexing_window_size: 5,
-            indexing_batch_size: 50_000,
+            indexing_batch_size: 100_000,
             compaction: CompactionConfig::default(),
         }
     }
