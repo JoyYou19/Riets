@@ -1,5 +1,5 @@
 use std::{
-    cmp::Reverse, collections::{BTreeMap, BinaryHeap}, io, iter::Peekable, path::{Path, PathBuf}, sync::Arc,
+    cmp::Reverse, collections::{BTreeMap, BinaryHeap}, io, path::{Path, PathBuf}, sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};

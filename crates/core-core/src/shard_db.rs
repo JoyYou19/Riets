@@ -1,8 +1,5 @@
 use std::{
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::SystemTime,
+    io, path::{Path, PathBuf}, sync::Arc, time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,8 +73,9 @@ pub struct ShardDb {
     shared: Arc<SharedShardState>,
     backup: BackupManager,
     pending: u32,
+    last_write: Instant,
 }
-
+const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(30);
 impl ShardDb {
     pub fn shared_state(&self) -> Arc<SharedShardState> {
         self.shared.clone()
@@ -127,6 +125,7 @@ impl ShardDb {
             root,
             backup,
             pending: 0,
+            last_write:Instant::now()
         })
     }
 
@@ -180,6 +179,7 @@ impl ShardDb {
             generation: 0,
             pending: 0,
             backup,
+            last_write: Instant::now(),
         })
     }
 
@@ -294,6 +294,7 @@ impl ShardDb {
         self.stats
             .set_compaction_enabled(self.compaction_worker.is_some());
         self.publish_stats();
+        self.last_write = Instant::now();
         info!(self.log, "shard started"; "shard_id" => self.shard_id);
         Ok(())
     }
@@ -514,6 +515,7 @@ impl ShardDb {
             Ok(report) => {
                 self.stats.add_documents_indexed(report.inserted as u64);
                  self.publish_stats();
+                 self.last_write = Instant::now();
                 info!(self.log, "indexed batch";
                     "shard_id" => %self.shard_id,
                     "documents" => count,
@@ -667,6 +669,7 @@ impl ShardDb {
             }
         }
         self.publish_stats();
+        self.last_write = Instant::now();
         let elapsed = started.elapsed();
         info!(self.log, "delete batch";
             "user" => user.clone(),
@@ -739,6 +742,7 @@ impl ShardDb {
         self.start()?;
         std::fs::remove_dir_all(&old_root).ok();
         self.publish_stats();
+        self.last_write = Instant::now();
         info!(self.log, "reindex committed";
             "shard_id" => %self.shard_id,
             "generation" => self.generation,
@@ -1002,6 +1006,8 @@ impl ShardDb {
         dead_ratio_threshold: f64,
     ) -> io::Result<Option<SegmentCompactionJob>> {
         let db = self.db_ref().map_err(io::Error::other)?;
+        self.publish_stats();
+        
         db.store()
             .plan_compaction(dead_ratio_threshold, DEFAULT_SEGMENT_SIZE)
     }
@@ -1096,6 +1102,7 @@ impl ShardDb {
 
         self.db = Some(db);
         self.publish_stats();
+        self.last_write = Instant::now();
         info!(self.log, "shard cleared"; "shard_id" => self.shard_id);
         Ok(())
     }
@@ -1214,6 +1221,25 @@ impl ShardDb {
         self.backup
             .delete_backups_old(cutoff)
             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        Ok(())
+    }
+        /// Flushes a shard that has unflushed data but no writes for a while,
+    /// so small loads reach disk and the WAL is emptied.
+    pub fn maybe_idle_flush(&mut self) -> Result<(), CorelamoError> {
+        if self.last_write.elapsed() < IDLE_FLUSH_AFTER {
+            return Ok(());
+        }
+        let db = self.db_ref()?;
+        let stats = db
+            .index_stats()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        if stats.memtable_term_count == 0 {
+            return Ok(()); // nothing in memory
+        }
+
+        self.flush()?; // ← your existing flush + WAL reset path
+        self.last_write = Instant::now(); // don't re-check until more writes
+        self.publish_stats();
         Ok(())
     }
 }

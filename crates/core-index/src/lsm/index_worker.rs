@@ -72,7 +72,7 @@ pub struct IndexWorker {
 }
 
 impl IndexWorker {
-    pub fn start(mut index: LsmIndex, analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
+    pub fn start(index: LsmIndex, analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
         shared.publish(index.snapshot());
 
         let (sender, receiver) = mpsc::channel();
