@@ -254,7 +254,7 @@ fn run_index_worker(
             Ok(command) => command,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if docs_since_publish > 0 {
-                    shared.publish(index.snapshot());
+                    shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
                     last_publish = Instant::now();
                 }
@@ -288,7 +288,7 @@ fn run_index_worker(
                 // so a bulk insert is searchable as soon as the request returns.
                 maybe_publish_on_threshold(
                     &shared,
-                    &index,
+                    &mut index,
                     &mut docs_since_publish,
                     &mut last_publish
                 );
@@ -302,7 +302,7 @@ fn run_index_worker(
                 }
                 send_acknowledgement(ack, outcome)?;
                 if ok {
-                    shared.publish(index.snapshot());
+                    shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
                     last_publish = Instant::now();
                 }
@@ -319,7 +319,7 @@ fn run_index_worker(
                     docs_since_publish += doc_count;
                     maybe_publish_on_threshold(
                         &shared,
-                        &index,
+                        &mut index,
                         &mut docs_since_publish,
                         &mut last_publish
                     );
@@ -344,7 +344,7 @@ fn run_index_worker(
                 let result = outcome.map(|_| ());
                 send_acknowledgement(ack, result)?;
                 if installed {
-                    shared.publish(index.snapshot());
+                    shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
                     last_publish = Instant::now();
                     stats.compactions_completed += 1;
@@ -362,14 +362,14 @@ fn run_index_worker(
                 let ok = outcome.is_ok();
                 send_acknowledgement(ack, outcome)?;
                 if ok {
-                    shared.publish(index.snapshot());
+                    shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
                     last_publish = Instant::now();
                 }
             }
             IndexCommand::Shutdown => {
                 index.flush()?;
-                shared.publish(index.snapshot());
+                shared.publish(index.publish_snapshot());
                 return Ok(index);
             }
             IndexCommand::Abort => {
@@ -389,7 +389,7 @@ fn run_index_worker(
         // Commands arriving faster than PUBLISH_INTERVAL never hit the Timeout
         // branch above, so the time-based publish is also checked here.
         if docs_since_publish > 0 && last_publish.elapsed() >= PUBLISH_INTERVAL {
-            shared.publish(index.snapshot());
+            shared.publish(index.publish_snapshot());
             docs_since_publish = 0;
             last_publish = Instant::now();
         }
@@ -401,12 +401,12 @@ fn run_index_worker(
 
 fn maybe_publish_on_threshold(
     shared: &SharedIndexSnapshot,
-    index: &LsmIndex,
+    index: &mut LsmIndex,
     docs_since_publish: &mut u64,
     last_publish: &mut Instant
 ) {
     if *docs_since_publish >= PUBLISH_DOC_THRESHOLD {
-        shared.publish(index.snapshot());
+        shared.publish(index.publish_snapshot());
         *docs_since_publish = 0;
         *last_publish = Instant::now();
     }

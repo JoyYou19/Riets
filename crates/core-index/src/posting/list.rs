@@ -156,6 +156,9 @@ impl PostingList {
     pub fn items(&self) -> &[Posting] {
         &self.items
     }
+    pub fn into_items(self) -> Vec<Posting> {
+        self.items
+    }
 
     #[inline]
     pub fn len(&self) -> usize {
@@ -176,6 +179,28 @@ impl PostingList {
         Self {
             items: Vec::with_capacity(capacity),
             max_weight: 0,
+        }
+    }
+    //TEST
+    pub fn append(&mut self, other: PostingList) {
+        if other.items.is_empty() {
+            return;
+        }
+        if self.items.is_empty() {
+            *self = other;
+            return;
+        }
+
+        let last = self.items.last().unwrap().doc_id;
+        let first = other.items.first().unwrap().doc_id;
+
+        if last < first {
+            self.max_weight = self.max_weight.max(other.max_weight);
+            self.items.extend(other.items);
+        } else {
+            let mut items = std::mem::take(&mut self.items);
+            items.extend(other.items);
+            *self = PostingList::from_items(items);
         }
     }
 }

@@ -1,17 +1,18 @@
 import json
 import random
 import time
-import subprocess
+import urllib.error
+import urllib.request
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 INPUT_FILE = "fever/corpus.jsonl"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
+SHARD_COUNT = 5
 
-# custom constant, tune to taste
-BATCH_SIZE = 60000
-
-USERNAME = "admin"
-PASSWORD = "secret"
+BATCH_SIZE = 50_000   # documents per insert request
+IN_FLIGHT = 3         # insert requests running at the same time
 
 POLICY = """\
 [[fields]]
@@ -60,34 +61,27 @@ max = 50
 """
 
 
-def login(username, password):
-    body = json.dumps({"username": username, "password": password})
-    result = subprocess.run(
-        ["curl", "-s", "-X", "POST", f"{BASE_URL}/api/login",
-         "-H", "Accept: application/json",
-         "-H", "Content-Type: application/json",
-         "-d", body],
-        capture_output=True,
-        text=True,
+def post(path, body):
+    """POST to the server and return the parsed JSON reply (or an error dict)."""
+    data = body.encode("utf-8") if isinstance(body, str) else body
+    request = urllib.request.Request(
+        f"{BASE_URL}{path}",
+        data=data,
+        method="POST",
+        headers={"Accept": "application/json"},
     )
-    print(result.stdout)
-    return json.loads(result.stdout)["data"]["token"]
+    try:
+        with urllib.request.urlopen(request) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        text = e.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as e:
+        return {"error": str(e.reason)}
 
-
-def curl_post(url, body, token):
-    result = subprocess.run(
-        ["curl", "-s", "-X", "POST", url,
-         "-H", "Accept: application/json",
-         "-H", f"X-Corelamo-Key: {token}",
-         "--data-binary", "@-"],
-        input=body,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip(), result.returncode
-
-
-
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"error": text}
 
 
 def batches_from_jsonl(path, batch_size):
@@ -103,7 +97,7 @@ def batches_from_jsonl(path, batch_size):
                 print(f"[WARN] skipping malformed line {line_no}: {e}")
                 continue
 
-            # test-only: inject random numeric fields to exercise the columns
+            # Test data for the numeric fields in the policy.
             doc["random_year"] = random.randint(1900, 2024)
             doc["random_float"] = round(random.uniform(0.0, 100.0), 4)
 
@@ -117,66 +111,57 @@ def batches_from_jsonl(path, batch_size):
 
 
 def main():
-    start_time = time.time()
-    print("[INFO] Starting fever uploader...")
+    start = time.time()
 
-    print(f"[INFO] Logging in as '{USERNAME}'...")
-    token = login(USERNAME, PASSWORD)
-    print("[INFO] Login successful, token acquired.")
-
-    # 1. delete if exists
-    # print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
-    # out, _ = curl_delete(
-    #     f"{BASE_URL}/api/databases/{DB_NAME}/clear-database", token)
-    # print(f"[INFO] {out}")
-
-    # 2. create database
     print(f"[INFO] Creating database '{DB_NAME}'...")
-    out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/create-database", "{\"shard_count\": 5}", token)
-    print(f"[INFO] {out}")
+    print(post(f"/api/databases/{DB_NAME}/create-database",
+               json.dumps({"shard_count": SHARD_COUNT})).get("title"))
 
-    # 2b. start database
     print(f"[INFO] Starting database '{DB_NAME}'...")
-    out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/start-database", "", token)
-    print(f"[INFO] {out}")
+    print(post(f"/api/databases/{DB_NAME}/start-database", "").get("title"))
 
-    # 3. set policy
     print("[INFO] Setting policy...")
-    out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
-    print(f"[INFO] {out}")
+    print(post(f"/api/databases/{DB_NAME}/set-policy", POLICY).get("title"))
 
-    # 4. count lines up front so progress has a denominator
-    print(f"[INFO] Counting lines in {INPUT_FILE}...")
-    total_lines = count_lines(INPUT_FILE)
-    print(f"[INFO] {total_lines} line(s) found.")
+    sent = 0
+    inserted = 0
+    insert_path = f"/api/databases/{DB_NAME}/insert"
 
-    # 5. stream + upload in batches
-    uploaded = 0
-    for batch_no, batch in enumerate(batches_from_jsonl(INPUT_FILE, BATCH_SIZE), start=1):
-        payload = json.dumps(batch, ensure_ascii=False)
-        out, code = curl_post(
-            f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
+    def report(batch_no, batch_len, reply):
+        nonlocal inserted
+        data = reply.get("data") or {}
+        if "error" in reply or "inserted" not in data:
+            print(f"[ERROR] batch {batch_no}: {reply}")
+            return
+        inserted += data["inserted"]
+        failed = batch_len - data["inserted"]
+        elapsed = time.time() - start
+        rate = inserted / elapsed if elapsed > 0 else 0
+        line = (f"[batch {batch_no}] inserted {inserted:,} / sent {sent:,}"
+                f"  ({rate:,.0f} docs/s, {elapsed:.1f}s)")
+        if failed:
+            line += f"  — {failed:,} failed: {reply.get('title')}"
+        print(line)
 
-        uploaded += len(batch)
-        if code != 0:
-            print(f"[ERROR] batch {
-                  batch_no} failed to send (curl exit {code})")
-            print(out)
-        else: 
-            print(f"[INFO] batch {batch_no}: {
-                  uploaded}/{total_lines} ({pct:.1f}%) — {out}")
+    print(f"[INFO] Uploading {INPUT_FILE} "
+          f"({BATCH_SIZE:,} docs per request, {IN_FLIGHT} in flight)...")
 
-    # 6. reindex
-    # print("[INFO] Reindexing...")
-    # out, _ = curl_post(
-    #     f"{BASE_URL}/api/databases/{DB_NAME}/reindex", "", token)
-    # print(f"[INFO] {out}")
+    pending = deque()
+    with ThreadPoolExecutor(max_workers=IN_FLIGHT) as pool:
+        for batch_no, batch in enumerate(batches_from_jsonl(INPUT_FILE, BATCH_SIZE), start=1):
+            payload = json.dumps(batch, ensure_ascii=False)
+            sent += len(batch)
+            pending.append((batch_no, len(batch), pool.submit(post, insert_path, payload)))
 
-    duration = time.time() - start_time
-    print(f"\n[INFO] Done in {duration:.2f}s.")
+            if len(pending) >= IN_FLIGHT:
+                done_no, done_len, future = pending.popleft()
+                report(done_no, done_len, future.result())
+
+        for done_no, done_len, future in pending:
+            report(done_no, done_len, future.result())
+
+    duration = time.time() - start
+    print(f"\n[INFO] Done: {inserted:,} of {sent:,} documents inserted in {duration:.2f}s.")
 
 
 if __name__ == "__main__":

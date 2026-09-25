@@ -156,21 +156,24 @@ impl MemIndex {
         position: u32,
         weight: u16,
     ) {
-        let key = TermKey::new(term, xpath);
+       
 
-        if !self.terms.contains_key(&key) {
-            self.estimated_bytes += key.term.len() + std::mem::size_of::<TermKey>();
-        }
+       
         // one position added to a posting: doc_id + one u32 position, plus
         // per-entry posting overhead (weight, small header). Approximate —
         // this doesn't need to be exact, just proportional to real growth.
         self.estimated_bytes +=
             std::mem::size_of::<DocId>() + std::mem::size_of::<u32>() + std::mem::size_of::<u16>();
 
-        self.terms
-            .entry(key)
-            .or_default()
-            .insert(doc_id, position, weight);
+       match self.terms.entry(TermKey::new(term, xpath)) {
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                slot.get_mut().insert(doc_id, position, weight);
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
+                slot.insert(PostingList::new()).insert(doc_id, position, weight);
+            }
+        }
     }
 
     #[timed(indexing_documents)]
@@ -182,17 +185,23 @@ impl MemIndex {
         positions: Vec<u32>,
         weight: u16,
     ) {
-        let key = TermKey::new(term, xpath);
-        if !self.terms.contains_key(&key) {
-            self.estimated_bytes += key.term.len() + std::mem::size_of::<TermKey>();
-        }
+        // let key = TermKey::new(term, xpath);
+        // if !self.terms.contains_key(&key) {
+        //     self.estimated_bytes += key.term.len() + std::mem::size_of::<TermKey>();
+        // }
         self.estimated_bytes += std::mem::size_of::<DocId>()
              + std::mem::size_of::<u16>()
              + positions.len() * std::mem::size_of::<u32>();
-        self.terms
-            .entry(key)
-            .or_default()
-            .insert_posting(doc_id, positions, weight);
+        match self.terms.entry(TermKey::new(term, xpath)) {
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                slot.get_mut().insert_posting(doc_id, positions, weight);
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
+                slot.insert(PostingList::new())
+                    .insert_posting(doc_id, positions, weight);
+            }
+        }
     }
 
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {
@@ -349,5 +358,25 @@ impl MemIndex {
         }
 
         PostingList::from_items(items)
+    }
+    //TEST
+     /// `newer` must hold later doc_ids (true on the single index worker).
+    /// Merges a newer generation into this one. `newer` must hold later
+    /// doc_ids, which holds on the single index worker.
+    #[timed(indexing_documents)]
+    pub fn merge_from(&mut self, newer: MemIndex) {
+        for (key, list) in newer.terms {
+            if let Some(existing) = self.terms.get_mut(&key) {
+                existing.append(list);
+            } else {
+                self.terms.insert(key, list);
+            }
+        }
+        self.doc_lengths.extend(newer.doc_lengths);
+        for (xpath, stats) in newer.field_stats {
+            self.field_stats.entry(xpath).or_default().add(&stats);
+        }
+        self.numeric_points.merge(newer.numeric_points);
+        self.estimated_bytes += newer.estimated_bytes;
     }
 }

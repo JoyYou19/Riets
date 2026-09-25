@@ -3,7 +3,7 @@ use std::{
     io::{self, BufWriter, Seek, Write},
     path::Path,
 };
-
+use std::io::SeekFrom;
 use core_timing::timed;
 
 use crate::{
@@ -18,9 +18,47 @@ use crate::{
     types::{DocId, TermKey, XPathId},
 };
 
-/*
-* Writes an ImmutableSegment to disk
-*/
+/// Tracks the write position itself, so `stream_position()` never flushes
+/// the BufWriter or makes a syscall.
+struct PositionWriter<W> {
+    inner: W,
+    pos: u64,
+}
+impl<W: Write> PositionWriter<W> {
+    fn new(inner: W) -> Self {
+        Self { inner, pos: 0 }
+    }
+
+    fn into_inner(self) -> W {
+        self.inner
+    }
+}
+impl<W: Write> Write for PositionWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+impl<W: Write> Seek for PositionWriter<W> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match pos {
+            SeekFrom::Current(0) => Ok(self.pos),
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "PositionWriter only reports its position",
+            )),
+        }
+    }
+
+    fn stream_position(&mut self) -> io::Result<u64> {
+        Ok(self.pos)
+    }
+}
 
 fn write_u8(out: &mut impl Write, value: u8) -> io::Result<()> {
     out.write_all(&[value])
@@ -105,9 +143,9 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
 #[timed(writing_files)]
 pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::Result<()> {
     let file = File::create(path)?;
-    let mut out = BufWriter::new(file);
+     let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
     write_segment_to(&mut out, segment)?;
-    out.flush()
+    finish_file(out)
 }
 
 #[timed(writing_files)]
@@ -201,9 +239,10 @@ pub fn write_merged_segment(
     numeric_fields: &NumericFields,
 ) -> io::Result<()> {
     let file = File::create(path)?;
-    let mut out = BufWriter::new(file);
+     let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
     write_merged_segment_to(&mut out, terms, doc_lengths, numeric_fields)?;
-    out.flush()
+    
+    finish_file(out)
 }
 
 #[timed(writing_files)]
@@ -248,7 +287,13 @@ pub fn write_merged_segment_to<W: Write + Seek>(
 
     write_footer(out, &footer)
 }
-
+//TEST
+/// Flushes the buffer and fsyncs, so the file is on disk before the
+/// manifest (or a WAL reset) depends on it.
+fn finish_file(out: PositionWriter<BufWriter<File>>) -> io::Result<()> {
+    let file = out.into_inner().into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()
+}
 // Streams postings out while grouping terms into one FST per field.
 // Terms MUST arrive in ascending (xpath, term)
 struct FieldWriter<K> {

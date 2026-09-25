@@ -1,9 +1,5 @@
 use std::{
-    collections::BTreeMap,
-    io,
-    iter::Peekable,
-    path::{Path, PathBuf},
-    sync::Arc,
+    cmp::Reverse, collections::{BTreeMap, BinaryHeap}, io, path::{Path, PathBuf}, sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -51,36 +47,58 @@ impl OpenSegment {
 }
 
 struct MergedTerms<'a> {
-    sources: Vec<Peekable<TermIter<'a>>>,
+    sources: Vec<TermIter<'a>>,
+    heads: Vec<Option<PostingList>>,
+    heap: BinaryHeap<Reverse<(TermKey, usize)>>,
     deleted: &'a DeleteSet,
 }
+impl<'a> MergedTerms<'a> {
+    fn new(mut sources: Vec<TermIter<'a>>, deleted: &'a DeleteSet) -> Self {
+        let mut heads = Vec::with_capacity(sources.len());
+        let mut heap = BinaryHeap::with_capacity(sources.len());
+        for (index, source) in sources.iter_mut().enumerate() {
+            match source.next() {
+                Some((key, list)) => {
+                    heap.push(Reverse((key, index)));
+                    heads.push(Some(list));
+                }
+                None => heads.push(None),
+            }
+        }
+        Self { sources, heads, heap, deleted }
+    }
 
+    /// Takes the current posting list of `index` and loads its next term.
+    fn advance(&mut self, index: usize) -> PostingList {
+        let list = self.heads[index].take().unwrap_or_default();
+        if let Some((key, next)) = self.sources[index].next() {
+            self.heap.push(Reverse((key, index)));
+            self.heads[index] = Some(next);
+        }
+        list
+    }
+}
 impl<'a> Iterator for MergedTerms<'a> {
     type Item = (TermKey, PostingList);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let min_key = self
-                .sources
-                .iter_mut()
-                .filter_map(|s| s.peek().map(|(k, _)| k.clone()))
-                .min()?;
+            let Reverse((key, index)) = self.heap.pop()?;
+            let mut items = self.advance(index).into_items();
 
-            let mut items = Vec::new();
-            for source in self.sources.iter_mut() {
-                if let Some((k, _)) = source.peek() {
-                    if *k == min_key {
-                        let (_, postings) = source.next().unwrap();
-                        items.extend(postings.items().iter().cloned());
-                    }
-                }
+            // Same term in other sources: pop them too. Ties pop in source
+            // index order, which is doc_id order (sources are sorted below).
+            while matches!(self.heap.peek(), Some(Reverse((next_key, _))) if *next_key == key) {
+                let Reverse((_, other)) = self.heap.pop().unwrap();
+                items.extend(self.advance(other).into_items());
             }
 
-            let merged = self.deleted.filter(&PostingList::from_sorted(items));
+            // Sorts only if the input ranges overlapped; merges duplicate doc_ids.
+            let mut merged = PostingList::from_items(items);
+            self.deleted.filter_in_place(&mut merged);
             if !merged.is_empty() {
-                return Some((min_key, merged));
+                return Some((key, merged));
             }
-            // every posting for this term was tombstoned — keep scanning
         }
     }
 }
@@ -124,10 +142,8 @@ pub fn compact_segments_streaming(
         }
     }
 
-    let sources: Vec<Peekable<TermIter<'_>>> =
-        opened.iter().map(|s| s.iter_terms().peekable()).collect();
-
-    let merged_terms = MergedTerms { sources, deleted };
+    let sources: Vec<TermIter<'_>> = opened.iter().map(|s| s.iter_terms()).collect();
+    let merged_terms = MergedTerms::new(sources, deleted);
 
     write_merged_segment(
         output_path,
@@ -141,16 +157,15 @@ pub fn compact_segments_streaming(
 pub struct CompactionConfig {
     pub max_segments_per_compaction: usize,
     pub compact_when_segments_at_least: usize,
-    pub max_segment_ratio:u64,
    
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            max_segments_per_compaction: 128,
-            compact_when_segments_at_least: 16,
-            max_segment_ratio:2
+            max_segments_per_compaction: 16,
+            compact_when_segments_at_least: 4,
+            
 
         }
     }
