@@ -274,7 +274,7 @@ impl ShardManager {
 
         let mut all_fields_map = BTreeMap::new();
         for input in &inputs {
-            all_fields_map.extend(input.fields.clone());
+            input.parsed.collect_leaf_values(&mut all_fields_map);
         }
         self.update_all_fields_from_fields(&all_fields_map)?;
 
@@ -342,7 +342,7 @@ impl ShardManager {
 
         let mut all_fields_map = BTreeMap::new();
         for input in &inputs {
-            all_fields_map.extend(input.fields.clone());
+            input.parsed.collect_leaf_values(&mut all_fields_map);
         }
         self.update_all_fields_from_fields(&all_fields_map)?;
 
@@ -801,9 +801,10 @@ impl ShardManager {
     ) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
         let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
+
         let mut all_fields_map = BTreeMap::new();
         for input in &inputs {
-            all_fields_map.extend(input.fields.clone());
+            input.parsed.collect_leaf_values(&mut all_fields_map);
         }
         self.update_all_fields_from_fields(&all_fields_map)?;
 

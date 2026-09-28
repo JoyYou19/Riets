@@ -947,6 +947,7 @@ pub async fn partial_replace_handler(
         .into_iter()
         .map(|item| (item.id, item.patch))
         .collect();
+
     //now we fetch the docs while still in async
     let mut fetched = HashMap::with_capacity(items.len());
     for (id, _) in &items {
@@ -955,12 +956,14 @@ pub async fn partial_replace_handler(
         }
         //WARN: this happens sequentially, for small partial-replaces its ok, if something happens we
         //can upgrade this
+
         let result = handle.retrieve_one(id).await.map_err(|e| e.to_string());
         fetched.insert(id.clone(), result);
     }
 
+    let policy = handle.policy();
     let parsed = tokio::task::spawn_blocking(move || {
-        doctypes::parse_partial_replace_to_inputs(&items, |id| match fetched.get(id) {
+        doctypes::parse_partial_replace_to_inputs(&items, &policy, |id| match fetched.get(id) {
             Some(Ok(doc)) => Ok(doc.clone()),
             Some(Err(msg)) => Err(CorelamoError::Internal(msg.clone())),
             None => Ok(None),

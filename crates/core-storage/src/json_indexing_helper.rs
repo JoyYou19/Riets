@@ -1,73 +1,141 @@
-//this is so that we can parse stored->indexed from the bytes
-use std::collections::BTreeMap;
-use std::io;
-
-use core_index::document::{IndexPolicy, IndexedDocument, policy::FieldKind};
+use core_index::array_rows::{ArrayRowAllocator, ArrayRowIndex};
+use core_index::document::document::{ArrayRow, NumericPoint};
+use core_index::document::{DocumentPart, IndexPolicy, IndexedDocument, policy::FieldKind};
 use core_index::numeric_values::{parse_float, parse_integer};
-use core_index::types::DocId;
-use core_protocol::command_response_helpers::traverse_json;
+use core_index::types::{ArrayRowId, DocId};
 
-pub fn flatten_fields(source: &[u8]) -> io::Result<BTreeMap<String, String>> {
-    if source.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let mut buf = source.to_vec();
-    let value = simd_json::to_owned_value(&mut buf)
-        .map_err(|e| io::Error::other(format!("failed to parse document source: {e}")))?;
-    let mut fields = BTreeMap::new();
-    traverse_json(&value, &mut String::new(), &mut fields);
-    Ok(fields)
-}
+use crate::json_parse::{ArrayField, LeafValue, ParsedNode};
 
-pub fn indexed_from_fields(
+pub fn index_document(
     doc_id: DocId,
-    fields: &BTreeMap<String, String>,
+    parsed: &ParsedNode,
     policy: &IndexPolicy,
+    allocator: &mut ArrayRowAllocator,
+    array_row_index: &mut ArrayRowIndex,
 ) -> IndexedDocument {
     let mut indexed = IndexedDocument::new(doc_id);
+    index_leaves(
+        &parsed.leaves,
+        &mut indexed.parts,
+        &mut indexed.numeric_points,
+        policy,
+    );
+    index_arrays(
+        &parsed.arrays,
+        doc_id,
+        None,
+        &mut indexed.array_rows,
+        policy,
+        allocator,
+        array_row_index,
+    );
+    indexed
+}
 
-    for field in policy.indexed_fields() {
+fn index_arrays(
+    arrays: &[ArrayField],
+    doc_id: DocId,
+    parent_row: Option<ArrayRowId>,
+    rows: &mut Vec<ArrayRow>,
+    policy: &IndexPolicy,
+    allocator: &mut ArrayRowAllocator,
+    array_row_index: &mut ArrayRowIndex,
+) {
+    for array_field in arrays {
+        for element in &array_field.elements {
+            let row_id = allocator.alloc();
+            array_row_index.push_row(row_id, doc_id, parent_row);
+
+            let mut row = ArrayRow::new(row_id);
+            index_leaves(
+                &element.leaves,
+                &mut row.parts,
+                &mut row.numeric_points,
+                policy,
+            );
+            index_arrays(
+                &element.arrays,
+                doc_id,
+                Some(row_id),
+                rows,
+                policy,
+                allocator,
+                array_row_index,
+            );
+            rows.push(row);
+        }
+    }
+}
+
+fn index_leaves(
+    leaves: &[LeafValue],
+    parts: &mut Vec<DocumentPart>,
+    numeric: &mut Vec<NumericPoint>,
+    policy: &IndexPolicy,
+) {
+    for leaf in leaves {
+        let Some(field) = policy.leaf_by_path(&leaf.path) else {
+            continue;
+        };
+        let raw = &leaf.value;
         match field.kind {
             FieldKind::Text => {
-                let Some(text) = fields.get(&field.name) else {
-                    continue;
-                };
-                indexed = indexed.with_part(field.xpath(policy), text, field.weight);
+                parts.push(DocumentPart {
+                    xpath: field.xpath(policy),
+                    text: raw.clone(),
+                    weight: field.weight,
+                    exact: false,
+                });
                 if let Some(exact_xpath) = field.exact_xpath(policy) {
-                    indexed = indexed.with_exact(exact_xpath, text, field.weight);
+                    parts.push(DocumentPart {
+                        xpath: exact_xpath,
+                        text: raw.clone(),
+                        weight: field.weight,
+                        exact: true,
+                    });
                 }
             }
             FieldKind::Id => {
-                let Some(text) = fields.get(&field.name) else {
-                    continue;
-                };
-                indexed = indexed.with_exact(field.xpath(policy), text, field.weight);
+                parts.push(DocumentPart {
+                    xpath: field.xpath(policy),
+                    text: raw.clone(),
+                    weight: field.weight,
+                    exact: true,
+                });
             }
             FieldKind::Integer => {
-                let Some(raw) = fields.get(&field.name) else {
-                    continue;
-                };
                 if let Some(value) = parse_integer(raw) {
-                    indexed = indexed.with_numeric_point(field.xpath(policy), value);
+                    numeric.push(NumericPoint {
+                        xpath: field.xpath(policy),
+                        value,
+                    });
                     if field.searchable() {
-                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
+                        parts.push(DocumentPart {
+                            xpath: field.xpath(policy),
+                            text: raw.to_string(),
+                            weight: field.weight,
+                            exact: true,
+                        });
                     }
                 }
             }
             FieldKind::Float => {
-                let Some(raw) = fields.get(&field.name) else {
-                    continue;
-                };
                 if let Some(value) = parse_float(raw) {
-                    indexed = indexed.with_numeric_point(field.xpath(policy), value);
+                    numeric.push(NumericPoint {
+                        xpath: field.xpath(policy),
+                        value,
+                    });
                     if field.searchable() {
-                        indexed = indexed.with_exact(field.xpath(policy), raw, field.weight);
+                        parts.push(DocumentPart {
+                            xpath: field.xpath(policy),
+                            text: raw.to_string(),
+                            weight: field.weight,
+                            exact: true,
+                        });
                     }
                 }
             }
             _ => {}
         }
     }
-
-    indexed
 }

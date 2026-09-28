@@ -1,7 +1,7 @@
 use crate::{
     document::policy::WeightInterval,
     numeric_values::NumericValue,
-    types::{DocId, XPathId},
+    types::{ArrayRowId, DocId, XPathId},
 };
 
 // Represents one entry in the database documents
@@ -10,6 +10,24 @@ pub struct IndexedDocument {
     pub doc_id: DocId,
     pub parts: Vec<DocumentPart>,
     pub numeric_points: Vec<NumericPoint>,
+    pub array_rows: Vec<ArrayRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArrayRow {
+    pub array_row_id: ArrayRowId,
+    pub parts: Vec<DocumentPart>,
+    pub numeric_points: Vec<NumericPoint>,
+}
+
+impl ArrayRow {
+    pub fn new(array_row_id: ArrayRowId) -> Self {
+        Self {
+            array_row_id,
+            parts: Vec::new(),
+            numeric_points: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +42,7 @@ impl IndexedDocument {
             doc_id,
             parts: Vec::new(),
             numeric_points: Vec::new(),
+            array_rows: Vec::new(),
         }
     }
 

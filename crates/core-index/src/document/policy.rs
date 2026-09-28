@@ -212,6 +212,22 @@ impl IndexPolicy {
         Ok(policy)
     }
 
+    pub fn leaf_by_path(&self, path: &str) -> Option<&FieldPolicy> {
+        fn find<'a>(fields: &'a [FieldPolicy], path: &str) -> Option<&'a FieldPolicy> {
+            for f in fields {
+                if f.kind == FieldKind::Array {
+                    if let Some(hit) = find(&f.subfields, path) {
+                        return Some(hit);
+                    }
+                } else if f.full_path == path {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        find(&self.fields, path)
+    }
+
     //validates if everything is fine for policy
     pub fn validate(&self) -> io::Result<()> {
         let mut names = HashSet::new();
