@@ -480,7 +480,7 @@ impl ShardDb {
         self.pending += count as u32;
         let not_flushed = self.pending >= (batch_size as u32);
         let wal_record = WalRecord::Create(inputs);
-        self.wal_append_record(&wal_record)?;
+       // self.wal_append_record(&wal_record)?;
         let WalRecord::Create(inputs) = wal_record else {
             return Err(CorelamoError::Internal("unexpected WAL record".into()));
         };
