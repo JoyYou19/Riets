@@ -75,7 +75,7 @@ pub struct ShardDb {
     pending: u32,
     last_write: Instant,
 }
-const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(30);
+const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
 impl ShardDb {
     pub fn shared_state(&self) -> Arc<SharedShardState> {
         self.shared.clone()
@@ -480,7 +480,7 @@ impl ShardDb {
         self.pending += count as u32;
         let not_flushed = self.pending >= (batch_size as u32);
         let wal_record = WalRecord::Create(inputs);
-        self.wal_append_record(&wal_record)?;
+       // self.wal_append_record(&wal_record)?;
         let WalRecord::Create(inputs) = wal_record else {
             return Err(CorelamoError::Internal("unexpected WAL record".into()));
         };

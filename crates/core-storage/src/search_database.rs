@@ -609,7 +609,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     #[timed(inserting)]
     pub fn finish(mut self) -> io::Result<InsertReport> {
         self.flush_batch()?;
-        self.flush_window()?;
+        // self.flush_window()?;
 
         //self.db.flush()?;
         Ok(InsertReport {
@@ -622,23 +622,23 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     // publishes them to the index
     //
     //
-    #[timed(inserting)]
-    fn flush_window(&mut self) -> io::Result<()> {
-        if self.pending_batches.is_empty() {
-            return Ok(());
-        }
+    // #[timed(inserting)]
+    // fn flush_window(&mut self) -> io::Result<()> {
+    //     if self.pending_batches.is_empty() {
+    //         return Ok(());
+    //     }
 
-        let batches = std::mem::take(&mut self.pending_batches);
+    //     let batches = std::mem::take(&mut self.pending_batches);
 
-        let counts: u64 = batches.iter().map(|batch| batch.len() as u64).sum();
-        let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
+    //     let counts: u64 = batches.iter().map(|batch| batch.len() as u64).sum();
+    //     let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
 
-        // for (segment, count) in segments.into_iter().zip(counts) {
-        self.db.index_worker.add_segment_wait(segments, counts)?;
-        // }
+    //     // for (segment, count) in segments.into_iter().zip(counts) {
+    //     self.db.index_worker.add_segment_wait(segments, counts)?;
+    //     // }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     // Flushes on completed document batch
     #[timed(inserting)]
