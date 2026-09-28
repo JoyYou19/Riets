@@ -8,7 +8,7 @@ use crate::{
 };
 use core_index::{
     analyzer::analyzer::Analyzer,
-    array_rows::{ArrayRowAllocator, ArrayRowIndex},
+    array_rows::ArrayRowAllocator,
     document::{IndexPolicy, IndexedDocument},
     lsm::{
         LsmIndex,
@@ -79,7 +79,6 @@ pub struct SearchDatabase<S: DocumentStore> {
     shard_id: ShardId,
     next_local_id: LocalDocId,
     array_row_allocator: ArrayRowAllocator,
-    array_row_index: ArrayRowIndex,
 }
 
 pub struct InsertReport {
@@ -184,6 +183,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shard_id: ShardId,
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+        let next_array_row = index.max_array_row().saturating_add(1);
 
         let snapshot = SharedIndexSnapshot::empty();
         let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone());
@@ -196,8 +196,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             policy,
             shard_id,
             next_local_id,
-            array_row_allocator: ArrayRowAllocator::new(),
-            array_row_index: ArrayRowIndex::new(0),
+            array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
         })
     }
 
@@ -211,6 +210,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shared_snapshot: SharedIndexSnapshot,
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+        let next_array_row = index.max_array_row().saturating_add(1);
 
         let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone());
 
@@ -222,8 +222,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             policy,
             shard_id,
             next_local_id,
-            array_row_allocator: ArrayRowAllocator::new(),
-            array_row_index: ArrayRowIndex::new(0),
+            array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
         })
     }
 
@@ -264,7 +263,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &input.parsed,
                 &self.policy,
                 &mut self.array_row_allocator,
-                &mut self.array_row_index,
             );
             self.index_worker.add_indexed_document_wait(indexed)?;
         }
@@ -351,7 +349,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &input.parsed,
                 &self.policy,
                 &mut self.array_row_allocator,
-                &mut self.array_row_index,
             );
             self.index_worker.add_indexed_document_wait(indexed)?;
         }
@@ -488,7 +485,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let analyzer = &self.analyzer;
         let policy = &self.policy;
         let worker = &self.index_worker;
-        let (allocator, array_index) = (&mut self.array_row_allocator, &mut self.array_row_index);
+        let allocator = &mut self.array_row_allocator;
 
         let mut current: Vec<IndexedDocument> = Vec::with_capacity(batch_size);
         let mut pending: Vec<Vec<IndexedDocument>> = Vec::with_capacity(window_size);
@@ -506,13 +503,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                         return Ok(());
                     }
                 };
-                current.push(index_document(
-                    doc.internal_id,
-                    &node,
-                    policy,
-                    allocator,
-                    array_index,
-                ));
+                current.push(index_document(doc.internal_id, &node, policy, allocator));
 
                 if current.len() >= batch_size {
                     pending.push(std::mem::replace(
@@ -585,7 +576,6 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
             &input.parsed,
             &self.db.policy,
             &mut self.db.array_row_allocator,
-            &mut self.db.array_row_index,
         );
         let stored = StoredDocument {
             external_id,

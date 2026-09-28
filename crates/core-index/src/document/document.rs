@@ -16,14 +16,16 @@ pub struct IndexedDocument {
 #[derive(Debug, Clone)]
 pub struct ArrayRow {
     pub array_row_id: ArrayRowId,
+    pub parent: Option<ArrayRowId>,
     pub parts: Vec<DocumentPart>,
     pub numeric_points: Vec<NumericPoint>,
 }
 
 impl ArrayRow {
-    pub fn new(array_row_id: ArrayRowId) -> Self {
+    pub fn new(array_row_id: ArrayRowId, parent: Option<ArrayRowId>) -> Self {
         Self {
             array_row_id,
+            parent,
             parts: Vec::new(),
             numeric_points: Vec::new(),
         }

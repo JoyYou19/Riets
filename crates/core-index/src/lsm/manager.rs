@@ -16,7 +16,7 @@ use crate::{
     posting::{DeleteSet, PostingList},
     search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
     segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, XPathId},
+    types::{ArrayRowId, DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -25,19 +25,20 @@ use crate::{
 pub struct LsmIndex {
     mem: MemIndex,
     //TEST
-    generations:Vec<Arc<MemIndex>>,
+    generations: Vec<Arc<MemIndex>>,
     segment_handles: Vec<SegmentHandle>,
     generation_bytes: usize,
     query_segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
     flush_threshold: usize,
     deleted: DeleteSet,
-    delete_generation:u64,
+    delete_generation: u64,
     root: Option<PathBuf>,
     next_segment_id: u64,
     next_compaction_job_id: u64,
-    
+    max_array_row: ArrayRowId,
 }
-const GENERATION_MERGE_RATIO:usize=2;
+const GENERATION_MERGE_RATIO: usize = 2;
+
 fn unwrap_mem(generation: Arc<MemIndex>) -> MemIndex {
     Arc::try_unwrap(generation).unwrap_or_else(|shared| (*shared).clone())
 }
@@ -114,16 +115,17 @@ impl LsmIndex {
     pub fn new(flush_threshold: usize) -> Self {
         Self {
             mem: MemIndex::new(),
-            generations:Vec::new(),
-            generation_bytes:0,
+            generations: Vec::new(),
+            generation_bytes: 0,
             segment_handles: Vec::new(),
             query_segments: Arc::new(Vec::new()),
             flush_threshold,
             deleted: DeleteSet::new(),
-            delete_generation:0,
+            delete_generation: 0,
             root: None,
             next_segment_id: 0,
             next_compaction_job_id: 0,
+            max_array_row: 0,
         }
     }
 
@@ -137,10 +139,13 @@ impl LsmIndex {
         let mut segment_handles = Vec::new();
         let mut query_segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::new();
         let mut next_segment_id = 0;
+        let mut max_array_row = 0;
         let deleted = crate::lsm::deletes::read_deletes(&root)?;
-        // let mut deleted_generation= 
+        // let mut deleted_generation=
         for path in segment_paths {
             let disk = DiskSegment::open(&path)?;
+
+            max_array_row = max_array_row.max(disk.array_row_index().max_array_row().unwrap_or(0));
 
             if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
                 && let Some(id) = stem
@@ -156,25 +161,29 @@ impl LsmIndex {
             query_segments.push(disk);
         }
 
-        
-
         Ok(Self {
             mem: MemIndex::new(),
-            generations:Vec::new(),
-            generation_bytes:0,
+            generations: Vec::new(),
+            generation_bytes: 0,
             segment_handles,
             query_segments: Arc::new(query_segments),
             flush_threshold,
             deleted,
-            delete_generation:0, //incorrect
+            delete_generation: 0, //incorrect
             root: Some(root),
             next_segment_id,
             next_compaction_job_id: 0,
+            max_array_row,
         })
     }
+
+    pub fn max_array_row(&self) -> ArrayRowId {
+        self.max_array_row
+    }
+
     //TEST
-        #[timed(indexing_documents)]
-        fn seal(&mut self) {
+    #[timed(indexing_documents)]
+    fn seal(&mut self) {
         if self.mem.term_count() == 0 {
             return;
         }
@@ -210,7 +219,11 @@ impl LsmIndex {
     fn build_snapshot(&self, mem: Arc<MemIndex>) -> IndexSnapshot {
         let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> =
             Vec::with_capacity(self.generations.len() + self.query_segments.len());
-        segments.extend(self.generations.iter().map(|g| g.clone() as Arc<dyn SearchReader + Send + Sync>));
+        segments.extend(
+            self.generations
+                .iter()
+                .map(|g| g.clone() as Arc<dyn SearchReader + Send + Sync>),
+        );
         segments.extend(self.query_segments.iter().cloned());
         IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
     }
@@ -282,7 +295,9 @@ impl LsmIndex {
         if self.generations.is_empty() {
             return Ok(());
         }
-        let mut gens = std::mem::take(&mut self.generations).into_iter().map(unwrap_mem);
+        let mut gens = std::mem::take(&mut self.generations)
+            .into_iter()
+            .map(unwrap_mem);
         let mut merged = gens.next().unwrap();
         for newer in gens {
             merged.merge_from(newer);
@@ -380,7 +395,7 @@ impl LsmIndex {
     }
 
     #[timed(compaction)]
-        #[timed(compaction)]
+    #[timed(compaction)]
     pub fn plan_compaction(
         &mut self,
         config: CompactionConfig,
@@ -442,17 +457,20 @@ impl LsmIndex {
         // delete-free, so tombstones can be dropped (same as compact_all did).
         let merged_all = positions.len() == self.segment_handles.len();
 
-       let disk = DiskSegment::open(&completed.output_path)?;
+        let disk = DiskSegment::open(&completed.output_path)?;
         let segs = Arc::make_mut(&mut self.query_segments);
         positions.sort_unstable();
         positions.dedup();
-        let insert_pos=positions[0];
+        let insert_pos = positions[0];
         for pos in positions.into_iter().rev() {
             self.segment_handles.remove(pos);
             segs.remove(pos);
         }
 
-        self.segment_handles.insert(insert_pos, SegmentHandle::Disk(completed.output_path.clone()));
+        self.segment_handles.insert(
+            insert_pos,
+            SegmentHandle::Disk(completed.output_path.clone()),
+        );
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
         segs.insert(insert_pos, disk);
 
@@ -473,7 +491,7 @@ impl LsmIndex {
             }
         }
 
-        if merged_all && completed.delete_generation == self.delete_generation{
+        if merged_all && completed.delete_generation == self.delete_generation {
             self.deleted = DeleteSet::new();
             crate::lsm::deletes::clear_deletes(root)?;
         }
@@ -484,7 +502,7 @@ impl LsmIndex {
     #[timed(modifying_documents)]
     pub fn delete_document(&mut self, doc_id: DocId) -> io::Result<()> {
         self.deleted.delete(doc_id);
-        self.delete_generation+=1;
+        self.delete_generation += 1;
 
         if let Some(root) = &self.root {
             crate::lsm::deletes::append_delete(root, doc_id)?;

@@ -1,4 +1,4 @@
-use core_index::array_rows::{ArrayRowAllocator, ArrayRowIndex};
+use core_index::array_rows::ArrayRowAllocator;
 use core_index::document::document::{ArrayRow, NumericPoint};
 use core_index::document::{DocumentPart, IndexPolicy, IndexedDocument, policy::FieldKind};
 use core_index::numeric_values::{parse_float, parse_integer};
@@ -11,7 +11,6 @@ pub fn index_document(
     parsed: &ParsedNode,
     policy: &IndexPolicy,
     allocator: &mut ArrayRowAllocator,
-    array_row_index: &mut ArrayRowIndex,
 ) -> IndexedDocument {
     let mut indexed = IndexedDocument::new(doc_id);
     index_leaves(
@@ -27,7 +26,6 @@ pub fn index_document(
         &mut indexed.array_rows,
         policy,
         allocator,
-        array_row_index,
     );
     indexed
 }
@@ -39,14 +37,12 @@ fn index_arrays(
     rows: &mut Vec<ArrayRow>,
     policy: &IndexPolicy,
     allocator: &mut ArrayRowAllocator,
-    array_row_index: &mut ArrayRowIndex,
 ) {
     for array_field in arrays {
         for element in &array_field.elements {
             let row_id = allocator.alloc();
-            array_row_index.push_row(row_id, doc_id, parent_row);
 
-            let mut row = ArrayRow::new(row_id);
+            let mut row = ArrayRow::new(row_id, parent_row);
             index_leaves(
                 &element.leaves,
                 &mut row.parts,
@@ -60,7 +56,6 @@ fn index_arrays(
                 rows,
                 policy,
                 allocator,
-                array_row_index,
             );
             rows.push(row);
         }

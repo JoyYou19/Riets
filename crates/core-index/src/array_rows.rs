@@ -33,7 +33,7 @@ impl ArrayRowAllocator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayRowIndex {
     base: ArrayRowId,
     //array row -> its root document's packed DocId.
@@ -52,6 +52,9 @@ impl ArrayRowIndex {
     }
 
     pub fn push_row(&mut self, array_row_id: ArrayRowId, doc: DocId, parent: Option<ArrayRowId>) {
+        if self.row_to_doc.is_empty() {
+            self.base = array_row_id;
+        }
         debug_assert_eq!(
             array_row_id,
             self.base + self.row_to_doc.len() as ArrayRowId,
@@ -59,6 +62,25 @@ impl ArrayRowIndex {
         );
         self.row_to_doc.push(doc);
         self.parent_row.push(parent.unwrap_or(NO_PARENT_ROW));
+    }
+
+    pub fn merge_from(&mut self, other: &ArrayRowIndex) {
+        if other.is_empty() {
+            return;
+        }
+        if self.is_empty() {
+            self.base = other.base;
+        }
+        debug_assert_eq!(other.base, self.base + self.len() as ArrayRowId);
+        self.row_to_doc.extend_from_slice(&other.row_to_doc);
+        self.parent_row.extend_from_slice(&other.parent_row);
+    }
+
+    pub fn row_to_doc(&self) -> &[DocId] {
+        &self.row_to_doc
+    }
+    pub fn parent_rows(&self) -> &[ArrayRowId] {
+        &self.parent_row
     }
 
     pub fn doc_of(&self, array_row_id: ArrayRowId) -> Option<DocId> {

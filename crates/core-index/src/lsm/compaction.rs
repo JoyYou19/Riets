@@ -1,5 +1,9 @@
 use std::{
-    cmp::Reverse, collections::{BTreeMap, BinaryHeap}, io, path::{Path, PathBuf}, sync::Arc,
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap},
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -7,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use core_timing::timed;
 
 use crate::{
+    array_rows::ArrayRowIndex,
     disk::{reader::DiskSegment, writer::write_merged_segment},
     numeric_values::{NumericFields, NumericPoints, unpack},
     posting::{DeleteSet, PostingList},
@@ -44,6 +49,13 @@ impl OpenSegment {
             }
         }
     }
+
+    fn array_row_index(&self) -> &ArrayRowIndex {
+        match self {
+            OpenSegment::Disk(d) => d.array_row_index(),
+            OpenSegment::Memory(m) => m.array_row_index(),
+        }
+    }
 }
 
 struct MergedTerms<'a> {
@@ -65,7 +77,12 @@ impl<'a> MergedTerms<'a> {
                 None => heads.push(None),
             }
         }
-        Self { sources, heads, heap, deleted }
+        Self {
+            sources,
+            heads,
+            heap,
+            deleted,
+        }
     }
 
     /// Takes the current posting list of `index` and loads its next term.
@@ -142,6 +159,11 @@ pub fn compact_segments_streaming(
         }
     }
 
+    let mut merged_array_rows = ArrayRowIndex::default();
+    for segment in &opened {
+        merged_array_rows.merge_from(segment.array_row_index());
+    }
+
     let sources: Vec<TermIter<'_>> = opened.iter().map(|s| s.iter_terms()).collect();
     let merged_terms = MergedTerms::new(sources, deleted);
 
@@ -150,6 +172,7 @@ pub fn compact_segments_streaming(
         merged_terms,
         &merged_doc_lengths,
         &merged_points.build(),
+        &merged_array_rows,
     )
 }
 
@@ -157,7 +180,6 @@ pub fn compact_segments_streaming(
 pub struct CompactionConfig {
     pub max_segments_per_compaction: usize,
     pub compact_when_segments_at_least: usize,
-   
 }
 
 impl Default for CompactionConfig {
@@ -165,8 +187,6 @@ impl Default for CompactionConfig {
         Self {
             max_segments_per_compaction: 16,
             compact_when_segments_at_least: 4,
-            
-
         }
     }
 }
@@ -176,7 +196,7 @@ pub struct CompactionJob {
     pub job_id: u64,
     pub selected: Vec<SegmentHandle>,
     pub deleted: DeleteSet,
-    pub delete_generation:u64,
+    pub delete_generation: u64,
     pub output_path: PathBuf,
 }
 
@@ -185,5 +205,5 @@ pub struct CompletedCompaction {
     pub job_id: u64,
     pub selected: Vec<SegmentHandle>,
     pub output_path: PathBuf,
-    pub delete_generation:u64
+    pub delete_generation: u64,
 }
