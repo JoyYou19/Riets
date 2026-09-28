@@ -75,7 +75,7 @@ pub struct ShardDb {
     pending: u32,
     last_write: Instant,
 }
-const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(30);
+const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
 impl ShardDb {
     pub fn shared_state(&self) -> Arc<SharedShardState> {
         self.shared.clone()

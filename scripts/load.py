@@ -9,10 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 INPUT_FILE = "fever/corpus.jsonl"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
-SHARD_COUNT = 5
+SHARD_COUNT = 4
 
 BATCH_SIZE = 50_000   # documents per insert request
-IN_FLIGHT = 3         # insert requests running at the same time
+IN_FLIGHT = 4          # insert requests running at the same time
 
 POLICY = """\
 [[fields]]
@@ -85,29 +85,37 @@ def post(path, body):
 
 
 def batches_from_jsonl(path, batch_size):
+    """Yield (body_bytes, doc_count) without parsing any JSON.
+
+    Each line is a JSON object ending in '}'. The two test fields are added by
+    replacing that final '}' with ',"random_year":...,"random_float":...}',
+    which is far cheaper than json.loads + json.dumps per document.
+    """
     batch = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "rb") as f:
         for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
-            try:
-                doc = json.loads(line)
-            except json.JSONDecodeError as e:
-                print(f"[WARN] skipping malformed line {line_no}: {e}")
+            if not (line.startswith(b"{") and line.endswith(b"}")):
+                print(f"[WARN] skipping line {line_no}: not a JSON object")
                 continue
 
-            # Test data for the numeric fields in the policy.
-            doc["random_year"] = random.randint(1900, 2024)
-            doc["random_float"] = round(random.uniform(0.0, 100.0), 4)
+            extra = b'"random_year":%d,"random_float":%.4f}' % (
+                random.randint(1900, 2024),
+                random.uniform(0.0, 100.0),
+            )
+            if line == b"{}":
+                batch.append(b"{" + extra)
+            else:
+                batch.append(line[:-1] + b"," + extra)
 
-            batch.append(doc)
             if len(batch) >= batch_size:
-                yield batch
+                yield b"[" + b",".join(batch) + b"]", len(batch)
                 batch = []
 
     if batch:
-        yield batch
+        yield b"[" + b",".join(batch) + b"]", len(batch)
 
 
 def main():
@@ -141,17 +149,18 @@ def main():
                 f"  ({rate:,.0f} docs/s, {elapsed:.1f}s)")
         if failed:
             line += f"  — {failed:,} failed: {reply.get('title')}"
-        print(line)
+        print(line, flush=True)
 
     print(f"[INFO] Uploading {INPUT_FILE} "
           f"({BATCH_SIZE:,} docs per request, {IN_FLIGHT} in flight)...")
 
     pending = deque()
     with ThreadPoolExecutor(max_workers=IN_FLIGHT) as pool:
-        for batch_no, batch in enumerate(batches_from_jsonl(INPUT_FILE, BATCH_SIZE), start=1):
-            payload = json.dumps(batch, ensure_ascii=False)
-            sent += len(batch)
-            pending.append((batch_no, len(batch), pool.submit(post, insert_path, payload)))
+        for batch_no, (payload, count) in enumerate(
+            batches_from_jsonl(INPUT_FILE, BATCH_SIZE), start=1
+        ):
+            sent += count
+            pending.append((batch_no, count, pool.submit(post, insert_path, payload)))
 
             if len(pending) >= IN_FLIGHT:
                 done_no, done_len, future = pending.popleft()

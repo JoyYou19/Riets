@@ -3,14 +3,15 @@ import time
 import os
 import glob
 import subprocess
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 INPUT_DIR = "./movie_chunks"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "movies"
 MAX_CHUNKS = 0  # 0 = send all
 SHARD_COUNT = 4
-USERNAME = "admin"
-PASSWORD = "secret"
+IN_FLIGHT = 1   # insert requests running at the same time
 
 POLICY = """\
 [[fields]]
@@ -108,55 +109,37 @@ max = 50
 """
 
 
-def login(username, password):
-    body = json.dumps({"username": username, "password": password})
-    result = subprocess.run(
-        ["curl", "-s", "-X", "POST", f"{BASE_URL}/api/login",
-         "-H", "Accept: application/json",
-         "-H", "Content-Type: application/json",
-         "-d", body],
-        capture_output=True,
-        text=True,
-    )
-    print(result.stdout)
-    return json.loads(result.stdout)["data"]["token"]
-
-
-def curl_post(url, body, token):
+def curl_post(url, body):
+    """POST text or bytes with curl. Returns (stdout, exit code)."""
+    data = body.encode("utf-8") if isinstance(body, str) else body
     result = subprocess.run(
         ["curl", "-s", "-X", "POST", url,
          "-H", "Accept: application/json",
-         "-H", f"X-Corelamo-Key: {token}",
          "--data-binary", "@-"],
-        input=body,
+        input=data,
         capture_output=True,
-        text=True,
     )
-    return result.stdout.strip(), result.returncode
+    return result.stdout.decode("utf-8", errors="replace").strip(), result.returncode
 
 
 def main():
     start_time = time.time()
     print("[INFO] Starting movie uploader...")
 
-    print(f"[INFO] Logging in as '{USERNAME}'...")
-    token = login(USERNAME, PASSWORD)
-    print("[INFO] Login successful, token acquired.")
-
     print(f"[INFO] Creating database '{DB_NAME}'...")
     out, _ = curl_post(
         f"{BASE_URL}/api/databases/{DB_NAME}/create-database",
-        json.dumps({"shard_count": SHARD_COUNT}), token)
+        json.dumps({"shard_count": SHARD_COUNT}))
     print(f"[INFO] {out}")
 
     print(f"[INFO] Starting database '{DB_NAME}'...")
     out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/start-database", "", token)
+        f"{BASE_URL}/api/databases/{DB_NAME}/start-database", "")
     print(f"[INFO] {out}")
 
     print("[INFO] Setting policy...")
     out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
+        f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY)
     print(f"[INFO] {out}")
 
     files = sorted(glob.glob(os.path.join(INPUT_DIR, "movies_*.json")))
@@ -167,22 +150,50 @@ def main():
     if MAX_CHUNKS > 0:
         files = files[:MAX_CHUNKS]
 
-    print(f"[INFO] Uploading {len(files)} chunk(s)...")
-    for idx, file in enumerate(files, start=1):
-        with open(file, "r", encoding="utf-8") as f:
-            chunk = json.load(f)
-        payload = json.dumps(chunk, ensure_ascii=False)
-        out, code = curl_post(
-            f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
+    insert_url = f"{BASE_URL}/api/databases/{DB_NAME}/insert"
+    inserted = 0
+    done = 0
+
+    def report(file, out, code):
+        nonlocal inserted, done
+        done += 1
+        name = os.path.basename(file)
         if code != 0:
-            print(f"[ERROR] Failed to upload {file}")
+            print(f"[ERROR] ({done}/{len(files)}) failed to upload {name} (curl exit {code})")
             print(out)
-        else:
-            print(
-                f"[INFO] ({idx}/{len(files)}) uploaded {len(chunk)} docs — {out}")
+            return
+        try:
+            reply = json.loads(out)
+        except json.JSONDecodeError:
+            print(f"[ERROR] ({done}/{len(files)}) {name}: unreadable reply: {out[:300]}")
+            return
+        got = (reply.get("data") or {}).get("inserted")
+        if got is None:
+            print(f"[ERROR] ({done}/{len(files)}) {name}: {reply.get('title') or out[:300]}")
+            return
+        inserted += got
+        elapsed = time.time() - start_time
+        print(f"[INFO] ({done}/{len(files)}) {name}: {reply.get('title')}  "
+              f"total inserted {inserted:,}  ({elapsed:.1f}s)", flush=True)
+
+    print(f"[INFO] Uploading {len(files)} chunk(s), {IN_FLIGHT} at a time...")
+    pending = deque()
+    with ThreadPoolExecutor(max_workers=IN_FLIGHT) as pool:
+        for file in files:
+            # Chunk files are already JSON arrays: send the bytes as they are.
+            with open(file, "rb") as f:
+                payload = f.read()
+            pending.append((file, pool.submit(curl_post, insert_url, payload)))
+
+            if len(pending) >= IN_FLIGHT:
+                done_file, future = pending.popleft()
+                report(done_file, *future.result())
+
+        for done_file, future in pending:
+            report(done_file, *future.result())
 
     duration = time.time() - start_time
-    print(f"\n[INFO] Done in {duration:.2f}s.")
+    print(f"\n[INFO] Done: {inserted:,} documents inserted in {duration:.2f}s.")
 
 
 if __name__ == "__main__":
