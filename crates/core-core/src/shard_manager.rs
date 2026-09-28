@@ -1234,7 +1234,7 @@ impl ShardManager {
             return Ok(Vec::new());
         }
 
-        let xpaths = Arc::new(self.policy.read().searchable_xpaths().collect::<Vec<_>>());
+        let xpaths = Arc::new(self.policy.read().searchable_xpaths());
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
@@ -1301,7 +1301,7 @@ impl ShardManager {
             Some(names) => Arc::new(core_query::resolver::resolve_suggest_xpaths(
                 names, &policy,
             )?),
-            None => Arc::new(policy.searchable_xpaths().collect()),
+            None => Arc::new(policy.searchable_xpaths()),
         };
 
         let fuzziness = parse_fuzziness(command.fuzziness.as_deref())?;

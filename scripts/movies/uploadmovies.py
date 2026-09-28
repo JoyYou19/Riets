@@ -16,16 +16,12 @@ POLICY = """\
 [[fields]]
 name = "id"
 kind = "IdAuto"
-list = true
-[fields.weight]
-min = 90
-max = 95
 
 [[fields]]
 name = "title"
 kind = "Text"
 list = true
-exact= true
+exact = true
 [fields.weight]
 min = 90
 max = 95
@@ -34,17 +30,25 @@ max = 95
 name = "year"
 kind = "Integer"
 searchable = true
-list = true
-[fields.weight]
-min = 1
-max = 50
 
 [[fields]]
 name = "cast"
-kind = "Text"
+kind = "Array"
 list = true
+
+[[fields.subfields]]
+name = "name"
+kind = "Text"
 stemming = "english"
-[fields.weight]
+[fields.subfields.weight]
+min = 1
+max = 75
+
+[[fields.subfields]]
+name = "surname"
+kind = "Text"
+stemming = "english"
+[fields.subfields.weight]
 min = 1
 max = 75
 
@@ -52,6 +56,7 @@ max = 75
 name = "genres"
 kind = "Text"
 list = true
+array = true
 [fields.weight]
 min = 1
 max = 60
@@ -59,7 +64,6 @@ max = 60
 [[fields]]
 name = "extract"
 kind = "Text"
-list = true
 stemming = "english"
 [fields.weight]
 min = 1
@@ -76,7 +80,7 @@ max = 0
 [[fields]]
 name = "thumbnail"
 kind = "None"
-list = true
+list = false
 [fields.weight]
 min = 0
 max = 0
@@ -84,7 +88,7 @@ max = 0
 [[fields]]
 name = "thumbnail_width"
 kind = "None"
-list = true
+list = false
 [fields.weight]
 min = 0
 max = 0
@@ -92,7 +96,7 @@ max = 0
 [[fields]]
 name = "thumbnail_height"
 kind = "None"
-list = true
+list = false
 [fields.weight]
 min = 0
 max = 0
@@ -100,7 +104,6 @@ max = 0
 [[fields]]
 name = "random_float"
 kind = "Float"
-searchable = true
 list = true
 [fields.weight]
 min = 1

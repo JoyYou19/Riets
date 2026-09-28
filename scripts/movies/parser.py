@@ -19,6 +19,33 @@ def flatten_value(value):
         return str(value)
 
 
+def parse_cast(cast_value):
+    """Convert cast entries into a list of dictionaries with name and surname."""
+    if not isinstance(cast_value, list):
+        if isinstance(cast_value, str) and cast_value.strip():
+            cast_value = [cast_value]
+        else:
+            return []
+
+    structured_cast = []
+    for person in cast_value:
+        if not person:
+            continue
+        parts = str(person).strip().split()
+        if not parts:
+            continue
+        elif len(parts) == 1:
+            name = parts[0]
+            surname = ""
+        else:
+            name = " ".join(parts[:-1])
+            surname = parts[-1]
+
+        structured_cast.append({"name": name, "surname": surname})
+
+    return structured_cast
+
+
 def main():
     start_time = time.time()
     print("[INFO] Starting movie parser...")
@@ -36,7 +63,10 @@ def main():
     for i, movie in enumerate(movies, start=1):
         doc = {}
         for key, value in movie.items():
-            doc[key] = flatten_value(value)
+            if key == "cast":
+                doc[key] = parse_cast(value)
+            else:
+                doc[key] = flatten_value(value)
 
         # Add random float between 1.000 and 1000.000
         # doc["random_float"] = round(random.uniform(1.0, 1000.0), 3)

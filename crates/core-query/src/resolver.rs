@@ -54,8 +54,8 @@ pub fn compile_query(
     let xpaths: Vec<XPathId> = match search_fields {
         Some(names) => resolve_search_xpaths(names, spec, policy)?,
         None => match spec {
-            MatchSpec::Exact(_) => policy.exact_xpaths().collect(),
-            _ => policy.searchable_xpaths().collect(),
+            MatchSpec::Exact(_) => policy.exact_xpaths(),
+            _ => policy.searchable_xpaths(),
         },
     };
     Ok((query, Arc::new(xpaths)))
