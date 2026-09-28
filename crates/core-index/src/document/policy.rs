@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -8,6 +8,7 @@ use crate::{
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
 };
+use ahash::HashSet;
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
 
@@ -230,7 +231,7 @@ impl IndexPolicy {
 
     //validates if everything is fine for policy
     pub fn validate(&self) -> io::Result<()> {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
 
         for field in &self.fields {
             if !names.insert(field.name.clone()) {

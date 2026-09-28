@@ -1,4 +1,4 @@
-use std::{collections::HashSet, io, sync::Arc};
+use std::{io, sync::Arc};
 
 use crate::{
     document_projections::{id_path_to_strip, project_document},
@@ -19,6 +19,8 @@ use core_index::{
     },
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
+
+use ahash::{HashSet, HashSetExt};
 
 use bincode::{Decode, Encode};
 use core_protocol::{

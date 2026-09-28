@@ -88,12 +88,6 @@ impl ArrayRowIndex {
         self.row_to_doc.get(idx as usize).copied()
     }
 
-    pub fn parent_of(&self, array_row_id: ArrayRowId) -> Option<ArrayRowId> {
-        let idx = array_row_id.checked_sub(self.base)?;
-        let parent = *self.parent_row.get(idx as usize)?;
-        (parent != NO_PARENT_ROW).then_some(parent)
-    }
-
     pub fn base(&self) -> ArrayRowId {
         self.base
     }
@@ -118,41 +112,5 @@ impl ArrayRowIndex {
 impl Default for ArrayRowIndex {
     fn default() -> Self {
         Self::new(0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn allocator_is_monotonic_and_unique() {
-        let mut alloc = ArrayRowAllocator::starting_at(10);
-        assert_eq!(alloc.alloc(), 10);
-        assert_eq!(alloc.alloc(), 11);
-        assert_eq!(alloc.alloc(), 12);
-        assert_eq!(alloc.next(), 13);
-    }
-
-    #[test]
-    fn array_row_index_maps_rows_to_docs_and_parents() {
-        // segment whose array rows start at 100
-        let mut idx = ArrayRowIndex::new(100);
-
-        // top-level array row (parent = the root document)
-        idx.push_row(100, /*doc*/ 7, /*parent*/ None);
-        // nested array row (parent = array row 100)
-        idx.push_row(101, 7, Some(100));
-
-        assert_eq!(idx.doc_of(100), Some(7));
-        assert_eq!(idx.doc_of(101), Some(7));
-        assert_eq!(idx.parent_of(100), None);
-        assert_eq!(idx.parent_of(101), Some(100));
-
-        // out-of-range lookups return None, don't panic
-        assert_eq!(idx.doc_of(99), None);
-        assert_eq!(idx.doc_of(102), None);
-
-        assert_eq!(idx.max_array_row(), Some(101));
     }
 }

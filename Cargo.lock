@@ -714,6 +714,7 @@ dependencies = [
 name = "core-storage"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "bincode",
  "core-index",
  "core-logs",

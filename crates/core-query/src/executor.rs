@@ -730,7 +730,7 @@ where
 
     //vai der + relevance
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
-        match query {
+        let scored = match query {
             Query::Term(term) => {
                 let postings = self.execute_term(term, xpath).unwrap_or_default();
                 let doc_freq = postings.len() as f32;
@@ -751,7 +751,9 @@ where
                 let true_df = postings.len() as f32;
                 score_term_hybrid(self.index, &postings, xpath, true_df)
             }
-        }
+        };
+
+        scored
     }
 
     //INFO: Norca sito hujnu centaas izprast kkur 1h, seit visam ir jabut safe, ne passaprotami,
