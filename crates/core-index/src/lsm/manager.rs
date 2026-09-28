@@ -1,5 +1,6 @@
 use std::{io, path::PathBuf, sync::Arc};
 
+use ahash::HashSet;
 use core_timing::timed;
 
 use crate::{
@@ -55,6 +56,10 @@ impl SearchIndex for LsmIndex {
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_prefix(prefix, xpath)
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        self.snapshot().resolve_array_rows(rows)
     }
 
     #[timed(search)]

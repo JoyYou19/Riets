@@ -39,7 +39,7 @@ list = true
 [[fields.subfields]]
 name = "name"
 kind = "Text"
-stemming = "english"
+exact = true
 [fields.subfields.weight]
 min = 1
 max = 75
@@ -47,7 +47,7 @@ max = 75
 [[fields.subfields]]
 name = "surname"
 kind = "Text"
-stemming = "english"
+exact = true
 [fields.subfields.weight]
 min = 1
 max = 75
@@ -56,7 +56,6 @@ max = 75
 name = "genres"
 kind = "Text"
 list = true
-array = true
 [fields.weight]
 min = 1
 max = 60

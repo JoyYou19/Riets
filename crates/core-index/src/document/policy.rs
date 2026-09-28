@@ -312,7 +312,7 @@ impl IndexPolicy {
     pub fn searchable_xpaths(&self) -> Vec<XPathId> {
         self.indexed_fields()
             .into_iter()
-            .filter(|field| !field.kind.is_numeric())
+            .filter(|field| !field.kind.is_numeric() && !field.row_keyed)
             .map(|field| field.xpath(self))
             .collect()
     }

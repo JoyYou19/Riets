@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ahash::HashMapExt;
+use ahash::{HashMapExt, HashSet};
 use core_timing::timed;
 
 use crate::analyzer::analyzer::Analyzer;
@@ -9,7 +9,7 @@ use crate::document::IndexedDocument;
 use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
 use crate::posting::{Posting, PostingList};
 use crate::search::{SearchIndex, SearchNumeric, SearchStats};
-use crate::types::{DocId, FieldStats, TermKey, XPathId};
+use crate::types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
@@ -38,6 +38,12 @@ impl Default for MemIndex {
 impl SearchIndex for MemIndex {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup_or_empty(term, xpath)
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        rows.iter()
+            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .collect()
     }
 
     fn terms(&self, xpath: XPathId) -> Vec<String> {
@@ -269,6 +275,32 @@ impl MemIndex {
 
     #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
+        for part in &document.parts {
+            if part.exact {
+                self.add_exact_weighted(
+                    document.doc_id,
+                    part.xpath,
+                    &part.text,
+                    part.weight.min,
+                    part.weight.max,
+                );
+            } else {
+                self.add_document_weighted(
+                    analyzer,
+                    document.doc_id,
+                    part.xpath,
+                    &part.text,
+                    part.weight.min,
+                    part.weight.max,
+                );
+            }
+        }
+
+        for point in &document.numeric_points {
+            self.numeric_points
+                .insert(point.xpath, point.value, document.doc_id);
+        }
+
         for row in &document.array_rows {
             self.array_row_index
                 .push_row(row.array_row_id, document.doc_id, row.parent);

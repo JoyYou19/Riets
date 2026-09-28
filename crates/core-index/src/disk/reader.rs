@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, io, path::Path};
 
+use ahash::HashSet;
 use core_timing::timed;
 use memmap2::Mmap;
 
@@ -18,7 +19,7 @@ use crate::{
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
     term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
 };
 
 // Read only disk segment.
@@ -219,6 +220,12 @@ impl SearchIndex for DiskSegment {
             doc_freq: meta.doc_freq,
             max_weight: meta.max_weight,
         }
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        rows.iter()
+            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .collect()
     }
 
     #[timed(search)]

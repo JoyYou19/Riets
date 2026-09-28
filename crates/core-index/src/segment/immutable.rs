@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use ahash::HashSet;
 use core_timing::timed;
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
     numeric_values::{NumericBound, NumericFields, NumericValue},
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -38,6 +39,12 @@ impl SearchIndex for ImmutableSegment {
             .range(TermKey::new("", xpath)..)
             .take_while(|(k, _)| k.xpath == xpath)
             .map(|(k, _)| k.term.clone())
+            .collect()
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        rows.iter()
+            .filter_map(|&r| self.array_row_index.doc_of(r))
             .collect()
     }
 

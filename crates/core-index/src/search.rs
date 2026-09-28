@@ -1,10 +1,11 @@
-use levenshtein_automata::{ Distance, LevenshteinAutomatonBuilder };
+use ahash::{HashSet, HashSetExt};
+use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
 
 use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix},
     numeric_values::{NumericBound, NumericValue},
     posting::PostingList,
-    types::{ DocId, XPathId },
+    types::{ArrayRowId, DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -34,12 +35,17 @@ pub trait SearchIndex {
     fn terms(&self, xpath: XPathId) -> Vec<String>;
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32;
 
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        let _ = rows;
+        HashSet::new()
+    }
+
     //words within max_edits of input
     fn fuzzy_expansions(
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
         //woodoo veids kaa defineet mazy funkkciju
         let existing = |term: String, edits: u8| -> Option<FuzzyExpansion> {
@@ -76,9 +82,8 @@ pub trait SearchIndex {
             let dfa = builder.build_dfa(suffix);
 
             for t in self.terms(xpath) {
-                if
-                    let Some(rest) = t.strip_prefix(prefix) &&
-                    let Distance::Exact(edits) = dfa.eval(rest)
+                if let Some(rest) = t.strip_prefix(prefix)
+                    && let Distance::Exact(edits) = dfa.eval(rest)
                 {
                     out.extend(existing(t, edits));
                 }
@@ -133,7 +138,7 @@ pub trait SearchNumeric {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> PostingList;
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue>;

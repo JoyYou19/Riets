@@ -10,9 +10,11 @@ use core_index::{
 };
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
+    collections::{BinaryHeap, HashMap, hash_map::Entry},
     u32,
 };
+
+use ahash::{HashSet, HashSetExt};
 
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
@@ -53,6 +55,7 @@ impl DidYouMeanReport {
 pub struct FieldFilter {
     pub xpath: XPathId,
     pub kind: MatchOp,
+    pub row_keyed: bool,
 }
 
 // Turns the AST into a PostingList or SearchHit
@@ -564,6 +567,28 @@ where
         hits
     }
 
+    fn raw_ids(&self, filter: &FieldFilter) -> HashSet<DocId> {
+        match &filter.kind {
+            MatchOp::Query(q) => match q {
+                Some(q) => self
+                    .execute(q, filter.xpath)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+                None => HashSet::new(),
+            },
+            MatchOp::Range { lo, hi } => self
+                .index
+                .numeric_range(filter.xpath, *lo, *hi)
+                .items()
+                .iter()
+                .map(|p| p.doc_id)
+                .collect(),
+            MatchOp::SameElement { .. } => HashSet::new(),
+        }
+    }
+
     #[timed(search)]
     pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldFilter>) -> Option<HashSet<DocId>> {
         if filters.is_empty() {
@@ -574,22 +599,26 @@ where
 
         for filter in filters.values() {
             let matched: HashSet<DocId> = match &filter.kind {
-                MatchOp::Query(query) => match query {
-                    Some(query) => self
-                        .execute(query, filter.xpath)
-                        .items()
-                        .iter()
-                        .map(|p| p.doc_id)
-                        .collect(),
-                    None => HashSet::new(),
-                },
-                MatchOp::Range { lo, hi } => self
-                    .index
-                    .numeric_range(filter.xpath, *lo, *hi)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
+                MatchOp::Query(_) | MatchOp::Range { .. } => {
+                    let raw = self.raw_ids(filter);
+                    if filter.row_keyed {
+                        self.index.resolve_array_rows(&raw)
+                    } else {
+                        raw
+                    }
+                }
+                MatchOp::SameElement { clauses } => {
+                    // intersect the clause ArrayRowIds FIRST, then resolve once
+                    let mut rows: Option<HashSet<DocId>> = None;
+                    for clause in clauses {
+                        let r = self.raw_ids(clause);
+                        rows = Some(match rows {
+                            Some(cur) => cur.intersection(&r).copied().collect(),
+                            None => r,
+                        });
+                    }
+                    self.index.resolve_array_rows(&rows.unwrap_or_default())
+                }
             };
 
             restrict = Some(match restrict {
@@ -601,7 +630,6 @@ where
                 return restrict;
             }
         }
-
         restrict
     }
 
