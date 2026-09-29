@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import time
 import math
 import random
@@ -46,9 +47,25 @@ def parse_cast(cast_value):
     return structured_cast
 
 
+def parse_genres(genres_value):
+    """Convert genres into a clean array of strings."""
+    if isinstance(genres_value, list):
+        return [str(g).strip() for g in genres_value if g is not None and str(g).strip()]
+    elif isinstance(genres_value, str) and genres_value.strip():
+        # Handles comma-separated strings if your data uses them
+        return [g.strip() for g in genres_value.split(",") if g.strip()]
+    else:
+        return []
+
+
 def main():
     start_time = time.time()
     print("[INFO] Starting movie parser...")
+
+    # Clear output directory if it exists, then recreate it
+    if os.path.exists(OUTPUT_DIR):
+        print(f"[INFO] Clearing existing directory: {OUTPUT_DIR} ...")
+        shutil.rmtree(OUTPUT_DIR)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -65,6 +82,8 @@ def main():
         for key, value in movie.items():
             if key == "cast":
                 doc[key] = parse_cast(value)
+            elif key == "genres":
+                doc[key] = parse_genres(value)
             else:
                 doc[key] = flatten_value(value)
 
