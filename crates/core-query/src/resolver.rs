@@ -16,6 +16,7 @@ use core_protocol::{
     command_reponse_definitions::{Fuzziness, MatchSpec},
     errors::CorelamoError,
 };
+use indexmap::IndexMap;
 
 use crate::{Query, executor::FieldFilter, query_string_parser::parse_and_analyze};
 
@@ -25,6 +26,10 @@ pub enum MatchOp {
     Range {
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
+    },
+    SameElement {
+        clauses: Vec<FieldFilter>,
+        depth: u32,
     },
 }
 
@@ -54,8 +59,8 @@ pub fn compile_query(
     let xpaths: Vec<XPathId> = match search_fields {
         Some(names) => resolve_search_xpaths(names, spec, policy)?,
         None => match spec {
-            MatchSpec::Exact(_) => policy.exact_xpaths().collect(),
-            _ => policy.searchable_xpaths().collect(),
+            MatchSpec::Exact(_) => policy.exact_xpaths(),
+            _ => policy.searchable_xpaths(),
         },
     };
     Ok((query, Arc::new(xpaths)))
@@ -133,16 +138,73 @@ pub fn compile_field_filter(
         .find(|f| f.name == field_name)
         .ok_or_else(|| CorelamoError::PathNotIndexed(field_name.to_string()))?;
 
+    // same_element is a container spec — handle it before the is_blank check
+    // (its `value()` is "", so is_blank() would wrongly skip it).
+
+    if let MatchSpec::SameElement(clauses) = spec {
+        return Ok(Some(compile_same_element(
+            field, clauses, analyzer, policy,
+        )?));
+    }
     if spec.is_blank() {
         return Ok(None);
     }
 
+    compile_leaf_filter(field, spec, analyzer, policy)
+}
+
+fn compile_same_element(
+    field: &FieldPolicy,
+    clauses: &IndexMap<String, MatchSpec>,
+    analyzer: &Analyzer,
+    policy: &IndexPolicy,
+) -> Result<FieldFilter, CorelamoError> {
+    if field.kind != FieldKind::Struct {
+        return Err(CorelamoError::InvalidData(format!(
+            "same_element requires an array field ('{}' is {})",
+            field.name,
+            field.kind.label()
+        )));
+    }
+    let mut compiled = Vec::with_capacity(clauses.len());
+    for (sub_name, sub_spec) in clauses {
+        let full = format!("{}/{}", field.full_path, sub_name);
+        let sub_field = policy
+            .field_by_path(&full)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(full.clone()))?;
+
+        let clause = if let MatchSpec::SameElement(inner) = sub_spec {
+            compile_same_element(sub_field, inner, analyzer, policy)? // nested array
+        } else {
+            compile_leaf_filter(sub_field, &sub_spec, analyzer, policy)?
+                .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?
+        };
+        compiled.push(clause);
+    }
+    Ok(FieldFilter {
+        xpath: 0,
+        kind: MatchOp::SameElement {
+            clauses: compiled,
+            depth: field.depth,
+        },
+        row_keyed: true,
+        depth: field.depth,
+    })
+}
+
+fn compile_leaf_filter(
+    field: &FieldPolicy,
+    spec: &MatchSpec,
+    analyzer: &Analyzer,
+    policy: &IndexPolicy,
+) -> Result<Option<FieldFilter>, CorelamoError> {
     match field.kind {
         FieldKind::Integer | FieldKind::Float => {
             let MatchSpec::Plain(term) = spec else {
                 return Err(CorelamoError::InvalidData(format!(
-                    "field '{field_name}' is numeric: use a range like '30..40', '>2010' or '<=5', \
-                     not exact/fuzzy matching"
+                    "field '{}' is numeric: use a range like '30..40', '>2010' or '<=5', \
+                     not exact/fuzzy matching",
+                    field.name
                 )));
             };
 
@@ -152,7 +214,8 @@ pub fn compile_field_filter(
             };
             let range = parse_numeric_range(term, parse).map_err(|e| {
                 CorelamoError::InvalidData(format!(
-                    "invalid filter '{term}' on numeric field '{field_name}': {e}"
+                    "invalid filter '{}' on numeric field '{}': {e}",
+                    term, field.name
                 ))
             })?;
 
@@ -162,17 +225,19 @@ pub fn compile_field_filter(
                     lo: range.lo,
                     hi: range.hi,
                 },
+                row_keyed: field.row_keyed,
+                depth: field.depth,
             }))
         }
 
-        // text fields: same semantics as the global query, on one xpath
         FieldKind::Text => Ok(Some(FieldFilter {
             xpath: text_xpath(spec, policy, field)?,
             kind: MatchOp::Query(text_query(spec, analyzer)?),
+            row_keyed: field.row_keyed,
+            depth: 0,
         })),
 
-        // unchanged: None / Date / Id / IdAuto are not filterable
-        _ => Err(CorelamoError::PathNotIndexed(field_name.to_string())),
+        _ => Err(CorelamoError::PathNotIndexed(field.name.to_string())),
     }
 }
 
@@ -321,5 +386,10 @@ fn text_query(spec: &MatchSpec, analyzer: &Analyzer) -> Result<Option<Query>, Co
                 max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
             },
         )),
+        MatchSpec::SameElement(_) => {
+            return Err(CorelamoError::InvalidData(
+                "same_element is only valid as a filter, not as the main query".to_string(),
+            ));
+        }
     })
 }

@@ -10,9 +10,11 @@ use core_index::{
 };
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
+    collections::{BinaryHeap, HashMap, hash_map::Entry},
     u32,
 };
+
+use ahash::{HashSet, HashSetExt};
 
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
@@ -53,6 +55,8 @@ impl DidYouMeanReport {
 pub struct FieldFilter {
     pub xpath: XPathId,
     pub kind: MatchOp,
+    pub row_keyed: bool,
+    pub depth: u32,
 }
 
 // Turns the AST into a PostingList or SearchHit
@@ -66,14 +70,19 @@ where
     // A query is analyzed also the same way as the index, so we could filter out words, stemming,
     // whaatever
     analyzer: &'a Analyzer,
+    array_groups: Vec<Vec<XPathId>>,
 }
 
 impl<'a, I> QueryExecutor<'a, I>
 where
     I: SearchIndex + SearchStats + SearchNumeric,
 {
-    pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
-        Self { index, analyzer }
+    pub fn new(index: &'a I, analyzer: &'a Analyzer, array_groups: Vec<Vec<XPathId>>) -> Self {
+        Self {
+            index,
+            analyzer,
+            array_groups,
+        }
     }
 
     #[timed(search)]
@@ -436,50 +445,6 @@ where
         hits
     }
 
-    // TODO: THIS IS OLD WE TEST FIRST
-    // #[timed(search)]
-    // pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
-    //     if k == 0 {
-    //         return Vec::new();
-    //     }
-    //
-    //     let scored = self.execute_scored(query, xpath);
-    //     let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
-    //
-    //     for p in scored {
-    //         let score = ((p.score as f32) / 1000.0) * p.density;
-    //
-    //         let hit = SearchHit {
-    //             doc_id: p.doc_id,
-    //             matched_terms: p.matched_terms,
-    //             weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
-    //             distance_factor: p.density,
-    //             score,
-    //         };
-    //
-    //         heap.push(TopHit(hit));
-    //
-    //         if heap.len() > k {
-    //             heap.pop();
-    //         }
-    //     }
-    //
-    //     let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
-    //
-    //     hits.sort_by(|a, b| {
-    //         b.score
-    //             .partial_cmp(&a.score)
-    //             .unwrap_or(Ordering::Equal)
-    //             .then_with(|| a.doc_id.cmp(&b.doc_id))
-    //     });
-    //
-    //     hits
-    // }
-
-    pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
-        self.search_top_k_restricted(query, xpath, k, None)
-    }
-
     fn search_top_k_restricted(
         &self,
         query: &Query,
@@ -491,11 +456,12 @@ where
             return Vec::new();
         }
 
+        //simple AND/OR/WAND
         if let Some(hits) = self.execute_top_k_retrieval(query, xpath, k, restrict) {
             return hits.into_iter().map(wand_hit_to_search_hit).collect();
         }
 
-        // Complex-query fallback.
+        //Complex-query fallback. fuzzy/exact
         let scored = self.execute_scored(query, xpath);
 
         let hits = scored
@@ -512,56 +478,123 @@ where
         top_k_from_hits(hits, k)
     }
 
-    // INFO: Currently we might want to think about other ways of implementing the idea
-    // of searching within all xpaths, cause it still happens independently.
-    #[timed(search)]
-    pub fn search_all_xpaths_top_k(
-        &self,
-        query: &Query,
-        xpaths: impl IntoIterator<Item = XPathId>,
-        k: usize,
-    ) -> Vec<SearchHit> {
-        if k == 0 {
+    fn raw_ids(&self, filter: &FieldFilter) -> HashSet<DocId> {
+        match &filter.kind {
+            MatchOp::Query(q) => match q {
+                Some(q) => self
+                    .execute(q, filter.xpath)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+                    .collect(),
+                None => HashSet::new(),
+            },
+            MatchOp::Range { lo, hi } => self
+                .index
+                .numeric_range(filter.xpath, *lo, *hi)
+                .items()
+                .iter()
+                .map(|p| p.doc_id)
+                .collect(),
+            MatchOp::SameElement { .. } => HashSet::new(),
+        }
+    }
+
+    fn score_array_groups(&self, query: &Query) -> Vec<SearchHit> {
+        let terms: Vec<&str> = match query {
+            Query::Term(t) => vec![t.as_str()],
+            Query::And(parts) | Query::Search(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    Query::Term(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect(),
+            _ => return Vec::new(),
+        };
+        if terms.is_empty() {
             return Vec::new();
         }
 
-        let mut by_doc = HashMap::<DocId, SearchHit>::new();
+        let mut out = Vec::new();
+        for group in &self.array_groups {
+            // element_row -> (total_score, terms_matched)
+            let mut acc: HashMap<DocId, (u64, usize)> = HashMap::new();
 
-        for xpath in xpaths {
-            for hit in self.search_top_k(query, xpath, k) {
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|existing| {
-                        existing.matched_terms += hit.matched_terms;
-                        existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
-                        existing.score += hit.score;
-                    })
-                    .or_insert(hit);
+            for term in &terms {
+                let mut hit: HashSet<DocId> = HashSet::new();
+                for &sub in group {
+                    let postings = self.index.lookup(term, sub);
+                    if postings.is_empty() {
+                        continue;
+                    }
+                    let df = postings.len() as f32;
+                    for score in score_term_hybrid(self.index, &postings, sub, df) {
+                        hit.insert(score.doc_id);
+                        let entry = acc.entry(score.doc_id).or_insert((0, 0));
+                        entry.0 = entry.0.saturating_add(score.score);
+                    }
+                }
+                for row in hit {
+                    if let Some(entry) = acc.get_mut(&row) {
+                        entry.1 += 1;
+                    }
+                }
+            }
+
+            // same element must match EVERY term; resolve + max-aggregate to doc
+            let mut best: HashMap<DocId, u64> = HashMap::new();
+            for (row, (score, matched)) in acc {
+                if matched != terms.len() {
+                    continue;
+                }
+                if let Some(doc) = self.index.doc_of_row(row) {
+                    best.entry(doc)
+                        .and_modify(|e| *e = (*e).max(score))
+                        .or_insert(score);
+                }
+            }
+
+            for (doc_id, score) in best {
+                out.push(SearchHit {
+                    doc_id,
+                    matched_terms: terms.len(),
+                    weight_sum: (score / 1000).min(u32::MAX as u64) as u32,
+                    distance_factor: 1.0,
+                    score: score as f32 / 1000.0,
+                });
             }
         }
+        out
+    }
 
-        let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
+    fn ascend(&self, rows: HashSet<DocId>, levels: u32) -> HashSet<DocId> {
+        let mut rows = rows;
+        for _ in 0..levels {
+            rows = rows
+                .into_iter()
+                .filter_map(|r| self.index.parent_of_row(r))
+                .collect();
+        }
+        rows
+    }
 
-        for hit in by_doc.into_values() {
-            heap.push(TopHit(hit));
-
-            if heap.len() > k {
-                heap.pop();
+    fn nested_rows(&self, filter: &FieldFilter) -> HashSet<DocId> {
+        match &filter.kind {
+            MatchOp::Query(_) | MatchOp::Range { .. } => self.raw_ids(filter),
+            MatchOp::SameElement { clauses, depth } => {
+                let mut rows: Option<HashSet<DocId>> = None;
+                for clause in clauses {
+                    let mut r = self.nested_rows(clause);
+                    r = self.ascend(r, clause.depth.saturating_sub(*depth));
+                    rows = Some(match rows {
+                        Some(cur) => cur.intersection(&r).copied().collect(),
+                        None => r,
+                    });
+                }
+                rows.unwrap_or_default()
             }
         }
-
-        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
-
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.doc_id.cmp(&b.doc_id))
-        });
-
-        hits
     }
 
     #[timed(search)]
@@ -574,22 +607,17 @@ where
 
         for filter in filters.values() {
             let matched: HashSet<DocId> = match &filter.kind {
-                MatchOp::Query(query) => match query {
-                    Some(query) => self
-                        .execute(query, filter.xpath)
-                        .items()
-                        .iter()
-                        .map(|p| p.doc_id)
-                        .collect(),
-                    None => HashSet::new(),
-                },
-                MatchOp::Range { lo, hi } => self
-                    .index
-                    .numeric_range(filter.xpath, *lo, *hi)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect(),
+                MatchOp::Query(_) | MatchOp::Range { .. } => {
+                    let raw = self.raw_ids(filter);
+                    if filter.row_keyed {
+                        self.index.resolve_array_rows(&raw)
+                    } else {
+                        raw
+                    }
+                }
+                MatchOp::SameElement { .. } => {
+                    self.index.resolve_array_rows(&self.nested_rows(filter))
+                }
             };
 
             restrict = Some(match restrict {
@@ -601,7 +629,6 @@ where
                 return restrict;
             }
         }
-
         restrict
     }
 
@@ -617,8 +644,6 @@ where
             return Vec::new();
         }
 
-        //if query was like ">2000" its not a text query and would automatically be just considered
-        //a filter
         let Some(query) = query else {
             return match restrict {
                 Some(allowed) => {
@@ -629,40 +654,35 @@ where
                         distance_factor: 1.0,
                         score: 0.0,
                     });
-
                     top_k_from_hits(hits, k)
                 }
-
                 None => Vec::new(),
             };
         };
 
-        let xpaths: Vec<XPathId> = xpaths.into_iter().collect();
-
-        if xpaths.is_empty() {
-            return Vec::new();
-        }
-
-        if xpaths.len() == 1 {
-            return self.search_top_k_restricted(query, xpaths[0], k, restrict);
-        }
-
         let mut by_doc = HashMap::<DocId, SearchHit>::new();
+
+        for hit in self.score_array_groups(query) {
+            by_doc
+                .entry(hit.doc_id)
+                .and_modify(|e| {
+                    e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                    e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
+                    e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                    e.score += hit.score;
+                })
+                .or_insert(hit);
+        }
 
         for xpath in xpaths {
             for hit in self.search_top_k_restricted(query, xpath, k, restrict) {
                 by_doc
                     .entry(hit.doc_id)
-                    .and_modify(|existing| {
-                        existing.matched_terms =
-                            existing.matched_terms.saturating_add(hit.matched_terms);
-
-                        existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
-
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
-
-                        existing.score += hit.score;
+                    .and_modify(|e| {
+                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                        e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
+                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                        e.score += hit.score;
                     })
                     .or_insert(hit);
             }
@@ -671,38 +691,9 @@ where
         top_k_from_hits(by_doc.into_values(), k)
     }
 
-    // Search the entire database all xpaths
-    #[timed(search)]
-    pub fn search_all_xpaths(
-        &self,
-        query: &Query,
-        xpaths: impl IntoIterator<Item = XPathId>,
-    ) -> Vec<SearchHit> {
-        use std::collections::BTreeMap;
-
-        let mut by_doc = BTreeMap::<DocId, SearchHit>::new();
-
-        for xpath in xpaths {
-            for hit in self.search(query, xpath) {
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|existing| {
-                        existing.matched_terms += hit.matched_terms;
-                        existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
-                        existing.score += hit.score;
-                    })
-                    .or_insert(hit);
-            }
-        }
-
-        by_doc.into_values().collect()
-    }
-
     //vai der + relevance
     fn execute_scored(&self, query: &Query, xpath: XPathId) -> Vec<ScoredPosting> {
-        match query {
+        let scored = match query {
             Query::Term(term) => {
                 let postings = self.execute_term(term, xpath).unwrap_or_default();
                 let doc_freq = postings.len() as f32;
@@ -723,7 +714,9 @@ where
                 let true_df = postings.len() as f32;
                 score_term_hybrid(self.index, &postings, xpath, true_df)
             }
-        }
+        };
+
+        scored
     }
 
     //INFO: Norca sito hujnu centaas izprast kkur 1h, seit visam ir jabut safe, ne passaprotami,

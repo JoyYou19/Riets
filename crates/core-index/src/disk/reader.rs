@@ -2,10 +2,12 @@
 
 use std::{collections::BTreeMap, io, path::Path};
 
+use ahash::HashSet;
 use core_timing::timed;
 use memmap2::Mmap;
 
 use crate::{
+    array_rows::{ArrayRowIndex, NO_PARENT_ROW},
     bkd::Bkd,
     disk::{
         codec::{read_var_u16, read_var_u32, read_var_u64},
@@ -17,7 +19,7 @@ use crate::{
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
     term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
 };
 
 // Read only disk segment.
@@ -31,6 +33,7 @@ pub struct DiskSegment {
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
+    array_row_index: ArrayRowIndex,
 }
 
 impl SearchStats for DiskSegment {
@@ -93,17 +96,23 @@ impl DiskSegment {
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
         let numeric_fields = read_numeric_fields(&mmap, &footer)?;
+        let array_row_index = read_array_row_index(&mmap, &footer)?;
         Ok(Self {
             mmap,
             dictionary,
             doc_lengths,
             field_stats,
             numeric_fields,
+            array_row_index,
         })
     }
 
     pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
+    }
+
+    pub fn array_row_index(&self) -> &ArrayRowIndex {
+        &self.array_row_index
     }
 
     pub fn numeric_fields(&self) -> &NumericFields {
@@ -211,6 +220,20 @@ impl SearchIndex for DiskSegment {
             doc_freq: meta.doc_freq,
             max_weight: meta.max_weight,
         }
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        rows.iter()
+            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .collect()
+    }
+
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.array_row_index.parent_of(row)
+    }
+
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.array_row_index.doc_of(row)
     }
 
     #[timed(search)]
@@ -356,6 +379,21 @@ fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
         ));
     }
 
+    let array_start = footer.array_row_index_offset as usize;
+    let array_len = footer.array_row_index_len as usize;
+    let Some(array_end) = array_start.checked_add(array_len) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "array row index offset overflow",
+        ));
+    };
+    if array_end > bytes.len() - FOOTER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "array row index outside segment bounds",
+        ));
+    }
+
     if footer.term_count == 0 && footer.dictionary_len != 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -402,7 +440,9 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
         dictionary_len: read_u64_at(bytes, start + 24),
         numeric_fields_offset: read_u64_at(bytes, start + 32),
         numeric_fields_len: read_u64_at(bytes, start + 40),
-        term_count: read_u32_at(bytes, start + 48),
+        array_row_index_offset: read_u64_at(bytes, start + 48),
+        array_row_index_len: read_u64_at(bytes, start + 56),
+        term_count: read_u32_at(bytes, start + 64),
     })
 }
 
@@ -449,6 +489,38 @@ fn read_doc_lengths(
     }
 
     Ok(doc_lengths)
+}
+
+fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<ArrayRowIndex> {
+    let start = footer.array_row_index_offset as usize;
+    let len = footer.array_row_index_len as usize;
+    let end = start.checked_add(len).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "array row index offset overflow",
+        )
+    })?;
+    if end > bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "array row index outside segment bounds",
+        ));
+    }
+
+    let mut cursor = Cursor::new(&bytes[start..end]);
+    let base = cursor.read_u64()?;
+    let count = cursor.read_u32()? as usize;
+    let mut idx = ArrayRowIndex::new(base);
+    for i in 0..count {
+        let doc = cursor.read_u64()?;
+        let parent = cursor.read_u64()?;
+        idx.push_row(
+            base + i as u64,
+            doc,
+            (parent != NO_PARENT_ROW).then_some(parent),
+        );
+    }
+    Ok(idx)
 }
 
 // One field is [xpath][term_count][fst_len][fst bytes][TermMeta * term_count].

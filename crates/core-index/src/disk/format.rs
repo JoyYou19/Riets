@@ -25,7 +25,7 @@
 //! |                        |    (u64 doc_id, u64 packed_value) * doc_value_entry_count
 //! +------------------------+
 //! | footer                 |  doc_lengths_offset/len, dictionary_offset/len,
-//! |                        |  numeric_fields_offset/len, term_count  (52 bytes)
+//! |                        |  numeric_fields_offset/len, term_count/ arrays (52 bytes)
 //! +------------------------+
 //! //! |    (now with the FST)  |
 //! |                        |    u32 xpath, u32 term_count, u64 fst_len,
@@ -37,10 +37,10 @@
 
 //                          ahahahahhahah
 pub const MAGIC: [u8; 8] = *b"BANANA_I";
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 pub const HEADER_LEN: usize = 8 + 4;
-pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4;
+pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentHeader {
@@ -65,5 +65,7 @@ pub struct SegmentFooter {
     pub dictionary_len: u64,
     pub numeric_fields_offset: u64,
     pub numeric_fields_len: u64,
+    pub array_row_index_offset: u64,
+    pub array_row_index_len: u64,
     pub term_count: u32,
 }

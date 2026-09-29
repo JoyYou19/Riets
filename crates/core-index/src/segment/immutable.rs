@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 
+use ahash::HashSet;
 use core_timing::timed;
 
 use crate::{
+    array_rows::ArrayRowIndex,
     numeric_values::{NumericBound, NumericFields, NumericValue},
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{DocId, FieldStats, TermKey, XPathId},
+    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -18,6 +20,7 @@ pub struct ImmutableSegment {
     doc_lengths: BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
+    array_row_index: ArrayRowIndex,
 }
 
 // Haha, if we want to search inside of this segment, it must implement, and we do
@@ -37,6 +40,20 @@ impl SearchIndex for ImmutableSegment {
             .take_while(|(k, _)| k.xpath == xpath)
             .map(|(k, _)| k.term.clone())
             .collect()
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        rows.iter()
+            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .collect()
+    }
+
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.array_row_index.doc_of(row)
+    }
+
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.array_row_index.parent_of(row)
     }
 
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
@@ -94,12 +111,14 @@ impl ImmutableSegment {
         doc_lengths: BTreeMap<(DocId, XPathId), u32>,
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
+        array_row_index: ArrayRowIndex,
     ) -> Self {
         Self {
             terms,
             doc_lengths,
             field_stats,
             numeric_fields,
+            array_row_index,
         }
     }
 
@@ -109,6 +128,10 @@ impl ImmutableSegment {
 
     pub fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
+    }
+
+    pub fn array_row_index(&self) -> &ArrayRowIndex {
+        &self.array_row_index
     }
 
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {

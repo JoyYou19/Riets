@@ -1,5 +1,8 @@
 use std::{
-    io, path::{Path, PathBuf}, sync::Arc, time::{Duration, Instant, SystemTime},
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,7 +128,7 @@ impl ShardDb {
             root,
             backup,
             pending: 0,
-            last_write:Instant::now()
+            last_write: Instant::now(),
         })
     }
 
@@ -514,8 +517,8 @@ impl ShardDb {
         match &result {
             Ok(report) => {
                 self.stats.add_documents_indexed(report.inserted as u64);
-                 self.publish_stats();
-                 self.last_write = Instant::now();
+                self.publish_stats();
+                self.last_write = Instant::now();
                 info!(self.log, "indexed batch";
                     "shard_id" => %self.shard_id,
                     "documents" => count,
@@ -1007,7 +1010,7 @@ impl ShardDb {
     ) -> io::Result<Option<SegmentCompactionJob>> {
         let db = self.db_ref().map_err(io::Error::other)?;
         self.publish_stats();
-        
+
         db.store()
             .plan_compaction(dead_ratio_threshold, DEFAULT_SEGMENT_SIZE)
     }
@@ -1223,7 +1226,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         Ok(())
     }
-        /// Flushes a shard that has unflushed data but no writes for a while,
+    /// Flushes a shard that has unflushed data but no writes for a while,
     /// so small loads reach disk and the WAL is emptied.
     pub fn maybe_idle_flush(&mut self) -> Result<(), CorelamoError> {
         if self.last_write.elapsed() < IDLE_FLUSH_AFTER {

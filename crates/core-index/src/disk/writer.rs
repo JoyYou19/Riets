@@ -1,11 +1,12 @@
+use core_timing::timed;
+use std::io::SeekFrom;
 use std::{
     fs::File,
     io::{self, BufWriter, Seek, Write},
     path::Path,
 };
-use std::io::SeekFrom;
-use core_timing::timed;
 
+use crate::array_rows::ArrayRowIndex;
 use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
@@ -89,6 +90,8 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
     write_u64(out, footer.dictionary_len)?;
     write_u64(out, footer.numeric_fields_offset)?;
     write_u64(out, footer.numeric_fields_len)?;
+    write_u64(out, footer.array_row_index_offset)?;
+    write_u64(out, footer.array_row_index_len)?;
     write_u32(out, footer.term_count)
 }
 
@@ -143,7 +146,7 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
 #[timed(writing_files)]
 pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::Result<()> {
     let file = File::create(path)?;
-     let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
+    let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
     write_segment_to(&mut out, segment)?;
     finish_file(out)
 }
@@ -175,6 +178,10 @@ pub fn write_segment_to<W: Write + Seek>(
     write_numeric_fields(out, segment.numeric_fields())?;
     let numeric_fields_end = out.stream_position()?;
 
+    let array_row_index_offset = out.stream_position()?;
+    write_array_row_index(out, segment.array_row_index())?;
+    let array_row_index_end = out.stream_position()?;
+
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
@@ -182,6 +189,8 @@ pub fn write_segment_to<W: Write + Seek>(
         dictionary_len: dictionary_end - dictionary_offset,
         numeric_fields_offset,
         numeric_fields_len: numeric_fields_end - numeric_fields_offset,
+        array_row_index_offset,
+        array_row_index_len: array_row_index_end - array_row_index_offset,
         term_count,
     };
 
@@ -206,6 +215,16 @@ fn write_doc_lengths(
         write_u32(out, len)?;
     }
 
+    Ok(())
+}
+
+fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Result<()> {
+    write_u64(out, idx.base())?;
+    write_u32(out, idx.len() as u32)?;
+    for (&doc, &parent) in idx.row_to_doc().iter().zip(idx.parent_rows().iter()) {
+        write_u64(out, doc)?;
+        write_u64(out, parent)?;
+    }
     Ok(())
 }
 
@@ -237,11 +256,18 @@ pub fn write_merged_segment(
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
+    array_row_index: &ArrayRowIndex,
 ) -> io::Result<()> {
     let file = File::create(path)?;
-     let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
-    write_merged_segment_to(&mut out, terms, doc_lengths, numeric_fields)?;
-    
+    let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
+    write_merged_segment_to(
+        &mut out,
+        terms,
+        doc_lengths,
+        numeric_fields,
+        array_row_index,
+    )?;
+
     finish_file(out)
 }
 
@@ -251,6 +277,7 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
+    array_row_index: &ArrayRowIndex,
 ) -> io::Result<()> {
     write_header(out)?;
 
@@ -275,6 +302,10 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     write_numeric_fields(out, numeric_fields)?;
     let numeric_fields_end = out.stream_position()?;
 
+    let array_row_index_offset = out.stream_position()?;
+    write_array_row_index(out, array_row_index)?;
+    let array_row_index_end = out.stream_position()?;
+
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
@@ -282,6 +313,8 @@ pub fn write_merged_segment_to<W: Write + Seek>(
         dictionary_len: dictionary_end - dictionary_offset,
         numeric_fields_offset,
         numeric_fields_len: numeric_fields_end - numeric_fields_offset,
+        array_row_index_offset,
+        array_row_index_len: array_row_index_end - array_row_index_offset,
         term_count,
     };
 
