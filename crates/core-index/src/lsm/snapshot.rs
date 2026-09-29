@@ -61,6 +61,13 @@ impl SearchIndex for IndexSnapshot {
         self.segments.iter().find_map(|seg| seg.parent_of_row(row))
     }
 
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        if let Some(d) = self.mem.doc_of_row(row) {
+            return Some(d);
+        }
+        self.segments.iter().find_map(|seg| seg.doc_of_row(row))
+    }
+
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup_wildcard(self, pattern, xpath)
     }

@@ -941,6 +941,7 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
+        let groups = policy.array_groups();
 
         let (query, xpaths) = compile_query(
             &command.query,
@@ -967,6 +968,7 @@ impl ShardManager {
             let filters = filters.clone();
             let xpaths = Arc::clone(&xpaths);
             let sort_xpaths = sort_xpaths.clone();
+            let groups = groups.clone();
             set.spawn_blocking(move || {
                 //any sort mentioned? - we do smart thing
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
@@ -976,11 +978,17 @@ impl ShardManager {
                         &xpaths,
                         sort_xpaths,
                         window,
+                        groups,
                     )
                 } else {
                     //else just relevance
-                    let hits =
-                        handle.rank_top_k((*query).as_ref(), filters.as_deref(), &xpaths, fetch)?;
+                    let hits = handle.rank_top_k(
+                        (*query).as_ref(),
+                        filters.as_deref(),
+                        &xpaths,
+                        fetch,
+                        groups,
+                    )?;
                     Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
                 }
             });

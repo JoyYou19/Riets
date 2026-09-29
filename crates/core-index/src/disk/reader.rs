@@ -232,6 +232,10 @@ impl SearchIndex for DiskSegment {
         self.array_row_index.parent_of(row)
     }
 
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.array_row_index.doc_of(row)
+    }
+
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.dictionary

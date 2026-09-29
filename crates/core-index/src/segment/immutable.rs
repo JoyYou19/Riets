@@ -48,6 +48,10 @@ impl SearchIndex for ImmutableSegment {
             .collect()
     }
 
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.array_row_index.doc_of(row)
+    }
+
     fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
         self.array_row_index.parent_of(row)
     }

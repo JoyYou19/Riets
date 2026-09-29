@@ -51,6 +51,10 @@ impl SearchIndex for MemIndex {
         self.array_row_index.parent_of(row)
     }
 
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.array_row_index.doc_of(row)
+    }
+
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.terms
             .keys()

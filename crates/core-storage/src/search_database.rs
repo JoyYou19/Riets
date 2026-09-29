@@ -382,7 +382,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(search)]
     pub fn search(&self, query: &Query, xpath: u32) -> Vec<SearchHit> {
         let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer, self.policy().array_groups());
         executor.search(query, xpath)
     }
 

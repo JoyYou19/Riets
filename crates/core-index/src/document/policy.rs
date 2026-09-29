@@ -72,7 +72,7 @@ impl Serialize for FieldPolicy {
             st.serialize_field("exact", &self.exact)?;
         }
         if self.repeated {
-            st.serialize_field("array", &self.repeated)?;
+            st.serialize_field("repeated", &self.repeated)?;
         }
         if !self.subfields.is_empty() {
             st.serialize_field("subfields", &self.subfields)?;
@@ -344,6 +344,18 @@ impl IndexPolicy {
         Ok(())
     }
 
+    pub fn array_groups(&self) -> Vec<Vec<XPathId>> {
+        let mut groups = Vec::new();
+        for field in &self.fields {
+            if field.kind == FieldKind::Struct {
+                let mut subs = Vec::new();
+                collect_subfield_xpaths(field, &mut subs, self);
+                groups.push(subs);
+            }
+        }
+        groups
+    }
+
     #[timed(database_lifecycle)]
     pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
         let root = root.as_ref();
@@ -471,7 +483,7 @@ impl FieldKind {
             FieldKind::Date => "date",
             FieldKind::Id => "id",
             FieldKind::IdAuto => "id",
-            FieldKind::Struct => "array",
+            FieldKind::Struct => "struct",
         }
     }
 
@@ -505,7 +517,7 @@ fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
         if field.subfields.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("array '{}' must declare at least one subfield", field.name),
+                format!("Struct '{}' must declare at least one subfield", field.name),
             ));
         }
         if depth > MAX_ARRAY_DEPTH {
@@ -639,6 +651,16 @@ impl FieldRegistry {
 
     fn get_exact(&self, name: &str) -> Option<XPathId> {
         self.exact_ids.get(name).copied()
+    }
+}
+
+fn collect_subfield_xpaths(field: &FieldPolicy, out: &mut Vec<XPathId>, policy: &IndexPolicy) {
+    for sub in &field.subfields {
+        if sub.kind == FieldKind::Struct {
+            collect_subfield_xpaths(sub, out, policy);
+        } else {
+            out.push(sub.xpath(policy));
+        }
     }
 }
 

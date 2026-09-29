@@ -70,14 +70,19 @@ where
     // A query is analyzed also the same way as the index, so we could filter out words, stemming,
     // whaatever
     analyzer: &'a Analyzer,
+    array_groups: Vec<Vec<XPathId>>,
 }
 
 impl<'a, I> QueryExecutor<'a, I>
 where
     I: SearchIndex + SearchStats + SearchNumeric,
 {
-    pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
-        Self { index, analyzer }
+    pub fn new(index: &'a I, analyzer: &'a Analyzer, array_groups: Vec<Vec<XPathId>>) -> Self {
+        Self {
+            index,
+            analyzer,
+            array_groups,
+        }
     }
 
     #[timed(search)]
@@ -495,6 +500,74 @@ where
         }
     }
 
+    fn score_array_groups(&self, query: &Query) -> Vec<SearchHit> {
+        let terms: Vec<&str> = match query {
+            Query::Term(t) => vec![t.as_str()],
+            Query::And(parts) | Query::Search(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    Query::Term(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect(),
+            _ => return Vec::new(),
+        };
+        if terms.is_empty() {
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        for group in &self.array_groups {
+            // element_row -> (total_score, terms_matched)
+            let mut acc: HashMap<DocId, (u64, usize)> = HashMap::new();
+
+            for term in &terms {
+                let mut hit: HashSet<DocId> = HashSet::new();
+                for &sub in group {
+                    let postings = self.index.lookup(term, sub);
+                    if postings.is_empty() {
+                        continue;
+                    }
+                    let df = postings.len() as f32;
+                    for score in score_term_hybrid(self.index, &postings, sub, df) {
+                        hit.insert(score.doc_id);
+                        let entry = acc.entry(score.doc_id).or_insert((0, 0));
+                        entry.0 = entry.0.saturating_add(score.score);
+                    }
+                }
+                for row in hit {
+                    if let Some(entry) = acc.get_mut(&row) {
+                        entry.1 += 1;
+                    }
+                }
+            }
+
+            // same element must match EVERY term; resolve + max-aggregate to doc
+            let mut best: HashMap<DocId, u64> = HashMap::new();
+            for (row, (score, matched)) in acc {
+                if matched != terms.len() {
+                    continue;
+                }
+                if let Some(doc) = self.index.doc_of_row(row) {
+                    best.entry(doc)
+                        .and_modify(|e| *e = (*e).max(score))
+                        .or_insert(score);
+                }
+            }
+
+            for (doc_id, score) in best {
+                out.push(SearchHit {
+                    doc_id,
+                    matched_terms: terms.len(),
+                    weight_sum: (score / 1000).min(u32::MAX as u64) as u32,
+                    distance_factor: 1.0,
+                    score: score as f32 / 1000.0,
+                });
+            }
+        }
+        out
+    }
+
     fn ascend(&self, rows: HashSet<DocId>, levels: u32) -> HashSet<DocId> {
         let mut rows = rows;
         for _ in 0..levels {
@@ -571,8 +644,6 @@ where
             return Vec::new();
         }
 
-        //if query was like ">2000" its not a text query and would automatically be just considered
-        //a filter
         let Some(query) = query else {
             return match restrict {
                 Some(allowed) => {
@@ -583,40 +654,35 @@ where
                         distance_factor: 1.0,
                         score: 0.0,
                     });
-
                     top_k_from_hits(hits, k)
                 }
-
                 None => Vec::new(),
             };
         };
 
-        let xpaths: Vec<XPathId> = xpaths.into_iter().collect();
-
-        if xpaths.is_empty() {
-            return Vec::new();
-        }
-
-        if xpaths.len() == 1 {
-            return self.search_top_k_restricted(query, xpaths[0], k, restrict);
-        }
-
         let mut by_doc = HashMap::<DocId, SearchHit>::new();
+
+        for hit in self.score_array_groups(query) {
+            by_doc
+                .entry(hit.doc_id)
+                .and_modify(|e| {
+                    e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                    e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
+                    e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                    e.score += hit.score;
+                })
+                .or_insert(hit);
+        }
 
         for xpath in xpaths {
             for hit in self.search_top_k_restricted(query, xpath, k, restrict) {
                 by_doc
                     .entry(hit.doc_id)
-                    .and_modify(|existing| {
-                        existing.matched_terms =
-                            existing.matched_terms.saturating_add(hit.matched_terms);
-
-                        existing.weight_sum = existing.weight_sum.saturating_add(hit.weight_sum);
-
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
-
-                        existing.score += hit.score;
+                    .and_modify(|e| {
+                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                        e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
+                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                        e.score += hit.score;
                     })
                     .or_insert(hit);
             }

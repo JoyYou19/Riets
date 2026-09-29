@@ -84,12 +84,13 @@ fn walk_fields(
                 elements: Vec::new(),
             };
             for element in elements.iter() {
-                //checks if the array holds only nested objects, if not object skip
-                if !matches!(element, OwnedValue::Object(_)) {
-                    continue;
-                }
-
-                //walk each child recursively
+                let OwnedValue::Object(_) = element else {
+                    return Err(FailReason::InvalidField {
+                        field: field.name.clone(),
+                        expected: "object".to_string(),
+                        got: value_type_name(element).to_string(),
+                    });
+                };
                 let mut child = ParsedNode::default();
                 walk_fields(element, &field.subfields, &mut child)?;
                 array_field.elements.push(child);
@@ -120,7 +121,7 @@ fn walk_fields(
                 array_field.elements.push(child);
             }
             node.arrays.push(array_field);
-            //this is a leaf value
+        //this is a leaf value
         } else {
             let Some(raw) = leaf_text(value) else {
                 continue;
@@ -165,5 +166,22 @@ fn leaf_text(value: &OwnedValue) -> Option<String> {
         OwnedValue::Static(simd_json::StaticNode::Null) => None,
         OwnedValue::Object(_) | OwnedValue::Array(_) => Some(value.to_string()),
         other => Some(other.to_string()),
+    }
+}
+
+fn value_type_name(value: &OwnedValue) -> &'static str {
+    match value {
+        OwnedValue::Static(node) => match node {
+            simd_json::StaticNode::Null => "null",
+            simd_json::StaticNode::Bool(_) => "bool",
+            simd_json::StaticNode::I64(_)
+            | simd_json::StaticNode::U64(_)
+            | simd_json::StaticNode::F64(_) => "number",
+        },
+        OwnedValue::String(_) => "string",
+        OwnedValue::Array(_) => "array",
+        OwnedValue::Object(_) => "object",
+        #[allow(unreachable_patterns)]
+        _ => "unknown",
     }
 }
