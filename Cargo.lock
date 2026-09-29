@@ -669,6 +669,7 @@ dependencies = [
  "core-testkit",
  "core-timing",
  "criterion",
+ "indexmap",
 ]
 
 [[package]]

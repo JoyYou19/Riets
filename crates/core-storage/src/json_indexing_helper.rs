@@ -49,6 +49,7 @@ fn index_arrays(
                 &mut row.numeric_points,
                 policy,
             );
+            rows.push(row);
             index_arrays(
                 &element.arrays,
                 doc_id,
@@ -57,7 +58,6 @@ fn index_arrays(
                 policy,
                 allocator,
             );
-            rows.push(row);
         }
     }
 }

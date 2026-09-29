@@ -1,7 +1,7 @@
 use crate::{
     AppState,
     database_helpers::{compute_disk_usage, validate_db_name},
-    doctypes,
+    doc_parser,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
@@ -540,7 +540,7 @@ pub async fn insert_handler(
 
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -560,7 +560,6 @@ pub async fn insert_handler(
     let doc_indices = outcome.indices;
     let parse_failures = outcome.failures;
 
-    //let manager = Arc::clone(&handle);
     let report = match handle.insert(outcome.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
@@ -647,7 +646,7 @@ pub async fn retrieve_handler(
         }
     }
 
-    let (documents, skipped_ids) = doctypes::convert_from_storage(&docs, ctx.format);
+    let (documents, skipped_ids) = doc_parser::convert_from_storage(&docs, ctx.format);
 
     let title = if skipped_ids.is_empty() {
         format!("retrieved {} document(s)", documents.len())
@@ -963,7 +962,7 @@ pub async fn partial_replace_handler(
 
     let policy = handle.policy();
     let parsed = tokio::task::spawn_blocking(move || {
-        doctypes::parse_partial_replace_to_inputs(&items, &policy, |id| match fetched.get(id) {
+        doc_parser::parse_partial_replace_to_inputs(&items, &policy, |id| match fetched.get(id) {
             Some(Ok(doc)) => Ok(doc.clone()),
             Some(Err(msg)) => Err(CorelamoError::Internal(msg.clone())),
             None => Ok(None),
@@ -1057,7 +1056,7 @@ pub async fn replace_document_handler(
     let policy = handle.policy();
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -1145,7 +1144,7 @@ pub async fn upsert_document_handler(
     let policy = handle.policy();
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doctypes::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -1632,7 +1631,7 @@ pub async fn get_policy_handler(
 
     let policy = handle.policy();
 
-    match doctypes::serialize_policy(&policy) {
+    match doc_parser::serialize_policy(&policy) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -1655,7 +1654,7 @@ pub async fn set_policy_handler(
         }
     };
 
-    let policy = match doctypes::parse_policy(&body) {
+    let policy = match doc_parser::parse_policy(&body) {
         Ok(p) => p,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();

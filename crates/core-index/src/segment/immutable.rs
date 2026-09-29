@@ -48,6 +48,10 @@ impl SearchIndex for ImmutableSegment {
             .collect()
     }
 
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.array_row_index.parent_of(row)
+    }
+
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         ImmutableSegment::lookup_prefix(self, prefix, xpath)
     }

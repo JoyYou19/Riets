@@ -56,6 +56,7 @@ pub struct FieldFilter {
     pub xpath: XPathId,
     pub kind: MatchOp,
     pub row_keyed: bool,
+    pub depth: u32,
 }
 
 // Turns the AST into a PostingList or SearchHit
@@ -439,50 +440,6 @@ where
         hits
     }
 
-    // TODO: THIS IS OLD WE TEST FIRST
-    // #[timed(search)]
-    // pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
-    //     if k == 0 {
-    //         return Vec::new();
-    //     }
-    //
-    //     let scored = self.execute_scored(query, xpath);
-    //     let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
-    //
-    //     for p in scored {
-    //         let score = ((p.score as f32) / 1000.0) * p.density;
-    //
-    //         let hit = SearchHit {
-    //             doc_id: p.doc_id,
-    //             matched_terms: p.matched_terms,
-    //             weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
-    //             distance_factor: p.density,
-    //             score,
-    //         };
-    //
-    //         heap.push(TopHit(hit));
-    //
-    //         if heap.len() > k {
-    //             heap.pop();
-    //         }
-    //     }
-    //
-    //     let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
-    //
-    //     hits.sort_by(|a, b| {
-    //         b.score
-    //             .partial_cmp(&a.score)
-    //             .unwrap_or(Ordering::Equal)
-    //             .then_with(|| a.doc_id.cmp(&b.doc_id))
-    //     });
-    //
-    //     hits
-    // }
-
-    pub fn search_top_k(&self, query: &Query, xpath: XPathId, k: usize) -> Vec<SearchHit> {
-        self.search_top_k_restricted(query, xpath, k, None)
-    }
-
     fn search_top_k_restricted(
         &self,
         query: &Query,
@@ -494,11 +451,12 @@ where
             return Vec::new();
         }
 
+        //simple AND/OR/WAND
         if let Some(hits) = self.execute_top_k_retrieval(query, xpath, k, restrict) {
             return hits.into_iter().map(wand_hit_to_search_hit).collect();
         }
 
-        // Complex-query fallback.
+        //Complex-query fallback. fuzzy/exact
         let scored = self.execute_scored(query, xpath);
 
         let hits = scored
@@ -513,58 +471,6 @@ where
             });
 
         top_k_from_hits(hits, k)
-    }
-
-    // INFO: Currently we might want to think about other ways of implementing the idea
-    // of searching within all xpaths, cause it still happens independently.
-    #[timed(search)]
-    pub fn search_all_xpaths_top_k(
-        &self,
-        query: &Query,
-        xpaths: impl IntoIterator<Item = XPathId>,
-        k: usize,
-    ) -> Vec<SearchHit> {
-        if k == 0 {
-            return Vec::new();
-        }
-
-        let mut by_doc = HashMap::<DocId, SearchHit>::new();
-
-        for xpath in xpaths {
-            for hit in self.search_top_k(query, xpath, k) {
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|existing| {
-                        existing.matched_terms += hit.matched_terms;
-                        existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
-                        existing.score += hit.score;
-                    })
-                    .or_insert(hit);
-            }
-        }
-
-        let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
-
-        for hit in by_doc.into_values() {
-            heap.push(TopHit(hit));
-
-            if heap.len() > k {
-                heap.pop();
-            }
-        }
-
-        let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
-
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.doc_id.cmp(&b.doc_id))
-        });
-
-        hits
     }
 
     fn raw_ids(&self, filter: &FieldFilter) -> HashSet<DocId> {
@@ -589,6 +495,35 @@ where
         }
     }
 
+    fn ascend(&self, rows: HashSet<DocId>, levels: u32) -> HashSet<DocId> {
+        let mut rows = rows;
+        for _ in 0..levels {
+            rows = rows
+                .into_iter()
+                .filter_map(|r| self.index.parent_of_row(r))
+                .collect();
+        }
+        rows
+    }
+
+    fn nested_rows(&self, filter: &FieldFilter) -> HashSet<DocId> {
+        match &filter.kind {
+            MatchOp::Query(_) | MatchOp::Range { .. } => self.raw_ids(filter),
+            MatchOp::SameElement { clauses, depth } => {
+                let mut rows: Option<HashSet<DocId>> = None;
+                for clause in clauses {
+                    let mut r = self.nested_rows(clause);
+                    r = self.ascend(r, clause.depth.saturating_sub(*depth));
+                    rows = Some(match rows {
+                        Some(cur) => cur.intersection(&r).copied().collect(),
+                        None => r,
+                    });
+                }
+                rows.unwrap_or_default()
+            }
+        }
+    }
+
     #[timed(search)]
     pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldFilter>) -> Option<HashSet<DocId>> {
         if filters.is_empty() {
@@ -607,17 +542,8 @@ where
                         raw
                     }
                 }
-                MatchOp::SameElement { clauses } => {
-                    // intersect the clause ArrayRowIds FIRST, then resolve once
-                    let mut rows: Option<HashSet<DocId>> = None;
-                    for clause in clauses {
-                        let r = self.raw_ids(clause);
-                        rows = Some(match rows {
-                            Some(cur) => cur.intersection(&r).copied().collect(),
-                            None => r,
-                        });
-                    }
-                    self.index.resolve_array_rows(&rows.unwrap_or_default())
+                MatchOp::SameElement { .. } => {
+                    self.index.resolve_array_rows(&self.nested_rows(filter))
                 }
             };
 
@@ -697,35 +623,6 @@ where
         }
 
         top_k_from_hits(by_doc.into_values(), k)
-    }
-
-    // Search the entire database all xpaths
-    #[timed(search)]
-    pub fn search_all_xpaths(
-        &self,
-        query: &Query,
-        xpaths: impl IntoIterator<Item = XPathId>,
-    ) -> Vec<SearchHit> {
-        use std::collections::BTreeMap;
-
-        let mut by_doc = BTreeMap::<DocId, SearchHit>::new();
-
-        for xpath in xpaths {
-            for hit in self.search(query, xpath) {
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|existing| {
-                        existing.matched_terms += hit.matched_terms;
-                        existing.weight_sum += hit.weight_sum;
-                        existing.distance_factor =
-                            existing.distance_factor.max(hit.distance_factor);
-                        existing.score += hit.score;
-                    })
-                    .or_insert(hit);
-            }
-        }
-
-        by_doc.into_values().collect()
     }
 
     //vai der + relevance

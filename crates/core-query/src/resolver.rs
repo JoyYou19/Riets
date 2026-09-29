@@ -16,6 +16,7 @@ use core_protocol::{
     command_reponse_definitions::{Fuzziness, MatchSpec},
     errors::CorelamoError,
 };
+use indexmap::IndexMap;
 
 use crate::{Query, executor::FieldFilter, query_string_parser::parse_and_analyze};
 
@@ -28,6 +29,7 @@ pub enum MatchOp {
     },
     SameElement {
         clauses: Vec<FieldFilter>,
+        depth: u32,
     },
 }
 
@@ -138,39 +140,56 @@ pub fn compile_field_filter(
 
     // same_element is a container spec — handle it before the is_blank check
     // (its `value()` is "", so is_blank() would wrongly skip it).
+
     if let MatchSpec::SameElement(clauses) = spec {
-        if field.kind != FieldKind::Array {
-            return Err(CorelamoError::InvalidData(format!(
-                "same_element requires an array field ('{}' is {})",
-                field.name,
-                field.kind.label()
-            )));
-        }
-
-        let mut compiled = Vec::with_capacity(clauses.len());
-        for (sub_name, sub_spec) in clauses {
-            let full = format!("{}/{}", field.full_path, sub_name);
-            let sub_field = policy
-                .leaf_by_path(&full)
-                .ok_or_else(|| CorelamoError::PathNotIndexed(full.clone()))?;
-
-            if let Some(filter) = compile_leaf_filter(sub_field, sub_spec, analyzer, policy)? {
-                compiled.push(filter);
-            }
-        }
-
-        return Ok(Some(FieldFilter {
-            xpath: 0, //clauses dont use xpaths, they have their own
-            kind: MatchOp::SameElement { clauses: compiled },
-            row_keyed: true,
-        }));
+        return Ok(Some(compile_same_element(
+            field, clauses, analyzer, policy,
+        )?));
     }
-
     if spec.is_blank() {
         return Ok(None);
     }
 
     compile_leaf_filter(field, spec, analyzer, policy)
+}
+
+fn compile_same_element(
+    field: &FieldPolicy,
+    clauses: &IndexMap<String, MatchSpec>,
+    analyzer: &Analyzer,
+    policy: &IndexPolicy,
+) -> Result<FieldFilter, CorelamoError> {
+    if field.kind != FieldKind::Struct {
+        return Err(CorelamoError::InvalidData(format!(
+            "same_element requires an array field ('{}' is {})",
+            field.name,
+            field.kind.label()
+        )));
+    }
+    let mut compiled = Vec::with_capacity(clauses.len());
+    for (sub_name, sub_spec) in clauses {
+        let full = format!("{}/{}", field.full_path, sub_name);
+        let sub_field = policy
+            .field_by_path(&full)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(full.clone()))?;
+
+        let clause = if let MatchSpec::SameElement(inner) = sub_spec {
+            compile_same_element(sub_field, inner, analyzer, policy)? // nested array
+        } else {
+            compile_leaf_filter(sub_field, &sub_spec, analyzer, policy)?
+                .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?
+        };
+        compiled.push(clause);
+    }
+    Ok(FieldFilter {
+        xpath: 0,
+        kind: MatchOp::SameElement {
+            clauses: compiled,
+            depth: field.depth,
+        },
+        row_keyed: true,
+        depth: field.depth,
+    })
 }
 
 fn compile_leaf_filter(
@@ -207,6 +226,7 @@ fn compile_leaf_filter(
                     hi: range.hi,
                 },
                 row_keyed: field.row_keyed,
+                depth: field.depth,
             }))
         }
 
@@ -214,6 +234,7 @@ fn compile_leaf_filter(
             xpath: text_xpath(spec, policy, field)?,
             kind: MatchOp::Query(text_query(spec, analyzer)?),
             row_keyed: field.row_keyed,
+            depth: 0,
         })),
 
         _ => Err(CorelamoError::PathNotIndexed(field.name.to_string())),

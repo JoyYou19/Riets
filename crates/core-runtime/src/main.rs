@@ -32,7 +32,7 @@ use tokio::signal;
 
 mod corelamo_settings;
 mod database_helpers;
-mod doctypes;
+mod doc_parser;
 mod handlers;
 mod http_response;
 mod middleware;

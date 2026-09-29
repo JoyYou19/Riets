@@ -8,6 +8,7 @@ ahash = "0.8.12"
 core-index = { path = "../core-index" }
 core-protocol = {path = "../core-protocol"}
 core-timing = { path = "../core-timing" }
+indexmap = "2.14.2"
 
 [features]
 timing = ["core-timing/timing", "core-index/timing"]

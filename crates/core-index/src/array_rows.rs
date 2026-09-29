@@ -51,6 +51,12 @@ impl ArrayRowIndex {
         }
     }
 
+    pub fn parent_of(&self, array_row_id: ArrayRowId) -> Option<ArrayRowId> {
+        let idx = array_row_id.checked_sub(self.base)?;
+        let parent = *self.parent_row.get(idx as usize)?;
+        (parent != NO_PARENT_ROW).then_some(parent)
+    }
+
     pub fn push_row(&mut self, array_row_id: ArrayRowId, doc: DocId, parent: Option<ArrayRowId>) {
         if self.row_to_doc.is_empty() {
             self.base = array_row_id;

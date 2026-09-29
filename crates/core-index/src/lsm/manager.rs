@@ -62,6 +62,10 @@ impl SearchIndex for LsmIndex {
         self.snapshot().resolve_array_rows(rows)
     }
 
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.snapshot().parent_of_row(row)
+    }
+
     #[timed(search)]
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_wildcard(pattern, xpath)

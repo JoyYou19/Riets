@@ -5,7 +5,8 @@ use core_timing::timed;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
-use crate::document::IndexedDocument;
+use crate::document::document::NumericPoint;
+use crate::document::{DocumentPart, IndexedDocument};
 use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
 use crate::posting::{Posting, PostingList};
 use crate::search::{SearchIndex, SearchNumeric, SearchStats};
@@ -44,6 +45,10 @@ impl SearchIndex for MemIndex {
         rows.iter()
             .filter_map(|&r| self.array_row_index.doc_of(r))
             .collect()
+    }
+
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.array_row_index.parent_of(row)
     }
 
     fn terms(&self, xpath: XPathId) -> Vec<String> {
@@ -275,10 +280,35 @@ impl MemIndex {
 
     #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
-        for part in &document.parts {
+        //main document
+        self.add_parts_and_points(
+            analyzer,
+            document.doc_id,
+            &document.parts,
+            &document.numeric_points,
+        );
+
+        //each array in documents
+        for row in &document.array_rows {
+            self.array_row_index
+                .push_row(row.array_row_id, document.doc_id, row.parent);
+
+            self.add_parts_and_points(analyzer, row.array_row_id, &row.parts, &row.numeric_points);
+        }
+    }
+
+    //helper
+    fn add_parts_and_points(
+        &mut self,
+        analyzer: &Analyzer,
+        target_id: DocId, //array row id uses the same type for id
+        parts: &[DocumentPart],
+        numeric_points: &[NumericPoint],
+    ) {
+        for part in parts {
             if part.exact {
                 self.add_exact_weighted(
-                    document.doc_id,
+                    target_id,
                     part.xpath,
                     &part.text,
                     part.weight.min,
@@ -287,7 +317,7 @@ impl MemIndex {
             } else {
                 self.add_document_weighted(
                     analyzer,
-                    document.doc_id,
+                    target_id,
                     part.xpath,
                     &part.text,
                     part.weight.min,
@@ -296,38 +326,9 @@ impl MemIndex {
             }
         }
 
-        for point in &document.numeric_points {
+        for point in numeric_points {
             self.numeric_points
-                .insert(point.xpath, point.value, document.doc_id);
-        }
-
-        for row in &document.array_rows {
-            self.array_row_index
-                .push_row(row.array_row_id, document.doc_id, row.parent);
-            for part in &row.parts {
-                if part.exact {
-                    self.add_exact_weighted(
-                        row.array_row_id,
-                        part.xpath,
-                        &part.text,
-                        part.weight.min,
-                        part.weight.max,
-                    );
-                } else {
-                    self.add_document_weighted(
-                        analyzer,
-                        row.array_row_id,
-                        part.xpath,
-                        &part.text,
-                        part.weight.min,
-                        part.weight.max,
-                    );
-                }
-            }
-            for point in &row.numeric_points {
-                self.numeric_points
-                    .insert(point.xpath, point.value, row.array_row_id);
-            }
+                .insert(point.xpath, point.value, target_id);
         }
     }
 

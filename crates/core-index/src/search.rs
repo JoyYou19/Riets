@@ -39,6 +39,7 @@ pub trait SearchIndex {
         let _ = rows;
         HashSet::new()
     }
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId>;
 
     //words within max_edits of input
     fn fuzzy_expansions(

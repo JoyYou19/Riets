@@ -38,7 +38,8 @@ pub struct FieldPolicy {
     pub weight: WeightInterval,
     pub stemming: Option<String>,
     pub exact: bool,
-    pub array: bool,
+    pub repeated: bool, // array of sttrings nums/bools
+
     pub subfields: Vec<FieldPolicy>,
     pub full_path: String,
     pub row_keyed: bool,
@@ -70,8 +71,8 @@ impl Serialize for FieldPolicy {
         if self.exact != defaults.exact {
             st.serialize_field("exact", &self.exact)?;
         }
-        if self.array {
-            st.serialize_field("array", &self.array)?;
+        if self.repeated {
+            st.serialize_field("array", &self.repeated)?;
         }
         if !self.subfields.is_empty() {
             st.serialize_field("subfields", &self.subfields)?;
@@ -91,7 +92,7 @@ impl FieldPolicy {
             weight: None,
             stemming: None,
             exact: None,
-            array: None,
+            repeated: None,
             subfields: None,
         })
     }
@@ -124,7 +125,7 @@ impl FieldPolicy {
 
     // Yields the field itself if it's an indexed leaf, else recurses into Array subfields.
     fn collect_leaves<'a>(&'a self, out: &mut Vec<&'a FieldPolicy>) {
-        if self.kind == FieldKind::Array {
+        if self.kind == FieldKind::Struct {
             for sub in &self.subfields {
                 sub.collect_leaves(out);
             }
@@ -143,7 +144,7 @@ impl FieldPolicy {
             weight: raw.weight.unwrap_or(defaults.weight),
             stemming: raw.stemming,
             exact: raw.exact.unwrap_or(defaults.exact),
-            array: raw.array.unwrap_or(false),
+            repeated: raw.repeated.unwrap_or(false),
             subfields: raw.subfields.unwrap_or_default(),
             full_path: raw.name,
             row_keyed: false,
@@ -162,7 +163,7 @@ struct RawFieldPolicy {
     weight: Option<WeightInterval>,
     stemming: Option<String>,
     exact: Option<bool>,
-    array: Option<bool>,
+    repeated: Option<bool>,
     subfields: Option<Vec<FieldPolicy>>,
 }
 
@@ -216,7 +217,7 @@ impl IndexPolicy {
     pub fn leaf_by_path(&self, path: &str) -> Option<&FieldPolicy> {
         fn find<'a>(fields: &'a [FieldPolicy], path: &str) -> Option<&'a FieldPolicy> {
             for f in fields {
-                if f.kind == FieldKind::Array {
+                if f.kind == FieldKind::Struct {
                     if let Some(hit) = find(&f.subfields, path) {
                         return Some(hit);
                     }
@@ -354,6 +355,23 @@ impl IndexPolicy {
         Ok(policy)
     }
 
+    pub fn field_by_path(&self, path: &str) -> Option<&FieldPolicy> {
+        fn find<'a>(fields: &'a [FieldPolicy], path: &str) -> Option<&'a FieldPolicy> {
+            for f in fields {
+                if f.full_path == path {
+                    return Some(f);
+                }
+                if f.kind == FieldKind::Struct {
+                    if let Some(hit) = find(&f.subfields, path) {
+                        return Some(hit);
+                    }
+                }
+            }
+            None
+        }
+        find(&self.fields, path)
+    }
+
     #[timed(writing_files)]
     pub fn save(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
         let root = root.as_ref();
@@ -386,7 +404,7 @@ pub enum FieldKind {
     Date,
     Id,
     IdAuto,
-    Array,
+    Struct, //list of objects
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -425,7 +443,7 @@ impl FieldKind {
                 weight: WeightInterval::DEFAULT,
                 exact: true,
             },
-            FieldKind::Array => FieldDefaults {
+            FieldKind::Struct => FieldDefaults {
                 searchable: false,
                 list: true,
                 weight: WeightInterval::DEFAULT,
@@ -453,7 +471,7 @@ impl FieldKind {
             FieldKind::Date => "date",
             FieldKind::Id => "id",
             FieldKind::IdAuto => "id",
-            FieldKind::Array => "array",
+            FieldKind::Struct => "array",
         }
     }
 
@@ -482,7 +500,7 @@ const MAX_ARRAY_DEPTH: u32 = 3;
 
 //arrays should have one subfield + max 3 + numbers cant be exact=false
 fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
-    if field.kind == FieldKind::Array {
+    if field.kind == FieldKind::Struct {
         let depth = array_depth + 1;
         if field.subfields.is_empty() {
             return Err(io::Error::new(
@@ -528,14 +546,15 @@ fn stamp_field(
     };
     field.full_path = full.clone();
 
-    if field.kind == FieldKind::Array {
+    if field.kind == FieldKind::Struct {
         let d = array_depth + 1;
+        field.depth = d;
         for sub in &mut field.subfields {
             stamp_field(sub, &full, d, registry);
         }
     } else {
-        field.row_keyed = field.array || array_depth > 0;
-        field.depth = if field.array { 1 } else { array_depth };
+        field.row_keyed = field.repeated || array_depth > 0;
+        field.depth = if field.repeated { 1 } else { array_depth };
         registry.resolve(&full);
         if field.has_exact_index() {
             registry.resolve_exact(&full);
@@ -668,7 +687,7 @@ impl Serialize for FullField<'_> {
             st.serialize_field("stemming", stem)?;
         }
         st.serialize_field("exact", &f.exact)?;
-        st.serialize_field("array", &f.array)?;
+        st.serialize_field("array", &f.repeated)?;
         st.serialize_field("subfields", &FullFields(&f.subfields))?;
         st.serialize_field("full_path", &f.full_path)?;
         st.serialize_field("row_keyed", &f.row_keyed)?;

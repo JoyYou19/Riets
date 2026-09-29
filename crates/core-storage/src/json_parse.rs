@@ -27,6 +27,7 @@ pub struct ParsedNode {
     pub arrays: Vec<ArrayField>,
 }
 
+//to get the new fields from the parsed document
 impl ParsedNode {
     pub fn collect_leaf_values(&self, out: &mut BTreeMap<String, String>) {
         for leaf in &self.leaves {
@@ -65,12 +66,16 @@ fn walk_fields(
     fields: &[FieldPolicy],
     node: &mut ParsedNode,
 ) -> Result<(), FailReason> {
+    //go through poolicy fields
     for field in fields {
+        //get this fields value in the given json
         let Some(value) = get_by_path(obj, &field.name) else {
             continue;
         };
 
-        if field.kind == FieldKind::Array {
+        //this array of nested objects?
+        if field.kind == FieldKind::Struct {
+            //ensure valid array
             let OwnedValue::Array(elements) = value else {
                 continue;
             };
@@ -79,15 +84,20 @@ fn walk_fields(
                 elements: Vec::new(),
             };
             for element in elements.iter() {
+                //checks if the array holds only nested objects, if not object skip
                 if !matches!(element, OwnedValue::Object(_)) {
                     continue;
-                } // mixed: skip
+                }
+
+                //walk each child recursively
                 let mut child = ParsedNode::default();
                 walk_fields(element, &field.subfields, &mut child)?;
                 array_field.elements.push(child);
             }
             node.arrays.push(array_field);
-        } else if field.array {
+
+        //this is an array with string/num/bool
+        } else if field.repeated {
             let OwnedValue::Array(elements) = value else {
                 continue;
             };
@@ -95,7 +105,9 @@ fn walk_fields(
                 path: field.full_path.clone(),
                 elements: Vec::new(),
             };
+            //poulate this array
             for element in elements.iter() {
+                //validate the string/numver based on the poliy
                 let Some(raw) = leaf_text(element) else {
                     continue;
                 };
@@ -108,6 +120,7 @@ fn walk_fields(
                 array_field.elements.push(child);
             }
             node.arrays.push(array_field);
+            //this is a leaf value
         } else {
             let Some(raw) = leaf_text(value) else {
                 continue;

@@ -1,0 +1,36 @@
+[[fields]]
+name = "id"
+kind = "IdAuto"
+
+[[fields]]
+name = "title"
+kind = "Text"
+exact = true
+
+[[fields]]
+name = "cast"
+kind = "Struct"
+
+[[fields.subfields]]
+name = "name"
+kind = "Text"
+exact = true
+
+[[fields.subfields]]
+name = "surname"
+kind = "Text"
+exact = true
+
+[[fields.subfields]]
+name = "awards"
+kind = "Struct"
+
+[[fields.subfields.subfields]]
+name = "title"
+kind = "Text"
+exact = true
+
+[[fields.subfields.subfields]]
+name = "year"
+kind = "Integer"
+searchable = true

@@ -33,7 +33,7 @@ searchable = true
 
 [[fields]]
 name = "cast"
-kind = "Array"
+kind = "Struct"
 list = true
 
 [[fields.subfields]]

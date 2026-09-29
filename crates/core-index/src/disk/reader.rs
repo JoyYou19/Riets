@@ -228,6 +228,10 @@ impl SearchIndex for DiskSegment {
             .collect()
     }
 
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.array_row_index.parent_of(row)
+    }
+
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.dictionary
