@@ -2,33 +2,33 @@ use std::collections::BTreeMap;
 
 use ahash::HashMapExt;
 use core_timing::timed;
-
+use ahash::AHashMap;
 use crate::analyzer::analyzer::Analyzer;
 use crate::document::IndexedDocument;
-use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
-use crate::posting::{Posting, PostingList};
-use crate::search::{SearchIndex, SearchNumeric, SearchStats};
-use crate::types::{DocId, FieldStats, TermKey, XPathId};
+use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
+use crate::posting::{ Posting, PostingList };
+use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
+use crate::types::{ DocId, FieldStats, TermKey, XPathId };
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
 #[derive(Debug, Clone)]
 pub struct MemIndex {
-    terms: ahash::HashMap<TermKey, PostingList>,
-    doc_lengths: ahash::HashMap<(DocId, XPathId), u32>,
+    terms: AHashMap<TermKey, PostingList>,
+    doc_lengths: AHashMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_points: NumericPoints,
-    estimated_bytes:usize,
+    estimated_bytes: usize,
 }
 
 impl Default for MemIndex {
     fn default() -> Self {
         Self {
-            terms: ahash::HashMap::default(),
-            doc_lengths: ahash::HashMap::default(),
+            terms: AHashMap::default(),
+            doc_lengths: AHashMap::default(),
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
-            estimated_bytes:0
+            estimated_bytes: 0,
         }
     }
 }
@@ -68,13 +68,14 @@ impl SearchNumeric for MemIndex {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> PostingList {
         let docs = self.numeric_points.range(xpath, lo, hi);
         PostingList::from_items(
-            docs.into_iter()
+            docs
+                .into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
+                .collect()
         )
     }
 
@@ -106,20 +107,20 @@ impl SearchStats for MemIndex {
 impl MemIndex {
     pub fn new() -> Self {
         Self {
-            terms: ahash::HashMap::new(),
-            doc_lengths: ahash::HashMap::new(),
+            terms: AHashMap::new(),
+            doc_lengths: AHashMap::new(),
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
-            estimated_bytes:0,
+            estimated_bytes: 0,
         }
     }
     pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
         Self {
-            terms: ahash::HashMap::with_capacity(expected_terms),
-            doc_lengths: ahash::HashMap::with_capacity(expected_docs),
+            terms: AHashMap::with_capacity(expected_terms),
+            doc_lengths: AHashMap::with_capacity(expected_docs),
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
-            estimated_bytes:0,
+            estimated_bytes: 0,
         }
     }
 
@@ -133,7 +134,7 @@ impl MemIndex {
             terms,
             doc_lengths,
             field_stats,
-            self.numeric_points.build(),
+            self.numeric_points.build()
         )
     }
 
@@ -142,7 +143,7 @@ impl MemIndex {
         term: impl Into<String>,
         xpath: XPathId,
         doc_id: DocId,
-        position: u32,
+        position: u32
     ) {
         self.add_token_weighted(term, xpath, doc_id, position, 1);
     }
@@ -154,18 +155,15 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         position: u32,
-        weight: u16,
+        weight: u16
     ) {
-       
-
-       
         // one position added to a posting: doc_id + one u32 position, plus
         // per-entry posting overhead (weight, small header). Approximate —
         // this doesn't need to be exact, just proportional to real growth.
         self.estimated_bytes +=
             std::mem::size_of::<DocId>() + std::mem::size_of::<u32>() + std::mem::size_of::<u16>();
 
-       match self.terms.entry(TermKey::new(term, xpath)) {
+        match self.terms.entry(TermKey::new(term, xpath)) {
             std::collections::hash_map::Entry::Occupied(mut slot) => {
                 slot.get_mut().insert(doc_id, position, weight);
             }
@@ -176,30 +174,27 @@ impl MemIndex {
         }
     }
 
-    #[timed(indexing_documents)]
+   
     pub fn add_posting_weighted(
         &mut self,
         term: impl Into<String>,
         xpath: XPathId,
         doc_id: DocId,
         positions: Vec<u32>,
-        weight: u16,
+        weight: u16
     ) {
-        // let key = TermKey::new(term, xpath);
-        // if !self.terms.contains_key(&key) {
-        //     self.estimated_bytes += key.term.len() + std::mem::size_of::<TermKey>();
-        // }
-        self.estimated_bytes += std::mem::size_of::<DocId>()
-             + std::mem::size_of::<u16>()
-             + positions.len() * std::mem::size_of::<u32>();
+        self.estimated_bytes +=
+            std::mem::size_of::<DocId>() +
+            std::mem::size_of::<u16>() +
+            positions.len() * std::mem::size_of::<u32>();
+
         match self.terms.entry(TermKey::new(term, xpath)) {
             std::collections::hash_map::Entry::Occupied(mut slot) => {
                 slot.get_mut().insert_posting(doc_id, positions, weight);
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
-                slot.insert(PostingList::new())
-                    .insert_posting(doc_id, positions, weight);
+                slot.insert(PostingList::new()).insert_posting(doc_id, positions, weight);
             }
         }
     }
@@ -237,7 +232,7 @@ impl MemIndex {
         xpath: XPathId,
         text: &str,
         min_weight: u16,
-        max_weight: u16,
+        max_weight: u16
     ) {
         let tokens = analyzer.analyze(text);
 
@@ -272,7 +267,7 @@ impl MemIndex {
                     part.xpath,
                     &part.text,
                     part.weight.min,
-                    part.weight.max,
+                    part.weight.max
                 );
             } else {
                 self.add_document_weighted(
@@ -281,14 +276,13 @@ impl MemIndex {
                     part.xpath,
                     &part.text,
                     part.weight.min,
-                    part.weight.max,
+                    part.weight.max
                 );
             }
         }
 
         for point in &document.numeric_points {
-            self.numeric_points
-                .insert(point.xpath, point.value, document.doc_id);
+            self.numeric_points.insert(point.xpath, point.value, document.doc_id);
         }
     }
 
@@ -300,7 +294,7 @@ impl MemIndex {
         xpath: XPathId,
         text: &str,
         min_weight: u16,
-        max_weight: u16,
+        max_weight: u16
     ) {
         let words: Vec<&str> = text.split_whitespace().collect();
         let len = words.len().min(u32::MAX as usize) as u32;
@@ -311,10 +305,10 @@ impl MemIndex {
         stats.doc_count += 1;
         stats.total_doc_len += len as u64;
 
-        let mut grouped = ahash::HashMap::<String, Vec<u32>>::default();
+        let mut grouped = ahash::HashMap::<&str, Vec<u32>>::default();
         for (position, word) in words.iter().enumerate() {
             grouped
-                .entry((*word).to_string())
+                .entry(word)
                 .or_default()
                 .push(position as u32);
         }
@@ -360,16 +354,17 @@ impl MemIndex {
         PostingList::from_items(items)
     }
     //TEST
-     /// `newer` must hold later doc_ids (true on the single index worker).
-    /// Merges a newer generation into this one. `newer` must hold later
-    /// doc_ids, which holds on the single index worker.
+
     #[timed(indexing_documents)]
     pub fn merge_from(&mut self, newer: MemIndex) {
         for (key, list) in newer.terms {
-            if let Some(existing) = self.terms.get_mut(&key) {
-                existing.append(list);
-            } else {
-                self.terms.insert(key, list);
+            match self.terms.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    slot.get_mut().append(list);
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(list);
+                }
             }
         }
         self.doc_lengths.extend(newer.doc_lengths);

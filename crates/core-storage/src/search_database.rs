@@ -66,7 +66,7 @@ pub struct IndexPipeline<'a, S: DocumentStore> {
     current_batch: Vec<IndexedDocument>,
 
     //completed batches that are waiting to be indexed together
-    pending_batches: Vec<Vec<IndexedDocument>>,
+    // pending_batches: Vec<Vec<IndexedDocument>>,
 
     inserted: u32,
     failures: Vec<DocFailure>,
@@ -274,7 +274,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn begin_import(
         &mut self,
         batch_size: usize,
-        window_size: usize,
+        // window_size: usize,
     ) -> io::Result<IndexPipeline<'_, S>> {
         if batch_size == 0 {
             return Err(io::Error::new(
@@ -283,12 +283,12 @@ impl<S: DocumentStore> SearchDatabase<S> {
             ));
         }
 
-        if window_size == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "window_size must be greater than zero",
-            ));
-        }
+        // if window_size == 0 {
+        //     return Err(io::Error::new(
+        //         io::ErrorKind::InvalidInput,
+        //         "window_size must be greater than zero",
+        //     ));
+        // }
 
         Ok(IndexPipeline {
             db: self,
@@ -296,7 +296,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             //window_size,
             current_store_batch: Vec::with_capacity(batch_size),
             current_batch: Vec::with_capacity(batch_size),
-            pending_batches: Vec::with_capacity(window_size),
+            // pending_batches: Vec::with_capacity(window_size),
             inserted: 0,
             failures: Vec::new(),
             seen: HashSet::new(),
@@ -308,11 +308,11 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &mut self,
         inputs: Vec<DocumentInput>,
         batch_size: usize,
-        window_size: usize,
+        // window_size: usize,
     ) -> io::Result<InsertReport> {
         let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
         core_timing::add_bytes("inserting", "put_documents_parallel", file!(), total_bytes);
-        let mut pipeline = self.begin_import(batch_size, window_size)?;
+        let mut pipeline = self.begin_import(batch_size)?;
         pipeline.seen.reserve(inputs.len());
         for (input_index, input) in inputs.into_iter().enumerate() {
             pipeline.push(input, input_index)?;
