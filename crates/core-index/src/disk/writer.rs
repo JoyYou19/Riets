@@ -1,21 +1,12 @@
-use std::{
-    fs::File,
-    io::{self, BufWriter, Seek, Write},
-    path::Path,
-};
+use std::{ fs::File, io::{ self, BufWriter, Seek, Write }, path::Path };
 use std::io::SeekFrom;
 use core_timing::timed;
 
 use crate::{
     disk::{
-        codec::{push_var_u16, push_var_u32, push_var_u64},
-        format::{SegmentFooter, SegmentHeader},
-    },
-    numeric_values::NumericFields,
-    posting::PostingList,
-    segment::ImmutableSegment,
-    term_dict::{TermDict, TermMeta},
-    types::{DocId, TermKey, XPathId},
+        codec::{ push_var_u16, push_var_u32, push_var_u64 },
+        format::{ SegmentFooter, SegmentHeader },
+    }, numeric_values::NumericFields, posting::PostingList, segment::{self, ImmutableSegment}, term_dict::{ TermDict, TermMeta }, types::{ DocId, TermKey, XPathId },
 };
 
 /// Tracks the write position itself, so `stream_position()` never flushes
@@ -48,10 +39,13 @@ impl<W: Write> Seek for PositionWriter<W> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match pos {
             SeekFrom::Current(0) => Ok(self.pos),
-            _ => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "PositionWriter only reports its position",
-            )),
+            _ =>
+                Err(
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "PositionWriter only reports its position"
+                    )
+                ),
         }
     }
 
@@ -89,7 +83,9 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
     write_u64(out, footer.dictionary_len)?;
     write_u64(out, footer.numeric_fields_offset)?;
     write_u64(out, footer.numeric_fields_len)?;
-    write_u32(out, footer.term_count)
+    write_u32(out, footer.term_count);
+    write_u64(out, footer.min_doc_id)?;
+    write_u64(out, footer.max_doc_id)
 }
 
 fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io::Result<()> {
@@ -143,7 +139,7 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
 #[timed(writing_files)]
 pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::Result<()> {
     let file = File::create(path)?;
-     let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
+    let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
     write_segment_to(&mut out, segment)?;
     finish_file(out)
 }
@@ -151,7 +147,7 @@ pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::
 #[timed(writing_files)]
 pub fn write_segment_to<W: Write + Seek>(
     out: &mut W,
-    segment: &ImmutableSegment,
+    segment: &ImmutableSegment
 ) -> io::Result<()> {
     write_header(out)?;
 
@@ -174,7 +170,7 @@ pub fn write_segment_to<W: Write + Seek>(
     let numeric_fields_offset = out.stream_position()?;
     write_numeric_fields(out, segment.numeric_fields())?;
     let numeric_fields_end = out.stream_position()?;
-
+    let doc_id_range = segment.doc_range().unwrap_or((0, 0));
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
@@ -183,6 +179,8 @@ pub fn write_segment_to<W: Write + Seek>(
         numeric_fields_offset,
         numeric_fields_len: numeric_fields_end - numeric_fields_offset,
         term_count,
+        min_doc_id: doc_id_range.0,
+        max_doc_id: doc_id_range.1,
     };
 
     write_footer(out, &footer)?;
@@ -195,7 +193,7 @@ pub fn write_segment_to<W: Write + Seek>(
 #[timed(writing_files)]
 fn write_doc_lengths(
     out: &mut impl Write,
-    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>
 ) -> io::Result<()> {
     write_u32(out, doc_lengths.len() as u32)?;
 
@@ -236,12 +234,13 @@ pub fn write_merged_segment(
     path: impl AsRef<Path>,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
-    numeric_fields: &NumericFields,
+    numeric_fields: &NumericFields
+   
 ) -> io::Result<()> {
     let file = File::create(path)?;
-     let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
+    let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
     write_merged_segment_to(&mut out, terms, doc_lengths, numeric_fields)?;
-    
+
     finish_file(out)
 }
 
@@ -251,6 +250,7 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     terms: impl Iterator<Item = (TermKey, PostingList)>,
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
+    
 ) -> io::Result<()> {
     write_header(out)?;
 
@@ -275,6 +275,7 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     write_numeric_fields(out, numeric_fields)?;
     let numeric_fields_end = out.stream_position()?;
 
+    let doc_id_range = compute_doc_id_range(doc_lengths, numeric_fields).unwrap_or((0, 0));
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
@@ -283,6 +284,8 @@ pub fn write_merged_segment_to<W: Write + Seek>(
         numeric_fields_offset,
         numeric_fields_len: numeric_fields_end - numeric_fields_offset,
         term_count,
+        min_doc_id: doc_id_range.0,
+        max_doc_id: doc_id_range.1,
     };
 
     write_footer(out, &footer)
@@ -291,9 +294,36 @@ pub fn write_merged_segment_to<W: Write + Seek>(
 /// Flushes the buffer and fsyncs, so the file is on disk before the
 /// manifest (or a WAL reset) depends on it.
 fn finish_file(out: PositionWriter<BufWriter<File>>) -> io::Result<()> {
-    let file = out.into_inner().into_inner().map_err(|e| e.into_error())?;
+    let file = out
+        .into_inner()
+        .into_inner()
+        .map_err(|e| e.into_error())?;
     file.sync_all()
 }
+fn compute_doc_id_range(
+     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+     numeric_fields: &NumericFields,
+ ) -> Option<(DocId, DocId)> {
+     let mut range: Option<(DocId, DocId)> = None;
+
+     for &(doc_id, _) in doc_lengths.keys() {
+         range = Some(match range {
+             None => (doc_id, doc_id),
+             Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
+         });
+     }
+
+     for (_, field) in numeric_fields.iter() {
+         for &(_, doc_id) in field.bkd.points() {
+             range = Some(match range {
+                 None => (doc_id, doc_id),
+                 Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
+             });
+         }
+     }
+
+     range
+ }
 // Streams postings out while grouping terms into one FST per field.
 // Terms MUST arrive in ascending (xpath, term)
 struct FieldWriter<K> {
@@ -322,7 +352,7 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
         out: &mut W,
         xpath: XPathId,
         term: K,
-        postings: &PostingList,
+        postings: &PostingList
     ) -> io::Result<()> {
         if self.current != Some(xpath) {
             self.close_field()?;
@@ -353,8 +383,7 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
     // Builds the FST for the field we were accumulating, if any.
     fn close_field(&mut self) -> io::Result<()> {
         if let Some(xpath) = self.current.take() {
-            self.fields
-                .push((xpath, TermDict::build(self.entries.drain(..))?));
+            self.fields.push((xpath, TermDict::build(self.entries.drain(..))?));
         }
 
         Ok(())
@@ -364,4 +393,5 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
         self.close_field()?;
         Ok((self.fields, self.term_count))
     }
+    
 }

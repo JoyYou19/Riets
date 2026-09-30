@@ -18,6 +18,7 @@ pub struct ImmutableSegment {
     doc_lengths: BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
+    doc_id_range:Option<(DocId,DocId)>,
 }
 
 // Haha, if we want to search inside of this segment, it must implement, and we do
@@ -95,17 +96,23 @@ impl ImmutableSegment {
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
     ) -> Self {
+         let doc_id_range = Self::compute_doc_id_range(&doc_lengths, &numeric_fields);
         Self {
             terms,
             doc_lengths,
             field_stats,
             numeric_fields,
+            doc_id_range
         }
     }
 
     pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
     }
+     pub fn doc_range(&self) -> Option<(DocId, DocId)> {
+         self.doc_id_range
+     }
+     
 
     pub fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
@@ -168,4 +175,29 @@ impl ImmutableSegment {
     pub fn term_count(&self) -> usize {
         self.terms.len()
     }
+    fn compute_doc_id_range(
+     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
+     numeric_fields: &NumericFields,
+ ) -> Option<(DocId, DocId)> {
+     let mut range: Option<(DocId, DocId)> = None;
+
+     for (doc_id, _) in doc_lengths.keys() {
+         range = Some(match range {
+             None => (*doc_id, *doc_id),
+             Some((min, max)) => (min.min(*doc_id), max.max(*doc_id)),
+         });
+     }
+
+     // numeric-only docs don't appear in doc_lengths
+     for (_, field) in numeric_fields.iter() {
+         for &(_, doc_id) in field.bkd.points() {
+             range = Some(match range {
+                 None => (doc_id, doc_id),
+                 Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
+             });
+         }
+     }
+
+     range
+ }
 }

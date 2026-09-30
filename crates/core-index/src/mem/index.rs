@@ -19,6 +19,8 @@ pub struct MemIndex {
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_points: NumericPoints,
     estimated_bytes: usize,
+    min_doc_id: Option<DocId>,
+    max_doc_id: Option<DocId>,
 }
 
 impl Default for MemIndex {
@@ -29,6 +31,8 @@ impl Default for MemIndex {
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
             estimated_bytes: 0,
+            min_doc_id: None,
+            max_doc_id: None,
         }
     }
 }
@@ -112,6 +116,8 @@ impl MemIndex {
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
             estimated_bytes: 0,
+            min_doc_id: None,
+            max_doc_id: None,
         }
     }
     pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
@@ -121,6 +127,8 @@ impl MemIndex {
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
             estimated_bytes: 0,
+            min_doc_id: None,
+            max_doc_id: None,
         }
     }
 
@@ -136,6 +144,18 @@ impl MemIndex {
             field_stats,
             self.numeric_points.build()
         )
+    }
+    //tracks min and max doc id in this segment
+    fn track_doc_id(&mut self, doc_id: DocId) {
+        self.min_doc_id = Some(self.min_doc_id.map_or(doc_id, |m| m.min(doc_id)));
+        self.max_doc_id = Some(self.max_doc_id.map_or(doc_id, |m| m.max(doc_id)));
+    }
+
+    pub fn doc_id_range(&self) -> Option<(DocId, DocId)> {
+        match (self.min_doc_id, self.max_doc_id) {
+            (Some(min), Some(max)) => Some((min, max)),
+            _ => None,
+        }
     }
 
     pub fn add_token(
@@ -157,6 +177,7 @@ impl MemIndex {
         position: u32,
         weight: u16
     ) {
+        self.track_doc_id(doc_id);
         // one position added to a posting: doc_id + one u32 position, plus
         // per-entry posting overhead (weight, small header). Approximate —
         // this doesn't need to be exact, just proportional to real growth.
@@ -174,7 +195,6 @@ impl MemIndex {
         }
     }
 
-   
     pub fn add_posting_weighted(
         &mut self,
         term: impl Into<String>,
@@ -183,6 +203,7 @@ impl MemIndex {
         positions: Vec<u32>,
         weight: u16
     ) {
+        self.track_doc_id(doc_id);
         self.estimated_bytes +=
             std::mem::size_of::<DocId>() +
             std::mem::size_of::<u16>() +
@@ -212,6 +233,7 @@ impl MemIndex {
 
     #[timed(indexing_documents)]
     pub fn add_document(&mut self, analyzer: &Analyzer, doc_id: DocId, xpath: XPathId, text: &str) {
+        self.track_doc_id(doc_id);
         for token in analyzer.analyze(text) {
             self.add_token(token.text, xpath, doc_id, token.position);
         }
@@ -234,6 +256,7 @@ impl MemIndex {
         min_weight: u16,
         max_weight: u16
     ) {
+        self.track_doc_id(doc_id);
         let tokens = analyzer.analyze(text);
 
         let len = tokens.len().min(u32::MAX as usize) as u32;
@@ -260,6 +283,7 @@ impl MemIndex {
 
     #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
+        self.track_doc_id(document.doc_id);
         for part in &document.parts {
             if part.exact {
                 self.add_exact_weighted(
@@ -296,6 +320,7 @@ impl MemIndex {
         min_weight: u16,
         max_weight: u16
     ) {
+        self.track_doc_id(doc_id);
         let words: Vec<&str> = text.split_whitespace().collect();
         let len = words.len().min(u32::MAX as usize) as u32;
 
@@ -357,6 +382,9 @@ impl MemIndex {
 
     #[timed(indexing_documents)]
     pub fn merge_from(&mut self, newer: MemIndex) {
+        // Capture this before we start moving fields out of `newer`.
+        let newer_doc_range = newer.doc_id_range();
+
         for (key, list) in newer.terms {
             match self.terms.entry(key) {
                 std::collections::hash_map::Entry::Occupied(mut slot) => {
@@ -373,5 +401,10 @@ impl MemIndex {
         }
         self.numeric_points.merge(newer.numeric_points);
         self.estimated_bytes += newer.estimated_bytes;
+
+        if let Some((min, max)) = newer_doc_range {
+            self.track_doc_id(min);
+            self.track_doc_id(max);
+        }
     }
 }

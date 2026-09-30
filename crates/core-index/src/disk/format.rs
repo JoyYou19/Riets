@@ -36,11 +36,11 @@
 //!
 
 //                          ahahahahhahah
-pub const MAGIC: [u8; 8] = *b"BANANA_I";
-pub const VERSION: u32 = 9;
+pub const MAGIC: [u8; 8] = *b"BANANA_2";
+pub const VERSION: u32 = 10;
 
 pub const HEADER_LEN: usize = 8 + 4;
-pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4;
+pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4+8+8; //64 totals
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentHeader {
@@ -66,4 +66,6 @@ pub struct SegmentFooter {
     pub numeric_fields_offset: u64,
     pub numeric_fields_len: u64,
     pub term_count: u32,
+    pub min_doc_id: u64,   // new
+    pub max_doc_id: u64,   // new
 }

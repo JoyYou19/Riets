@@ -34,12 +34,17 @@ pub struct LsmIndex {
     delete_generation: u64,
     root: Option<PathBuf>,
     next_segment_id: u64,
+    next_doc_id: DocId,
     next_compaction_job_id: u64,
+    
 }
-const GENERATION_MERGE_RATIO: usize = 1000;
+// const GENERATION_MERGE_RATIO: usize = 1000;
 const STAGING_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 fn unwrap_mem(generation: Arc<MemIndex>) -> MemIndex {
     Arc::try_unwrap(generation).unwrap_or_else(|shared| (*shared).clone())
+}
+pub trait FlushCheckpoint: Send + Sync {
+       fn checkpoint(&self) -> io::Result<()>;
 }
 impl SearchIndex for LsmIndex {
     #[timed(search)]
@@ -122,6 +127,7 @@ impl LsmIndex {
             deleted: DeleteSet::new(),
             delete_generation: 0,
             root: None,
+            next_doc_id: 0,
             next_segment_id: 0,
             next_compaction_job_id: 0,
         }
@@ -133,15 +139,18 @@ impl LsmIndex {
         std::fs::create_dir_all(&root)?;
 
         let segment_paths = manifest::read_manifest(&root)?;
-
+        let mut next_doc_id = 0;
         let mut segment_handles = Vec::new();
         let mut query_segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::new();
         let mut next_segment_id = 0;
+
         let deleted = crate::lsm::deletes::read_deletes(&root)?;
         // let mut deleted_generation=
         for path in segment_paths {
             let disk = DiskSegment::open(&path)?;
-
+            if let Some((_, max)) = disk.doc_range() {
+                next_doc_id = next_doc_id.max(max + 1);
+            }
             if
                 let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) &&
                 let Some(id) = stem
@@ -168,6 +177,7 @@ impl LsmIndex {
             delete_generation: 0, //incorrect
             root: Some(root),
             next_segment_id,
+            next_doc_id,
             next_compaction_job_id: 0,
         })
     }
@@ -235,13 +245,13 @@ impl LsmIndex {
     }
 
     fn build_snapshot(&self, mem: Arc<MemIndex>) -> IndexSnapshot {
-        let segments: Vec<Arc<dyn SearchReader + Send + Sync>> = self.generations
+        let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> = self.generations
             .iter()
             .filter_map(|g| {
                 g.as_ref().map(|g| Arc::clone(g) as Arc<dyn SearchReader + Send + Sync>)
             })
             .collect();
-        // segments.extend(self.query_segments.iter().cloned());
+        segments.extend(self.query_segments.iter().cloned());
         IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
     }
 
@@ -358,41 +368,54 @@ impl LsmIndex {
     // so we can query, share, serialize, compact the data
     #[timed(flushing)]
     pub fn flush(&mut self) -> io::Result<()> {
-    self.seal();
+        self.seal();
 
-    // Merge all tiers into one before flushing
-    let mut merged_mem = MemIndex::default();
-    for tier in 0..self.generations.len() {
-        if let Some(generation) = self.generations.get_mut(tier).and_then(|g| g.take()) {
-            let generation = unwrap_mem(generation);
-            merged_mem.merge_from(generation);
+        let mut merged_mem = MemIndex::default();
+        for tier in 0..self.generations.len() {
+            if let Some(generation) = self.generations.get_mut(tier).and_then(|g| g.take()) {
+                let generation = unwrap_mem(generation);
+                merged_mem.merge_from(generation);
+            }
         }
+
+        // A segment can be numeric-only (0 terms but doc ids exist).
+        if merged_mem.term_count() > 0 || merged_mem.doc_id_range().is_some() {
+            let (min_doc_id, max_doc_id) = merged_mem
+                .doc_id_range()
+                .ok_or_else(||
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "flushed segment has no document ids"
+                    )
+                )?;
+
+            // Cursor only: IDs were assigned externally, never renumber them.
+            self.next_doc_id = max_doc_id.saturating_add(1);
+
+            let segment = Arc::new(merged_mem.freeze());
+
+            let reader: Arc<dyn SearchReader + Send + Sync> = match &self.root {
+                Some(root) => {
+                    let path = root.join(format!("segment-{}.idx", self.next_segment_id));
+                    self.next_segment_id += 1;
+
+                    write_segment(&path, &segment)?;
+                    let disk = DiskSegment::open(&path)?;
+                    manifest::append_segment(root, &path)?;
+                    self.segment_handles.push(SegmentHandle::Disk(path.clone()));
+                    Arc::new(disk)
+                }
+                None => {
+                    self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
+                    segment as Arc<dyn SearchReader + Send + Sync>
+                }
+            };
+
+            Arc::make_mut(&mut self.query_segments).push(reader);
+        }
+      
+        Ok(())
     }
-
-    if merged_mem.term_count() > 0 {
-        self.generation_bytes = self.generation_bytes.saturating_sub(merged_mem.estimated_size_bytes());
-        let segment = Arc::new(merged_mem.freeze());
-
-        let reader: Arc<dyn SearchReader + Send + Sync> = match &self.root {
-            Some(root) => {
-                let path = root.join(format!("segment-{}.idx", self.next_segment_id));
-                self.next_segment_id += 1;
-                write_segment(&path, &segment)?;
-                let disk = DiskSegment::open(&path)?;
-                manifest::append_segment(root, &path)?;
-                self.segment_handles.push(SegmentHandle::Disk(path));
-                Arc::new(disk)
-            }
-            None => {
-                self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
-                segment as Arc<dyn SearchReader + Send + Sync>
-            }
-        };
-        Arc::make_mut(&mut self.query_segments).push(reader);
-    }
-    Ok(())
-}
-
     // pub fn snapshot(&self) -> IndexSnapshot {
     //     IndexSnapshot::new(
     //         self.mem.clone(),

@@ -31,6 +31,7 @@ pub struct DiskSegment {
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
+    doc_id_range:Option<(DocId,DocId)>
 }
 
 impl SearchStats for DiskSegment {
@@ -93,18 +94,27 @@ impl DiskSegment {
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
         let numeric_fields = read_numeric_fields(&mmap, &footer)?;
+         let doc_id_range = if footer.term_count == 0 {
+             None
+         } else {
+             Some((footer.min_doc_id, footer.max_doc_id))
+         };
         Ok(Self {
             mmap,
             dictionary,
             doc_lengths,
             field_stats,
             numeric_fields,
+            doc_id_range
         })
     }
 
     pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
     }
+    pub fn doc_range(&self) -> Option<(DocId, DocId)> {
+         self.doc_id_range
+     }
 
     pub fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
@@ -403,6 +413,8 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
         numeric_fields_offset: read_u64_at(bytes, start + 32),
         numeric_fields_len: read_u64_at(bytes, start + 40),
         term_count: read_u32_at(bytes, start + 48),
+        min_doc_id: read_u64_at(bytes,start+52),
+        max_doc_id: read_u64_at(bytes,start+60)
     })
 }
 
