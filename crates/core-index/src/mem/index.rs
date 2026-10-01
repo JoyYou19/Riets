@@ -24,7 +24,7 @@ pub struct MemIndex {
     min_doc_id: Option<DocId>,
     max_doc_id: Option<DocId>,
     array_row_index: ArrayRowIndex,
-    estimated_bytes: usize,
+    
 }
 
 impl Default for MemIndex {
@@ -38,7 +38,7 @@ impl Default for MemIndex {
             min_doc_id: None,
             max_doc_id: None,
             array_row_index: ArrayRowIndex::default(),
-            estimated_bytes: 0,
+            
         }
     }
 }
@@ -142,7 +142,7 @@ impl MemIndex {
             min_doc_id: None,
             max_doc_id: None,
             array_row_index: ArrayRowIndex::default(),
-            estimated_bytes: 0,
+           
         }
     }
     pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
@@ -155,7 +155,7 @@ impl MemIndex {
             min_doc_id: None,
             max_doc_id: None,
             array_row_index: ArrayRowIndex::default(),
-            estimated_bytes: 0,
+            
         }
     }
 

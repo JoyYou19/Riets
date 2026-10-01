@@ -4,26 +4,12 @@ use ahash::HashSet;
 use core_timing::timed;
 
 use crate::{
-    analyzer::analyzer::Analyzer,
-    disk::{ reader::DiskSegment, writer::write_segment },
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
-    lsm::{
+    analyzer::analyzer::Analyzer, disk::{ reader::DiskSegment, writer::write_segment }, fuzzy::{ FuzzyExpansion, FuzzyOptions }, lsm::{
         IndexSnapshot,
         compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
         manifest,
-    },
-    mem::MemIndex,
-    numeric_values::{ NumericBound, NumericValue },
-    posting::{ DeleteSet, PostingList },
-    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats },
-    segment::{ ImmutableSegment, SegmentHandle },
-    types::{ DocId, XPathId },
-    numeric_values::{NumericBound, NumericValue},
-    posting::{DeleteSet, PostingList},
-    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
-    segment::{ImmutableSegment, SegmentHandle},
-    types::{ArrayRowId, DocId, XPathId},
-    wildcard::WildcardPattern,
+    }, mem::MemIndex, numeric_values::{ NumericBound, NumericValue }, posting::{ DeleteSet, PostingList }, search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats }, segment::{ ImmutableSegment, SegmentHandle }, types::{ ArrayRowId, DocId, XPathId }, wildcard::WildcardPattern,
+    
 };
 
 // Live index of data, this will be flushed in other words put into a persistent
@@ -42,6 +28,7 @@ pub struct LsmIndex {
     next_segment_id: u64,
     next_doc_id: DocId,
     next_compaction_job_id: u64,
+    max_array_row:ArrayRowId
 }
 // const GENERATION_MERGE_RATIO: usize = 1000;
 const STAGING_LIMIT_BYTES: usize = 64 * 1024 * 1024;
@@ -172,10 +159,7 @@ impl LsmIndex {
             if let Some((_, max)) = disk.doc_range() {
                 next_doc_id = next_doc_id.max(max + 1);
             }
-            if
-                let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) &&
-                let Some(id) = stem
-
+           
             max_array_row = max_array_row.max(disk.array_row_index().max_array_row().unwrap_or(0));
 
             if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())

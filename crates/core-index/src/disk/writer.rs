@@ -1,13 +1,9 @@
 use std::{ fs::File, io::{ self, BufWriter, Seek, Write }, path::Path };
 use std::io::SeekFrom;
 use core_timing::timed;
-use core_timing::timed;
-use std::io::SeekFrom;
-use std::{
-    fs::File,
-    io::{self, BufWriter, Seek, Write},
-    path::Path,
-};
+
+
+
 
 use crate::array_rows::ArrayRowIndex;
 use crate::{
@@ -97,12 +93,11 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
     write_u64(out, footer.dictionary_len)?;
     write_u64(out, footer.numeric_fields_offset)?;
     write_u64(out, footer.numeric_fields_len)?;
-    write_u32(out, footer.term_count);
+    write_u32(out, footer.term_count)?;
     write_u64(out, footer.min_doc_id)?;
-    write_u64(out, footer.max_doc_id)
+    write_u64(out, footer.max_doc_id)?;
     write_u64(out, footer.array_row_index_offset)?;
-    write_u64(out, footer.array_row_index_len)?;
-    write_u32(out, footer.term_count)
+    write_u64(out, footer.array_row_index_len)
 }
 
 fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io::Result<()> {

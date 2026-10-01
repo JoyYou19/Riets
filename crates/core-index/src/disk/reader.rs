@@ -7,20 +7,10 @@ use core_timing::timed;
 use memmap2::Mmap;
 
 use crate::{
-    array_rows::{ArrayRowIndex, NO_PARENT_ROW},
-    bkd::Bkd,
-    disk::{
+    array_rows::{ArrayRowIndex, NO_PARENT_ROW}, bkd::Bkd, disk::{
         codec::{ read_var_u16, read_var_u32, read_var_u64 },
         format::{ FOOTER_LEN, MAGIC, SegmentFooter, VERSION },
-    },
-    document_values::DocValues,
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
-    numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue },
-    posting::{ Posting, PostingList },
-    search::{ SearchIndex, SearchNumeric, SearchStats, TermPostings },
-    term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta },
-    types::{ DocId, FieldStats, TermKey, XPathId },
-    segment::{ build_field_stats, compute_doc_id_range },
+    }, document_values::DocValues, fuzzy::{ FuzzyExpansion, FuzzyOptions }, numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue }, posting::{ Posting, PostingList }, search::{ SearchIndex, SearchNumeric, SearchStats, TermPostings }, segment::{ build_field_stats, compute_doc_id_range }, term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta }, types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId },
 };
 
 // Read only disk segment.
@@ -440,9 +430,9 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
         term_count: read_u32_at(bytes, start + 48),
         min_doc_id: read_u64_at(bytes, start + 52),
         max_doc_id: read_u64_at(bytes, start + 60),
-        array_row_index_offset: read_u64_at(bytes, start + 48),
-        array_row_index_len: read_u64_at(bytes, start + 56),
-        term_count: read_u32_at(bytes, start + 64),
+        array_row_index_offset: read_u64_at(bytes, start + 68),
+        array_row_index_len: read_u64_at(bytes, start + 76),
+        
     })
 }
 
@@ -456,7 +446,7 @@ fn read_doc_lengths(
         .checked_add(len)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "doc lengths offset overflow"))?;
 
-    if end > bytes.len() {
+    if end > bytes.len()-FOOTER_LEN {
         return Err(
             io::Error::new(io::ErrorKind::InvalidData, "doc lengths outside segment bounds")
         );
@@ -520,7 +510,7 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
         return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary offset overflow"));
     };
 
-    if end > bytes.len() {
+    if end > bytes.len() -FOOTER_LEN {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary outside segment bounds"));
     }
 
@@ -588,7 +578,7 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
         return Err(io::Error::new(io::ErrorKind::InvalidData, "numeric fields offset overflow"));
     };
 
-    if end > bytes.len() {
+    if end > bytes.len() -FOOTER_LEN {
         return Err(
             io::Error::new(io::ErrorKind::InvalidData, "numeric fields outside segment bounds")
         );

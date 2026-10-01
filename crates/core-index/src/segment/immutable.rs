@@ -4,17 +4,8 @@ use ahash::HashSet;
 use core_timing::timed;
 
 use crate::{
-    array_rows::ArrayRowIndex,
-    numeric_values::{NumericBound, NumericFields, NumericValue},
-     posting::{Posting, PostingList},
-     search::{SearchIndex, SearchNumeric, SearchStats},
-     segment::{build_field_stats, compute_doc_id_range},
-     types::{DocId, FieldStats, TermKey, XPathId},
-     wildcard::WildcardPattern,
-    posting::{Posting, PostingList},
-    search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
-    wildcard::WildcardPattern,
+    array_rows::ArrayRowIndex, numeric_values::{NumericBound, NumericFields, NumericValue}, posting::{Posting, PostingList}, search::{SearchIndex, SearchNumeric, SearchStats}, segment::{build_field_stats, compute_doc_id_range}, types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId}, wildcard::WildcardPattern,
+   
 };
 
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
@@ -134,7 +125,7 @@ impl ImmutableSegment {
             doc_lengths,
             field_stats,
             numeric_fields,
-            doc_id_range
+            doc_id_range,
             array_row_index,
         }
     }
