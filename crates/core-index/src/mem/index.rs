@@ -276,7 +276,7 @@ impl MemIndex {
         xpath: XPathId,
         text: &str,
         min_weight: u16,
-        max_weight: u16
+       _max_weight: u16
     ) {
         let mut grouped: AHashMap<String, Vec<u32>> = AHashMap::new();
         let len = analyzer.for_each_token(text, |term, position| {
@@ -304,9 +304,9 @@ impl MemIndex {
 
        
         for (term, positions) in grouped {
-            let occurrences = positions.len().min(u16::MAX as usize) as u16;
-            let weight = min_weight.saturating_add(occurrences).min(max_weight);
-
+            // let occurrences = positions.len().min(u16::MAX as usize) as u16;
+            // let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            let weight = min_weight;
             self.add_posting_weighted(term, xpath, doc_id, positions, weight);
         }
     }
@@ -398,8 +398,9 @@ impl MemIndex {
         }
 
         for (term, positions) in grouped {
-            let occurrences = positions.len().min(u16::MAX as usize) as u16;
-            let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            // let occurrences = positions.len().min(u16::MAX as usize) as u16;
+            // let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            let weight = min_weight;
             self.add_posting_weighted(term, xpath, doc_id, positions, weight);
         }
     }

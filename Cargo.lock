@@ -624,6 +624,7 @@ dependencies = [
  "parking_lot",
  "rand 0.10.2",
  "rayon",
+ "rust-stemmers",
  "serde",
  "slog",
  "smallvec",

@@ -367,7 +367,7 @@ impl LsmIndex {
     // Converts a mutable indexing state into a readonly segment
     // so we can query, share, serialize, compact the data
     #[timed(flushing)]
-    #[timed(flushing)]
+   
     pub fn flush(&mut self) -> io::Result<()> {
         self.seal();
         if self.generations.is_empty() {
@@ -491,7 +491,7 @@ impl LsmIndex {
     }
 
     #[timed(compaction)]
-    #[timed(compaction)]
+  
     pub fn plan_compaction(
         &mut self,
         config: CompactionConfig

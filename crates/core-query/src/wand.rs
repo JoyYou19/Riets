@@ -17,6 +17,131 @@ use crate::scorer::{bm25_score_scaled, bm25_upper_bound};
 //
 // The upper bound is what allows WAND to prove that some documents simply wont be looked at cause
 // they are simply too shit
+//teoretical CLAUDE test
+/// Postings for every query term within one field.
+pub struct FieldTerms {
+    pub xpath: XPathId,
+    pub terms: Vec<TermPostings>,
+}
+
+struct MultiFieldTerm<'a> {
+    cursor: PostingCursor<'a>,
+    field: usize,
+    doc_freq: u32,
+    upper_bound: u64,
+}
+
+/// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
+/// Each pair is an independent WAND cursor scored with its own field's statistics.
+#[timed(search)]
+pub fn wand_top_k_multi_field<S: SearchStats>(
+    stats: &S,
+    fields: &[FieldTerms],
+    k: usize,
+    restrict: Option<&HashSet<DocId>>,
+) -> Vec<WandHit> {
+    if k == 0 || fields.is_empty() {
+        return Vec::new();
+    }
+
+    let field_stats: Vec<_> = fields
+        .iter()
+        .map(|field| (field.xpath, stats.doc_count(field.xpath), stats.avg_doc_len(field.xpath)))
+        .collect();
+
+    let mut terms: Vec<MultiFieldTerm<'_>> = Vec::new();
+    for (field_index, field) in fields.iter().enumerate() {
+        let doc_count = field_stats[field_index].1;
+        for term in &field.terms {
+            let cursor = PostingCursor::new(&term.postings);
+            if cursor.is_exhausted() {
+                continue;
+            }
+            terms.push(MultiFieldTerm {
+                cursor,
+                field: field_index,
+                doc_freq: term.doc_freq,
+                upper_bound: bm25_upper_bound(term.max_weight, doc_count, term.doc_freq),
+            });
+        }
+    }
+
+    let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
+    let mut doc_len_cache: Vec<Option<u32>> = vec![None; fields.len()];
+
+    loop {
+        terms.retain(|term| !term.cursor.is_exhausted());
+        if terms.is_empty() {
+            break;
+        }
+        terms.sort_unstable_by_key(|term| term.cursor.doc_id().unwrap());
+
+        let threshold = if heap.len() < k {
+            0
+        } else {
+            heap.peek().map(|hit| hit.score).unwrap_or(0)
+        };
+
+        let mut accumulated_upper_bound = 0u64;
+        let mut pivot_index = None;
+        for (index, term) in terms.iter().enumerate() {
+            accumulated_upper_bound = accumulated_upper_bound.saturating_add(term.upper_bound);
+            if accumulated_upper_bound >= threshold && accumulated_upper_bound > 0 {
+                pivot_index = Some(index);
+                break;
+            }
+        }
+        let Some(pivot_index) = pivot_index else {
+            break;
+        };
+
+        let pivot_doc = terms[pivot_index].cursor.doc_id().unwrap();
+        let smallest_doc = terms[0].cursor.doc_id().unwrap();
+
+        if smallest_doc == pivot_doc {
+            if restrict.is_none_or(|docs| docs.contains(&pivot_doc)) {
+                doc_len_cache.fill(None);
+                let mut score = 0u64;
+                let mut matched_terms = 0usize;
+
+                for term in &terms {
+                    if term.cursor.doc_id() != Some(pivot_doc) {
+                        continue;
+                    }
+                    let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
+                    let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
+                        stats.doc_len(pivot_doc, xpath).unwrap_or(avg_doc_len as u32)
+                    });
+                    let posting = term.cursor.current().unwrap();
+
+                    score = score.saturating_add(bm25_score_scaled(
+                        posting.positions.len() as u32,
+                        posting.weight,
+                        doc_len,
+                        avg_doc_len,
+                        doc_count,
+                        term.doc_freq,
+                    ));
+                    matched_terms += 1;
+                }
+
+                push_top_k(&mut heap, pivot_doc, score, matched_terms, k);
+            }
+
+            for term in &mut terms {
+                if term.cursor.doc_id() == Some(pivot_doc) {
+                    term.cursor.next();
+                }
+            }
+        } else {
+            for term in &mut terms[..pivot_index] {
+                term.cursor.advance_to(pivot_doc);
+            }
+        }
+    }
+
+    finish_heap(heap)
+}
 pub struct WandTerm<'a> {
     pub cursor: PostingCursor<'a>,
     pub doc_freq: u32,

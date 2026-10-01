@@ -1,30 +1,19 @@
 use core_index::{
     analyzer::analyzer::Analyzer,
-    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
-    posting::{
-        Posting, PostingList,
-        ops::{intersect_ids, intersection, restrict_to, union},
-    },
-    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
-    types::{DocId, XPathId},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec },
+    posting::{ Posting, PostingList, ops::{ intersect_ids, intersection, restrict_to, union } },
+    search::{ SearchIndex, SearchNumeric, SearchStats, TermPostings },
+    types::{ DocId, XPathId },
 };
-use std::{
-    cmp::Ordering,
-    collections::{BinaryHeap, HashMap, hash_map::Entry},
-    u32,
-};
+use std::{ cmp::Ordering, collections::{ BinaryHeap, HashMap, hash_map::Entry }, u32 };
 
-use ahash::{HashSet, HashSetExt};
+use ahash::{ HashSet, HashSetExt };
 
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit,
-    ast::Query,
-    resolver::MatchOp,
-    scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
-    wand::{WandHit, conjunctive_top_k, wand_top_k},
+    ScoredPosting, SearchHit, TopHit, ast::Query, resolver::MatchOp, scorer::{ fuzzy_decay, score_term_hybrid, score_term_into }, wand::{ FieldTerms, WandHit, conjunctive_top_k, wand_top_k, wand_top_k_multi_field },
 };
 
 #[derive(Debug, Clone)]
@@ -60,10 +49,7 @@ pub struct FieldFilter {
 }
 
 // Turns the AST into a PostingList or SearchHit
-pub struct QueryExecutor<'a, I>
-where
-    I: SearchIndex + SearchStats,
-{
+pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
     // Which index are we searching?
     index: &'a I,
 
@@ -73,10 +59,7 @@ where
     array_groups: Vec<Vec<XPathId>>,
 }
 
-impl<'a, I> QueryExecutor<'a, I>
-where
-    I: SearchIndex + SearchStats + SearchNumeric,
-{
+impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNumeric {
     pub fn new(index: &'a I, analyzer: &'a Analyzer, array_groups: Vec<Vec<XPathId>>) -> Self {
         Self {
             index,
@@ -98,7 +81,7 @@ where
         query: &Query,
         xpath: XPathId,
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&HashSet<DocId>>
     ) -> Option<Vec<WandHit>> {
         match query {
             Query::Term(term) => {
@@ -111,9 +94,11 @@ where
             Query::Search(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
                 let terms: Vec<&str> = parts
                     .iter()
-                    .filter_map(|part| match part {
-                        Query::Term(term) => Some(term.as_str()),
-                        _ => None,
+                    .filter_map(|part| {
+                        match part {
+                            Query::Term(term) => Some(term.as_str()),
+                            _ => None,
+                        }
                     })
                     .collect();
 
@@ -125,23 +110,27 @@ where
             Query::Or(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
                 let terms: Vec<&str> = parts
                     .iter()
-                    .filter_map(|part| match part {
-                        Query::Term(term) => Some(term.as_str()),
-                        _ => None,
+                    .filter_map(|part| {
+                        match part {
+                            Query::Term(term) => Some(term.as_str()),
+                            _ => None,
+                        }
                     })
                     .collect();
 
                 let postings = self.fetch_term_postings(&terms, xpath);
 
-                Some(conjunctive_top_k(self.index, xpath, &postings, k, restrict))
+                Some(wand_top_k(self.index, xpath, &postings, k, restrict))
             }
 
             Query::And(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => {
                 let terms: Vec<&str> = parts
                     .iter()
-                    .filter_map(|part| match part {
-                        Query::Term(term) => Some(term.as_str()),
-                        _ => None,
+                    .filter_map(|part| {
+                        match part {
+                            Query::Term(term) => Some(term.as_str()),
+                            _ => None,
+                        }
                     })
                     .collect();
 
@@ -173,6 +162,7 @@ where
             }
         }
     }
+    
 
     #[timed(search)]
     pub fn execute(&self, query: &Query, xpath: XPathId) -> PostingList {
@@ -322,7 +312,7 @@ where
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec,
+        spec: FuzzySpec
     ) -> PostingList {
         //"butman and robin" -> [butman, robin]
         let words = self.fuzzy_words(raw);
@@ -333,10 +323,7 @@ where
 
         let lists: Vec<PostingList> = words
             .iter()
-            .map(|w| {
-                self.index
-                    .lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec))
-            })
+            .map(|w| { self.index.lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec)) })
             .collect();
 
         let mut iter = lists.into_iter();
@@ -450,7 +437,7 @@ where
         query: &Query,
         xpath: XPathId,
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&HashSet<DocId>>
     ) -> Vec<SearchHit> {
         if k == 0 || restrict.is_some_and(|docs| docs.is_empty()) {
             return Vec::new();
@@ -480,22 +467,24 @@ where
 
     fn raw_ids(&self, filter: &FieldFilter) -> HashSet<DocId> {
         match &filter.kind {
-            MatchOp::Query(q) => match q {
-                Some(q) => self
-                    .execute(q, filter.xpath)
+            MatchOp::Query(q) =>
+                match q {
+                    Some(q) =>
+                        self
+                            .execute(q, filter.xpath)
+                            .items()
+                            .iter()
+                            .map(|p| p.doc_id)
+                            .collect(),
+                    None => HashSet::new(),
+                }
+            MatchOp::Range { lo, hi } =>
+                self.index
+                    .numeric_range(filter.xpath, *lo, *hi)
                     .items()
                     .iter()
                     .map(|p| p.doc_id)
                     .collect(),
-                None => HashSet::new(),
-            },
-            MatchOp::Range { lo, hi } => self
-                .index
-                .numeric_range(filter.xpath, *lo, *hi)
-                .items()
-                .iter()
-                .map(|p| p.doc_id)
-                .collect(),
             MatchOp::SameElement { .. } => HashSet::new(),
         }
     }
@@ -503,14 +492,19 @@ where
     fn score_array_groups(&self, query: &Query) -> Vec<SearchHit> {
         let terms: Vec<&str> = match query {
             Query::Term(t) => vec![t.as_str()],
-            Query::And(parts) | Query::Search(parts) => parts
-                .iter()
-                .filter_map(|p| match p {
-                    Query::Term(t) => Some(t.as_str()),
-                    _ => None,
-                })
-                .collect(),
-            _ => return Vec::new(),
+            Query::And(parts) | Query::Search(parts) =>
+                parts
+                    .iter()
+                    .filter_map(|p| {
+                        match p {
+                            Query::Term(t) => Some(t.as_str()),
+                            _ => None,
+                        }
+                    })
+                    .collect(),
+            _ => {
+                return Vec::new();
+            }
         };
         if terms.is_empty() {
             return Vec::new();
@@ -550,7 +544,9 @@ where
                 }
                 if let Some(doc) = self.index.doc_of_row(row) {
                     best.entry(doc)
-                        .and_modify(|e| *e = (*e).max(score))
+                        .and_modify(|e| {
+                            *e = (*e).max(score);
+                        })
                         .or_insert(score);
                 }
             }
@@ -561,7 +557,7 @@ where
                     matched_terms: terms.len(),
                     weight_sum: (score / 1000).min(u32::MAX as u64) as u32,
                     distance_factor: 1.0,
-                    score: score as f32 / 1000.0,
+                    score: (score as f32) / 1000.0,
                 });
             }
         }
@@ -631,14 +627,14 @@ where
         }
         restrict
     }
-
+    
     #[timed(search)]
     pub fn search_all_xpaths_top_k_restricted(
         &self,
         query: Option<&Query>,
         xpaths: impl IntoIterator<Item = XPathId>,
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&HashSet<DocId>>
     ) -> Vec<SearchHit> {
         if k == 0 || restrict.is_some_and(|docs| docs.is_empty()) {
             return Vec::new();
@@ -647,13 +643,16 @@ where
         let Some(query) = query else {
             return match restrict {
                 Some(allowed) => {
-                    let hits = allowed.iter().copied().map(|doc_id| SearchHit {
-                        doc_id,
-                        matched_terms: 0,
-                        weight_sum: 0,
-                        distance_factor: 1.0,
-                        score: 0.0,
-                    });
+                    let hits = allowed
+                        .iter()
+                        .copied()
+                        .map(|doc_id| SearchHit {
+                            doc_id,
+                            matched_terms: 0,
+                            weight_sum: 0,
+                            distance_factor: 1.0,
+                            score: 0.0,
+                        });
                     top_k_from_hits(hits, k)
                 }
                 None => Vec::new(),
@@ -674,8 +673,20 @@ where
                 .or_insert(hit);
         }
 
-        for xpath in xpaths {
-            for hit in self.search_top_k_restricted(query, xpath, k, restrict) {
+        let xpaths: Vec<XPathId> = xpaths.into_iter().collect();
+
+        if let Some(terms) = additive_terms(query) {
+            let fields: Vec<FieldTerms> = xpaths
+                .iter()
+                .map(|&xpath| FieldTerms {
+                    xpath,
+                    terms: self.fetch_term_postings(&terms, xpath),
+                })
+                .collect();
+
+            for hit in wand_top_k_multi_field(self.index, &fields, k, restrict)
+                .into_iter()
+                .map(wand_hit_to_search_hit) {
                 by_doc
                     .entry(hit.doc_id)
                     .and_modify(|e| {
@@ -685,6 +696,20 @@ where
                         e.score += hit.score;
                     })
                     .or_insert(hit);
+            }
+        } else {
+            for xpath in xpaths {
+                for hit in self.search_top_k_restricted(query, xpath, k, restrict) {
+                    by_doc
+                        .entry(hit.doc_id)
+                        .and_modify(|e| {
+                            e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                            e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
+                            e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                            e.score += hit.score;
+                        })
+                        .or_insert(hit);
+                }
             }
         }
 
@@ -752,8 +777,9 @@ where
 
                         existing.score = existing.score.saturating_add(hit.score);
 
-                        existing.matched_terms =
-                            existing.matched_terms.saturating_add(hit.matched_terms);
+                        existing.matched_terms = existing.matched_terms.saturating_add(
+                            hit.matched_terms
+                        );
                     }
                 }
             }
@@ -768,7 +794,7 @@ where
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec,
+        spec: FuzzySpec
     ) -> Vec<ScoredPosting> {
         //"butman and robin" -> "butman" "robin"
         let words = self.fuzzy_words(raw);
@@ -816,7 +842,7 @@ where
                     xpath,
                     true_df,
                     &mut doc_len,
-                    &mut scored_buf,
+                    &mut scored_buf
                 );
 
                 let decay = fuzzy_decay(expansion.edits);
@@ -900,8 +926,7 @@ where
 
         fetched.sort_by_key(|f| f.postings.len());
 
-        let mut candidates: Vec<DocId> = fetched[0]
-            .postings
+        let mut candidates: Vec<DocId> = fetched[0].postings
             .items()
             .iter()
             .map(|posting| posting.doc_id)
@@ -941,8 +966,9 @@ where
 
                         existing.score = existing.score.saturating_add(hit.score);
 
-                        existing.matched_terms =
-                            existing.matched_terms.saturating_add(hit.matched_terms);
+                        existing.matched_terms = existing.matched_terms.saturating_add(
+                            hit.matched_terms
+                        );
                     }
                 }
             }
@@ -989,7 +1015,10 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
         }
     }
 
-    let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+    let mut hits: Vec<SearchHit> = heap
+        .into_iter()
+        .map(|hit| hit.0)
+        .collect();
 
     hits.sort_by(|a, b| {
         b.score
@@ -1030,7 +1059,13 @@ pub fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize)
 //fuzzable words for did_you_mean
 pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
     raw.split_whitespace()
-        .filter_map(|w| analyzer.analyze_query(w).into_iter().next().map(|t| t.text))
+        .filter_map(|w|
+            analyzer
+                .analyze_query(w)
+                .into_iter()
+                .next()
+                .map(|t| t.text)
+        )
         .collect()
 }
 
@@ -1040,9 +1075,30 @@ fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
         matched_terms: hit.matched_terms,
         weight_sum: (hit.score / 1000).min(u32::MAX as u64) as u32,
         distance_factor: 1.0,
-        score: hit.score as f32 / 1000.0,
+        score: (hit.score as f32) / 1000.0,
     }
 }
+fn additive_terms(query: &Query) -> Option<Vec<&str>> {
+        match query {
+            Query::Term(term) => Some(vec![term.as_str()]),
+            Query::Search(parts) | Query::Or(parts) if
+                parts.iter().all(|part| matches!(part, Query::Term(_)))
+            => {
+                Some(
+                    parts
+                        .iter()
+                        .filter_map(|part| {
+                            match part {
+                                Query::Term(term) => Some(term.as_str()),
+                                _ => None,
+                            }
+                        })
+                        .collect()
+                )
+            }
+            _ => None,
+        }
+    }
 
 /*
 #[cfg(test)]
