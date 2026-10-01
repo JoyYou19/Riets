@@ -12,7 +12,7 @@ use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
 use core_index::search::{SearchIndex, SearchNumeric};
 use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse};
-use core_query::executor::FieldFilter;
+use core_query::resolver::{FieldCtx, FieldQuery};
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
 use core_storage::document_projections::{id_path_to_strip, project_document};
 use core_storage::document_store::StoredDocument;
@@ -245,10 +245,11 @@ impl ShardHandle {
         &self,
         snapshot: &IndexSnapshot,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, FieldFilter>>,
-        xpaths: &[XPathId],
+        filters: Option<&HashMap<String, FieldQuery>>,
+        ctxs: &[FieldCtx],
         k: usize,
-        groups: Vec<Vec<XPathId>>,
+        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
+        include_array_groups: bool,
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
@@ -256,44 +257,56 @@ impl ShardHandle {
 
         let executor = QueryExecutor::new(snapshot, &self.analyzer, groups);
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
-
-        executor.search_all_xpaths_top_k_restricted(
-            query,
-            xpaths.iter().copied(),
-            k,
-            restrict.as_ref(),
-        )
+        executor.rank(query, ctxs, k, restrict.as_ref(), include_array_groups)
     }
 
     #[timed(search)]
     pub fn rank_top_k(
         &self,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, FieldFilter>>,
-        xpaths: &[XPathId],
+        filters: Option<&HashMap<String, FieldQuery>>,
+        ctxs: &[FieldCtx],
         k: usize,
-        groups: Vec<Vec<XPathId>>,
+        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
+        include_array_groups: bool,
     ) -> Result<Vec<SearchHit>, CorelamoError> {
         let snapshot = self.shared.snapshot.get();
-        Ok(self.rank_candidates(&snapshot, query, filters, xpaths, k, groups))
+        Ok(self.rank_candidates(
+            &snapshot,
+            query,
+            filters,
+            ctxs,
+            k,
+            groups,
+            include_array_groups,
+        ))
     }
 
     #[timed(search)]
     pub fn rank_sorted(
         &self,
         query: Option<&Query>,
-        filters: Option<&HashMap<String, FieldFilter>>,
-        xpaths: &[XPathId],
+        filters: Option<&HashMap<String, FieldQuery>>,
+        ctxs: &[FieldCtx],
         sort_xpaths: &[XPathId],
         window: usize,
-        groups: Vec<Vec<XPathId>>,
+        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
+        include_array_groups: bool,
     ) -> Result<Vec<(SearchHit, Vec<Option<f64>>)>, CorelamoError> {
         if window == 0 {
             return Ok(Vec::new());
         }
 
         let snapshot = self.shared.snapshot.get();
-        let candidates = self.rank_candidates(&snapshot, query, filters, xpaths, window, groups);
+        let candidates = self.rank_candidates(
+            &snapshot,
+            query,
+            filters,
+            ctxs,
+            window,
+            groups,
+            include_array_groups,
+        );
         if candidates.is_empty() {
             return Ok(Vec::new());
         }

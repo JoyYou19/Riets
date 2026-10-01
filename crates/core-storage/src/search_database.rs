@@ -29,7 +29,7 @@ use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
-use core_query::{Query, SearchHit, executor::QueryExecutor};
+use core_query::SearchHit;
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,6 @@ pub struct IndexPipeline<'a, S: DocumentStore> {
 
     //completed batches that are waiting to be indexed together
     // pending_batches: Vec<Vec<IndexedDocument>>,
-
     inserted: u32,
     failures: Vec<DocFailure>,
     seen: HashSet<String>,
@@ -74,7 +73,6 @@ pub struct IndexPipeline<'a, S: DocumentStore> {
 pub struct SearchDatabase<S: DocumentStore> {
     store: S,
     index_worker: IndexWorker,
-    snapshot: SharedIndexSnapshot,
     analyzer: Analyzer,
     policy: IndexPolicy,
 
@@ -193,7 +191,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(Self {
             store,
             index_worker,
-            snapshot,
             analyzer,
             policy,
             shard_id,
@@ -219,7 +216,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(Self {
             store,
             index_worker,
-            snapshot: shared_snapshot,
             analyzer,
             policy,
             shard_id,
@@ -377,13 +373,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     pub fn get_document(&self, external_id: &str) -> io::Result<Option<StoredDocument>> {
         self.store.get(external_id)
-    }
-
-    #[timed(search)]
-    pub fn search(&self, query: &Query, xpath: u32) -> Vec<SearchHit> {
-        let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer, self.policy().array_groups());
-        executor.search(query, xpath)
     }
 
     //lookup-retrieves+filters document based on request

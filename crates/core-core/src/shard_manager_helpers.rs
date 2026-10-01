@@ -5,8 +5,7 @@ use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{SearchCommand, SortOrderRequest};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
-use core_query::executor::FieldFilter;
-use core_query::resolver::compile_field_filter;
+use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,19 +20,11 @@ pub fn compile_filters(
     analyzer: &Analyzer,
     command: &SearchCommand,
     policy: &IndexPolicy,
-) -> Result<Option<Arc<HashMap<String, FieldFilter>>>, CorelamoError> {
+) -> Result<Option<Arc<HashMap<String, FieldQuery>>>, CorelamoError> {
     let Some(filters) = command.filters.as_ref() else {
         return Ok(None);
     };
-
-    let mut resolved = HashMap::with_capacity(filters.len());
-    for (field, spec) in filters {
-        if let Some(filter) = compile_field_filter(field, spec, analyzer, policy)? {
-            resolved.insert(field.clone(), filter);
-        }
-    }
-
-    Ok(Some(Arc::new(resolved)))
+    Ok(Some(Arc::new(resolve_filters(filters, analyzer, policy)?)))
 }
 
 pub fn resolve_sorts(

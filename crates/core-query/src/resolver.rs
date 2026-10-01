@@ -1,5 +1,4 @@
-//place where MatchSpec -> Query for the query and filters in one place
-
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use core_index::{
@@ -8,30 +7,349 @@ use core_index::{
         IndexPolicy,
         policy::{FieldKind, FieldPolicy},
     },
-    fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec},
     numeric_values::{NumericBound, NumericRange, NumericValue, parse_float, parse_integer},
     types::XPathId,
 };
-use core_protocol::{
-    command_reponse_definitions::{Fuzziness, MatchSpec},
-    errors::CorelamoError,
-};
+use core_protocol::{command_reponse_definitions::Fuzziness, errors::CorelamoError};
 use indexmap::IndexMap;
+use simd_json::{OwnedValue, base::ValueAsScalar};
 
-use crate::{Query, executor::FieldFilter, query_string_parser::parse_and_analyze};
+use crate::{
+    Query,
+    query_string_parser::{analyze_query, parse_json_query},
+};
+
+//xpath context for one field: normal (analyzed) + exact (raw) index
+#[derive(Debug, Clone, Copy)]
+pub struct FieldCtx {
+    pub xpath: XPathId,
+    pub exact_xpath: Option<XPathId>,
+    pub row_keyed: bool,
+}
+
+//recursive field bindings for a same_element node; mirrors Query::SameElement nesting
+#[derive(Debug, Clone)]
+pub struct SameElementBinding {
+    pub depth: u32,                  //this array field's depth
+    pub clauses: Vec<ClauseBinding>, //parallel to Query::SameElement children
+}
 
 #[derive(Debug, Clone)]
-pub enum MatchOp {
-    Query(Option<Query>),
-    Range {
-        lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
-    },
-    SameElement {
-        clauses: Vec<FieldFilter>,
-        depth: u32,
-    },
+pub struct ClauseBinding {
+    pub ctx: FieldCtx, //subfield xpath (dummy for nested same_element)
+    pub depth: u32,    //subfield depth (for ascend)
+    pub nested: Option<Box<SameElementBinding>>, //Some when the clause is itself same_element
 }
+
+#[derive(Debug, Clone)]
+pub struct FieldQuery {
+    //field this filter runs against (dummy for same_element, which uses `same_element`)
+    pub ctx: FieldCtx,
+    pub query: Query,
+    pub row_keyed: bool,
+    pub depth: u32,
+    pub same_element: Option<SameElementBinding>, //Some when query is Query::SameElement
+}
+
+fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
+    FieldCtx {
+        xpath: field.xpath(policy),
+        exact_xpath: field.exact_xpath(policy),
+        row_keyed: field.row_keyed,
+    }
+}
+
+// =============== main query ===============
+
+pub fn compile_query(
+    raw: &OwnedValue,
+    search_fields: Option<&[String]>,
+    analyzer: &Analyzer,
+    policy: &IndexPolicy,
+) -> Result<(Option<Query>, Arc<Vec<FieldCtx>>), CorelamoError> {
+    if is_match_all(raw) {
+        return Ok((None, Arc::new(Vec::new())));
+    }
+
+    reject_filter_only_operators(raw)?;
+
+    //field-agnostic: parse + analyze once
+    let node = parse_json_query(raw)?;
+    let query = analyze_query(node, analyzer);
+
+    //determining which xpaths to look into
+    let ctxs: Vec<FieldCtx> = match search_fields {
+        Some(names) => resolve_search_fields(names, query.as_ref(), policy)?,
+        None => policy
+            .searchable_fields()
+            .into_iter()
+            .map(|f| field_ctx(f, policy))
+            .collect(),
+    };
+
+    Ok((query, Arc::new(ctxs)))
+}
+
+//WARN: mos kkadu "match_all"
+fn is_match_all(v: &OwnedValue) -> bool {
+    match v {
+        OwnedValue::String(s) => s.trim().is_empty(),
+        OwnedValue::Object(obj) => obj.is_empty(),
+        _ => false,
+    }
+}
+
+fn resolve_search_fields(
+    names: &[String],
+    query: Option<&Query>,
+    policy: &IndexPolicy,
+) -> Result<Vec<FieldCtx>, CorelamoError> {
+    let needs_exact = query.is_some_and(tree_has_exact);
+
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let field = policy
+            .field_by_path(name)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
+
+        if !field.searchable() && !needs_exact {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{name}' is not searchable (add 'searchable = true' to its policy and reindex the database)"
+            )));
+        }
+        if needs_exact && field.exact_xpath(policy).is_none() {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{name}' has no exact index (add 'exact = true' to its policy)"
+            )));
+        }
+
+        out.push(field_ctx(field, policy));
+    }
+    Ok(out)
+}
+
+fn reject_filter_only_operators(v: &OwnedValue) -> Result<(), CorelamoError> {
+    match v {
+        OwnedValue::Object(obj) => {
+            if obj.contains_key("same_element") {
+                return Err(CorelamoError::InvalidData(
+                    "'same_element' is only valid as a filter, not as the main query".into(),
+                ));
+            }
+            if obj.contains_key("range") {
+                return Err(CorelamoError::InvalidData(
+                    "'range' is only valid as a filter, not as the main query".into(),
+                ));
+            }
+            for (_, child) in obj.iter() {
+                reject_filter_only_operators(child)?;
+            }
+        }
+        OwnedValue::Array(items) => {
+            for item in items.iter() {
+                reject_filter_only_operators(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn tree_has_exact(q: &Query) -> bool {
+    match q {
+        Query::Exact(_) => true,
+        Query::And(ps) | Query::Or(ps) | Query::Wand(ps) => ps.iter().any(tree_has_exact),
+        Query::SameElement(ps) => ps.iter().any(tree_has_exact),
+        _ => false,
+    }
+}
+
+// =============== filters ===============
+
+pub fn compile_filters(
+    filters: &IndexMap<String, OwnedValue>,
+    analyzer: &Analyzer,
+    policy: &IndexPolicy,
+) -> Result<HashMap<String, FieldQuery>, CorelamoError> {
+    let mut out = HashMap::with_capacity(filters.len());
+
+    for (name, raw) in filters {
+        let field = policy
+            .fields
+            .iter()
+            .find(|f| &f.name == name)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
+
+        //same_element is a container spec — handle it before the blank check
+        let is_same_element =
+            matches!(raw, OwnedValue::Object(o) if o.contains_key("same_element"));
+
+        let (query, same_element) = if is_same_element {
+            let OwnedValue::Object(obj) = raw else {
+                unreachable!()
+            };
+            let inner = obj.get("same_element").unwrap();
+            let (q, b) = resolve_same_element(field, inner, analyzer, policy)?
+                .ok_or_else(|| CorelamoError::InvalidData(format!("blank filter '{name}'")))?;
+            (q, Some(b))
+        } else {
+            match build_node(raw, field, analyzer)? {
+                Some(q) => (q, None),
+                None => continue,
+            }
+        };
+
+        if !is_same_element && tree_has_exact(&query) && field.exact_xpath(policy).is_none() {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{}' has no exact index (add 'exact = true' to its policy)",
+                field.name
+            )));
+        }
+
+        out.insert(
+            name.clone(),
+            FieldQuery {
+                ctx: if is_same_element {
+                    FieldCtx {
+                        xpath: 0,
+                        exact_xpath: None,
+                        row_keyed: false,
+                    }
+                } else {
+                    field_ctx(field, policy)
+                },
+                query,
+                row_keyed: field.row_keyed,
+                depth: field.depth,
+                same_element,
+            },
+        );
+    }
+
+    Ok(out)
+}
+
+//single core: OwnedValue + field context -> resolved Query (non-same_element)
+fn build_node(
+    v: &OwnedValue,
+    field: &FieldPolicy,
+    analyzer: &Analyzer,
+) -> Result<Option<Query>, CorelamoError> {
+    if let OwnedValue::Object(obj) = v {
+        if let Some(inner) = obj.get("range") {
+            return resolve_range(field, inner);
+        }
+    }
+
+    let node = parse_json_query(v)?;
+    Ok(analyze_query(node, analyzer))
+}
+
+fn resolve_range(field: &FieldPolicy, inner: &OwnedValue) -> Result<Option<Query>, CorelamoError> {
+    let s = inner.as_str().ok_or_else(|| {
+        CorelamoError::InvalidData("'range' must be a string like '30..40'".into())
+    })?;
+
+    let parse: fn(&str) -> Option<NumericValue> = match field.kind {
+        FieldKind::Integer => parse_integer,
+        FieldKind::Float => parse_float,
+        _ => {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{}' is {} — 'range' only applies to numeric fields",
+                field.name,
+                field.kind.label()
+            )));
+        }
+    };
+
+    let r = parse_numeric_range(s, parse).map_err(|e| {
+        CorelamoError::InvalidData(format!("invalid range on '{}': {e}", field.name))
+    })?;
+    Ok(Some(Query::Range(r)))
+}
+
+fn resolve_same_element(
+    field: &FieldPolicy,
+    inner: &OwnedValue,
+    analyzer: &Analyzer,
+    policy: &IndexPolicy,
+) -> Result<Option<(Query, SameElementBinding)>, CorelamoError> {
+    if field.kind != FieldKind::Struct {
+        return Err(CorelamoError::InvalidData(format!(
+            "same_element requires an array field ('{}' is {})",
+            field.name,
+            field.kind.label()
+        )));
+    }
+
+    let OwnedValue::Object(map) = inner else {
+        return Err(CorelamoError::InvalidData(
+            "'same_element' must be an object mapping subfield -> clause".into(),
+        ));
+    };
+
+    let mut children = Vec::with_capacity(map.len());
+    let mut clauses = Vec::with_capacity(map.len());
+
+    for (sub_name, sub_v) in map.iter() {
+        let full = format!("{}/{}", field.full_path, sub_name);
+        let sub_field = policy
+            .field_by_path(&full)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(full.clone()))?;
+
+        //nested array-in-array
+        if let OwnedValue::Object(o) = sub_v {
+            if o.contains_key("same_element") {
+                let (sub_query, sub_binding) = resolve_same_element(
+                    sub_field,
+                    o.get("same_element").unwrap(),
+                    analyzer,
+                    policy,
+                )?
+                .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
+
+                clauses.push(ClauseBinding {
+                    ctx: FieldCtx {
+                        xpath: 0,
+                        exact_xpath: None,
+                        row_keyed: false,
+                    },
+                    depth: sub_field.depth,
+                    nested: Some(Box::new(sub_binding)),
+                });
+                children.push(sub_query);
+                continue;
+            }
+        }
+
+        let sub = build_node(sub_v, sub_field, analyzer)?
+            .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
+
+        if tree_has_exact(&sub) && sub_field.exact_xpath(policy).is_none() {
+            return Err(CorelamoError::InvalidData(format!(
+                "subfield '{}' has no exact index (add 'exact = true' to its policy)",
+                full
+            )));
+        }
+
+        clauses.push(ClauseBinding {
+            ctx: field_ctx(sub_field, policy),
+            depth: sub_field.depth,
+            nested: None,
+        });
+        children.push(sub);
+    }
+
+    Ok(Some((
+        Query::SameElement(children),
+        SameElementBinding {
+            depth: field.depth,
+            clauses,
+        },
+    )))
+}
+
+// =============== kept unchanged ===============
 
 pub fn parse_fuzziness(raw: Option<&str>) -> Result<Fuzziness, CorelamoError> {
     let Some(raw) = raw else {
@@ -49,54 +367,6 @@ pub fn parse_fuzziness(raw: Option<&str>) -> Result<Fuzziness, CorelamoError> {
     }
 }
 
-pub fn compile_query(
-    spec: &MatchSpec,
-    search_fields: Option<&[String]>,
-    analyzer: &Analyzer,
-    policy: &IndexPolicy,
-) -> Result<(Option<Query>, Arc<Vec<XPathId>>), CorelamoError> {
-    let query = text_query(spec, analyzer)?;
-    let xpaths: Vec<XPathId> = match search_fields {
-        Some(names) => resolve_search_xpaths(names, spec, policy)?,
-        None => match spec {
-            MatchSpec::Exact(_) => policy.exact_xpaths(),
-            _ => policy.searchable_xpaths(),
-        },
-    };
-    Ok((query, Arc::new(xpaths)))
-}
-
-fn resolve_search_xpaths(
-    names: &[String],
-    spec: &MatchSpec,
-    policy: &IndexPolicy,
-) -> Result<Vec<XPathId>, CorelamoError> {
-    let mut out: Vec<XPathId> = Vec::with_capacity(names.len());
-
-    for name in names {
-        let field = policy
-            .fields
-            .iter()
-            .find(|f| &f.name == name)
-            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
-
-        if !field.searchable() && !matches!(spec, MatchSpec::Exact(_)) {
-            return Err(CorelamoError::InvalidData(format!(
-                "field '{name}' is not searchable (add 'searchable = true' to its policy and reindex the database)"
-            )));
-        }
-
-        let xpath = text_xpath(spec, policy, field)?;
-
-        if !out.contains(&xpath) {
-            out.push(xpath);
-        }
-    }
-
-    Ok(out)
-}
-
-//basically the same as the resolve_search_xpaths but without exact matching cuz its fuzzy
 pub fn resolve_suggest_xpaths(
     names: &[String],
     policy: &IndexPolicy,
@@ -124,121 +394,6 @@ pub fn resolve_suggest_xpaths(
     }
 
     Ok(out)
-}
-
-pub fn compile_field_filter(
-    field_name: &str,
-    spec: &MatchSpec,
-    analyzer: &Analyzer,
-    policy: &IndexPolicy,
-) -> Result<Option<FieldFilter>, CorelamoError> {
-    let field = policy
-        .fields
-        .iter()
-        .find(|f| f.name == field_name)
-        .ok_or_else(|| CorelamoError::PathNotIndexed(field_name.to_string()))?;
-
-    // same_element is a container spec — handle it before the is_blank check
-    // (its `value()` is "", so is_blank() would wrongly skip it).
-
-    if let MatchSpec::SameElement(clauses) = spec {
-        return Ok(Some(compile_same_element(
-            field, clauses, analyzer, policy,
-        )?));
-    }
-    if spec.is_blank() {
-        return Ok(None);
-    }
-
-    compile_leaf_filter(field, spec, analyzer, policy)
-}
-
-fn compile_same_element(
-    field: &FieldPolicy,
-    clauses: &IndexMap<String, MatchSpec>,
-    analyzer: &Analyzer,
-    policy: &IndexPolicy,
-) -> Result<FieldFilter, CorelamoError> {
-    if field.kind != FieldKind::Struct {
-        return Err(CorelamoError::InvalidData(format!(
-            "same_element requires an array field ('{}' is {})",
-            field.name,
-            field.kind.label()
-        )));
-    }
-    let mut compiled = Vec::with_capacity(clauses.len());
-    for (sub_name, sub_spec) in clauses {
-        let full = format!("{}/{}", field.full_path, sub_name);
-        let sub_field = policy
-            .field_by_path(&full)
-            .ok_or_else(|| CorelamoError::PathNotIndexed(full.clone()))?;
-
-        let clause = if let MatchSpec::SameElement(inner) = sub_spec {
-            compile_same_element(sub_field, inner, analyzer, policy)? // nested array
-        } else {
-            compile_leaf_filter(sub_field, &sub_spec, analyzer, policy)?
-                .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?
-        };
-        compiled.push(clause);
-    }
-    Ok(FieldFilter {
-        xpath: 0,
-        kind: MatchOp::SameElement {
-            clauses: compiled,
-            depth: field.depth,
-        },
-        row_keyed: true,
-        depth: field.depth,
-    })
-}
-
-fn compile_leaf_filter(
-    field: &FieldPolicy,
-    spec: &MatchSpec,
-    analyzer: &Analyzer,
-    policy: &IndexPolicy,
-) -> Result<Option<FieldFilter>, CorelamoError> {
-    match field.kind {
-        FieldKind::Integer | FieldKind::Float => {
-            let MatchSpec::Plain(term) = spec else {
-                return Err(CorelamoError::InvalidData(format!(
-                    "field '{}' is numeric: use a range like '30..40', '>2010' or '<=5', \
-                     not exact/fuzzy matching",
-                    field.name
-                )));
-            };
-
-            let parse: fn(&str) -> Option<NumericValue> = match field.kind {
-                FieldKind::Integer => parse_integer,
-                _ => parse_float,
-            };
-            let range = parse_numeric_range(term, parse).map_err(|e| {
-                CorelamoError::InvalidData(format!(
-                    "invalid filter '{}' on numeric field '{}': {e}",
-                    term, field.name
-                ))
-            })?;
-
-            Ok(Some(FieldFilter {
-                xpath: field.xpath(policy),
-                kind: MatchOp::Range {
-                    lo: range.lo,
-                    hi: range.hi,
-                },
-                row_keyed: field.row_keyed,
-                depth: field.depth,
-            }))
-        }
-
-        FieldKind::Text => Ok(Some(FieldFilter {
-            xpath: text_xpath(spec, policy, field)?,
-            kind: MatchOp::Query(text_query(spec, analyzer)?),
-            row_keyed: field.row_keyed,
-            depth: 0,
-        })),
-
-        _ => Err(CorelamoError::PathNotIndexed(field.name.to_string())),
-    }
 }
 
 //vibemaxxing funciton: parsing the query for the foken numbres
@@ -351,45 +506,4 @@ pub fn parse_numeric_range(
 
 fn has_op_prefix(t: &str) -> bool {
     t.starts_with('=') || t.starts_with('>') || t.starts_with('<')
-}
-
-fn text_xpath(
-    spec: &MatchSpec,
-    policy: &IndexPolicy,
-    field: &FieldPolicy,
-) -> Result<XPathId, CorelamoError> {
-    match spec {
-        MatchSpec::Exact(_) => field.exact_xpath(policy).ok_or_else(|| {
-            CorelamoError::InvalidData(format!(
-                "field '{}' has no exact index (add 'exact = true' to its policy)",
-                field.name
-            ))
-        }),
-        _ => Ok(field.xpath(policy)),
-    }
-}
-
-fn text_query(spec: &MatchSpec, analyzer: &Analyzer) -> Result<Option<Query>, CorelamoError> {
-    Ok(match spec {
-        MatchSpec::Plain(raw) => parse_and_analyze(raw, analyzer)?,
-        MatchSpec::Exact(value) => Some(Query::Exact(value.clone())),
-        MatchSpec::Fuzzy {
-            value,
-            fuzziness,
-            prefix_length,
-            max_expansions,
-        } => Some(Query::Fuzzy(
-            value.clone(),
-            fuzziness.unwrap_or(Fuzziness::Auto),
-            FuzzySpec {
-                prefix_length: prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH),
-                max_expansions: max_expansions.unwrap_or(DEFAULT_MAX_EXPANSIONS),
-            },
-        )),
-        MatchSpec::SameElement(_) => {
-            return Err(CorelamoError::InvalidData(
-                "same_element is only valid as a filter, not as the main query".to_string(),
-            ));
-        }
-    })
 }

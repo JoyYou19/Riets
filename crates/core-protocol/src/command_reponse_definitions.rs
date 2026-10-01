@@ -6,7 +6,6 @@ use serde::de::DeserializeOwned;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, json};
 use std::collections::BTreeMap;
-use std::fmt;
 use strsim::levenshtein;
 
 use crate::command_response_helpers::escape_json_text;
@@ -106,10 +105,9 @@ pub trait ResponseData {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-//TODO: numbers exact-match
 pub struct SearchCommand {
-    pub query: MatchSpec,
-    pub filters: Option<IndexMap<String, MatchSpec>>,
+    pub query: OwnedValue,
+    pub filters: Option<IndexMap<String, OwnedValue>>,
     pub search_fields: Option<Vec<String>>,
     pub docs: Option<usize>,
     pub offset: Option<usize>,
@@ -143,7 +141,7 @@ impl Fuzziness {
         }
     }
 
-    fn from_owned(v: &OwnedValue) -> Result<Self, String> {
+    pub fn from_owned(v: &OwnedValue) -> Result<Self, String> {
         if let Some(n) = v.as_u64() {
             return match n {
                 0 => Ok(Fuzziness::Zero),
@@ -171,143 +169,6 @@ impl<'de> Deserialize<'de> for Fuzziness {
     {
         let v = OwnedValue::deserialize(deserializer)?;
         Self::from_owned(&v).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MatchSpec {
-    Plain(String),
-    Exact(String),
-    Fuzzy {
-        value: String,
-        fuzziness: Option<Fuzziness>,
-        prefix_length: Option<usize>,
-        max_expansions: Option<usize>,
-    },
-    SameElement(IndexMap<String, MatchSpec>),
-}
-
-impl fmt::Display for MatchSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // used by the search handler for its "N hit(s) for '...'" message
-        f.write_str(self.value())
-    }
-}
-
-impl MatchSpec {
-    pub fn value(&self) -> &str {
-        match self {
-            MatchSpec::Plain(value) | MatchSpec::Exact(value) => value,
-            MatchSpec::Fuzzy { value, .. } => value,
-            MatchSpec::SameElement(_) => "",
-        }
-    }
-
-    pub fn is_blank(&self) -> bool {
-        self.value().trim().is_empty()
-    }
-}
-
-impl<'de> Deserialize<'de> for MatchSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = OwnedValue::deserialize(deserializer)?;
-        deserialize_match_spec(&value).map_err(serde::de::Error::custom)
-    }
-}
-
-const MATCH_SPEC_KEYS: &[&str] = &[
-    "value",
-    "exact",
-    "fuzzy",
-    "fuzziness",
-    "prefix_length",
-    "max_expansions",
-    "search_fields",
-    "same_element",
-];
-
-//Hand made cuz this our favourite command that needs a lot of care
-fn deserialize_match_spec(value: &OwnedValue) -> Result<MatchSpec, String> {
-    match value {
-        OwnedValue::String(raw) => Ok(MatchSpec::Plain(raw.clone())),
-
-        OwnedValue::Object(obj) => {
-            if let Some(inner) = obj.get("same_element") {
-                let OwnedValue::Object(map) = inner else {
-                    return Err(
-                        "'same_element' must be an object mapping field -> match".to_string()
-                    );
-                };
-                let mut clauses = IndexMap::with_capacity(map.len());
-                for (k, v) in map.iter() {
-                    clauses.insert(k.clone(), deserialize_match_spec(v)?);
-                }
-                return Ok(MatchSpec::SameElement(clauses));
-            }
-
-            for key in obj.keys() {
-                if MATCH_SPEC_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                return Err(
-                    match MATCH_SPEC_KEYS
-                        .iter()
-                        .min_by_key(|known| levenshtein(key, known))
-                        .filter(|best| levenshtein(key, best) <= 3)
-                    {
-                        Some(best) => format!("Unknown field '{key}'. Did you mean '{best}'?"),
-                        None => format!(
-                            "Unknown field '{key}'. Expected one of: {}.",
-                            MATCH_SPEC_KEYS.join(", ")
-                        ),
-                    },
-                );
-            }
-
-            let value = obj
-                .get("value")
-                .and_then(OwnedValue::as_str)
-                .ok_or("match object requires a string 'value' field")?
-                .to_string();
-
-            let exact = obj
-                .get("exact")
-                .and_then(OwnedValue::as_bool)
-                .unwrap_or(false);
-            let fuzzy = obj
-                .get("fuzzy")
-                .and_then(OwnedValue::as_bool)
-                .unwrap_or(false);
-
-            match (exact, fuzzy) {
-                (true, true) => Err("match cannot set both 'exact' and 'fuzzy'".to_string()),
-                (true, false) => Ok(MatchSpec::Exact(value)),
-                (false, true) => Ok(MatchSpec::Fuzzy {
-                    value,
-                    fuzziness: match obj.get("fuzziness") {
-                        Some(v) => Some(Fuzziness::from_owned(v)?),
-                        None => None,
-                    },
-                    prefix_length: obj
-                        .get("prefix_length")
-                        .and_then(OwnedValue::as_u64)
-                        .map(|n| n as usize),
-                    max_expansions: obj
-                        .get("max_expansions")
-                        .and_then(OwnedValue::as_u64)
-                        .map(|n| n as usize),
-                }),
-                (false, false) => Ok(MatchSpec::Plain(value)),
-            }
-        }
-
-        other => Err(format!(
-            "match must be a string, or an object with a 'value' field (found {})",
-            other.value_type()
-        )),
     }
 }
 

@@ -942,8 +942,9 @@ impl ShardManager {
 
         let policy = self.policy.read().clone();
         let groups = policy.array_groups();
+        let include_array_groups = command.search_fields.is_none();
 
-        let (query, xpaths) = compile_query(
+        let (query, ctxs) = compile_query(
             &command.query,
             command.search_fields.as_deref(),
             &self.analyzer,
@@ -966,7 +967,7 @@ impl ShardManager {
             let handle = handle.clone();
             let query = Arc::clone(&query);
             let filters = filters.clone();
-            let xpaths = Arc::clone(&xpaths);
+            let ctxs = Arc::clone(&ctxs);
             let sort_xpaths = sort_xpaths.clone();
             let groups = groups.clone();
             set.spawn_blocking(move || {
@@ -975,19 +976,21 @@ impl ShardManager {
                     handle.rank_sorted(
                         (*query).as_ref(),
                         filters.as_deref(),
-                        &xpaths,
+                        &ctxs,
                         sort_xpaths,
                         window,
                         groups,
+                        include_array_groups,
                     )
                 } else {
                     //else just relevance
                     let hits = handle.rank_top_k(
                         (*query).as_ref(),
                         filters.as_deref(),
-                        &xpaths,
+                        &ctxs,
                         fetch,
                         groups,
+                        include_array_groups,
                     )?;
                     Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
                 }

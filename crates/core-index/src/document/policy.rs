@@ -208,6 +208,32 @@ impl IndexPolicy {
         }
     }
 
+    pub fn array_groups(&self) -> Vec<Vec<(XPathId, Option<XPathId>)>> {
+        let mut groups = Vec::new();
+        for field in &self.fields {
+            if field.kind == FieldKind::Struct {
+                let mut subs = Vec::new();
+                Self::collect_subfield_contexts(field, &mut subs, self);
+                groups.push(subs);
+            }
+        }
+        groups
+    }
+
+    fn collect_subfield_contexts(
+        field: &FieldPolicy,
+        out: &mut Vec<(XPathId, Option<XPathId>)>,
+        policy: &IndexPolicy,
+    ) {
+        for sub in &field.subfields {
+            if sub.kind == FieldKind::Struct {
+                Self::collect_subfield_contexts(sub, out, policy);
+            } else {
+                out.push((sub.xpath(policy), sub.exact_xpath(policy)));
+            }
+        }
+    }
+
     pub fn from_toml(contents: &str) -> io::Result<Self> {
         let policy: Self =
             toml::from_str(contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -311,10 +337,16 @@ impl IndexPolicy {
         self.registry.get_exact(name)
     }
 
-    pub fn searchable_xpaths(&self) -> Vec<XPathId> {
+    pub fn searchable_fields(&self) -> Vec<&FieldPolicy> {
         self.indexed_fields()
             .into_iter()
             .filter(|field| !field.kind.is_numeric() && !field.row_keyed)
+            .collect()
+    }
+
+    pub fn searchable_xpaths(&self) -> Vec<XPathId> {
+        self.searchable_fields()
+            .into_iter()
             .map(|field| field.xpath(self))
             .collect()
     }
@@ -342,18 +374,6 @@ impl IndexPolicy {
 
         self.registry = registry;
         Ok(())
-    }
-
-    pub fn array_groups(&self) -> Vec<Vec<XPathId>> {
-        let mut groups = Vec::new();
-        for field in &self.fields {
-            if field.kind == FieldKind::Struct {
-                let mut subs = Vec::new();
-                collect_subfield_xpaths(field, &mut subs, self);
-                groups.push(subs);
-            }
-        }
-        groups
     }
 
     #[timed(database_lifecycle)]
@@ -651,16 +671,6 @@ impl FieldRegistry {
 
     fn get_exact(&self, name: &str) -> Option<XPathId> {
         self.exact_ids.get(name).copied()
-    }
-}
-
-fn collect_subfield_xpaths(field: &FieldPolicy, out: &mut Vec<XPathId>, policy: &IndexPolicy) {
-    for sub in &field.subfields {
-        if sub.kind == FieldKind::Struct {
-            collect_subfield_xpaths(sub, out, policy);
-        } else {
-            out.push(sub.xpath(policy));
-        }
     }
 }
 
