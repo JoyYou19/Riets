@@ -7,7 +7,7 @@ import random
 
 INPUT_FILE = "movies.json"
 OUTPUT_DIR = "./movie_chunks"
-CHUNK_SIZE = 10000  # 1000 movies per file
+CHUNK_SIZE = 10000  # 10000 movies per file
 
 
 def flatten_value(value):
@@ -87,8 +87,17 @@ def main():
             else:
                 doc[key] = flatten_value(value)
 
-        # Add random float between 1.000 and 1000.000
-        # doc["random_float"] = round(random.uniform(1.0, 1000.0), 3)
+        # Add an array of two structs, each with num1 and num2, at the bottom of the document
+        doc["random_nums"] = [
+            {
+                "num1": random.randint(0, 100),
+                "num2": random.randint(0, 100)
+            },
+            {
+                "num1": random.randint(0, 100),
+                "num2": random.randint(0, 100)
+            }
+        ]
 
         docs.append(doc)
 

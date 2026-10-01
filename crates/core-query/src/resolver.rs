@@ -175,9 +175,7 @@ pub fn compile_filters(
 
     for (name, raw) in filters {
         let field = policy
-            .fields
-            .iter()
-            .find(|f| &f.name == name)
+            .field_by_path(name)
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
 
         //same_element is a container spec — handle it before the blank check

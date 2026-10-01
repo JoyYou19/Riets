@@ -340,7 +340,7 @@ impl IndexPolicy {
     pub fn searchable_fields(&self) -> Vec<&FieldPolicy> {
         self.indexed_fields()
             .into_iter()
-            .filter(|field| !field.kind.is_numeric() && !field.row_keyed)
+            .filter(|field| field.searchable() && !field.row_keyed)
             .collect()
     }
 

@@ -96,6 +96,20 @@ kind = "Integer"
 [fields.weight]
 min = 0
 max = 0
+
+[[fields]]
+name = "random_nums"
+kind = "Struct"
+
+[[fields.subfields]]
+name = "num1"
+kind = "Integer"
+searchable = true
+
+[[fields.subfields]]
+name = "num2"
+kind = "Integer"
+searchable = true
 """
 
 
