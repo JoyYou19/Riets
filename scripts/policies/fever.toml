@@ -1,0 +1,43 @@
+[[fields]]
+name = "_id"
+kind = "IdAuto"
+list = true
+[fields.weight]
+min = 90
+max = 95
+
+[[fields]]
+name = "title"
+kind = "Text"
+list = true
+exact = true
+stemming = "english"
+[fields.weight]
+min = 40
+max = 80
+
+[[fields]]
+name = "text"
+kind = "Text"
+list = true
+stemming = "english"
+[fields.weight]
+min = 1
+max = 100
+
+[[fields]]
+name = "random_year"
+kind = "Integer"
+searchable = true
+list = true
+[fields.weight]
+min = 1
+max = 50
+
+[[fields]]
+name = "random_float"
+kind = "Float"
+list = true
+[fields.weight]
+min = 1
+max = 50
