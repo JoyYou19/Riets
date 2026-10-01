@@ -186,7 +186,9 @@ impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             max_segments_per_compaction: 16,
-            compact_when_segments_at_least: 4,
+            compact_when_segments_at_least: 16,
+            
+
         }
     }
 }

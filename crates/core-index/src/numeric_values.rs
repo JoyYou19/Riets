@@ -71,6 +71,9 @@ impl NumericFields {
     pub fn iter(&self) -> impl Iterator<Item = (XPathId, &NumericField)> + '_ {
         self.fields.iter().map(|(&xpath, field)| (xpath, field))
     }
+     pub fn is_empty(&self) -> bool {
+         self.fields.is_empty()
+     }
 }
 
 //sits only in ram, cause documents come in docid order so btree map is faster in ram for ranges n

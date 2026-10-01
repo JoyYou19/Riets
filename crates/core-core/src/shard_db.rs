@@ -242,7 +242,7 @@ impl ShardDb {
                     let _ = db.put_documents_parallel(
                         inputs,
                         self.options.runtime.indexing_batch_size,
-                        self.options.runtime.indexing_window_size,
+                        // self.options.runtime.indexing_window_size,
                     );
                 }
                 WalRecord::Upsert(inputs) => {
@@ -479,7 +479,7 @@ impl ShardDb {
         core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
         let batch_size = self.options.runtime.indexing_batch_size;
 
-        let window_size = self.options.runtime.indexing_window_size;
+        // let window_size = self.options.runtime.indexing_window_size;
         self.pending += count as u32;
         let not_flushed = self.pending >= (batch_size as u32);
         let wal_record = WalRecord::Create(inputs);
@@ -494,7 +494,7 @@ impl ShardDb {
                 .db_mut()
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             let report = db
-                .put_documents_parallel(inputs, batch_size, window_size)
+                .put_documents_parallel(inputs, batch_size)
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
             if not_flushed {

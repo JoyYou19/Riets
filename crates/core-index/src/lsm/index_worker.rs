@@ -267,15 +267,35 @@ fn run_index_worker(
 
         match command {
             IndexCommand::AddIndexedDocuments { documents, ack } => {
-                let mut outcome = Ok(());
+                let mut staging = MemIndex::default();
                 let mut added = 0u64;
-                for document in &documents {
-                    if let Err(error) = index.add_indexed_document(&analyzer, document) {
-                        outcome = Err(error);
-                        break;
-                    }
+                let mut outcome = Ok(());
+                let staging_cap = index.flush_threshold();
+
+                for document in documents {
+                    staging.add_indexed_document(&analyzer, &document);
                     added += 1;
+
+                    let staged = staging.estimated_size_bytes();
+                    if staged >= staging_cap {
+                        // 64MB staging cap
+                        index.merge_into_memtable(std::mem::take(&mut staging));
+                        if index.memtable_size() >= index.flush_threshold() {
+                            if let Err(error) = index.flush() {
+                                outcome = Err(error);
+                                break;
+                            }
+                        }
+                    }
                 }
+
+                if outcome.is_ok() && added > 0 {
+                    index.merge_into_memtable(staging);
+                    if index.memtable_size() >= index.flush_threshold() {
+                        outcome = index.flush();
+                    }
+                }
+
                 stats.total_documents_indexed += added;
                 docs_since_publish += added;
                 core_timing::add_bytes(
@@ -284,8 +304,6 @@ fn run_index_worker(
                     file!(),
                     index.memtable_term_count() as u64
                 );
-                // Batches of PUBLISH_DOC_THRESHOLD or more publish before the ack,
-                // so a bulk insert is searchable as soon as the request returns.
                 maybe_publish_on_threshold(
                     &shared,
                     &mut index,
