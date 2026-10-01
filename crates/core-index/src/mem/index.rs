@@ -106,9 +106,9 @@ impl SearchStats for MemIndex {
             .map(|s| s.total_doc_len)
             .unwrap_or(0)
     }
-     fn doc_range(&self) -> Option<(DocId, DocId)> {
-         self.doc_id_range()
-     }
+    fn doc_range(&self) -> Option<(DocId, DocId)> {
+        self.doc_id_range()
+    }
 }
 
 impl MemIndex {
@@ -266,9 +266,18 @@ impl MemIndex {
 
         self.doc_lengths.insert((doc_id, xpath), len);
 
+        let old = self.doc_lengths.insert((doc_id, xpath), len);
         let stats = self.field_stats.entry(xpath).or_default();
-        stats.doc_count += 1;
-        stats.total_doc_len += len as u64;
+        match old {
+            Some(old_len) => {
+                stats.total_doc_len =
+                    stats.total_doc_len.saturating_sub(old_len as u64) + (len as u64);
+            }
+            None => {
+                stats.doc_count += 1;
+                stats.total_doc_len += len as u64;
+            }
+        }
 
         let mut grouped = ahash::HashMap::<String, Vec<u32>>::with_capacity(tokens.len());
 
@@ -329,10 +338,18 @@ impl MemIndex {
 
         self.doc_lengths.insert((doc_id, xpath), len);
 
+        let old = self.doc_lengths.insert((doc_id, xpath), len);
         let stats = self.field_stats.entry(xpath).or_default();
-        stats.doc_count += 1;
-        stats.total_doc_len += len as u64;
-
+        match old {
+            Some(old_len) => {
+                stats.total_doc_len =
+                    stats.total_doc_len.saturating_sub(old_len as u64) + (len as u64);
+            }
+            None => {
+                stats.doc_count += 1;
+                stats.total_doc_len += len as u64;
+            }
+        }
         let mut grouped = ahash::HashMap::<&str, Vec<u32>>::default();
         for (position, word) in words.iter().enumerate() {
             grouped

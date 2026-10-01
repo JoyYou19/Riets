@@ -52,4 +52,7 @@ impl DeleteSet {
     pub fn contains(&self, doc_id: DocId) -> bool {
         self.deleted.contains(&doc_id)
     }
+    pub fn iter(&self) -> impl Iterator<Item = DocId> + '_ {
+     self.deleted.iter().copied()
+ }
 }

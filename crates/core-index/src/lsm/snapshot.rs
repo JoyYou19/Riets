@@ -4,12 +4,12 @@ use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions },
     mem::MemIndex,
-    numeric_values::{NumericBound, NumericValue},
-    posting::{DeleteSet, PostingList, ops::union_many},
-    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
-    types::{DocId, XPathId},
+    numeric_values::{ NumericBound, NumericValue },
+    posting::{ DeleteSet, PostingList, ops::union_many },
+    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats },
+    types::{ DocId, XPathId },
     wildcard::WildcardPattern,
 };
 
@@ -64,19 +64,18 @@ impl SearchIndex for IndexSnapshot {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
-        let mut out: std::collections::BTreeMap<String, FuzzyExpansion> =
-            std::collections::BTreeMap::new();
+        let mut out: std::collections::BTreeMap<
+            String,
+            FuzzyExpansion
+        > = std::collections::BTreeMap::new();
 
-        let all = self
-            .mem
+        let all = self.mem
             .fuzzy_expansions(term, xpath, opts)
             .into_iter()
             .chain(
-                self.segments
-                    .iter()
-                    .flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts)),
+                self.segments.iter().flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts))
             );
 
         for expansion in all {
@@ -98,7 +97,7 @@ impl SearchNumeric for IndexSnapshot {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> PostingList {
         let mut lists = Vec::new();
 
@@ -132,21 +131,24 @@ impl SearchNumeric for IndexSnapshot {
 
 impl SearchStats for IndexSnapshot {
     fn doc_count(&self, xpath: XPathId) -> u64 {
-        let mut total = self.mem.doc_count(xpath);
-
-        for segment in self.segments.iter() {
-            total += segment.doc_count(xpath);
-        }
-
-        total
+        let raw =
+            self.mem.doc_count(xpath) +
+            self.segments
+                .iter()
+                .map(|s| s.doc_count(xpath))
+                .sum::<u64>();
+        let deleted = self.deleted
+            .iter()
+            .filter(|&doc_id| self.doc_len(doc_id, xpath).is_some())
+            .count() as u64;
+        raw.saturating_sub(deleted)
     }
 
-    fn doc_len(&self, doc_id: crate::types::DocId, xpath: XPathId) -> Option<u32> {
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
         if let Some(len) = self.mem.doc_len(doc_id, xpath) {
             return Some(len);
         }
-
-        for segment in self.segments.iter() {
+        for segment in self.segments.iter().rev() {
             if let Some((lo, hi)) = segment.doc_range() {
                 if doc_id < lo || doc_id > hi {
                     continue;
@@ -156,40 +158,44 @@ impl SearchStats for IndexSnapshot {
                 return Some(len);
             }
         }
-
         None
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        let mut total = self.mem.total_doc_len(xpath);
-
-        for segment in self.segments.iter() {
-            total += segment.total_doc_len(xpath);
-        }
-
-        total
+        let raw =
+            self.mem.total_doc_len(xpath) +
+            self.segments
+                .iter()
+                .map(|s| s.total_doc_len(xpath))
+                .sum::<u64>();
+        let deleted: u64 = self.deleted
+            .iter()
+            .filter_map(|doc_id| self.doc_len(doc_id, xpath))
+            .map(|len| len as u64)
+            .sum();
+        raw.saturating_sub(deleted)
     }
     fn doc_range(&self) -> Option<(DocId, DocId)> {
-     let mut range: Option<(DocId, DocId)> = self.mem.doc_range();
+        let mut range: Option<(DocId, DocId)> = self.mem.doc_range();
 
-     for segment in self.segments.iter() {
-         if let Some((lo, hi)) = segment.doc_range() {
-             range = Some(match range {
-                 None => (lo, hi),
-                 Some((min, max)) => (min.min(lo), max.max(hi)),
-             });
-         }
-     }
+        for segment in self.segments.iter() {
+            if let Some((lo, hi)) = segment.doc_range() {
+                range = Some(match range {
+                    None => (lo, hi),
+                    Some((min, max)) => (min.min(lo), max.max(hi)),
+                });
+            }
+        }
 
-     range
- }
+        range
+    }
 }
 
 impl IndexSnapshot {
     pub fn new(
         mem: Arc<MemIndex>,
         segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
-        deleted: DeleteSet,
+        deleted: DeleteSet
     ) -> Self {
         Self {
             mem,
@@ -207,8 +213,7 @@ impl IndexSnapshot {
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
 
-        let segment_lists: Vec<PostingList> = self
-            .segments
+        let segment_lists: Vec<PostingList> = self.segments
             .iter()
             .map(|segment| segment.lookup(term, xpath))
             .collect();

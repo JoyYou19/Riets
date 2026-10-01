@@ -24,7 +24,7 @@ use crate::{
 // memtable, snapshoting, deleting
 pub struct LsmIndex {
     mem: MemIndex,
-    //TEST
+
     generations: Vec<Option<Arc<MemIndex>>>,
     segment_handles: Vec<SegmentHandle>,
     generation_bytes: usize,
@@ -36,7 +36,6 @@ pub struct LsmIndex {
     next_segment_id: u64,
     next_doc_id: DocId,
     next_compaction_job_id: u64,
-    
 }
 // const GENERATION_MERGE_RATIO: usize = 1000;
 const STAGING_LIMIT_BYTES: usize = 64 * 1024 * 1024;
@@ -44,7 +43,7 @@ fn unwrap_mem(generation: Arc<MemIndex>) -> MemIndex {
     Arc::try_unwrap(generation).unwrap_or_else(|shared| (*shared).clone())
 }
 pub trait FlushCheckpoint: Send + Sync {
-       fn checkpoint(&self) -> io::Result<()>;
+    fn checkpoint(&self) -> io::Result<()>;
 }
 impl SearchIndex for LsmIndex {
     #[timed(search)]
@@ -114,8 +113,8 @@ impl SearchStats for LsmIndex {
         self.snapshot().total_doc_len(xpath)
     }
     fn doc_range(&self) -> Option<(DocId, DocId)> {
-     self.snapshot().doc_range()
- }
+        self.snapshot().doc_range()
+    }
 }
 
 impl LsmIndex {
@@ -200,7 +199,6 @@ impl LsmIndex {
             }
 
             if Arc::strong_count(&generation) > 1 {
-                // Generation is shared (snapshot or reader holds it), stop merging
                 self.generations[tier] = Some(generation);
                 break;
             }
@@ -213,7 +211,6 @@ impl LsmIndex {
                         tier += 1;
                     }
                     Err(existing) => {
-                        // try_unwrap failed, existing is still wrapped in Arc
                         self.generations[tier] = Some(existing);
                         if tier + 1 >= self.generations.len() {
                             self.generations.push(None);
@@ -222,15 +219,9 @@ impl LsmIndex {
                         break;
                     }
                 }
-            } else if generation.estimated_size_bytes() > self.flush_threshold {
-                if tier == 0 {
-                    // self.flush_generation(Arc::try_unwrap(generation).unwrap())?;
-                    break;
-                } else {
-                    self.generations[tier] = Some(generation);
-                    break;
-                }
             } else {
+                // Tier is empty. Store the generation here. The worker decides
+                // when to flush based on total memory (mem + generations).
                 self.generations[tier] = Some(generation);
                 break;
             }
@@ -335,7 +326,11 @@ impl LsmIndex {
     }
 
     pub fn memtable_size(&self) -> usize {
-        self.mem.estimated_size_bytes()
+        let mut total = self.mem.estimated_size_bytes();
+        for generation in self.generations.iter().flatten() {
+            total += generation.estimated_size_bytes();
+        }
+        total
     }
 
     pub fn flush_threshold(&self) -> usize {
@@ -371,54 +366,55 @@ impl LsmIndex {
     // so we can query, share, serialize, compact the data
     #[timed(flushing)]
     pub fn flush(&mut self) -> io::Result<()> {
-        self.seal();
+     self.seal();
 
-        let mut merged_mem = MemIndex::default();
-        for tier in 0..self.generations.len() {
-            if let Some(generation) = self.generations.get_mut(tier).and_then(|g| g.take()) {
-                let generation = unwrap_mem(generation);
-                merged_mem.merge_from(generation);
-            }
-        }
+     let mut merged_mem = MemIndex::default();
+     for tier in 0..self.generations.len() {
+         if let Some(generation) = self.generations.get_mut(tier).and_then(|g| g.take()) {
+             let generation = unwrap_mem(generation);
+             merged_mem.merge_from(generation);
+         }
+     }
 
-        // A segment can be numeric-only (0 terms but doc ids exist).
-        if merged_mem.term_count() > 0 || merged_mem.doc_id_range().is_some() {
-            let (min_doc_id, max_doc_id) = merged_mem
-                .doc_id_range()
-                .ok_or_else(||
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "flushed segment has no document ids"
-                    )
-                )?;
+     // A segment can be numeric-only (0 terms but doc ids exist).
+     if merged_mem.term_count() > 0 || merged_mem.doc_id_range().is_some() {
+         let (min_doc_id, max_doc_id) = merged_mem
+             .doc_id_range()
+             .ok_or_else(|| {
+                 io::Error::new(
+                     io::ErrorKind::InvalidData,
+                     "flushed segment has no document ids",
+                 )
+             })?;
 
-            // Cursor only: IDs were assigned externally, never renumber them.
-            self.next_doc_id = max_doc_id.saturating_add(1);
+         // Cursor only: IDs were assigned externally, never renumber them.
+         self.next_doc_id = max_doc_id.saturating_add(1);
 
-            let segment = Arc::new(merged_mem.freeze());
+         let segment = Arc::new(merged_mem.freeze());
 
-            let reader: Arc<dyn SearchReader + Send + Sync> = match &self.root {
-                Some(root) => {
-                    let path = root.join(format!("segment-{}.idx", self.next_segment_id));
-                    self.next_segment_id += 1;
+         let reader: Arc<dyn SearchReader + Send + Sync> = match &self.root {
+             Some(root) => {
+                 let path = root.join(format!("segment-{}.idx", self.next_segment_id));
+                 self.next_segment_id += 1;
 
-                    write_segment(&path, &segment)?;
-                    let disk = DiskSegment::open(&path)?;
-                    manifest::append_segment(root, &path)?;
-                    self.segment_handles.push(SegmentHandle::Disk(path.clone()));
-                    Arc::new(disk)
-                }
-                None => {
-                    self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
-                    segment as Arc<dyn SearchReader + Send + Sync>
-                }
-            };
+                 write_segment(&path, &segment)?;
+                 let disk = DiskSegment::open(&path)?;
+                 manifest::append_segment(root, &path)?;
+                 self.segment_handles.push(SegmentHandle::Disk(path.clone()));
+                 Arc::new(disk)
+             }
+             None => {
+                 self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
+                 segment as Arc<dyn SearchReader + Send + Sync>
+             }
+         };
 
-            Arc::make_mut(&mut self.query_segments).push(reader);
-        }
-      
-        Ok(())
-    }
+         Arc::make_mut(&mut self.query_segments).push(reader);
+     }
+
+     Ok(())
+ }
+
     // pub fn snapshot(&self) -> IndexSnapshot {
     //     IndexSnapshot::new(
     //         self.mem.clone(),
