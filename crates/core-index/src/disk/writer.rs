@@ -3,11 +3,17 @@ use std::io::SeekFrom;
 use core_timing::timed;
 
 use crate::{
-    disk::{
-        codec::{ push_var_u16, push_var_u32, push_var_u64 },
-        format::{ SegmentFooter, SegmentHeader },
-    }, numeric_values::NumericFields, posting::PostingList, segment::{self, ImmutableSegment}, term_dict::{ TermDict, TermMeta }, types::{ DocId, TermKey, XPathId },
-};
+     disk::{
+         codec::{push_var_u16, push_var_u32, push_var_u64},
+         format::{SegmentFooter, SegmentHeader},
+     },
+     numeric_values::NumericFields,
+     posting::PostingList,
+     segment::{self, compute_doc_id_range}, // ADD compute_doc_id_range
+     segment::ImmutableSegment,
+     term_dict::{TermDict, TermMeta},
+     types::{DocId, TermKey, XPathId},
+ };
 
 /// Tracks the write position itself, so `stream_position()` never flushes
 /// the BufWriter or makes a syscall.
@@ -300,30 +306,7 @@ fn finish_file(out: PositionWriter<BufWriter<File>>) -> io::Result<()> {
         .map_err(|e| e.into_error())?;
     file.sync_all()
 }
-fn compute_doc_id_range(
-     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
-     numeric_fields: &NumericFields,
- ) -> Option<(DocId, DocId)> {
-     let mut range: Option<(DocId, DocId)> = None;
 
-     for &(doc_id, _) in doc_lengths.keys() {
-         range = Some(match range {
-             None => (doc_id, doc_id),
-             Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
-         });
-     }
-
-     for (_, field) in numeric_fields.iter() {
-         for &(_, doc_id) in field.bkd.points() {
-             range = Some(match range {
-                 None => (doc_id, doc_id),
-                 Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
-             });
-         }
-     }
-
-     range
- }
 // Streams postings out while grouping terms into one FST per field.
 // Terms MUST arrive in ascending (xpath, term)
 struct FieldWriter<K> {

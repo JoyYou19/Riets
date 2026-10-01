@@ -106,6 +106,9 @@ impl SearchStats for MemIndex {
             .map(|s| s.total_doc_len)
             .unwrap_or(0)
     }
+     fn doc_range(&self) -> Option<(DocId, DocId)> {
+         self.doc_id_range()
+     }
 }
 
 impl MemIndex {

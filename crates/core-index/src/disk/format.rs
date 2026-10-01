@@ -40,7 +40,7 @@ pub const MAGIC: [u8; 8] = *b"BANANA_2";
 pub const VERSION: u32 = 10;
 
 pub const HEADER_LEN: usize = 8 + 4;
-pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4+8+8; //64 totals
+pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4+8+8; //68 totals
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentHeader {

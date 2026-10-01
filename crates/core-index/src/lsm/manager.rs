@@ -113,6 +113,9 @@ impl SearchStats for LsmIndex {
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         self.snapshot().total_doc_len(xpath)
     }
+    fn doc_range(&self) -> Option<(DocId, DocId)> {
+     self.snapshot().doc_range()
+ }
 }
 
 impl LsmIndex {

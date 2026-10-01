@@ -169,6 +169,20 @@ impl SearchStats for IndexSnapshot {
 
         total
     }
+    fn doc_range(&self) -> Option<(DocId, DocId)> {
+     let mut range: Option<(DocId, DocId)> = self.mem.doc_range();
+
+     for segment in self.segments.iter() {
+         if let Some((lo, hi)) = segment.doc_range() {
+             range = Some(match range {
+                 None => (lo, hi),
+                 Some((min, max)) => (min.min(lo), max.max(hi)),
+             });
+         }
+     }
+
+     range
+ }
 }
 
 impl IndexSnapshot {

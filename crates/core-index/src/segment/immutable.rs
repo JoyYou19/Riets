@@ -4,10 +4,11 @@ use core_timing::timed;
 
 use crate::{
     numeric_values::{NumericBound, NumericFields, NumericValue},
-    posting::{Posting, PostingList},
-    search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{DocId, FieldStats, TermKey, XPathId},
-    wildcard::WildcardPattern,
+     posting::{Posting, PostingList},
+     search::{SearchIndex, SearchNumeric, SearchStats},
+     segment::{build_field_stats, compute_doc_id_range},
+     types::{DocId, FieldStats, TermKey, XPathId},
+     wildcard::WildcardPattern,
 };
 
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
@@ -70,24 +71,28 @@ impl SearchNumeric for ImmutableSegment {
 }
 
 impl SearchStats for ImmutableSegment {
-    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
-        self.doc_lengths.get(&(doc_id, xpath)).copied()
-    }
+     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+         self.doc_lengths.get(&(doc_id, xpath)).copied()
+     }
 
-    fn doc_count(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map(|s| s.doc_count)
-            .unwrap_or(0)
-    }
+     fn doc_count(&self, xpath: XPathId) -> u64 {
+         self.field_stats
+             .get(&xpath)
+             .map(|s| s.doc_count)
+             .unwrap_or(0)
+     }
 
-    fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map(|s| s.total_doc_len)
-            .unwrap_or(0)
-    }
-}
+     fn total_doc_len(&self, xpath: XPathId) -> u64 {
+         self.field_stats
+             .get(&xpath)
+             .map(|s| s.total_doc_len)
+             .unwrap_or(0)
+     }
+
+     fn doc_range(&self) -> Option<(DocId, DocId)> {
+         self.doc_id_range
+     }
+ }
 
 impl ImmutableSegment {
     pub fn new(
@@ -96,7 +101,12 @@ impl ImmutableSegment {
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
     ) -> Self {
-         let doc_id_range = Self::compute_doc_id_range(&doc_lengths, &numeric_fields);
+         debug_assert_eq!(
+             field_stats,
+             build_field_stats(&doc_lengths),
+             "field_stats must be derivable from doc_lengths"
+         );
+         let doc_id_range = compute_doc_id_range(&doc_lengths, &numeric_fields);
         Self {
             terms,
             doc_lengths,
@@ -175,29 +185,5 @@ impl ImmutableSegment {
     pub fn term_count(&self) -> usize {
         self.terms.len()
     }
-    fn compute_doc_id_range(
-     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
-     numeric_fields: &NumericFields,
- ) -> Option<(DocId, DocId)> {
-     let mut range: Option<(DocId, DocId)> = None;
-
-     for (doc_id, _) in doc_lengths.keys() {
-         range = Some(match range {
-             None => (*doc_id, *doc_id),
-             Some((min, max)) => (min.min(*doc_id), max.max(*doc_id)),
-         });
-     }
-
-     // numeric-only docs don't appear in doc_lengths
-     for (_, field) in numeric_fields.iter() {
-         for &(_, doc_id) in field.bkd.points() {
-             range = Some(match range {
-                 None => (doc_id, doc_id),
-                 Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
-             });
-         }
-     }
-
-     range
- }
+    
 }
