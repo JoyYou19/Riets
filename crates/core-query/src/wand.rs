@@ -1,8 +1,6 @@
-use std::{
-    cmp::Ordering,
-    collections::{BinaryHeap, HashSet},
-};
+use std::{cmp::Ordering, collections::BinaryHeap};
 
+use ahash::HashSet;
 use core_index::{
     posting::{PostingList, cursor::PostingCursor},
     search::{SearchStats, TermPostings},

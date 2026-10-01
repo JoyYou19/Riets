@@ -25,7 +25,7 @@
 //! |                        |    (u64 doc_id, u64 packed_value) * doc_value_entry_count
 //! +------------------------+
 //! | footer                 |  doc_lengths_offset/len, dictionary_offset/len,
-//! |                        |  numeric_fields_offset/len, term_count  (52 bytes)
+//! |                        |  numeric_fields_offset/len, term_count/ arrays (52 bytes)
 //! +------------------------+
 //! //! |    (now with the FST)  |
 //! |                        |    u32 xpath, u32 term_count, u64 fst_len,
@@ -65,6 +65,8 @@ pub struct SegmentFooter {
     pub dictionary_len: u64,
     pub numeric_fields_offset: u64,
     pub numeric_fields_len: u64,
+    pub array_row_index_offset: u64,
+    pub array_row_index_len: u64,
     pub term_count: u32,
     pub min_doc_id: u64,   // new
     pub max_doc_id: u64,   // new

@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
+use ahash::HashSet;
 use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
     fuzzy::{ FuzzyExpansion, FuzzyOptions },
     mem::MemIndex,
-    numeric_values::{ NumericBound, NumericValue },
-    posting::{ DeleteSet, PostingList, ops::union_many },
-    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats },
-    types::{ DocId, XPathId },
+    numeric_values::{NumericBound, NumericValue},
+    posting::{DeleteSet, PostingList, ops::union_many},
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
+    types::{ArrayRowId, DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -40,6 +41,31 @@ impl SearchIndex for IndexSnapshot {
             out.extend(seg.terms(xpath));
         }
         out.into_iter().collect()
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        let mut out: HashSet<DocId> = self.mem.resolve_array_rows(rows);
+        for seg in self.segments.iter() {
+            out.extend(seg.resolve_array_rows(rows));
+        }
+
+        //filter deletes
+        out.retain(|doc| !self.deleted.contains(*doc));
+        out
+    }
+
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        if let Some(p) = self.mem.parent_of_row(row) {
+            return Some(p);
+        }
+        self.segments.iter().find_map(|seg| seg.parent_of_row(row))
+    }
+
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        if let Some(d) = self.mem.doc_of_row(row) {
+            return Some(d);
+        }
+        self.segments.iter().find_map(|seg| seg.doc_of_row(row))
     }
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {

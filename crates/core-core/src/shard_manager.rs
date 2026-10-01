@@ -274,7 +274,7 @@ impl ShardManager {
 
         let mut all_fields_map = BTreeMap::new();
         for input in &inputs {
-            all_fields_map.extend(input.fields.clone());
+            input.parsed.collect_leaf_values(&mut all_fields_map);
         }
         self.update_all_fields_from_fields(&all_fields_map)?;
 
@@ -342,7 +342,7 @@ impl ShardManager {
 
         let mut all_fields_map = BTreeMap::new();
         for input in &inputs {
-            all_fields_map.extend(input.fields.clone());
+            input.parsed.collect_leaf_values(&mut all_fields_map);
         }
         self.update_all_fields_from_fields(&all_fields_map)?;
 
@@ -801,9 +801,10 @@ impl ShardManager {
     ) -> Result<InsertReport, CorelamoError> {
         let started = std::time::Instant::now();
         let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
+
         let mut all_fields_map = BTreeMap::new();
         for input in &inputs {
-            all_fields_map.extend(input.fields.clone());
+            input.parsed.collect_leaf_values(&mut all_fields_map);
         }
         self.update_all_fields_from_fields(&all_fields_map)?;
 
@@ -940,6 +941,7 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
+        let groups = policy.array_groups();
 
         let (query, xpaths) = compile_query(
             &command.query,
@@ -966,6 +968,7 @@ impl ShardManager {
             let filters = filters.clone();
             let xpaths = Arc::clone(&xpaths);
             let sort_xpaths = sort_xpaths.clone();
+            let groups = groups.clone();
             set.spawn_blocking(move || {
                 //any sort mentioned? - we do smart thing
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
@@ -975,11 +978,17 @@ impl ShardManager {
                         &xpaths,
                         sort_xpaths,
                         window,
+                        groups,
                     )
                 } else {
                     //else just relevance
-                    let hits =
-                        handle.rank_top_k((*query).as_ref(), filters.as_deref(), &xpaths, fetch)?;
+                    let hits = handle.rank_top_k(
+                        (*query).as_ref(),
+                        filters.as_deref(),
+                        &xpaths,
+                        fetch,
+                        groups,
+                    )?;
                     Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
                 }
             });
@@ -1234,7 +1243,7 @@ impl ShardManager {
             return Ok(Vec::new());
         }
 
-        let xpaths = Arc::new(self.policy.read().searchable_xpaths().collect::<Vec<_>>());
+        let xpaths = Arc::new(self.policy.read().searchable_xpaths());
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
@@ -1301,7 +1310,7 @@ impl ShardManager {
             Some(names) => Arc::new(core_query::resolver::resolve_suggest_xpaths(
                 names, &policy,
             )?),
-            None => Arc::new(policy.searchable_xpaths().collect()),
+            None => Arc::new(policy.searchable_xpaths()),
         };
 
         let fuzziness = parse_fuzziness(command.fuzziness.as_deref())?;

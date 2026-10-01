@@ -1,17 +1,17 @@
 use core_index::document::{IndexPolicy, policy::FieldKind};
 use core_protocol::{
-    command_response_helpers::{apply_merge_patch, traverse_json},
+    command_response_helpers::apply_merge_patch,
     errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
 use core_storage::{
     document_store::{ExternalDocId, StoredDocument},
+    json_parse::{ParsedNode, parse_into_node},
     search_database::DocumentInput,
 };
 use core_timing::timed;
 use rayon::prelude::*;
 use simd_json::OwnedValue as Value;
-use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub trait DocumentConversion {
@@ -46,18 +46,13 @@ pub fn parse_documents(
 
 //INFO: a little porno to tell if we found the id and if not then if its auto
 #[timed(json_parsing)]
-fn extract_external_id(
-    fields: &BTreeMap<String, String>,
-    policy: &IndexPolicy,
-) -> Result<String, FailReason> {
+fn extract_external_id(node: &ParsedNode, policy: &IndexPolicy) -> Result<String, FailReason> {
     let Some(id_field) = policy.id_field() else {
         return Err(FailReason::NoIdField);
     };
-    match fields.get(&id_field.name) {
-        Some(v) if !v.is_empty() => Ok(v.clone()),
-        //INFO: we generate a random auto id for shard rounting if its auto shard_manager detects it
-        //and inside the shard_db it gets a correct id
-        _ if id_field.kind == FieldKind::IdAuto => Ok(generate_routing_id(fields)),
+    match node.leaves.iter().find(|l| l.path == id_field.full_path) {
+        Some(l) if !l.value.is_empty() => Ok(l.value.clone()),
+        _ if id_field.kind == FieldKind::IdAuto => Ok(generate_routing_id()),
         _ => Err(FailReason::MissingId {
             field: id_field.name.clone(),
         }),
@@ -65,7 +60,7 @@ fn extract_external_id(
 }
 
 #[timed(json_parsing)]
-fn generate_routing_id(_fields: &BTreeMap<String, String>) -> String {
+fn generate_routing_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
@@ -85,12 +80,12 @@ impl<'a> DocumentConversion for Json<'a> {
         let mut docs = Vec::new();
         let mut indices = Vec::new();
         let mut failures = Vec::new();
-        match json_value_to_document_input(value, policy) {
+        match parse_one(0, &value, policy) {
             Ok(doc) => {
                 docs.push(doc);
                 indices.push(0);
             }
-            Err(reason) => failures.push(DocFailure::at(0, reason)),
+            Err(failure) => failures.push(failure),
         }
         Ok(ParseOutcome {
             docs,
@@ -116,9 +111,8 @@ fn parse_raw_items_sequential(raw_items: &[Value], policy: &IndexPolicy) -> Pars
     let mut docs = Vec::with_capacity(raw_items.len());
     let mut indices = Vec::with_capacity(raw_items.len());
     let mut failures = Vec::new();
-    let mut path_buf = String::with_capacity(64);
     for (index, raw) in raw_items.iter().enumerate() {
-        match parse_one(index, raw, policy, &mut path_buf) {
+        match parse_one(index, raw, policy) {
             Ok(doc) => {
                 docs.push(doc);
                 indices.push(index);
@@ -142,7 +136,7 @@ fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy) -> ParseO
             || String::with_capacity(64),
             |path_buf, (index, raw)| {
                 path_buf.clear();
-                parse_one(index, raw, policy, path_buf)
+                parse_one(index, raw, policy)
             },
         )
         .collect();
@@ -173,43 +167,14 @@ fn parse_one(
     index: usize,
     value: &Value,
     policy: &IndexPolicy,
-    path_buf: &mut String,
 ) -> Result<DocumentInput, DocFailure> {
     let source = simd_json::to_vec(value)
         .map_err(|e| DocFailure::at(index, FailReason::InvalidJson(e.to_string())))?;
-
-    let mut fields = BTreeMap::new();
-    path_buf.clear();
-    traverse_json(value, path_buf, &mut fields);
-    validate_numeric_fields(&fields, policy).map_err(|reason| DocFailure::at(index, reason))?;
-
-    let external_id =
-        extract_external_id(&fields, policy).map_err(|reason| DocFailure::at(index, reason))?;
-
+    let node = parse_into_node(value, policy).map_err(|r| DocFailure::at(index, r))?;
+    let external_id = extract_external_id(&node, policy).map_err(|r| DocFailure::at(index, r))?;
     Ok(DocumentInput {
         external_id,
-        fields,
-        source,
-        format: Format::JSON,
-    })
-}
-
-#[timed(json_parsing)]
-fn json_value_to_document_input(
-    value: Value,
-    policy: &IndexPolicy,
-) -> Result<DocumentInput, FailReason> {
-    let source = simd_json::to_vec(&value).map_err(|e| FailReason::InvalidJson(e.to_string()))?;
-
-    let mut fields = BTreeMap::new();
-    traverse_json(&value, &mut "".to_string(), &mut fields);
-    validate_numeric_fields(&fields, policy)?;
-
-    let external_id = extract_external_id(&fields, policy)?;
-
-    Ok(DocumentInput {
-        external_id,
-        fields,
+        parsed: node,
         source,
         format: Format::JSON,
     })
@@ -234,35 +199,9 @@ pub fn convert_from_storage(
 }
 
 #[timed(json_parsing)]
-fn validate_numeric_fields(
-    fields: &BTreeMap<String, String>,
-    policy: &IndexPolicy,
-) -> Result<(), FailReason> {
-    for field in &policy.fields {
-        if !field.kind.is_numeric() {
-            continue;
-        }
-        let Some(raw) = fields.get(&field.name) else {
-            continue;
-        };
-        if raw.trim().is_empty() {
-            continue;
-        }
-        field
-            .kind
-            .validate_value(raw)
-            .map_err(|_| FailReason::InvalidField {
-                field: field.name.clone(),
-                expected: field.kind.label().to_string(),
-                got: raw.clone(),
-            })?;
-    }
-    Ok(())
-}
-
-#[timed(json_parsing)]
 pub fn parse_partial_replace_to_inputs(
     items: &[(String, Value)],
+    policy: &IndexPolicy,
     get_document: impl Fn(&str) -> Result<Option<StoredDocument>, CorelamoError>,
 ) -> (Vec<DocumentInput>, Vec<DocFailure>) {
     let mut inputs = Vec::with_capacity(items.len());
@@ -303,11 +242,16 @@ pub fn parse_partial_replace_to_inputs(
 
         apply_merge_patch(&mut doc_value, patch);
 
-        let mut fields = BTreeMap::new();
-        traverse_json(&doc_value, &mut "".to_string(), &mut fields);
+        let node = match parse_into_node(&doc_value, policy) {
+            Ok(n) => n,
+            Err(e) => {
+                failures.push(DocFailure::new(Some(index), Some(id.clone()), e));
+                continue;
+            }
+        };
 
         let source = match simd_json::to_vec(&doc_value) {
-            Ok(v) => v,
+            Ok(s) => s,
             Err(e) => {
                 failures.push(DocFailure::new(
                     Some(index),
@@ -320,7 +264,7 @@ pub fn parse_partial_replace_to_inputs(
 
         inputs.push(DocumentInput {
             external_id: id.clone(),
-            fields,
+            parsed: node,
             source,
             format: Format::JSON,
         });

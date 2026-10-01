@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 
-use ahash::HashMapExt;
+use ahash::{HashMapExt, HashSet};
 use core_timing::timed;
 use ahash::AHashMap;
 use crate::analyzer::analyzer::Analyzer;
-use crate::document::IndexedDocument;
-use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
-use crate::posting::{ Posting, PostingList };
-use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
-use crate::types::{ DocId, FieldStats, TermKey, XPathId };
+use crate::array_rows::ArrayRowIndex;
+use crate::document::document::NumericPoint;
+use crate::document::{DocumentPart, IndexedDocument};
+use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
+use crate::posting::{Posting, PostingList};
+use crate::search::{SearchIndex, SearchNumeric, SearchStats};
+use crate::types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::WildcardPattern;
 
 // Memory inverted index, the core of the index
@@ -21,6 +23,8 @@ pub struct MemIndex {
     estimated_bytes: usize,
     min_doc_id: Option<DocId>,
     max_doc_id: Option<DocId>,
+    array_row_index: ArrayRowIndex,
+    estimated_bytes: usize,
 }
 
 impl Default for MemIndex {
@@ -33,12 +37,28 @@ impl Default for MemIndex {
             estimated_bytes: 0,
             min_doc_id: None,
             max_doc_id: None,
+            array_row_index: ArrayRowIndex::default(),
+            estimated_bytes: 0,
         }
     }
 }
 impl SearchIndex for MemIndex {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup_or_empty(term, xpath)
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        rows.iter()
+            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .collect()
+    }
+
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.array_row_index.parent_of(row)
+    }
+
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.array_row_index.doc_of(row)
     }
 
     fn terms(&self, xpath: XPathId) -> Vec<String> {
@@ -121,6 +141,8 @@ impl MemIndex {
             estimated_bytes: 0,
             min_doc_id: None,
             max_doc_id: None,
+            array_row_index: ArrayRowIndex::default(),
+            estimated_bytes: 0,
         }
     }
     pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
@@ -132,6 +154,8 @@ impl MemIndex {
             estimated_bytes: 0,
             min_doc_id: None,
             max_doc_id: None,
+            array_row_index: ArrayRowIndex::default(),
+            estimated_bytes: 0,
         }
     }
 
@@ -145,7 +169,8 @@ impl MemIndex {
             terms,
             doc_lengths,
             field_stats,
-            self.numeric_points.build()
+            self.numeric_points.build(),
+            self.array_row_index,
         )
     }
     //tracks min and max doc id in this segment
@@ -193,7 +218,8 @@ impl MemIndex {
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
-                slot.insert(PostingList::new()).insert(doc_id, position, weight);
+                slot.insert(PostingList::new())
+                    .insert(doc_id, position, weight);
             }
         }
     }
@@ -295,11 +321,36 @@ impl MemIndex {
 
     #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
+        //main document
         self.track_doc_id(document.doc_id);
-        for part in &document.parts {
+        self.add_parts_and_points(
+            analyzer,
+            document.doc_id,
+            &document.parts,
+            &document.numeric_points,
+        );
+
+        //each array in documents
+        for row in &document.array_rows {
+            self.array_row_index
+                .push_row(row.array_row_id, document.doc_id, row.parent);
+
+            self.add_parts_and_points(analyzer, row.array_row_id, &row.parts, &row.numeric_points);
+        }
+    }
+
+    //helper
+    fn add_parts_and_points(
+        &mut self,
+        analyzer: &Analyzer,
+        target_id: DocId, //array row id uses the same type for id
+        parts: &[DocumentPart],
+        numeric_points: &[NumericPoint],
+    ) {
+        for part in parts {
             if part.exact {
                 self.add_exact_weighted(
-                    document.doc_id,
+                    target_id,
                     part.xpath,
                     &part.text,
                     part.weight.min,
@@ -308,7 +359,7 @@ impl MemIndex {
             } else {
                 self.add_document_weighted(
                     analyzer,
-                    document.doc_id,
+                    target_id,
                     part.xpath,
                     &part.text,
                     part.weight.min,
@@ -317,8 +368,9 @@ impl MemIndex {
             }
         }
 
-        for point in &document.numeric_points {
-            self.numeric_points.insert(point.xpath, point.value, document.doc_id);
+        for point in numeric_points {
+            self.numeric_points
+                .insert(point.xpath, point.value, target_id);
         }
     }
 
@@ -398,6 +450,7 @@ impl MemIndex {
 
         PostingList::from_items(items)
     }
+
     //TEST
 
     #[timed(indexing_documents)]
@@ -420,6 +473,7 @@ impl MemIndex {
             self.field_stats.entry(xpath).or_default().add(&stats);
         }
         self.numeric_points.merge(newer.numeric_points);
+        self.array_row_index.merge_from(&newer.array_row_index);
         self.estimated_bytes += newer.estimated_bytes;
 
         if let Some((min, max)) = newer_doc_range {

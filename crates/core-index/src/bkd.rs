@@ -57,14 +57,6 @@ impl Bkd {
         self.points.is_empty()
     }
 
-    pub fn min_value(&self) -> Option<u64> {
-        self.points.first().map(|point| point.0)
-    }
-
-    pub fn max_value(&self) -> Option<u64> {
-        self.points.last().map(|point| point.0)
-    }
-
     //array of ascending values
     pub fn points(&self) -> &[(u64, DocId)] {
         &self.points

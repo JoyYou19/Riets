@@ -1,0 +1,18 @@
+[
+  {
+    "id": "m1",
+    "title": "Forest Gump",
+    "cast": [
+      {"name": "Tom", "surname": "Hanks", "awards": [{"title": "Oscar", "year": 1994}]},
+      {"name": "Brad", "surname": "Pitt", "awards": [{"title": "Golden Globe", "year": 2020}]}
+    ]
+  },
+  {
+    "id": "m2",
+    "title": "Mission Impossible",
+    "cast": [
+      {"name": "Tom", "surname": "Cruise", "awards": []},
+      {"name": "Leonardo", "surname": "DiCaprio", "awards": [{"title": "Oscar", "year": 2016}]}
+    ]
+  }
+]

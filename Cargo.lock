@@ -663,11 +663,13 @@ dependencies = [
 name = "core-query"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "core-index",
  "core-protocol",
  "core-testkit",
  "core-timing",
  "criterion",
+ "indexmap",
 ]
 
 [[package]]
@@ -713,6 +715,7 @@ dependencies = [
 name = "core-storage"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "bincode",
  "core-index",
  "core-logs",

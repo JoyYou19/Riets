@@ -1,4 +1,5 @@
 pub mod analyzer;
+pub mod array_rows;
 pub mod bkd;
 pub mod disk;
 pub mod document;

@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
 use std::io;
 
 use core_storage::document_store::StoredDocument;
+use core_storage::json_parse::ParsedNode;
 use simd_json::{json, prelude::*, OwnedValue};
 
 use argon2::password_hash::{rand_core::OsRng, SaltString};
@@ -36,7 +36,7 @@ impl<S: DocumentStore> UserDatabase<S> {
 
         let input = DocumentInput {
             external_id: username.to_string(),
-            fields: BTreeMap::new(),
+            parsed: ParsedNode::default(),
             source,
             format: Format::JSON,
         };

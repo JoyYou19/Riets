@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -8,10 +8,10 @@ use crate::{
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
 };
+use ahash::HashSet;
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
 
-// Core policy, eventually will need to move to a configuration file
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeightInterval {
     pub min: u16,
@@ -29,9 +29,7 @@ impl WeightInterval {
     }
 }
 
-//TODO: the list would need to be some enum with yes/no/snippet right?
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldPolicy {
     pub name: String,
     pub kind: FieldKind,
@@ -40,6 +38,48 @@ pub struct FieldPolicy {
     pub weight: WeightInterval,
     pub stemming: Option<String>,
     pub exact: bool,
+    pub repeated: bool, // array of sttrings nums/bools
+
+    pub subfields: Vec<FieldPolicy>,
+    pub full_path: String,
+    pub row_keyed: bool,
+    pub depth: u32,
+}
+
+impl Serialize for FieldPolicy {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let defaults = self.kind.defaults();
+        let mut st = serializer.serialize_struct("FieldPolicy", 9)?;
+
+        st.serialize_field("name", &self.name)?;
+        st.serialize_field("kind", &self.kind)?;
+
+        if self.searchable != defaults.searchable {
+            st.serialize_field("searchable", &self.searchable)?;
+        }
+        if self.list != defaults.list {
+            st.serialize_field("list", &self.list)?;
+        }
+        if self.weight != defaults.weight {
+            st.serialize_field("weight", &self.weight)?;
+        }
+        if let Some(stem) = &self.stemming {
+            st.serialize_field("stemming", stem)?;
+        }
+        if self.exact != defaults.exact {
+            st.serialize_field("exact", &self.exact)?;
+        }
+        if self.repeated {
+            st.serialize_field("repeated", &self.repeated)?;
+        }
+        if !self.subfields.is_empty() {
+            st.serialize_field("subfields", &self.subfields)?;
+        }
+
+        st.end()
+    }
 }
 
 impl FieldPolicy {
@@ -52,17 +92,15 @@ impl FieldPolicy {
             weight: None,
             stemming: None,
             exact: None,
+            repeated: None,
+            subfields: None,
         })
     }
 
     pub fn xpath(&self, policy: &IndexPolicy) -> XPathId {
-        policy.xpath_of(&self.name).unwrap_or_else(|| {
-            panic!(
-                "field '{}' does not belong to the given IndexPolicy — \
-                 xpath() must be called with the policy that owns this field",
-                self.name
-            )
-        })
+        policy
+            .xpath_of(&self.full_path)
+            .unwrap_or_else(|| panic!("field '{}' has no registered xpath", self.full_path))
     }
 
     pub fn searchable(&self) -> bool {
@@ -77,24 +115,40 @@ impl FieldPolicy {
         if !self.has_exact_index() {
             return None;
         }
-        Some(policy.exact_xpath_of(&self.name).unwrap_or_else(|| {
+        Some(policy.exact_xpath_of(&self.full_path).unwrap_or_else(|| {
             panic!(
                 "field '{}' has no exact xpath — IndexPolicy::resolve() should have registered it",
-                self.name
+                self.full_path
             )
         }))
+    }
+
+    // Yields the field itself if it's an indexed leaf, else recurses into Array subfields.
+    fn collect_leaves<'a>(&'a self, out: &mut Vec<&'a FieldPolicy>) {
+        if self.kind == FieldKind::Struct {
+            for sub in &self.subfields {
+                sub.collect_leaves(out);
+            }
+        } else if self.kind != FieldKind::None {
+            out.push(self);
+        }
     }
 
     fn from_raw(raw: RawFieldPolicy) -> Self {
         let defaults = raw.kind.defaults();
         Self {
-            name: raw.name,
+            name: raw.name.clone(),
             kind: raw.kind,
             searchable: raw.searchable.unwrap_or(defaults.searchable),
             list: raw.list.unwrap_or(defaults.list),
             weight: raw.weight.unwrap_or(defaults.weight),
             stemming: raw.stemming,
             exact: raw.exact.unwrap_or(defaults.exact),
+            repeated: raw.repeated.unwrap_or(false),
+            subfields: raw.subfields.unwrap_or_default(),
+            full_path: raw.name,
+            row_keyed: false,
+            depth: 0,
         }
     }
 }
@@ -109,6 +163,8 @@ struct RawFieldPolicy {
     weight: Option<WeightInterval>,
     stemming: Option<String>,
     exact: Option<bool>,
+    repeated: Option<bool>,
+    subfields: Option<Vec<FieldPolicy>>,
 }
 
 impl<'de> Deserialize<'de> for FieldPolicy {
@@ -124,17 +180,21 @@ impl<'de> Deserialize<'de> for FieldPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexPolicy {
     pub fields: Vec<FieldPolicy>,
-
     #[serde(skip)]
     registry: FieldRegistry,
 }
 
 impl IndexPolicy {
     pub const POLICY_FILE_NAME: &'static str = "policy.toml";
+    pub const FULL_FILE_NAME: &'static str = "policy.full";
     pub const REGISTRY_FILE_NAME: &'static str = "xpath_registry.toml";
 
     fn policy_path(root: &Path) -> PathBuf {
         root.join(Self::POLICY_FILE_NAME)
+    }
+
+    fn full_path(root: &Path) -> PathBuf {
+        root.join(Self::FULL_FILE_NAME)
     }
 
     fn registry_path(root: &Path) -> PathBuf {
@@ -148,9 +208,31 @@ impl IndexPolicy {
         }
     }
 
+    pub fn from_toml(contents: &str) -> io::Result<Self> {
+        let policy: Self =
+            toml::from_str(contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok(policy)
+    }
+
+    pub fn leaf_by_path(&self, path: &str) -> Option<&FieldPolicy> {
+        fn find<'a>(fields: &'a [FieldPolicy], path: &str) -> Option<&'a FieldPolicy> {
+            for f in fields {
+                if f.kind == FieldKind::Struct {
+                    if let Some(hit) = find(&f.subfields, path) {
+                        return Some(hit);
+                    }
+                } else if f.full_path == path {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        find(&self.fields, path)
+    }
+
     //validates if everything is fine for policy
     pub fn validate(&self) -> io::Result<()> {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
 
         for field in &self.fields {
             if !names.insert(field.name.clone()) {
@@ -181,6 +263,10 @@ impl IndexPolicy {
             ));
         }
 
+        for field in &self.fields {
+            validate_field(field, 0)?;
+        }
+
         Ok(())
     }
 
@@ -205,14 +291,16 @@ impl IndexPolicy {
             .find(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
     }
 
-    pub fn indexed_fields(&self) -> impl Iterator<Item = &FieldPolicy> {
-        self.fields
-            .iter()
-            .filter(|field| field.kind != FieldKind::None)
+    pub fn indexed_fields(&self) -> Vec<&FieldPolicy> {
+        let mut out = Vec::new();
+        for f in &self.fields {
+            f.collect_leaves(&mut out);
+        }
+        out
     }
 
     pub fn has_hidden_fields(&self) -> bool {
-        self.fields.iter().any(|f| !f.list)
+        self.indexed_fields().into_iter().any(|f| !f.list)
     }
 
     pub fn xpath_of(&self, name: &str) -> Option<XPathId> {
@@ -223,31 +311,20 @@ impl IndexPolicy {
         self.registry.get_exact(name)
     }
 
-    pub fn searchable_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
+    pub fn searchable_xpaths(&self) -> Vec<XPathId> {
         self.indexed_fields()
-            .filter(|field| !field.kind.is_numeric())
-            .map(move |field| {
-                self.registry.get(&field.name).unwrap_or_else(|| {
-                    panic!(
-                        "field '{}' has no registered xpath id IndexPolicy::load()/save()/resolve() should happen",
-                        field.name
-                    )
-                })
-            })
+            .into_iter()
+            .filter(|field| !field.kind.is_numeric() && !field.row_keyed)
+            .map(|field| field.xpath(self))
+            .collect()
     }
 
-    pub fn exact_xpaths(&self) -> impl Iterator<Item = XPathId> + '_ {
-        self.fields
-            .iter()
+    pub fn exact_xpaths(&self) -> Vec<XPathId> {
+        self.indexed_fields()
+            .into_iter()
             .filter(|field| field.has_exact_index())
-            .map(move |field| {
-                self.exact_xpath_of(&field.name).unwrap_or_else(|| {
-                    panic!(
-                        "field '{}' has no exact xpath — IndexPolicy::resolve() should have registered it",
-                        field.name
-                    )
-                })
-            })
+            .map(|field| field.exact_xpath(self).unwrap())
+            .collect()
     }
 
     pub fn resolve(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
@@ -256,11 +333,8 @@ impl IndexPolicy {
         let mut registry = FieldRegistry::load(&registry_path)?;
 
         let before = registry.len();
-        for field in &self.fields {
-            registry.resolve(&field.name);
-            if field.has_exact_index() {
-                registry.resolve_exact(&field.name);
-            }
+        for field in &mut self.fields {
+            stamp_field(field, "", 0, &mut registry);
         }
         if registry.len() != before {
             registry.save(&registry_path)?;
@@ -268,6 +342,18 @@ impl IndexPolicy {
 
         self.registry = registry;
         Ok(())
+    }
+
+    pub fn array_groups(&self) -> Vec<Vec<XPathId>> {
+        let mut groups = Vec::new();
+        for field in &self.fields {
+            if field.kind == FieldKind::Struct {
+                let mut subs = Vec::new();
+                collect_subfield_xpaths(field, &mut subs, self);
+                groups.push(subs);
+            }
+        }
+        groups
     }
 
     #[timed(database_lifecycle)]
@@ -281,15 +367,38 @@ impl IndexPolicy {
         Ok(policy)
     }
 
+    pub fn field_by_path(&self, path: &str) -> Option<&FieldPolicy> {
+        fn find<'a>(fields: &'a [FieldPolicy], path: &str) -> Option<&'a FieldPolicy> {
+            for f in fields {
+                if f.full_path == path {
+                    return Some(f);
+                }
+                if f.kind == FieldKind::Struct {
+                    if let Some(hit) = find(&f.subfields, path) {
+                        return Some(hit);
+                    }
+                }
+            }
+            None
+        }
+        find(&self.fields, path)
+    }
+
     #[timed(writing_files)]
     pub fn save(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
         let root = root.as_ref();
         self.validate()?;
         self.resolve(root)?;
-        let contents = toml::to_string_pretty(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        fs::write(Self::policy_path(root), contents)
+        // minimal (hide defaults) -> policy.toml
+        let minimal = toml::to_string_pretty(self)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(Self::policy_path(root), minimal)?;
+
+        // full resolved (defaults + stamps) -> policy.full
+        let full = toml::to_string_pretty(&Full(self))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(Self::full_path(root), full)
     }
 
     pub fn write_default(root: impl AsRef<Path>) -> io::Result<()> {
@@ -307,6 +416,7 @@ pub enum FieldKind {
     Date,
     Id,
     IdAuto,
+    Struct, //list of objects
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -345,6 +455,12 @@ impl FieldKind {
                 weight: WeightInterval::DEFAULT,
                 exact: true,
             },
+            FieldKind::Struct => FieldDefaults {
+                searchable: false,
+                list: true,
+                weight: WeightInterval::DEFAULT,
+                exact: false,
+            },
             FieldKind::None => FieldDefaults {
                 searchable: false,
                 list: true,
@@ -367,6 +483,7 @@ impl FieldKind {
             FieldKind::Date => "date",
             FieldKind::Id => "id",
             FieldKind::IdAuto => "id",
+            FieldKind::Struct => "struct",
         }
     }
 
@@ -390,11 +507,72 @@ pub enum MatchMode {
     Both,
 }
 
-//
-//
-//
-//
-//
+//Array inside Array inside Array... max
+const MAX_ARRAY_DEPTH: u32 = 3;
+
+//arrays should have one subfield + max 3 + numbers cant be exact=false
+fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
+    if field.kind == FieldKind::Struct {
+        let depth = array_depth + 1;
+        if field.subfields.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Struct '{}' must declare at least one subfield", field.name),
+            ));
+        }
+        if depth > MAX_ARRAY_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "field '{}' nests deeper than {MAX_ARRAY_DEPTH} array levels",
+                    field.name
+                ),
+            ));
+        }
+        for sub in &field.subfields {
+            validate_field(sub, depth)?;
+        }
+    } else if field.kind.is_numeric() && !field.exact {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "numeric field '{}' must have exact = true (or omit it)",
+                field.name
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn stamp_field(
+    field: &mut FieldPolicy,
+    prefix: &str,
+    array_depth: u32,
+    registry: &mut FieldRegistry,
+) {
+    let full = if prefix.is_empty() {
+        field.name.clone()
+    } else {
+        format!("{prefix}/{}", field.name)
+    };
+    field.full_path = full.clone();
+
+    if field.kind == FieldKind::Struct {
+        let d = array_depth + 1;
+        field.depth = d;
+        for sub in &mut field.subfields {
+            stamp_field(sub, &full, d, registry);
+        }
+    } else {
+        field.row_keyed = field.repeated || array_depth > 0;
+        field.depth = if field.repeated { 1 } else { array_depth };
+        registry.resolve(&full);
+        if field.has_exact_index() {
+            registry.resolve_exact(&full);
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FieldRegistry {
@@ -476,8 +654,66 @@ impl FieldRegistry {
     }
 }
 
+fn collect_subfield_xpaths(field: &FieldPolicy, out: &mut Vec<XPathId>, policy: &IndexPolicy) {
+    for sub in &field.subfields {
+        if sub.kind == FieldKind::Struct {
+            collect_subfield_xpaths(sub, out, policy);
+        } else {
+            out.push(sub.xpath(policy));
+        }
+    }
+}
+
 impl Default for FieldRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+//helper to write the pretty + full policy
+struct Full<'a>(&'a IndexPolicy);
+impl Serialize for Full<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("IndexPolicy", 1)?;
+        st.serialize_field("fields", &FullFields(&self.0.fields))?;
+        st.end()
+    }
+}
+
+struct FullFields<'a>(&'a [FieldPolicy]);
+
+impl Serialize for FullFields<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(self.0.len()))?;
+        for f in self.0 {
+            seq.serialize_element(&FullField(f))?;
+        }
+        seq.end()
+    }
+}
+
+struct FullField<'a>(&'a FieldPolicy);
+impl Serialize for FullField<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let f = self.0;
+        let mut st = s.serialize_struct("FieldPolicy", 12)?;
+        st.serialize_field("name", &f.name)?;
+        st.serialize_field("kind", &f.kind)?;
+        st.serialize_field("searchable", &f.searchable)?;
+        st.serialize_field("list", &f.list)?;
+        st.serialize_field("weight", &f.weight)?;
+        if let Some(stem) = &f.stemming {
+            st.serialize_field("stemming", stem)?;
+        }
+        st.serialize_field("exact", &f.exact)?;
+        st.serialize_field("array", &f.repeated)?;
+        st.serialize_field("subfields", &FullFields(&f.subfields))?;
+        st.serialize_field("full_path", &f.full_path)?;
+        st.serialize_field("row_keyed", &f.row_keyed)?;
+        st.serialize_field("depth", &f.depth)?;
+        st.end()
     }
 }

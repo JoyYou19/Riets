@@ -184,6 +184,7 @@ pub enum MatchSpec {
         prefix_length: Option<usize>,
         max_expansions: Option<usize>,
     },
+    SameElement(IndexMap<String, MatchSpec>),
 }
 
 impl fmt::Display for MatchSpec {
@@ -198,6 +199,7 @@ impl MatchSpec {
         match self {
             MatchSpec::Plain(value) | MatchSpec::Exact(value) => value,
             MatchSpec::Fuzzy { value, .. } => value,
+            MatchSpec::SameElement(_) => "",
         }
     }
 
@@ -224,6 +226,7 @@ const MATCH_SPEC_KEYS: &[&str] = &[
     "prefix_length",
     "max_expansions",
     "search_fields",
+    "same_element",
 ];
 
 //Hand made cuz this our favourite command that needs a lot of care
@@ -232,6 +235,19 @@ fn deserialize_match_spec(value: &OwnedValue) -> Result<MatchSpec, String> {
         OwnedValue::String(raw) => Ok(MatchSpec::Plain(raw.clone())),
 
         OwnedValue::Object(obj) => {
+            if let Some(inner) = obj.get("same_element") {
+                let OwnedValue::Object(map) = inner else {
+                    return Err(
+                        "'same_element' must be an object mapping field -> match".to_string()
+                    );
+                };
+                let mut clauses = IndexMap::with_capacity(map.len());
+                for (k, v) in map.iter() {
+                    clauses.insert(k.clone(), deserialize_match_spec(v)?);
+                }
+                return Ok(MatchSpec::SameElement(clauses));
+            }
+
             for key in obj.keys() {
                 if MATCH_SPEC_KEYS.contains(&key.as_str()) {
                     continue;

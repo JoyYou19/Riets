@@ -248,12 +248,13 @@ impl ShardHandle {
         filters: Option<&HashMap<String, FieldFilter>>,
         xpaths: &[XPathId],
         k: usize,
+        groups: Vec<Vec<XPathId>>,
     ) -> Vec<SearchHit> {
         if k == 0 {
             return Vec::new();
         }
 
-        let executor = QueryExecutor::new(snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(snapshot, &self.analyzer, groups);
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
 
         executor.search_all_xpaths_top_k_restricted(
@@ -271,9 +272,10 @@ impl ShardHandle {
         filters: Option<&HashMap<String, FieldFilter>>,
         xpaths: &[XPathId],
         k: usize,
+        groups: Vec<Vec<XPathId>>,
     ) -> Result<Vec<SearchHit>, CorelamoError> {
         let snapshot = self.shared.snapshot.get();
-        Ok(self.rank_candidates(&snapshot, query, filters, xpaths, k))
+        Ok(self.rank_candidates(&snapshot, query, filters, xpaths, k, groups))
     }
 
     #[timed(search)]
@@ -284,13 +286,14 @@ impl ShardHandle {
         xpaths: &[XPathId],
         sort_xpaths: &[XPathId],
         window: usize,
+        groups: Vec<Vec<XPathId>>,
     ) -> Result<Vec<(SearchHit, Vec<Option<f64>>)>, CorelamoError> {
         if window == 0 {
             return Ok(Vec::new());
         }
 
         let snapshot = self.shared.snapshot.get();
-        let candidates = self.rank_candidates(&snapshot, query, filters, xpaths, window);
+        let candidates = self.rank_candidates(&snapshot, query, filters, xpaths, window, groups);
         if candidates.is_empty() {
             return Ok(Vec::new());
         }

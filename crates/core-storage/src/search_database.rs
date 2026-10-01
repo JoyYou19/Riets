@@ -1,16 +1,14 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    io,
-    sync::Arc,
-};
+use std::{io, sync::Arc};
 
 use crate::{
     document_projections::{id_path_to_strip, project_document},
     document_store::{DocumentStore, StoredDocument},
-    json_indexing_helper::flatten_fields,
+    json_indexing_helper::index_document,
+    json_parse::{ParsedNode, parse_source_into_node},
 };
 use core_index::{
     analyzer::analyzer::Analyzer,
+    array_rows::ArrayRowAllocator,
     document::{IndexPolicy, IndexedDocument},
     lsm::{
         LsmIndex,
@@ -22,7 +20,7 @@ use core_index::{
     types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
 };
 
-use crate::json_indexing_helper::indexed_from_fields;
+use ahash::{HashSet, HashSetExt};
 
 use bincode::{Decode, Encode};
 use core_protocol::{
@@ -82,6 +80,7 @@ pub struct SearchDatabase<S: DocumentStore> {
 
     shard_id: ShardId,
     next_local_id: LocalDocId,
+    array_row_allocator: ArrayRowAllocator,
 }
 
 pub struct InsertReport {
@@ -122,8 +121,7 @@ pub enum DatabasePowerButtonOutcome {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Encode, Decode)]
 pub struct DocumentInput {
     pub external_id: String,
-    pub fields: BTreeMap<String, String>, //Don't know if this can be HashMap instead
-
+    pub parsed: ParsedNode,
     pub source: Vec<u8>,
     pub format: Format, // Stores the format of the document JSON/XML
 }
@@ -187,6 +185,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shard_id: ShardId,
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+        let next_array_row = index.max_array_row().saturating_add(1);
 
         let snapshot = SharedIndexSnapshot::empty();
         let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone());
@@ -199,6 +198,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             policy,
             shard_id,
             next_local_id,
+            array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
         })
     }
 
@@ -212,6 +212,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shared_snapshot: SharedIndexSnapshot,
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+        let next_array_row = index.max_array_row().saturating_add(1);
 
         let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone());
 
@@ -223,6 +224,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             policy,
             shard_id,
             next_local_id,
+            array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
         })
     }
 
@@ -258,7 +260,12 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn put_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let internal_id = self.allocate_internal_id()?;
         if mode == IndexMode::StoreAndIndex {
-            let indexed = indexed_from_fields(internal_id, &input.fields, &self.policy);
+            let indexed = index_document(
+                internal_id,
+                &input.parsed,
+                &self.policy,
+                &mut self.array_row_allocator,
+            );
             self.index_worker.add_indexed_document_wait(indexed)?;
         }
         let doc = StoredDocument {
@@ -339,7 +346,12 @@ impl<S: DocumentStore> SearchDatabase<S> {
         }
 
         if mode == IndexMode::StoreAndIndex {
-            let indexed = indexed_from_fields(internal_id, &input.fields, &self.policy);
+            let indexed = index_document(
+                internal_id,
+                &input.parsed,
+                &self.policy,
+                &mut self.array_row_allocator,
+            );
             self.index_worker.add_indexed_document_wait(indexed)?;
         }
 
@@ -370,7 +382,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(search)]
     pub fn search(&self, query: &Query, xpath: u32) -> Vec<SearchHit> {
         let snapshot = self.snapshot.get();
-        let executor = QueryExecutor::new(&*snapshot, &self.analyzer);
+        let executor = QueryExecutor::new(&*snapshot, &self.analyzer, self.policy().array_groups());
         executor.search(query, xpath)
     }
 
@@ -475,6 +487,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         let analyzer = &self.analyzer;
         let policy = &self.policy;
         let worker = &self.index_worker;
+        let allocator = &mut self.array_row_allocator;
 
         let mut current: Vec<IndexedDocument> = Vec::with_capacity(batch_size);
         let mut pending: Vec<Vec<IndexedDocument>> = Vec::with_capacity(window_size);
@@ -485,15 +498,14 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     return Err(io::Error::other("reindex cancelled"));
                 }
 
-                let fields = match flatten_fields(&doc.source) {
-                    Ok(f) => f,
+                let node = match parse_source_into_node(&doc.source, policy) {
+                    Ok(n) => n,
                     Err(e) => {
-                        eprintln!("[reindex] skipping document {}: {e}", doc.external_id);
+                        eprintln!("[reindex] skipping document {}: {e:?}", doc.external_id);
                         return Ok(());
                     }
                 };
-
-                current.push(indexed_from_fields(doc.internal_id, &fields, policy));
+                current.push(index_document(doc.internal_id, &node, policy, allocator));
 
                 if current.len() >= batch_size {
                     pending.push(std::mem::replace(
@@ -561,7 +573,12 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         }
 
         self.seen.insert(external_id.clone());
-        let indexed = indexed_from_fields(internal_id, &input.fields, &self.db.policy);
+        let indexed = index_document(
+            internal_id,
+            &input.parsed,
+            &self.db.policy,
+            &mut self.db.array_row_allocator,
+        );
         let stored = StoredDocument {
             external_id,
             internal_id,
@@ -588,23 +605,6 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         self.db.store.contains(external_id)
     }
-
-    // Generates an external ID for documents that dont have one
-    // packed global document ids are used as the generated external ID
-    // (THIS IS NOT AUTOINCREMENT WE FUCK THEM)
-    // fn allocate_generated_external_id(&mut self, mut internal_id: DocId) -> io::Result<String> {
-    //     loop {
-    //         let external_id = internal_id.to_string();
-
-    //         if !self.external_id_exists(&external_id)? {
-    //             self.seen.insert(external_id.clone());
-
-    //             return Ok(external_id.to_string());
-    //         }
-
-    //         internal_id = self.db.allocate_internal_id()?;
-    //     }
-    // }
 
     #[timed(inserting)]
     pub fn finish(mut self) -> io::Result<InsertReport> {

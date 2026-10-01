@@ -1,5 +1,6 @@
 use std::{ io, path::PathBuf, sync::Arc };
 
+use ahash::HashSet;
 use core_timing::timed;
 
 use crate::{
@@ -17,6 +18,11 @@ use crate::{
     search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats },
     segment::{ ImmutableSegment, SegmentHandle },
     types::{ DocId, XPathId },
+    numeric_values::{NumericBound, NumericValue},
+    posting::{DeleteSet, PostingList},
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
+    segment::{ImmutableSegment, SegmentHandle},
+    types::{ArrayRowId, DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -58,6 +64,18 @@ impl SearchIndex for LsmIndex {
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.snapshot().lookup_prefix(prefix, xpath)
+    }
+
+    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+        self.snapshot().resolve_array_rows(rows)
+    }
+
+    fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
+        self.snapshot().parent_of_row(row)
+    }
+
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.snapshot().doc_of_row(row)
     }
 
     #[timed(search)]
@@ -132,6 +150,7 @@ impl LsmIndex {
             next_doc_id: 0,
             next_segment_id: 0,
             next_compaction_job_id: 0,
+            max_array_row: 0,
         }
     }
 
@@ -145,7 +164,7 @@ impl LsmIndex {
         let mut segment_handles = Vec::new();
         let mut query_segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::new();
         let mut next_segment_id = 0;
-
+        let mut max_array_row = 0;
         let deleted = crate::lsm::deletes::read_deletes(&root)?;
         // let mut deleted_generation=
         for path in segment_paths {
@@ -156,6 +175,11 @@ impl LsmIndex {
             if
                 let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) &&
                 let Some(id) = stem
+
+            max_array_row = max_array_row.max(disk.array_row_index().max_array_row().unwrap_or(0));
+
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                && let Some(id) = stem
                     .strip_prefix("segment-")
                     .and_then(|value| value.parse::<u64>().ok())
             {
@@ -181,8 +205,14 @@ impl LsmIndex {
             next_segment_id,
             next_doc_id,
             next_compaction_job_id: 0,
+            max_array_row,
         })
     }
+
+    pub fn max_array_row(&self) -> ArrayRowId {
+        self.max_array_row
+    }
+
     //TEST
     #[timed(indexing_documents)]
     fn seal(&mut self) {
@@ -560,7 +590,10 @@ impl LsmIndex {
             segs.remove(pos);
         }
 
-        self.segment_handles.insert(insert_pos, SegmentHandle::Disk(completed.output_path.clone()));
+        self.segment_handles.insert(
+            insert_pos,
+            SegmentHandle::Disk(completed.output_path.clone()),
+        );
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
         segs.insert(insert_pos, disk);
 
