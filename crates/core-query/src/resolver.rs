@@ -19,7 +19,6 @@ use crate::{
     query_string_parser::{analyze_query, parse_json_query},
 };
 
-//xpath context for one field: normal (analyzed) + exact (raw) index
 #[derive(Debug, Clone, Copy)]
 pub struct FieldCtx {
     pub xpath: XPathId,
@@ -27,23 +26,21 @@ pub struct FieldCtx {
     pub row_keyed: bool,
 }
 
-//recursive field bindings for a same_element node; mirrors Query::SameElement nesting
 #[derive(Debug, Clone)]
 pub struct SameElementBinding {
-    pub depth: u32,                  //this array field's depth
-    pub clauses: Vec<ClauseBinding>, //parallel to Query::SameElement children
+    pub depth: u32, //inside how many arrays is this in
+    pub clauses: Vec<ClauseBinding>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ClauseBinding {
-    pub ctx: FieldCtx, //subfield xpath (dummy for nested same_element)
-    pub depth: u32,    //subfield depth (for ascend)
-    pub nested: Option<Box<SameElementBinding>>, //Some when the clause is itself same_element
+    pub ctx: FieldCtx,
+    pub depth: u32,
+    pub nested: Option<Box<SameElementBinding>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldQuery {
-    //field this filter runs against (dummy for same_element, which uses `same_element`)
     pub ctx: FieldCtx,
     pub query: Query,
     pub row_keyed: bool,
@@ -69,12 +66,12 @@ pub fn compile_query(
         return Ok((None, Arc::new(Vec::new())));
     }
 
+    //query shouldnt have range like >2000 or same_element
     reject_filter_only_operators(raw)?;
 
     let raw_query = parse_json_query(raw)?;
     let query = analyze_query(raw_query, analyzer);
 
-    //determining which xpaths to look into
     let ctxs: Vec<FieldCtx> = match search_fields {
         Some(names) => resolve_search_fields(names, query.as_ref(), policy)?,
         None => policy
@@ -95,6 +92,7 @@ pub fn is_blank_query(v: &OwnedValue) -> bool {
     }
 }
 
+//determining which xpaths to look into either from search_fields or searchable ones
 fn resolve_search_fields(
     names: &[String],
     query: Option<&Query>,
@@ -340,8 +338,6 @@ fn resolve_same_element(
         },
     )))
 }
-
-// =============== kept unchanged ===============
 
 pub fn parse_fuzziness(raw: Option<&str>) -> Result<Fuzziness, CorelamoError> {
     let Some(raw) = raw else {

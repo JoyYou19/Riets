@@ -241,6 +241,7 @@ impl ShardHandle {
             .collect())
     }
 
+    //helper for the ranking
     fn rank_candidates(
         &self,
         snapshot: &IndexSnapshot,
@@ -256,7 +257,11 @@ impl ShardHandle {
         }
 
         let executor = QueryExecutor::new(snapshot, &self.analyzer, groups);
+
+        //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
+
+        //main entry point for query yes?
         executor.rank(query, ctxs, k, restrict.as_ref(), include_array_groups)
     }
 

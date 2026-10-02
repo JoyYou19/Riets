@@ -93,7 +93,7 @@ pub fn resolve_sorts(
 }
 
 /// relevance_norm = score / rel_best                    → 0..1 (or 0)
-/// field_norm     = (value - min) / (max - min)         → 0..1 position in the window
+/// field_norm     = (value - min) / (max - min)         → 0..1 position in the current window
 /// direction      = desc ? field_norm : 1 - field_norm  → "how good is this doc's value"
 /// blend          = (rel_weight * relevance_norm + Σ ratio_i * direction_i) / denom
 //                                  hit          sort fields like year, imdb...

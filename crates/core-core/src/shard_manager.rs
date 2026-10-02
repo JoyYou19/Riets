@@ -1,3 +1,4 @@
+//include ALL
 use crate::ShardDb;
 use crate::metrics::DbStats;
 use crate::reindex::{PendingReindexJob, ReindexPool};
@@ -20,7 +21,9 @@ use core_protocol::command_reponse_definitions::{
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
-use core_query::resolver::{compile_query, is_blank_query, parse_fuzziness};
+use core_query::resolver::{
+    compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
+};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
@@ -939,15 +942,15 @@ impl ShardManager {
         if fetch == 0 {
             return Ok(Vec::new());
         }
-
-        let policy = self.policy.read().clone();
         if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
             return Err(CorelamoError::InvalidData(
                 "Search for something not nothing....".into(),
             ));
         }
 
+        let policy = self.policy.read().clone();
         let groups = policy.array_groups();
+        //if no search_fields we should search in the arrays
         let include_array_groups = command.search_fields.is_none();
 
         let (query, ctxs) = compile_query(
@@ -958,7 +961,6 @@ impl ShardManager {
         )?;
 
         println!("{:?}", query);
-
         let query = Arc::new(query);
 
         let filters = compile_filters(&self.analyzer, command, &policy)?;
@@ -1318,10 +1320,9 @@ impl ShardManager {
         let policy = self.policy.read().clone();
 
         //in which xpaths to search in
+        //WARN: manskiet te bij jauna logika bet man bail no merge conflikta
         let xpaths: Arc<Vec<XPathId>> = match &command.search_fields {
-            Some(names) => Arc::new(core_query::resolver::resolve_suggest_xpaths(
-                names, &policy,
-            )?),
+            Some(names) => Arc::new(resolve_suggest_xpaths(names, &policy)?),
             None => Arc::new(policy.searchable_xpaths()),
         };
 

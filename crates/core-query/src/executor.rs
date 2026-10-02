@@ -156,7 +156,7 @@ where
         }
     }
 
-    // Query a term
+    //Lookup a term
     #[timed(search)]
     fn execute_term(&self, term: &str, xpath: XPathId) -> Option<PostingList> {
         if term.is_empty() {
@@ -176,7 +176,7 @@ where
         Some(self.index.lookup_prefix(prefix, xpath))
     }
 
-    // Wildcard query, for now, we are not analyzing this, might change later
+    // Wildcard query
     #[timed(search)]
     fn execute_wildcard(&self, pattern: &str, xpath: XPathId) -> PostingList {
         let pattern = core_index::wildcard::WildcardPattern::parse(pattern);
@@ -185,10 +185,8 @@ where
 
     // Phrase query,
     // ["rust", "document"]
-    //
     // A document matches only if rust and database appear in it in order rust + database so
     // position and position + 1
-    //
     #[timed(search)]
     fn execute_phrase(&self, terms: &[String], xpath: XPathId) -> PostingList {
         use core_index::posting::Posting;
@@ -277,7 +275,7 @@ where
     fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
         let raw = raw.trim();
 
-        //incase someone did phrase + exact
+        //incase someone did phrase + exact we can be forgiving and drop the ""
         let raw = raw
             .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))

@@ -21,7 +21,8 @@ def flatten_value(value):
 
 
 def parse_cast(cast_value):
-    """Convert cast entries into a list of dictionaries with name and surname."""
+    """Convert cast entries into a list of dictionaries
+    with name and surname."""
     if not isinstance(cast_value, list):
         if isinstance(cast_value, str) and cast_value.strip():
             cast_value = [cast_value]
