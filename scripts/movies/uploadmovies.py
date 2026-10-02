@@ -96,6 +96,20 @@ kind = "Integer"
 [fields.weight]
 min = 0
 max = 0
+
+[[fields]]
+name = "random_nums"
+kind = "Struct"
+
+[[fields.subfields]]
+name = "num1"
+kind = "Integer"
+searchable = true
+
+[[fields.subfields]]
+name = "num2"
+kind = "Integer"
+searchable = true
 """
 
 
@@ -149,17 +163,20 @@ def main():
         done += 1
         name = os.path.basename(file)
         if code != 0:
-            print(f"[ERROR] ({done}/{len(files)}) failed to upload {name} (curl exit {code})")
+            print(
+                f"[ERROR] ({done}/{len(files)}) failed to upload {name} (curl exit {code})")
             print(out)
             return
         try:
             reply = json.loads(out)
         except json.JSONDecodeError:
-            print(f"[ERROR] ({done}/{len(files)}) {name}: unreadable reply: {out[:300]}")
+            print(
+                f"[ERROR] ({done}/{len(files)}) {name}: unreadable reply: {out[:300]}")
             return
         got = (reply.get("data") or {}).get("inserted")
         if got is None:
-            print(f"[ERROR] ({done}/{len(files)}) {name}: {reply.get('title') or out[:300]}")
+            print(
+                f"[ERROR] ({done}/{len(files)}) {name}: {reply.get('title') or out[:300]}")
             return
         inserted += got
         elapsed = time.time() - start_time
@@ -183,7 +200,8 @@ def main():
             report(done_file, *future.result())
 
     duration = time.time() - start_time
-    print(f"\n[INFO] Done: {inserted:,} documents inserted in {duration:.2f}s.")
+    print(f"\n[INFO] Done: {
+          inserted:,} documents inserted in {duration:.2f}s.")
 
 
 if __name__ == "__main__":

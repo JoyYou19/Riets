@@ -64,23 +64,23 @@ impl Analyzer {
 
     #[timed(indexing_documents)]
     pub fn analyze(&self, input: &str) -> Vec<Token> {
-         LOCAL_ANALYZER.with(|cell| {
+        LOCAL_ANALYZER.with(|cell| {
             let mut local = cell.borrow_mut();
-        let  analyzer = local.get_or_insert_with(|| self.analyzer.clone());
-        let mut stream = analyzer.token_stream(input);
-        let mut output = Vec::new();
+            let analyzer = local.get_or_insert_with(|| self.analyzer.clone());
+            let mut stream = analyzer.token_stream(input);
+            let mut output = Vec::new();
 
-        while let Some(token) = stream.next() {
-            output.push(Token {
-                text: token.text.clone(),
-                position: token.position as u32,
-                start_byte: token.offset_from,
-                end_byte: token.offset_to,
-            });
-        }
+            while let Some(token) = stream.next() {
+                output.push(Token {
+                    text: token.text.clone(),
+                    position: token.position as u32,
+                    start_byte: token.offset_from,
+                    end_byte: token.offset_to,
+                });
+            }
 
-        output
-    })
+            output
+        })
     }
 
     //For search same thing like spider-man spiderman the same thing is in index so it would match

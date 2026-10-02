@@ -5,7 +5,7 @@ use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
     mem::MemIndex,
     numeric_values::{NumericBound, NumericValue},
     posting::{DeleteSet, PostingList, ops::union_many},
@@ -41,6 +41,10 @@ impl SearchIndex for IndexSnapshot {
             out.extend(seg.terms(xpath));
         }
         out.into_iter().collect()
+    }
+
+    fn is_deleted(&self, doc_id: DocId) -> bool {
+        self.deleted.is_deleted(doc_id)
     }
 
     fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
@@ -90,18 +94,19 @@ impl SearchIndex for IndexSnapshot {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
-        let mut out: std::collections::BTreeMap<
-            String,
-            FuzzyExpansion
-        > = std::collections::BTreeMap::new();
+        let mut out: std::collections::BTreeMap<String, FuzzyExpansion> =
+            std::collections::BTreeMap::new();
 
-        let all = self.mem
+        let all = self
+            .mem
             .fuzzy_expansions(term, xpath, opts)
             .into_iter()
             .chain(
-                self.segments.iter().flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts))
+                self.segments
+                    .iter()
+                    .flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts)),
             );
 
         for expansion in all {
@@ -123,7 +128,7 @@ impl SearchNumeric for IndexSnapshot {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> PostingList {
         let mut lists = Vec::new();
 
@@ -157,13 +162,14 @@ impl SearchNumeric for IndexSnapshot {
 
 impl SearchStats for IndexSnapshot {
     fn doc_count(&self, xpath: XPathId) -> u64 {
-        let raw =
-            self.mem.doc_count(xpath) +
-            self.segments
+        let raw = self.mem.doc_count(xpath)
+            + self
+                .segments
                 .iter()
                 .map(|s| s.doc_count(xpath))
                 .sum::<u64>();
-        let deleted = self.deleted
+        let deleted = self
+            .deleted
             .iter()
             .filter(|&doc_id| self.doc_len(doc_id, xpath).is_some())
             .count() as u64;
@@ -188,19 +194,21 @@ impl SearchStats for IndexSnapshot {
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        let raw =
-            self.mem.total_doc_len(xpath) +
-            self.segments
+        let raw = self.mem.total_doc_len(xpath)
+            + self
+                .segments
                 .iter()
                 .map(|s| s.total_doc_len(xpath))
                 .sum::<u64>();
-        let deleted: u64 = self.deleted
+        let deleted: u64 = self
+            .deleted
             .iter()
             .filter_map(|doc_id| self.doc_len(doc_id, xpath))
             .map(|len| len as u64)
             .sum();
         raw.saturating_sub(deleted)
     }
+
     fn doc_range(&self) -> Option<(DocId, DocId)> {
         let mut range: Option<(DocId, DocId)> = self.mem.doc_range();
 
@@ -221,7 +229,7 @@ impl IndexSnapshot {
     pub fn new(
         mem: Arc<MemIndex>,
         segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
-        deleted: DeleteSet
+        deleted: DeleteSet,
     ) -> Self {
         Self {
             mem,
@@ -239,7 +247,8 @@ impl IndexSnapshot {
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
 
-        let segment_lists: Vec<PostingList> = self.segments
+        let segment_lists: Vec<PostingList> = self
+            .segments
             .iter()
             .map(|segment| segment.lookup(term, xpath))
             .collect();

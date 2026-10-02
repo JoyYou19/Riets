@@ -36,7 +36,7 @@ use core_protocol::{
     command_reponse_definitions::{LookupCommand, LookupResponse},
     errors::{CorelamoError, DocFailure, FailReason},
 };
-use core_query::{Query, SearchHit, query_string_parser::parse_and_analyze};
+use core_query::SearchHit;
 use core_timing::timed;
 
 use crate::{
@@ -450,13 +450,6 @@ impl ShardDb {
             .map_err(CorelamoError::from)
     }
 
-    #[timed(search)]
-    pub fn build_query(&self, input: &str) -> Result<Option<Query>, CorelamoError> {
-        let db = self
-            .db_ref()
-            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        parse_and_analyze(input, db.get_analyzer())
-    }
     // =========write operations =========
     #[timed(wal)]
     fn wal_append_record(&mut self, record: &WalRecord) -> Result<u64, CorelamoError> {
@@ -483,7 +476,7 @@ impl ShardDb {
         self.pending += count as u32;
         let not_flushed = self.pending >= (batch_size as u32);
         let wal_record = WalRecord::Create(inputs);
-       // self.wal_append_record(&wal_record)?;
+        // self.wal_append_record(&wal_record)?;
         let WalRecord::Create(inputs) = wal_record else {
             return Err(CorelamoError::Internal("unexpected WAL record".into()));
         };
