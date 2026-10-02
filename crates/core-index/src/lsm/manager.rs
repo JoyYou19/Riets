@@ -1,4 +1,4 @@
-use std::{ io, path::PathBuf, sync::Arc };
+use std::{ io, path::PathBuf, sync::Arc, time::{Duration, Instant} };
 
 use ahash::HashSet;
 use core_timing::timed;
@@ -38,6 +38,7 @@ pub struct LsmIndex {
     next_doc_id: DocId,
     next_compaction_job_id: u64,
     max_array_row: ArrayRowId,
+    last_ingest: Instant,
 }
 //THIS DOESNT NEED TO BE CONFIGURABlE I THINK?
 /// Hard cap on in-memory generations so snapshot fan-out stays bounded.
@@ -45,8 +46,14 @@ const MAX_GENERATIONS: usize = 16;
 const STAGING_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 /// A compaction run only contains segments whose sizes are within this factor of each other.
 const COMPACTION_SIZE_RATIO: u64 = 4;
-/// Fewest segments worth merging in one job.
+/// Fewest similar-sized adjacent segments worth merging during ingest.
 const MIN_COMPACTION_WIDTH: usize = 4;
+/// Above this many segments, merge the cheapest adjacent run even if sizes differ.
+const MAX_SEGMENTS_TARGET: usize = 10;
+/// After this long without inserts or deletes, merge everything into one segment.
+const IDLE_FULL_MERGE_AFTER: Duration = Duration::from_secs(30);
+/// Fewest segments worth merging in one job.
+
 #[timed(flushing)]
 fn unwrap_mem(generation: Arc<MemIndex>) -> MemIndex {
     Arc::try_unwrap(generation).unwrap_or_else(|shared| (*shared).clone())
@@ -154,6 +161,7 @@ impl LsmIndex {
             next_segment_id: 0,
             next_compaction_job_id: 0,
             max_array_row: 0,
+            last_ingest:Instant::now()
         }
     }
 
@@ -206,6 +214,7 @@ impl LsmIndex {
             next_doc_id,
             next_compaction_job_id: 0,
             max_array_row,
+            last_ingest:Instant::now()
         })
     }
 
@@ -492,81 +501,112 @@ impl LsmIndex {
 
     #[timed(compaction)]
   
-    pub fn plan_compaction(
-        &mut self,
-        config: CompactionConfig
-    ) -> io::Result<Option<CompactionJob>> {
-        if self.segment_count() < config.compact_when_segments_at_least {
-            return Ok(None);
-        }
-        let Some(root) = &self.root else {
-            return Ok(None);
-        };
 
-        let sizes: Vec<Option<u64>> = self.segment_handles
-            .iter()
-            .map(|handle| {
-                match handle {
-                    SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
-                    SegmentHandle::Memory(_) => None,
-                }
-            })
-            .collect();
+pub fn plan_compaction(&mut self, config: CompactionConfig) -> io::Result<Option<CompactionJob>> {
+    let Some(root) = &self.root else {
+        return Ok(None);
+    };
 
-        let max_width = config.max_segments_per_compaction.max(MIN_COMPACTION_WIDTH);
-        let mut best: Option<(usize, usize, u64)> = None; // (start, end_exclusive, total_bytes)
+    let sizes: Vec<Option<u64>> = self
+        .segment_handles
+        .iter()
+        .map(|handle| match handle {
+            SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
+            SegmentHandle::Memory(_) => None,
+        })
+        .collect();
 
-        for start in 0..sizes.len() {
-            let Some(first) = sizes[start] else {
-                continue;
-            };
-            let (mut smallest, mut largest, mut total) = (first, first, first);
-            let mut end = start + 1;
-
-            while end < sizes.len() && end - start < max_width {
-                let Some(size) = sizes[end] else {
-                    break;
-                };
-                let next_smallest = smallest.min(size);
-                let next_largest = largest.max(size);
-                if next_largest > next_smallest.saturating_mul(COMPACTION_SIZE_RATIO) {
-                    break;
-                }
-                smallest = next_smallest;
-                largest = next_largest;
-                total += size;
-                end += 1;
-            }
-
-            if
-                end - start >= MIN_COMPACTION_WIDTH &&
-                best.map_or(true, |(_, _, best_total)| total < best_total)
-            {
-                best = Some((start, end, total));
-            }
-        }
-
-        let Some((start, end, _)) = best else {
-            return Ok(None);
-        };
-
-        let selected: Vec<SegmentHandle> = self.segment_handles[start..end].to_vec();
-        let output_path = root.join(format!("segment-{}.idx", self.next_segment_id));
-        self.next_segment_id += 1;
-        let job_id = self.next_compaction_job_id;
-        self.next_compaction_job_id += 1;
-
-        Ok(
-            Some(CompactionJob {
-                job_id,
-                selected,
-                deleted: self.deleted.clone(),
-                delete_generation: self.delete_generation,
-                output_path,
-            })
-        )
+    let disk_segments = sizes.iter().filter(|size| size.is_some()).count();
+    if disk_segments < 2 {
+        return Ok(None);
     }
 
+    let idle = self.last_ingest.elapsed() >= IDLE_FULL_MERGE_AFTER;
+    let all_disk = disk_segments == sizes.len();
+    let max_width = config.max_segments_per_compaction.max(MIN_COMPACTION_WIDTH);
+
+    let window = if idle && all_disk {
+        Some((0, sizes.len()))
+    } else if self.segment_count() >= config.compact_when_segments_at_least {
+        Self::tiered_window(&sizes, MIN_COMPACTION_WIDTH, max_width).or_else(|| {
+            (self.segment_count() > MAX_SEGMENTS_TARGET)
+                .then(|| Self::cheapest_window(&sizes, max_width))
+                .flatten()
+        })
+    } else {
+        None
+    };
+
+    let Some((start, end)) = window else {
+        return Ok(None);
+    };
+
+    let selected: Vec<SegmentHandle> = self.segment_handles[start..end].to_vec();
+    let output_path = root.join(format!("segment-{}.idx", self.next_segment_id));
+    self.next_segment_id += 1;
+    let job_id = self.next_compaction_job_id;
+    self.next_compaction_job_id += 1;
+
+    Ok(Some(CompactionJob {
+        job_id,
+        selected,
+        deleted: self.deleted.clone(),
+        delete_generation: self.delete_generation,
+        output_path,
+    }))
+}
+
+/// Cheapest contiguous run of disk segments whose sizes are within
+/// COMPACTION_SIZE_RATIO of each other, at least `min_width` long.
+fn tiered_window(sizes: &[Option<u64>], min_width: usize, max_width: usize) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize, u64)> = None;
+
+    for start in 0..sizes.len() {
+        let Some(first) = sizes[start] else { continue };
+        let (mut smallest, mut largest, mut total) = (first, first, first);
+        let mut end = start + 1;
+
+        while end < sizes.len() && end - start < max_width {
+            let Some(size) = sizes[end] else { break };
+            let next_smallest = smallest.min(size);
+            let next_largest = largest.max(size);
+            if next_largest > next_smallest.saturating_mul(COMPACTION_SIZE_RATIO) {
+                break;
+            }
+            smallest = next_smallest;
+            largest = next_largest;
+            total += size;
+            end += 1;
+        }
+
+        if end - start >= min_width && best.map_or(true, |(_, _, best_total)| total < best_total) {
+            best = Some((start, end, total));
+        }
+    }
+
+    best.map(|(start, end, _)| (start, end))
+}
+
+/// Cheapest contiguous run of up to `width` disk segments, ignoring size ratios.
+/// Used to keep the segment count bounded when no tiered run qualifies.
+fn cheapest_window(sizes: &[Option<u64>], width: usize) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize, u64)> = None;
+
+    for start in 0..sizes.len() {
+        let mut total = 0u64;
+        let mut end = start;
+        while end < sizes.len() && end - start < width {
+            let Some(size) = sizes[end] else { break };
+            total += size;
+            end += 1;
+        }
+        if end - start >= 2 && best.map_or(true, |(_, _, best_total)| total < best_total) {
+            best = Some((start, end, total));
+        }
+    }
+
+    best.map(|(start, end, _)| (start, end))
+}
     #[timed(compaction)]
     pub fn install_compaction(&mut self, completed: CompletedCompaction) -> io::Result<bool> {
         let Some(root) = &self.root else {

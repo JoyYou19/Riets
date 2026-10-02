@@ -19,7 +19,7 @@ use crate::lsm::{
     index_worker::IndexCommand,
 };
 
-const MAX_CONCURRENT_INDEX_COMPACTIONS: usize = 2;
+const MAX_CONCURRENT_INDEX_COMPACTIONS: usize = 8;
 const STOP_POLL: Duration = Duration::from_millis(100);
 
 static INDEX_COMPACTION_SLOTS: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
