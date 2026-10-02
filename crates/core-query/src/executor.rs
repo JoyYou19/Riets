@@ -403,6 +403,8 @@ where
             Query::And(parts) => self.eval_and(parts, ctxs, mode),
             //same_element is resolved by the filter driver (needs its binding tree)
             Query::SameElement(_) => EvalOutcome::Docs(HashSet::new()),
+
+            Query::MatchAll => EvalOutcome::Docs(HashSet::new()),
         }
     }
 
@@ -662,8 +664,26 @@ where
             return Vec::new();
         }
 
-        //WARN: the match_all
+        //no query
         let Some(query) = query else {
+            //filter-only search
+            return match restrict {
+                Some(allowed) => top_k_from_hits(
+                    allowed.iter().copied().map(|doc_id| SearchHit {
+                        doc_id,
+                        matched_terms: 0,
+                        weight_sum: 0,
+                        distance_factor: 1.0,
+                        score: 0.0,
+                    }),
+                    k,
+                ),
+                None => Vec::new(),
+            };
+        };
+
+        //explicit match_all
+        if let Query::MatchAll = query {
             return match restrict {
                 Some(allowed) => top_k_from_hits(
                     allowed.iter().copied().map(|doc_id| SearchHit {

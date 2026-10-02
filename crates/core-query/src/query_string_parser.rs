@@ -270,6 +270,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
                 Some(Query::SameElement(kept))
             }
         }
+        Query::MatchAll => Some(Query::MatchAll),
     }
 }
 
@@ -341,6 +342,7 @@ pub fn parse_and_analyze(input: &str, analyzer: &Analyzer) -> Result<Option<Quer
 #[timed(search)]
 pub fn parse_json_query(v: &OwnedValue) -> Result<Query, CorelamoError> {
     match v {
+        OwnedValue::String(s) if s.trim() == "match_all" => Ok(Query::MatchAll),
         OwnedValue::String(s) => Ok(classify_word(s)),
         OwnedValue::Object(obj) => {
             if let Some(inner) = obj.get("AND") {
@@ -383,31 +385,43 @@ enum Leaf {
 }
 
 fn combinator(inner: &OwnedValue, make: fn(Vec<Query>) -> Query) -> Result<Query, CorelamoError> {
-    let OwnedValue::Array(items) = inner else {
-        return Err(CorelamoError::InvalidData(
-            "AND/OR/WAND must be an array".into(),
-        ));
-    };
-    items
-        .iter()
-        .map(parse_json_query)
-        .collect::<Result<Vec<_>, _>>()
-        .map(make)
-}
-
-fn leaf(inner: &OwnedValue, kind: Leaf) -> Result<Query, CorelamoError> {
-    let s = inner.as_str().ok_or_else(|| {
-        CorelamoError::InvalidData("leaf value must be a single word (string)".into())
-    })?;
-    if s.split_whitespace().count() > 1 {
-        return Err(CorelamoError::InvalidData(
-            "leaf values take one word — combine with AND/OR/WAND for multiple".into(),
-        ));
+    match inner {
+        OwnedValue::Array(items) => {
+            let mut out = Vec::new();
+            for item in items.iter() {
+                match item {
+                    OwnedValue::String(s) => {
+                        out.extend(s.split_whitespace().map(classify_word));
+                    }
+                    other => out.push(parse_json_query(other)?),
+                }
+            }
+            Ok(make(out))
+        }
+        OwnedValue::String(s) => {
+            let items: Vec<Query> = s.split_whitespace().map(classify_word).collect();
+            Ok(make(items))
+        }
+        _ => Err(CorelamoError::InvalidData(
+            "AND/OR/WAND must be an array or a string".into(),
+        )),
     }
+}
+fn leaf(inner: &OwnedValue, kind: Leaf) -> Result<Query, CorelamoError> {
+    let s = inner
+        .as_str()
+        .ok_or_else(|| CorelamoError::InvalidData("leaf value must be a string".into()))?;
     Ok(match kind {
+        //exact allows multiple words too
         Leaf::Exact => Query::Exact(s.to_string()),
-        //term still auto-detects prefix/wildcard (e*, *a*)
-        Leaf::Term => classify_word(s),
+        Leaf::Term => {
+            if s.split_whitespace().count() > 1 {
+                return Err(CorelamoError::InvalidData(
+                    "term takes one word — combine with AND/OR/WAND for multiple".into(),
+                ));
+            }
+            classify_word(s)
+        }
     })
 }
 
@@ -433,9 +447,21 @@ fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
 }
 
 fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
+    //fuzzy ALSO allows multiple words now
+    if let Some(s) = inner.as_str() {
+        return Ok(Query::Fuzzy(
+            s.to_string(),
+            Fuzziness::Auto,
+            FuzzySpec {
+                prefix_length: DEFAULT_PREFIX_LENGTH,
+                max_expansions: DEFAULT_MAX_EXPANSIONS,
+            },
+        ));
+    }
+
     let OwnedValue::Object(obj) = inner else {
         return Err(CorelamoError::InvalidData(
-            "'fuzzy' must be an object with 'value'".into(),
+            "'fuzzy' must be a string or an object with 'value'".into(),
         ));
     };
     let value = obj

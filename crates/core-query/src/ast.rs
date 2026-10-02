@@ -19,4 +19,5 @@ pub enum Query {
     //
     Range(NumericRange),
     SameElement(Vec<Query>),
+    MatchAll,
 }

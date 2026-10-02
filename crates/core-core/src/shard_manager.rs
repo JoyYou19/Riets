@@ -20,7 +20,7 @@ use core_protocol::command_reponse_definitions::{
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
-use core_query::resolver::{compile_query, parse_fuzziness};
+use core_query::resolver::{compile_query, is_blank_query, parse_fuzziness};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
@@ -941,6 +941,12 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
+        if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
+            return Err(CorelamoError::InvalidData(
+                "Search for something not nothing....".into(),
+            ));
+        }
+
         let groups = policy.array_groups();
         let include_array_groups = command.search_fields.is_none();
 
@@ -950,6 +956,9 @@ impl ShardManager {
             &self.analyzer,
             &policy,
         )?;
+
+        println!("{:?}", query);
+
         let query = Arc::new(query);
 
         let filters = compile_filters(&self.analyzer, command, &policy)?;

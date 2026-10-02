@@ -59,23 +59,20 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
     }
 }
 
-// =============== main query ===============
-
 pub fn compile_query(
     raw: &OwnedValue,
     search_fields: Option<&[String]>,
     analyzer: &Analyzer,
     policy: &IndexPolicy,
 ) -> Result<(Option<Query>, Arc<Vec<FieldCtx>>), CorelamoError> {
-    if is_match_all(raw) {
+    if is_blank_query(raw) {
         return Ok((None, Arc::new(Vec::new())));
     }
 
     reject_filter_only_operators(raw)?;
 
-    //field-agnostic: parse + analyze once
-    let node = parse_json_query(raw)?;
-    let query = analyze_query(node, analyzer);
+    let raw_query = parse_json_query(raw)?;
+    let query = analyze_query(raw_query, analyzer);
 
     //determining which xpaths to look into
     let ctxs: Vec<FieldCtx> = match search_fields {
@@ -90,8 +87,7 @@ pub fn compile_query(
     Ok((query, Arc::new(ctxs)))
 }
 
-//WARN: mos kkadu "match_all"
-fn is_match_all(v: &OwnedValue) -> bool {
+pub fn is_blank_query(v: &OwnedValue) -> bool {
     match v {
         OwnedValue::String(s) => s.trim().is_empty(),
         OwnedValue::Object(obj) => obj.is_empty(),
@@ -163,8 +159,6 @@ fn tree_has_exact(q: &Query) -> bool {
         _ => false,
     }
 }
-
-// =============== filters ===============
 
 pub fn compile_filters(
     filters: &IndexMap<String, OwnedValue>,
