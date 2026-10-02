@@ -12,6 +12,9 @@ use crate::posting::{ Posting, PostingList };
 use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
 use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId };
 use crate::wildcard::WildcardPattern;
+use ahash::AHashMap;
+use ahash::{HashMapExt, HashSet};
+use core_timing::timed;
 
 // Memory inverted index, the core of the index
 #[derive(Debug, Clone)]
@@ -90,14 +93,13 @@ impl SearchNumeric for MemIndex {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> PostingList {
         let docs = self.numeric_points.range(xpath, lo, hi);
         PostingList::from_items(
-            docs
-                .into_iter()
+            docs.into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect()
+                .collect(),
         )
     }
 
@@ -187,7 +189,7 @@ impl MemIndex {
         term: impl Into<String>,
         xpath: XPathId,
         doc_id: DocId,
-        position: u32
+        position: u32,
     ) {
         self.add_token_weighted(term, xpath, doc_id, position, 1);
     }
@@ -199,9 +201,8 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         position: u32,
-        weight: u16
+        weight: u16,
     ) {
-        self.track_doc_id(doc_id);
         // one position added to a posting: doc_id + one u32 position, plus
         // per-entry posting overhead (weight, small header). Approximate —
         // this doesn't need to be exact, just proportional to real growth.
@@ -225,7 +226,7 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         positions: Vec<u32>,
-        weight: u16
+        weight: u16,
     ) {
         self.estimated_bytes +=
             std::mem::size_of::<DocId>() +
@@ -238,7 +239,8 @@ impl MemIndex {
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
-                slot.insert(PostingList::new()).insert_posting(doc_id, positions, weight);
+                slot.insert(PostingList::new())
+                    .insert_posting(doc_id, positions, weight);
             }
         }
     }
@@ -345,7 +347,7 @@ impl MemIndex {
                     part.xpath,
                     &part.text,
                     part.weight.min,
-                    part.weight.max
+                    part.weight.max,
                 );
             } else {
                 self.add_document_weighted(
@@ -354,7 +356,7 @@ impl MemIndex {
                     part.xpath,
                     &part.text,
                     part.weight.min,
-                    part.weight.max
+                    part.weight.max,
                 );
             }
         }
@@ -372,7 +374,7 @@ impl MemIndex {
         xpath: XPathId,
         text: &str,
         min_weight: u16,
-        max_weight: u16
+        max_weight: u16,
     ) {
         let words: Vec<&str> = text.split_whitespace().collect();
         let len = words.len().min(u32::MAX as usize) as u32;
@@ -391,10 +393,7 @@ impl MemIndex {
         }
         let mut grouped = ahash::HashMap::<&str, Vec<u32>>::default();
         for (position, word) in words.iter().enumerate() {
-            grouped
-                .entry(word)
-                .or_default()
-                .push(position as u32);
+            grouped.entry(word).or_default().push(position as u32);
         }
 
         for (term, positions) in grouped {

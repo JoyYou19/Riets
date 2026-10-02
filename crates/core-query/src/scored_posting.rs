@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use core_index::types::{DocId, Position};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ScoredPosting {
     pub doc_id: DocId,
     pub positions: Arc<[Position]>,

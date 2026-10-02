@@ -158,6 +158,7 @@ impl Analyzer {
                     end_byte: token.offset_to,
                 });
             }
+
             output
         })
     }

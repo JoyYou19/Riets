@@ -346,7 +346,7 @@ pub async fn search_handler(
 
     let resp = SearchResponse::new(docs, strip_id);
 
-    HttpOk::with_response(format!("{hit_count} hit(s) for '{query}'"), resp, &ctx).into_response()
+    HttpOk::with_response(format!("{hit_count} hit(s) for '{query:?}'"), resp, &ctx).into_response()
 }
 
 #[timed(search)]

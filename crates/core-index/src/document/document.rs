@@ -47,41 +47,6 @@ impl IndexedDocument {
             array_rows: Vec::new(),
         }
     }
-
-    pub fn with_numeric_point(mut self, xpath: XPathId, value: NumericValue) -> Self {
-        self.numeric_points.push(NumericPoint { xpath, value });
-        self
-    }
-
-    pub fn with_part(
-        mut self,
-        xpath: XPathId,
-        text: impl Into<String>,
-        weight: WeightInterval,
-    ) -> Self {
-        self.parts.push(DocumentPart {
-            xpath,
-            text: text.into(),
-            weight,
-            exact: false,
-        });
-        self
-    }
-
-    pub fn with_exact(
-        mut self,
-        xpath: XPathId,
-        text: impl Into<String>,
-        weight: WeightInterval,
-    ) -> Self {
-        self.parts.push(DocumentPart {
-            xpath,
-            text: text.into(),
-            weight,
-            exact: true,
-        });
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

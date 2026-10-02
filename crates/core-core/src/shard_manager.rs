@@ -1,3 +1,4 @@
+//include ALL
 use crate::ShardDb;
 use crate::metrics::DbStats;
 use crate::reindex::{PendingReindexJob, ReindexPool};
@@ -20,7 +21,9 @@ use core_protocol::command_reponse_definitions::{
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
-use core_query::resolver::{compile_query, parse_fuzziness};
+use core_query::resolver::{
+    compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
+};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
@@ -939,16 +942,25 @@ impl ShardManager {
         if fetch == 0 {
             return Ok(Vec::new());
         }
+        if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
+            return Err(CorelamoError::InvalidData(
+                "Search for something not nothing....".into(),
+            ));
+        }
 
         let policy = self.policy.read().clone();
         let groups = policy.array_groups();
+        //if no search_fields we should search in the arrays
+        let include_array_groups = command.search_fields.is_none();
 
-        let (query, xpaths) = compile_query(
+        let (query, ctxs) = compile_query(
             &command.query,
             command.search_fields.as_deref(),
             &self.analyzer,
             &policy,
         )?;
+
+        println!("{:?}", query);
         let query = Arc::new(query);
 
         let filters = compile_filters(&self.analyzer, command, &policy)?;
@@ -966,7 +978,7 @@ impl ShardManager {
             let handle = handle.clone();
             let query = Arc::clone(&query);
             let filters = filters.clone();
-            let xpaths = Arc::clone(&xpaths);
+            let ctxs = Arc::clone(&ctxs);
             let sort_xpaths = sort_xpaths.clone();
             let groups = groups.clone();
             set.spawn_blocking(move || {
@@ -975,19 +987,21 @@ impl ShardManager {
                     handle.rank_sorted(
                         (*query).as_ref(),
                         filters.as_deref(),
-                        &xpaths,
+                        &ctxs,
                         sort_xpaths,
                         window,
                         groups,
+                        include_array_groups,
                     )
                 } else {
                     //else just relevance
                     let hits = handle.rank_top_k(
                         (*query).as_ref(),
                         filters.as_deref(),
-                        &xpaths,
+                        &ctxs,
                         fetch,
                         groups,
+                        include_array_groups,
                     )?;
                     Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
                 }
@@ -1306,10 +1320,9 @@ impl ShardManager {
         let policy = self.policy.read().clone();
 
         //in which xpaths to search in
+        //WARN: manskiet te bij jauna logika bet man bail no merge conflikta
         let xpaths: Arc<Vec<XPathId>> = match &command.search_fields {
-            Some(names) => Arc::new(core_query::resolver::resolve_suggest_xpaths(
-                names, &policy,
-            )?),
+            Some(names) => Arc::new(resolve_suggest_xpaths(names, &policy)?),
             None => Arc::new(policy.searchable_xpaths()),
         };
 

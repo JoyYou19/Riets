@@ -35,6 +35,10 @@ pub trait SearchIndex {
     fn terms(&self, xpath: XPathId) -> Vec<String>;
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32;
 
+    fn is_deleted(&self, _doc_id: DocId) -> bool {
+        false
+    }
+
     fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
         let _ = rows;
         HashSet::new()
@@ -118,9 +122,7 @@ pub trait SearchStats {
     fn doc_count(&self, xpath: XPathId) -> u64;
     fn total_doc_len(&self, xpath: XPathId) -> u64;
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32>;
-    fn doc_range(&self) -> Option<(DocId, DocId)> {
-        None
-    }
+    fn doc_range(&self) -> Option<(DocId, DocId)>;
     fn avg_doc_len(&self, xpath: XPathId) -> f32 {
         let count = self.doc_count(xpath);
 

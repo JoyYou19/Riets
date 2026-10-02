@@ -671,6 +671,7 @@ dependencies = [
  "core-timing",
  "criterion",
  "indexmap",
+ "simd-json",
 ]
 
 [[package]]
