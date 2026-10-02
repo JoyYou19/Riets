@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 
+use ahash::{ HashMapExt, HashSet };
+use core_timing::timed;
+use ahash::AHashMap;
 use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
 use crate::document::document::NumericPoint;
-use crate::document::{DocumentPart, IndexedDocument};
-use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
-use crate::posting::{Posting, PostingList};
-use crate::search::{SearchIndex, SearchNumeric, SearchStats};
-use crate::types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId};
+use crate::document::{ DocumentPart, IndexedDocument };
+use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
+use crate::posting::{ Posting, PostingList };
+use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
+use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId };
 use crate::wildcard::WildcardPattern;
 use ahash::AHashMap;
 use ahash::{HashMapExt, HashSet};
@@ -165,7 +168,7 @@ impl MemIndex {
             doc_lengths,
             field_stats,
             self.numeric_points.build(),
-            self.array_row_index,
+            self.array_row_index
         )
     }
     //tracks min and max doc id in this segment
@@ -212,8 +215,7 @@ impl MemIndex {
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
-                slot.insert(PostingList::new())
-                    .insert(doc_id, position, weight);
+                slot.insert(PostingList::new()).insert(doc_id, position, weight);
             }
         }
     }
@@ -226,9 +228,10 @@ impl MemIndex {
         positions: Vec<u32>,
         weight: u16,
     ) {
-        self.estimated_bytes += std::mem::size_of::<DocId>()
-            + std::mem::size_of::<u16>()
-            + positions.len() * std::mem::size_of::<u32>();
+        self.estimated_bytes +=
+            std::mem::size_of::<DocId>() +
+            std::mem::size_of::<u16>() +
+            positions.len() * std::mem::size_of::<u32>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             std::collections::hash_map::Entry::Occupied(mut slot) => {
@@ -255,7 +258,6 @@ impl MemIndex {
 
     #[timed(indexing_documents)]
     pub fn add_document(&mut self, analyzer: &Analyzer, doc_id: DocId, xpath: XPathId, text: &str) {
-        self.track_doc_id(doc_id);
         for token in analyzer.analyze(text) {
             self.add_token(token.text, xpath, doc_id, token.position);
         }
@@ -276,14 +278,18 @@ impl MemIndex {
         xpath: XPathId,
         text: &str,
         min_weight: u16,
-        max_weight: u16,
+       _max_weight: u16
     ) {
-        self.track_doc_id(doc_id);
-        let tokens = analyzer.analyze(text);
+        let mut grouped: AHashMap<String, Vec<u32>> = AHashMap::new();
+        let len = analyzer.for_each_token(text, |term, position| {
+            if let Some(positions) = grouped.get_mut(term) {
+                positions.push(position);
+            } else {
+                grouped.insert(term.to_owned(), vec![position]);
+            }
+        });
 
-        let len = tokens.len().min(u32::MAX as usize) as u32;
-
-        self.doc_lengths.insert((doc_id, xpath), len);
+    
 
         let old = self.doc_lengths.insert((doc_id, xpath), len);
         let stats = self.field_stats.entry(xpath).or_default();
@@ -298,16 +304,11 @@ impl MemIndex {
             }
         }
 
-        let mut grouped = ahash::HashMap::<String, Vec<u32>>::with_capacity(tokens.len());
-
-        for token in tokens {
-            grouped.entry(token.text).or_default().push(token.position);
-        }
-
+       
         for (term, positions) in grouped {
-            let occurrences = positions.len().min(u16::MAX as usize) as u16;
-            let weight = min_weight.saturating_add(occurrences).min(max_weight);
-
+            // let occurrences = positions.len().min(u16::MAX as usize) as u16;
+            // let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            let weight = min_weight;
             self.add_posting_weighted(term, xpath, doc_id, positions, weight);
         }
     }
@@ -320,13 +321,12 @@ impl MemIndex {
             analyzer,
             document.doc_id,
             &document.parts,
-            &document.numeric_points,
+            &document.numeric_points
         );
 
         //each array in documents
         for row in &document.array_rows {
-            self.array_row_index
-                .push_row(row.array_row_id, document.doc_id, row.parent);
+            self.array_row_index.push_row(row.array_row_id, document.doc_id, row.parent);
 
             self.add_parts_and_points(analyzer, row.array_row_id, &row.parts, &row.numeric_points);
         }
@@ -338,7 +338,7 @@ impl MemIndex {
         analyzer: &Analyzer,
         target_id: DocId, //array row id uses the same type for id
         parts: &[DocumentPart],
-        numeric_points: &[NumericPoint],
+        numeric_points: &[NumericPoint]
     ) {
         for part in parts {
             if part.exact {
@@ -362,8 +362,7 @@ impl MemIndex {
         }
 
         for point in numeric_points {
-            self.numeric_points
-                .insert(point.xpath, point.value, target_id);
+            self.numeric_points.insert(point.xpath, point.value, target_id);
         }
     }
 
@@ -379,8 +378,6 @@ impl MemIndex {
     ) {
         let words: Vec<&str> = text.split_whitespace().collect();
         let len = words.len().min(u32::MAX as usize) as u32;
-
-        self.doc_lengths.insert((doc_id, xpath), len);
 
         let old = self.doc_lengths.insert((doc_id, xpath), len);
         let stats = self.field_stats.entry(xpath).or_default();
@@ -400,8 +397,9 @@ impl MemIndex {
         }
 
         for (term, positions) in grouped {
-            let occurrences = positions.len().min(u16::MAX as usize) as u16;
-            let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            // let occurrences = positions.len().min(u16::MAX as usize) as u16;
+            // let weight = min_weight.saturating_add(occurrences).min(max_weight);
+            let weight = min_weight;
             self.add_posting_weighted(term, xpath, doc_id, positions, weight);
         }
     }

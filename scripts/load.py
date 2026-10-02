@@ -12,7 +12,7 @@ DB_NAME = "fever"
 SHARD_COUNT = 4
 
 BATCH_SIZE = 50_000   # documents per insert request
-IN_FLIGHT = 10      # insert requests running at the same time
+IN_FLIGHT = 12      # insert requests running at the same time
 
 POLICY = """\
 [[fields]]

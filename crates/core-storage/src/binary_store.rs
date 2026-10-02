@@ -24,7 +24,7 @@ use dashmap::DashMap;
 use moka::sync::Cache;
 
 //                  hihi haha part 2
-const MAGIC: &[u8; 8] = b"BANANA_D";
+const MAGIC: &[u8; 8] = b"BANANA_E";
 
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
@@ -32,6 +32,67 @@ const OP_DELETE: u8 = 2;
 //TODO: make configurable per-database
 pub const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10000;
 pub const DEFAULT_SEGMENT_SIZE: u64 = 128 * 1024 * 1024;
+
+
+//JAUNS COMPACTIONS KONCEPTS
+const MAPS_EXTENTION: &str= "maps.bin";
+pub const MAPS_TMP_EXTENTION: &str="maps.bin.tmp";
+const COMPACTION_IO_BUFFER: usize = 1 << 20;
+const COMPACTION_MAX_BYTES_PER_SEC: u64 = 64 * 1024 * 1024;
+const MAX_CONCURRENT_COMPACTIONS: usize = 2;
+
+static COMPACTION_SLOTS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+struct CompactionPermit;
+
+impl CompactionPermit {
+    fn acquire() -> Self {
+        let (lock, available) = &COMPACTION_SLOTS;
+        let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *running >= MAX_CONCURRENT_COMPACTIONS {
+            running = available.wait(running).unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *running += 1;
+        CompactionPermit
+    }
+}
+
+impl Drop for CompactionPermit {
+    fn drop(&mut self) {
+        let (lock, available) = &COMPACTION_SLOTS;
+        let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *running -= 1;
+        available.notify_one();
+    }
+}
+
+struct Throttle {
+    started: std::time::Instant,
+    bytes: u64,
+    bytes_per_sec: u64,
+}
+
+impl Throttle {
+    fn new(bytes_per_sec: u64) -> Self {
+        Self { started: std::time::Instant::now(), bytes: 0, bytes_per_sec }
+    }
+
+    fn consume(&mut self, bytes: u64) {
+        self.bytes += bytes;
+        let due = std::time::Duration::from_secs_f64(self.bytes as f64 / self.bytes_per_sec as f64);
+        let elapsed = self.started.elapsed();
+        if due > elapsed {
+            std::thread::sleep(due - elapsed);
+        }
+    }
+}
+
+fn with_path(err: io::Error, path: &Path) -> io::Error {
+    io::Error::new(err.kind(), format!("{}: {}", path.display(), err))
+}
+
+
+//VISS IR TRIVIALI 
 #[derive(Debug)]
 pub struct BinaryDocumentStore {
     path: PathBuf,
@@ -40,6 +101,7 @@ pub struct BinaryDocumentStore {
     locations: Arc<DashMap<String, DocLocation>>,
     current_segment: AtomicU32,
     next_segment_id: AtomicU32,
+  
 }
 pub struct SegmentCompactionJob {
     pub segment_ids: Vec<u32>,
@@ -53,6 +115,14 @@ pub struct CompletedSegmentCompaction {
     pub new_segment_id: u32,
     pub tmp_path: PathBuf,
     pub new_locations: Vec<(String, DocLocation)>,
+}
+//TODO: make this persistend and generate on each load
+#[derive(Debug, Clone, Copy, bincode::Encode, bincode::Decode)]
+pub struct DocLocation {
+    pub internal_id: DocId,
+    pub offset: u64,
+    pub segment: u32,
+    pub len:u32
 }
 
 impl BinaryDocumentStore {
@@ -76,6 +146,7 @@ impl BinaryDocumentStore {
             internal_to_external: Arc::new(DashMap::new()),
             locations: Arc::new(DashMap::new()),
             next_segment_id: AtomicU32::new(existing_max + 1),
+          
         };
 
         store.load()?;
@@ -136,6 +207,7 @@ impl BinaryDocumentStore {
             docs,
             internal_to_external,
             locations,
+           
         };
         if !try_load_maps(&store.path, &store.internal_to_external, &store.locations) {
             store.load()?;
@@ -161,152 +233,113 @@ impl BinaryDocumentStore {
         self.current_segment.store(next_id, Ordering::Relaxed);
         Ok(())
     }
+   
     pub fn plan_compaction(
-        &self,
-        dead_ratio_threshold: f64,
-        target_size: u64
-    ) -> io::Result<Option<SegmentCompactionJob>> {
-        let current = self.current_segment.load(Ordering::Relaxed);
-        // eprintln!("[plan] current_segment={current}");
-        let mut candidates = Vec::new();
-        for id in Self::list_segment_ids(&self.path)? {
-            if id >= current {
-                continue;
-            }
+    &self,
+    dead_ratio_threshold: f64,
+    target_size: u64,
+) -> io::Result<Option<SegmentCompactionJob>> {
+    let current = self.current_segment.load(Ordering::Acquire);
 
-            let seg_path = self.path.join(Self::segment_filename(id));
-            let file = File::open(&seg_path)?;
-            let mut reader = CountingReader::new(BufReader::new(file));
-            let mut magic = [0u8; 8];
-            reader.read_exact(&mut magic)?;
-            if &magic != MAGIC {
-                return Err(
-                    io::Error::new(io::ErrorKind::InvalidData, "bad document store magic").into()
-                );
-            }
-            let mut total = 0u64;
-            let mut live_entries = Vec::new();
-            let mut live_bytes = 0u64;
-            loop {
-                match read_u8(&mut reader) {
-                    Ok(OP_PUT) => {
-                        let start = reader.position();
-                        let doc = read_document(&mut reader)?;
-                        let doc_size = reader.position() - start;
-                        total += doc_size;
-                        if let Some(loc) = self.locations.get(&doc.external_id) {
-                            if loc.segment == id && loc.offset == start {
-                                live_entries.push((doc.external_id.clone(), *loc));
-                                live_bytes += doc_size;
-                            }
-                        }
-                    }
-                    Ok(OP_DELETE) => {
-                        let start = reader.position();
-                        let _ = read_string(&mut reader)?;
-                        total += reader.position() - start;
-                    }
-                    Ok(other) => {
-                        return Err(
-                            io::Error
-                                ::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!("unknown document op {other}")
-                                )
-                                .into()
-                        );
-                    }
-                    Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-                        break;
-                    }
-                    Err(err) => {
-                        return Err(err.into());
-                    }
-                }
-            }
-            if total == 0 {
-                continue;
-            }
-            let dead_ratio = 1.0 - (live_bytes as f64) / (total as f64);
-            // eprintln!(
-            //     "[plan] segment {id}: total={total} live={} dead_ratio={dead_ratio:.3}",
-            //     live_entries.len()
-            // );
-            if dead_ratio >= dead_ratio_threshold {
-                candidates.push((id, live_entries, live_bytes));
-            }
+    let mut live_bytes_by_segment: ahash::AHashMap<u32, u64> = ahash::AHashMap::new();
+    for entry in self.locations.iter() {
+        let location = entry.value();
+        if location.segment < current {
+            *live_bytes_by_segment.entry(location.segment).or_default() += location.len as u64 + 1;
         }
-        if candidates.is_empty() {
-            return Ok(None);
-        }
-
-        // worst (most dead-ratio-worthy) first — list_segment_ids is already
-        // ascending by id; sort candidates by live_bytes ascending so the
-        // smallest/dirtiest segments get merged first
-        candidates.sort_by_key(|(_, _, bytes)| *bytes);
-        // eprintln!("[plan] {} candidates found, sorted by live_bytes", candidates.len());
-        let mut selected_ids = Vec::new();
-        let mut selected_entries = Vec::new();
-        let mut running_size = 0u64;
-        for (id, entries, bytes) in candidates {
-            if !selected_ids.is_empty() && running_size + bytes > target_size {
-                break;
-            }
-            running_size += bytes;
-            selected_ids.push(id);
-            selected_entries.extend(entries);
-            if running_size >= target_size {
-                break;
-            }
-        }
-
-        if selected_ids.is_empty() {
-            // eprintln!(
-            //     "[plan] only {} segment(s) selected, running_size={}, target_size={}",
-            //     selected_ids.len(),
-            //     running_size,
-            //     target_size
-            // );
-            return Ok(None);
-        }
-        let new_segment_id = self.next_segment_id.fetch_add(1, Ordering::Relaxed);
-        Ok(
-            Some(SegmentCompactionJob {
-                segment_ids: selected_ids,
-                next_segment_id: new_segment_id,
-                store_dir: self.path.clone(),
-                locations_snapshot: selected_entries,
-            })
-        )
     }
-    pub fn install_segment_compaction(
-        &mut self,
-        completed: CompletedSegmentCompaction
-    ) -> io::Result<bool> {
-        let still_valid = completed.new_locations.iter().all(|(id, _)| {
-            self.locations
-                .get(id)
-                .map(|loc| completed.old_segment_ids.contains(&loc.segment))
-                .unwrap_or(false)
-        });
-        if !still_valid {
-            std::fs::remove_file(&completed.tmp_path).ok();
-            return Ok(false);
-        }
 
-        for (id, loc) in completed.new_locations {
-            self.locations.insert(id, loc);
+    let mut candidates: Vec<(u32, u64)> = Vec::new();
+    for id in Self::list_segment_ids(&self.path)? {
+        if id >= current {
+            continue;
         }
-
-        let final_path = self.path.join(Self::segment_filename(completed.new_segment_id));
-        std::fs::rename(&completed.tmp_path, &final_path)?;
-
-        for old_id in &completed.old_segment_ids {
-            let old_path = self.path.join(Self::segment_filename(*old_id));
-            std::fs::remove_file(old_path).ok();
+        let seg_path = self.path.join(Self::segment_filename(id));
+        let file_len = match std::fs::metadata(&seg_path) {
+            Ok(meta) => meta.len(),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(with_path(err, &seg_path)),
+        };
+        let total = file_len.saturating_sub(MAGIC.len() as u64);
+        if total == 0 {
+            continue;
         }
-        Ok(true)
+        let live = live_bytes_by_segment.get(&id).copied().unwrap_or(0).min(total);
+        let dead_ratio = 1.0 - (live as f64) / (total as f64);
+        if dead_ratio >= dead_ratio_threshold {
+            candidates.push((id, live));
+        }
     }
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    candidates.sort_unstable_by_key(|&(_, live)| live);
+
+    let mut selected_ids = Vec::new();
+    let mut running_size = 0u64;
+    for (id, live) in candidates {
+        if !selected_ids.is_empty() && running_size + live > target_size {
+            break;
+        }
+        running_size += live;
+        selected_ids.push(id);
+        if running_size >= target_size {
+            break;
+        }
+    }
+
+    let selected: ahash::AHashSet<u32> = selected_ids.iter().copied().collect();
+    let mut entries: Vec<(String, DocLocation)> = self
+        .locations
+        .iter()
+        .filter(|entry| selected.contains(&entry.value().segment))
+        .map(|entry| (entry.key().clone(), *entry.value()))
+        .collect();
+    entries.sort_unstable_by_key(|(_, location)| (location.segment, location.offset));
+
+    let new_segment_id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
+    Ok(Some(SegmentCompactionJob {
+        segment_ids: selected_ids,
+        next_segment_id: new_segment_id,
+        store_dir: self.path.clone(),
+        locations_snapshot: entries,
+    }))
+}
+    
+pub fn install_segment_compaction(
+    &mut self,
+    completed: CompletedSegmentCompaction,
+) -> io::Result<bool> {
+    let final_path = self.path.join(Self::segment_filename(completed.new_segment_id));
+    std::fs::rename(&completed.tmp_path, &final_path).map_err(|e| with_path(e, &final_path))?;
+    File::open(&self.path)?.sync_all()?;
+
+    let mut installed = 0usize;
+    for (external_id, new_location) in completed.new_locations {
+        if let Some(mut current) = self.locations.get_mut(&external_id) {
+            if completed.old_segment_ids.contains(&current.segment) {
+                *current = new_location;
+                installed += 1;
+            }
+        }
+    }
+
+    // The persisted map must stop referencing the old segments before they are deleted.
+    save_maps(&self.path, &self.locations)?;
+
+    for old_id in &completed.old_segment_ids {
+        let old_path = self.path.join(Self::segment_filename(*old_id));
+        if let Err(err) = std::fs::remove_file(&old_path) {
+            if err.kind() != io::ErrorKind::NotFound {
+                return Err(with_path(err, &old_path));
+            }
+        }
+    }
+
+    Ok(installed > 0)
+}
+
     #[timed(database_lifecycle)]
     fn load(&mut self) -> io::Result<()> {
         for id in Self::list_segment_ids(&self.path)? {
@@ -325,11 +358,13 @@ impl BinaryDocumentStore {
                     Ok(OP_PUT) => {
                         let doc_offset = reader.position();
                         let doc = read_document(&mut reader)?;
+                        let len =(reader.position()-doc_offset) as u32;
                         self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
                         self.locations.insert(doc.external_id.clone(), DocLocation {
                             internal_id: doc.internal_id,
                             offset: doc_offset,
                             segment: id,
+                            len
                         });
                     }
                     Ok(OP_DELETE) => {
@@ -364,18 +399,23 @@ impl BinaryDocumentStore {
     }
 
     #[timed(writing_files)]
-    fn append_put(&self, doc: &StoredDocument) -> io::Result<u64> {
-        let file = OpenOptions::new().append(true).open(&self.current_segment_path())?;
-        let start = file.metadata()?.len();
-        let mut writer = CountingWriter::new(BufWriter::new(file), start);
+    #[timed(writing_files)]
+fn append_put(&self, doc: &StoredDocument) -> io::Result<DocLocation> {
+    let segment = self.current_segment.load(Ordering::Acquire);
+    let seg_path = self.path.join(Self::segment_filename(segment));
+    let file = OpenOptions::new().append(true).open(&seg_path).map_err(|e| with_path(e, &seg_path))?;
+    let start = file.metadata()?.len();
+    let mut writer = CountingWriter::new(BufWriter::new(file), start);
 
-        write_u8(&mut writer, OP_PUT)?;
-        let doc_offset = writer.position();
-        write_document(&mut writer, doc)?;
-        writer.flush()?;
-        self.maybe_rotate_segment()?;
-        Ok(doc_offset)
-    }
+    write_u8(&mut writer, OP_PUT)?;
+    let offset = writer.position();
+    write_document(&mut writer, doc)?;
+    let len = (writer.position() - offset) as u32;
+    writer.flush()?;
+    self.maybe_rotate_segment()?;
+
+    Ok(DocLocation { internal_id: doc.internal_id, offset, segment, len })
+}
 
     #[timed(writing_files)]
     fn append_delete(&self, external_id: &str) -> io::Result<()> {
@@ -392,20 +432,13 @@ impl BinaryDocumentStore {
 
 impl DocumentStore for BinaryDocumentStore {
     #[timed(inserting)]
-    fn put(&mut self, doc: StoredDocument) -> io::Result<()> {
-        let offset = self.append_put(&doc)?;
-
-        self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
-        let current_segment = Self::list_segment_ids(&self.path)?.last().copied().unwrap_or(0);
-        self.locations.insert(doc.external_id.clone(), DocLocation {
-            internal_id: doc.internal_id,
-            offset,
-            segment: current_segment,
-        });
-        self.docs.insert(doc.external_id.clone(), doc);
-
-        Ok(())
-    }
+fn put(&mut self, doc: StoredDocument) -> io::Result<()> {
+    let location = self.append_put(&doc)?;
+    self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
+    self.locations.insert(doc.external_id.clone(), location);
+    self.docs.insert(doc.external_id.clone(), doc);
+    Ok(())
+}
 
     #[timed(inserting)]
     fn put_batch(&mut self, docs: Vec<StoredDocument>) -> io::Result<()> {
@@ -422,12 +455,13 @@ impl DocumentStore for BinaryDocumentStore {
             write_u8(&mut writer, OP_PUT)?;
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
-
+            let len =(writer.position()-doc_offset) as u32;
             self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
             self.locations.insert(doc.external_id.clone(), DocLocation {
                 internal_id: doc.internal_id,
                 offset: doc_offset,
                 segment: current_segment,
+                len
             });
 
             self.docs.insert(doc.external_id.clone(), doc);
@@ -560,6 +594,7 @@ impl DocumentStore for BinaryDocumentStore {
 
         Ok(docs)
     }
+    
 }
 
 fn write_document(writer: &mut impl Write, doc: &StoredDocument) -> io::Result<()> {
@@ -644,7 +679,82 @@ fn read_u64(reader: &mut impl Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-//helper so that rust compiler isnt angry at me cause this will be called from the ShardHandle not
+pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<CompletedSegmentCompaction> {
+    let _permit = CompactionPermit::acquire();
+    let mut throttle = Throttle::new(COMPACTION_MAX_BYTES_PER_SEC);
+
+    let tmp_path = job
+        .store_dir
+        .join(format!("{}.tmp", BinaryDocumentStore::segment_filename(job.next_segment_id)));
+    let file = File::create(&tmp_path).map_err(|e| with_path(e, &tmp_path))?;
+    let mut writer = CountingWriter::new(BufWriter::with_capacity(COMPACTION_IO_BUFFER, file), 0);
+    writer.write_all(MAGIC)?;
+
+    let mut new_locations = Vec::with_capacity(job.locations_snapshot.len());
+    let mut record: Vec<u8> = Vec::new();
+    let mut source: Option<(u32, BufReader<File>, u64)> = None;
+
+    for (external_id, location) in &job.locations_snapshot {
+        let reuse = matches!(&source, Some((segment, _, _)) if *segment == location.segment);
+        if !reuse {
+            let seg_path = job.store_dir.join(BinaryDocumentStore::segment_filename(location.segment));
+            let file = File::open(&seg_path).map_err(|e| with_path(e, &seg_path))?;
+            source = Some((location.segment, BufReader::with_capacity(COMPACTION_IO_BUFFER, file), 0));
+        }
+        let (_, reader, position) = source.as_mut().expect("source opened above");
+
+        if *position != location.offset {
+            reader.seek_relative(location.offset as i64 - *position as i64)?;
+            *position = location.offset;
+        }
+        record.resize(location.len as usize, 0);
+        reader.read_exact(&mut record)?;
+        *position += location.len as u64;
+
+        let id_bytes = external_id.as_bytes();
+        let stored_id_len = record
+            .get(0..4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+        if stored_id_len != Some(id_bytes.len()) || record.get(4..4 + id_bytes.len()) != Some(id_bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "segment {} offset {}: record does not belong to '{}'",
+                    location.segment, location.offset, external_id
+                ),
+            ));
+        }
+
+        write_u8(&mut writer, OP_PUT)?;
+        let offset = writer.position();
+        writer.write_all(&record)?;
+        throttle.consume(location.len as u64 + 1);
+
+        new_locations.push((
+            external_id.clone(),
+            DocLocation {
+                internal_id: location.internal_id,
+                offset,
+                segment: job.next_segment_id,
+                len: location.len,
+            },
+        ));
+    }
+
+    writer.flush()?;
+    writer
+        .into_inner()
+        .into_inner()
+        .map_err(|e| io::Error::other(format!("flush failed: {e}")))?
+        .sync_all()?;
+
+    Ok(CompletedSegmentCompaction {
+        old_segment_ids: job.segment_ids,
+        new_segment_id: job.next_segment_id,
+        tmp_path,
+        new_locations,
+    })
+}
 //ShardDb
 #[timed(disk_io)]
 pub fn read_document_at_path(
@@ -661,17 +771,20 @@ pub fn read_document_at_path(
 
 #[timed(database_lifecycle)]
 pub fn save_maps(path: &Path, locations: &DashMap<String, DocLocation>) -> io::Result<()> {
-    let locations_snapshot: Vec<(String, DocLocation)> = locations
-        .iter()
-        .map(|e| (e.key().clone(), *e.value()))
-        .collect();
-    let map_tmp = path.with_extension("maps.bin.tmp");
-    let map_dst = path.with_extension("maps.bin");
-    let bytes = bincode
-        ::encode_to_vec(&locations_snapshot, bincode::config::standard())
+    let snapshot: Vec<(String, DocLocation)> =
+        locations.iter().map(|e| (e.key().clone(), *e.value())).collect();
+    let bytes = bincode::encode_to_vec(&snapshot, bincode::config::standard())
         .map_err(|e| io::Error::other(format!("failed to encode maps: {e}")))?;
-    std::fs::write(&map_tmp, bytes)?;
-    std::fs::rename(&map_tmp, &map_dst)?;
+
+    let map_tmp = path.with_extension(MAPS_TMP_EXTENTION);
+    let map_dst = path.with_extension(MAPS_EXTENTION);
+    let mut file = File::create(&map_tmp).map_err(|e| with_path(e, &map_tmp))?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    std::fs::rename(&map_tmp, &map_dst).map_err(|e| with_path(e, &map_dst))?;
+    if let Some(parent) = map_dst.parent() {
+        File::open(parent)?.sync_all()?;
+    }
     Ok(())
 }
 #[timed(database_lifecycle)]
@@ -680,7 +793,7 @@ fn try_load_maps(
     internal_to_external: &DashMap<DocId, String>,
     locations: &DashMap<String, DocLocation>
 ) -> bool {
-    let map_path = path.with_extension("maps.bin");
+    let map_path = path.with_extension(MAPS_EXTENTION);
     let Ok(bytes) = std::fs::read(&map_path) else {
         return false;
     };
@@ -697,93 +810,8 @@ fn try_load_maps(
     true
 }
 
-pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<CompletedSegmentCompaction> {
-    let live_ids: std::collections::HashSet<&str> = job.locations_snapshot
-        .iter()
-        .map(|(id, _)| id.as_str())
-        .collect();
 
-    let mut live_docs = Vec::new();
-    for &seg_id in &job.segment_ids {
-        let seg_path = job.store_dir.join(BinaryDocumentStore::segment_filename(seg_id));
-        let file = File::open(&seg_path)?;
-        let mut reader = CountingReader::new(BufReader::new(file));
-        let mut magic = [0u8; 8];
-        reader.read_exact(&mut magic)?;
-        if &magic != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad document store magic"));
-        }
-        loop {
-            match read_u8(&mut reader) {
-                Ok(OP_PUT) => {
-                    let doc = read_document(&mut reader)?;
-                    if live_ids.contains(doc.external_id.as_str()) {
-                        live_docs.push(doc);
-                    }
-                }
-                Ok(OP_DELETE) => {
-                    let _ = read_string(&mut reader)?;
-                }
-                Ok(other) => {
-                    return Err(
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("unknown document op {other}")
-                        )
-                    );
-                }
-                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-                    break;
-                }
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-        }
-    }
 
-    let tmp_path = job.store_dir.join(
-        format!("{}.tmp", BinaryDocumentStore::segment_filename(job.next_segment_id))
-    );
-    let file = File::create(&tmp_path)?;
-    let mut writer = CountingWriter::new(BufWriter::new(file), 0);
-    writer.write_all(MAGIC)?;
-
-    let mut new_locations = Vec::with_capacity(live_docs.len());
-    for doc in &live_docs {
-        write_u8(&mut writer, OP_PUT)?;
-        let offset = writer.position();
-        write_document(&mut writer, doc)?;
-        new_locations.push((
-            doc.external_id.clone(),
-            DocLocation {
-                internal_id: doc.internal_id,
-                offset,
-                segment: job.next_segment_id,
-            },
-        ));
-    }
-    writer.flush()?;
-    writer
-        .into_inner()
-        .into_inner()
-        .map_err(|e| io::Error::other(format!("flush failed: {e}")))?
-        .sync_all()?;
-
-    Ok(CompletedSegmentCompaction {
-        old_segment_ids: job.segment_ids,
-        new_segment_id: job.next_segment_id,
-        tmp_path,
-        new_locations,
-    })
-}
-//TODO: make this persistend and generate on each load
-#[derive(Debug, Clone, Copy, bincode::Encode, bincode::Decode)]
-pub struct DocLocation {
-    pub internal_id: DocId,
-    pub offset: u64,
-    pub segment: u32,
-}
 
 //helper 1
 struct CountingReader<R> {
