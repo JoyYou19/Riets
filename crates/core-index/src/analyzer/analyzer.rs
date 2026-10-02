@@ -1,17 +1,12 @@
-use std::{ collections::{ HashMap, HashSet }, sync::atomic::{ AtomicU64, Ordering } };
-
-use core_timing::timed;
-use tantivy::tokenizer::{
-    Language,
-    LowerCaser,
-    RemoveLongFilter,
-    Stemmer,
-    StopWordFilter,
-    TextAnalyzer,
-    TokenStream,
+use std::{
+    collections::{HashMap, HashSet},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::analyzer::{ token::Token, word_delimiter::WordDelimiterTokenizer };
+use core_timing::timed;
+use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, StopWordFilter, TextAnalyzer, TokenStream};
+
+use crate::analyzer::{token::Token, word_delimiter::WordDelimiterTokenizer};
 
 #[derive(Clone)]
 pub struct Analyzer {
@@ -56,56 +51,14 @@ impl Analyzer {
         let literal_symbols: HashSet<char> = symbols.into_iter().collect();
         //TODO: configurable
         let stopwords: HashSet<String> = [
-            "a",
-            "an",
-            "the",
-            "and",
-            "or",
-            "of",
-            "is",
-            "it",
-            "this",
-            "that",
-            "he",
-            "she",
-            "you",
-            "i",
-            "am",
-            "are",
-            "was",
-            "were",
-            "be",
-            "been",
-            "being",
-            "to",
-            "in",
-            "on",
-            "for",
-            "with",
-            "as",
-            "by",
-            "at",
-            "from",
-            "but",
-            "not",
-            "his",
-            "her",
-            "their",
-            "they",
-            "we",
-            "my",
-            "your",
-            "our",
-            "who",
-            "what",
-            "when",
-            "where",
-            "why",
-            "how",
+            "a", "an", "the", "and", "or", "of", "is", "it", "this", "that", "he", "she", "you",
+            "i", "am", "are", "was", "were", "be", "been", "being", "to", "in", "on", "for",
+            "with", "as", "by", "at", "from", "but", "not", "his", "her", "their", "they", "we",
+            "my", "your", "our", "who", "what", "when", "where", "why", "how",
         ]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        .into_iter()
+        .map(str::to_string)
+        .collect();
 
         let analyzer = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
             .filter(RemoveLongFilter::limit(40))
@@ -126,7 +79,9 @@ impl Analyzer {
             if !cache.contains_key(&self.id) && cache.len() >= MAX_CACHED_ANALYZERS_PER_THREAD {
                 cache.clear();
             }
-            let analyzer = cache.entry(self.id).or_insert_with(|| self.analyzer.clone());
+            let analyzer = cache
+                .entry(self.id)
+                .or_insert_with(|| self.analyzer.clone());
             f(analyzer)
         })
     }
@@ -223,5 +178,4 @@ mod cached_stemmer_equivalence {
             );
         }
     }
-    
 }

@@ -1,20 +1,20 @@
 use std::{
     io,
-    sync::{ Arc, Condvar, Mutex, atomic::{ AtomicBool, Ordering }, mpsc::Sender },
-    thread::{ self, JoinHandle },
-    time::{ Duration, Instant },
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use core_timing::timed;
-use slog::error;
 
 use crate::lsm::{
     //compact_segments,
     compaction::{
-        CompactionConfig,
-        CompactionJob,
-        CompletedCompaction,
-        compact_segments_streaming,
+        CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
     },
     index_worker::IndexCommand,
 };
@@ -31,7 +31,9 @@ impl CompactionPermit {
         let (lock, available) = &INDEX_COMPACTION_SLOTS;
         let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while *running >= MAX_CONCURRENT_INDEX_COMPACTIONS {
-            running = available.wait(running).unwrap_or_else(|poisoned| poisoned.into_inner());
+            running = available
+                .wait(running)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         *running += 1;
         CompactionPermit
@@ -57,40 +59,43 @@ impl CompactionWorker {
         sender: Sender<IndexCommand>,
         config: CompactionConfig,
         interval: Duration,
-        log: slog::Logger
+        log: slog::Logger,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
 
-        let handle = thread::spawn(
-            move || -> io::Result<()> {
-                while !stop_thread.load(Ordering::Relaxed) {
-                    match run_cycle(&sender, config,&log) {
-                        Ok(true) => {
-                            continue;
-                        }
-                        Ok(false) => {}
-                        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
-                            return Ok(());
-                        }
-                        Err(err) => {
-                            slog::error!(log, "index compaction cycle failed; retrying after interval";
-                        "error" => %err);
-                        }
+        let handle = thread::spawn(move || -> io::Result<()> {
+            while !stop_thread.load(Ordering::Relaxed) {
+                match run_cycle(&sender, config, &log) {
+                    Ok(true) => {
+                        continue;
                     }
-                    sleep_unless_stopped(&stop_thread, interval);
+                    Ok(false) => {}
+                    Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        slog::error!(log, "index compaction cycle failed; retrying after interval";
+                        "error" => %err);
+                    }
                 }
-                Ok(())
+                sleep_unless_stopped(&stop_thread, interval);
             }
-        );
+            Ok(())
+        });
 
-        Self { stop, handle: Some(handle) }
+        Self {
+            stop,
+            handle: Some(handle),
+        }
     }
 
     pub fn stop(mut self) -> io::Result<()> {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
-            handle.join().map_err(|_| io::Error::other("compaction worker panicked"))??;
+            handle
+                .join()
+                .map_err(|_| io::Error::other("compaction worker panicked"))??;
         }
         Ok(())
     }
@@ -109,7 +114,7 @@ impl CompactionWorker {
 fn run_cycle(
     sender: &Sender<IndexCommand>,
     config: CompactionConfig,
-    log: &slog::Logger
+    log: &slog::Logger,
 ) -> io::Result<bool> {
     let (reply, plan_rx) = std::sync::mpsc::channel();
     sender
@@ -118,7 +123,8 @@ fn run_cycle(
 
     let Some(job) = plan_rx
         .recv()
-        .map_err(|_| broken_pipe("index worker dropped compaction plan reply"))?? else {
+        .map_err(|_| broken_pipe("index worker dropped compaction plan reply"))??
+    else {
         return Ok(false);
     };
     // slet shard_log=slog::Logger;
@@ -135,16 +141,20 @@ fn run_cycle(
                      "error" => %remove_err);
                     }
                 }
-                return Err(
-                    io::Error::new(err.kind(), format!("{}: {}", output_path.display(), err))
-                );
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("{}: {}", output_path.display(), err),
+                ));
             }
         }
     };
 
     let (ack, install_rx) = std::sync::mpsc::channel();
     sender
-        .send(IndexCommand::InstallCompaction { completed, ack: Some(ack) })
+        .send(IndexCommand::InstallCompaction {
+            completed,
+            ack: Some(ack),
+        })
         .map_err(|_| broken_pipe("index worker stopped"))?;
     let _ = install_rx
         .recv()
