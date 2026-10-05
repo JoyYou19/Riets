@@ -651,6 +651,7 @@ name = "core-protocol"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "core-index",
  "core-timing",
  "indexmap",
  "serde",

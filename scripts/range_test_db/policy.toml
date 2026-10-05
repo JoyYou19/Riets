@@ -1,0 +1,58 @@
+[[fields]]
+name = "id"
+kind = "IdAuto"
+
+[[fields]]
+name = "name"
+kind = "Text"
+exact = true
+
+# 3-level nested numeric arrays (hits MAX_ARRAY_DEPTH = 3)
+[[fields]]
+name = "grid"
+kind = "Struct"
+
+[[fields.subfields]]
+name = "row"
+kind = "Struct"
+
+[[fields.subfields.subfields]]
+name = "cell"
+kind = "Struct"
+
+[[fields.subfields.subfields.subfields]]
+name = "value"
+kind = "Integer"
+searchable = true
+
+# 2-level nested: sensors -> readings -> (temp, humidity)
+[[fields]]
+name = "sensors"
+kind = "Struct"
+
+[[fields.subfields]]
+name = "readings"
+kind = "Struct"
+
+[[fields.subfields.subfields]]
+name = "temp"
+kind = "Integer"
+searchable = true
+
+[[fields.subfields.subfields]]
+name = "humidity"
+kind = "Integer"
+searchable = true
+
+# array of repeated numbers (with duplicates)
+[[fields]]
+name = "scores"
+kind = "Integer"
+repeated = true
+searchable = true
+
+# scalar number
+[[fields]]
+name = "total"
+kind = "Integer"
+searchable = true
