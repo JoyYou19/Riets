@@ -2,7 +2,7 @@
 //drastically improve the peformance since we wouldnt need to "guess" the first character, left at 0
 //for now
 
-pub const DEFAULT_PREFIX_LENGTH: usize = 0;
+pub const DEFAULT_PREFIX_LENGTH: usize = 1;
 pub const DEFAULT_MAX_EXPANSIONS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +38,7 @@ impl FuzzyExpansion {
 pub fn default_max_edits(term: &str) -> u8 {
     match term.chars().count() {
         0..=3 => 0,
-        4..=6 => 1,
+        4..=5 => 1,
         _ => 2,
     }
 }
@@ -54,9 +54,10 @@ pub fn split_prefix(term: &str, prefix_chars: usize) -> (&str, &str) {
 }
 
 //every possible strging within one edit distance of our fuzzed suffix
-//utman -> atman , utman,
+//utman -> atman , utman, batman,
 pub fn candidates_within_one(term: &str) -> Vec<String> {
     let chars: Vec<char> = term.chars().collect();
+    //WARN: mos sito vajag vairak kaa a-z kip ieklaut kkadus - / . ?
     let alphabet: Vec<char> = ('a'..='z').collect();
     let mut out = Vec::new();
 

@@ -1,0 +1,29 @@
+ [
+ {
+    "id": "d1",
+    "name": "alpha",
+    "grid": [ { "row": [ { "cell": [ {"value": 1}, {"value": 2} ] }, { "cell": [ {"value": 3} ] } ] } ],
+    "sensors": [
+      { "readings": [ {"temp": 10, "humidity": 40}, {"temp": 20, "humidity": 50} ] },
+      { "readings": [ {"temp": 30, "humidity": 60} ] }
+    ],
+    "scores": [5, 15, 25, 35],
+    "total": 42
+  },
+  {
+    "id": "d2",
+    "name": "beta",
+    "grid": [ { "row": [ { "cell": [ {"value": 100} ] } ] } ],
+    "sensors": [ { "readings": [ {"temp": 90, "humidity": 90} ] } ],
+    "scores": [50, 60, 70],
+    "total": 87
+  },
+  {
+    "id": "d3",
+    "name": "gamma",
+    "grid": [ { "row": [ { "cell": [ {"value": 5}, {"value": 55}, {"value": 99} ] } ] } ],
+    "sensors": [ { "readings": [ {"temp": 5, "humidity": 10}, {"temp": 75, "humidity": 80} ] } ],
+    "scores": [100, 5, 100],
+    "total": 3
+  }
+]

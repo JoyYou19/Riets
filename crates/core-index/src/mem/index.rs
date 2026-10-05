@@ -337,13 +337,7 @@ impl MemIndex {
     ) {
         for part in parts {
             if part.exact {
-                self.add_exact_weighted(
-                    target_id,
-                    part.xpath,
-                    &part.text,
-                    part.weight.min,
-                    part.weight.max,
-                );
+                self.add_exact_weighted(target_id, part.xpath, &part.text, part.weight.min);
             } else {
                 self.add_document_weighted(
                     analyzer,
@@ -370,7 +364,6 @@ impl MemIndex {
         xpath: XPathId,
         text: &str,
         min_weight: u16,
-        max_weight: u16,
     ) {
         let words: Vec<&str> = text.split_whitespace().collect();
         let len = words.len().min(u32::MAX as usize) as u32;

@@ -1,3 +1,4 @@
+use core_index::fuzzy::default_max_edits;
 //from abstract http text to our commands, useful for complex commands like search, retrieve....
 use core_timing::timed;
 use indexmap::IndexMap;
@@ -121,14 +122,6 @@ pub enum Fuzziness {
     One,
     Two,
     Auto,
-}
-
-pub fn default_max_edits(term: &str) -> u8 {
-    match term.chars().count() {
-        0..=2 => 0,
-        3..=5 => 1,
-        _ => 2,
-    }
 }
 
 impl Fuzziness {
