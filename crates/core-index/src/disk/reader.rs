@@ -33,13 +33,86 @@ pub struct DiskSegment {
     dictionary: TermDictionary,
     //TODO: we should look into this, if doc_lengths takes up too much RAM wikipedia-scale then we
     //could cache this
-    doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
+    doc_lengths: DocLengths,
     
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
     bool_fields: BTreeMap<XPathId, BoolField>,
     doc_id_range: Option<(DocId, DocId)>,
     array_row_index: ArrayRowIndex,
+}
+/// Field lengths per document: one array per field, indexed by `doc_id - base`, with
+/// `NO_LENGTH` where a document has no value in that field. A segment's doc ids form one
+/// range, so this is the exact data in 4 bytes per document and field, and a lookup is an
+/// index where a B-tree needed a search of about ten cache misses.
+const NO_LENGTH: u32 = u32::MAX;
+pub struct DocLengths {
+    base: DocId,
+    //few fields per database, so a sorted vector beats a map
+    fields: Vec<(XPathId, Vec<u32>)>,
+}
+impl DocLengths {
+    pub fn empty() -> Self {
+        Self { base: 0, fields: Vec::new() }
+    }
+
+    /// Builds from `(doc_id, xpath, length)` entries in any order.
+    pub fn from_entries(entries: impl Iterator<Item = (DocId, XPathId, u32)> + Clone) -> Self {
+        let Some(first) = entries.clone().map(|(doc, _, _)| doc).min() else {
+            return Self::empty();
+        };
+        let last = entries.clone().map(|(doc, _, _)| doc).max().unwrap_or(first);
+        let span = (last - first + 1) as usize;
+        let mut fields: Vec<(XPathId, Vec<u32>)> = Vec::new();
+        for (doc, xpath, len) in entries {
+            let slot = match fields.binary_search_by_key(&xpath, |(x, _)| *x) {
+                Ok(slot) => slot,
+                Err(slot) => {
+                    fields.insert(slot, (xpath, vec![NO_LENGTH; span]));
+                    slot
+                }
+            };
+            fields[slot].1[(doc - first) as usize] = len;
+        }
+        Self { base: first, fields }
+    }
+
+    pub fn get(&self, doc: DocId, xpath: XPathId) -> Option<u32> {
+        let index = usize::try_from(doc.checked_sub(self.base)?).ok()?;
+        let (_, lengths) = self.fields.iter().find(|(x, _)| *x == xpath)?;
+        let len = *lengths.get(index)?;
+        (len != NO_LENGTH).then_some(len)
+    }
+
+    /// Every stored length in (doc_id, xpath) order, the order the B-tree had.
+    pub fn iter(&self) -> impl Iterator<Item = ((DocId, XPathId), u32)> + '_ {
+        let span = self.fields.first().map_or(0, |(_, lengths)| lengths.len());
+        (0..span).flat_map(move |offset| {
+            self.fields.iter().filter_map(move |(xpath, lengths)| {
+                let len = lengths[offset];
+                (len != NO_LENGTH).then_some(((self.base + offset as u64, *xpath), len))
+            })
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.fields
+            .iter()
+            .map(|(_, lengths)| lengths.iter().filter(|&&len| len != NO_LENGTH).count())
+            .sum()
+    }
+
+    pub fn field_stats(&self) -> BTreeMap<XPathId, FieldStats> {
+        self.fields
+            .iter()
+            .map(|(xpath, lengths)| {
+                let present = lengths.iter().filter(|&&len| len != NO_LENGTH);
+                let doc_count = present.clone().count() as u64;
+                let total_doc_len = present.map(|&len| len as u64).sum();
+                (*xpath, FieldStats { doc_count, total_doc_len })
+            })
+            .collect()
+    }
 }
 
 impl SearchStats for DiskSegment {
@@ -58,7 +131,7 @@ impl SearchStats for DiskSegment {
     }
 
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
-        self.doc_lengths.get(&(doc_id, xpath)).copied()
+        self.doc_lengths.get(doc_id, xpath)
     }
 
     fn doc_range(&self) -> Option<(DocId, DocId)> {
@@ -102,7 +175,7 @@ impl DiskSegment {
         validate_footer(&mmap, &footer)?;
 
         let doc_lengths = read_doc_lengths(&mmap, &footer)?;
-        let field_stats = build_field_stats(&doc_lengths);
+        let field_stats = doc_lengths.field_stats();
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
         let numeric_fields = read_numeric_fields(&mmap, &footer)?;
@@ -127,7 +200,7 @@ impl DiskSegment {
         })
     }
 
-    pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
+    pub fn doc_lengths(&self) ->  &DocLengths {
         &self.doc_lengths
     }
     pub fn doc_range(&self) -> Option<(DocId, DocId)> {
@@ -515,10 +588,7 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
     })
 }
 
-fn read_doc_lengths(
-    bytes: &[u8],
-    footer: &SegmentFooter,
-) -> io::Result<std::collections::BTreeMap<(DocId, XPathId), u32>> {
+fn read_doc_lengths(bytes: &[u8], footer: &SegmentFooter) -> io::Result<DocLengths> {
     let start = footer.doc_lengths_offset as usize;
     let len = footer.doc_lengths_len as usize;
     let end = start
@@ -526,25 +596,21 @@ fn read_doc_lengths(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "doc lengths offset overflow"))?;
 
     if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "doc lengths outside segment bounds",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "doc lengths outside segment bounds"));
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
     let count = cursor.read_u32()? as usize;
-    let mut doc_lengths = std::collections::BTreeMap::new();
-
+    let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
-        let doc_id = cursor.read_u64()?; // read doc_id
+        let doc_id = cursor.read_u64()?;
         let xpath = cursor.read_u32()?;
         let len = cursor.read_u32()?;
-        doc_lengths.insert((doc_id, xpath), len);
+        entries.push((doc_id, xpath, len));
     }
-
-    Ok(doc_lengths)
+    Ok(DocLengths::from_entries(entries.iter().copied()))
 }
+
 
 fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<ArrayRowIndex> {
     let start = footer.array_row_index_offset as usize;
