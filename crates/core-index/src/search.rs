@@ -1,5 +1,6 @@
 use ahash::{HashSet, HashSetExt};
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
+use roaring::RoaringTreemap;
 
 use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix},
@@ -45,6 +46,20 @@ pub trait SearchIndex {
     }
     fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId>;
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId>;
+
+    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap;
+
+    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap;
+
+    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
+        if self.bool_true_ids(xpath).contains(doc_id) {
+            return Some(true);
+        }
+        if self.bool_false_ids(xpath).contains(doc_id) {
+            return Some(false);
+        }
+        None
+    }
 
     //words within max_edits of input
     fn fuzzy_expansions(
@@ -134,8 +149,6 @@ pub trait SearchStats {
     }
 }
 
-//WARN: for optimizations sake these functions wont check for deletes, for filtering sorting you
-//have to apply_deletes and then call numeric...
 pub trait SearchNumeric {
     //docs within the [lo, hi], ascending
     fn numeric_range(
@@ -145,6 +158,7 @@ pub trait SearchNumeric {
         hi: Option<NumericBound>,
     ) -> PostingList;
 
+    //quick docid+xpath->numeric_value
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue>;
 }
 

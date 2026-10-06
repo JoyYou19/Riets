@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, io, path::Path};
 use ahash::HashSet;
 use core_timing::timed;
 use memmap2::Mmap;
+use roaring::RoaringTreemap;
 
 use crate::{
     array_rows::{ArrayRowIndex, NO_PARENT_ROW},
@@ -13,6 +14,7 @@ use crate::{
         codec::{read_var_u16, read_var_u32, read_var_u64},
         format::{FOOTER_LEN, MAGIC, SegmentFooter, VERSION},
     },
+    document::document::BoolField,
     document_values::DocValues,
     fuzzy::{FuzzyExpansion, FuzzyOptions},
     numeric_values::{NumericBound, NumericField, NumericFields, NumericKind, NumericValue},
@@ -34,6 +36,7 @@ pub struct DiskSegment {
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
+    bool_fields: BTreeMap<XPathId, BoolField>,
     doc_id_range: Option<(DocId, DocId)>,
     array_row_index: ArrayRowIndex,
 }
@@ -102,6 +105,9 @@ impl DiskSegment {
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
         let numeric_fields = read_numeric_fields(&mmap, &footer)?;
+
+        let bool_fields = read_bool_points(&mmap, &footer)?;
+
         let doc_id_range = if footer.term_count == 0 && numeric_fields.is_empty() {
             None
         } else {
@@ -114,6 +120,7 @@ impl DiskSegment {
             doc_lengths,
             field_stats,
             numeric_fields,
+            bool_fields,
             doc_id_range,
             array_row_index,
         })
@@ -132,6 +139,10 @@ impl DiskSegment {
 
     pub fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
+    }
+
+    pub fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
+        &self.bool_fields
     }
 
     //bro yo zis so good function
@@ -211,7 +222,6 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
 }
 
 // We need to search this segment for sure
-// We need to search this segment for sure
 impl SearchIndex for DiskSegment {
     #[timed(search)]
     fn lookup(&self, term: &str, xpath: crate::types::XPathId) -> PostingList {
@@ -249,6 +259,30 @@ impl SearchIndex for DiskSegment {
 
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
         self.array_row_index.doc_of(row)
+    }
+
+    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.bool_fields
+            .get(&xpath)
+            .map(|f| f.true_ids.clone())
+            .unwrap_or_default()
+    }
+    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.bool_fields
+            .get(&xpath)
+            .map(|f| f.false_ids.clone())
+            .unwrap_or_default()
+    }
+
+    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
+        let f = self.bool_fields.get(&xpath)?;
+        if f.true_ids.contains(doc_id) {
+            Some(true)
+        } else if f.false_ids.contains(doc_id) {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     #[timed(search)]
@@ -394,6 +428,21 @@ fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
         ));
     }
 
+    let bool_start = footer.bool_fields_offset as usize;
+    let bool_len = footer.bool_fields_len as usize;
+    let Some(bool_end) = bool_start.checked_add(bool_len) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bool fields offset overflow",
+        ));
+    };
+    if bool_end > bytes.len() - FOOTER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bool fields outside segment bounds",
+        ));
+    }
+
     let array_start = footer.array_row_index_offset as usize;
     let array_len = footer.array_row_index_len as usize;
     let Some(array_end) = array_start.checked_add(array_len) else {
@@ -458,6 +507,8 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
         term_count: read_u32_at(bytes, start + 48),
         min_doc_id: read_u64_at(bytes, start + 52),
         max_doc_id: read_u64_at(bytes, start + 60),
+        bool_fields_offset: read_u64_at(bytes, start + 84),
+        bool_fields_len: read_u64_at(bytes, start + 92),
         array_row_index_offset: read_u64_at(bytes, start + 68),
         array_row_index_len: read_u64_at(bytes, start + 76),
     })
@@ -656,6 +707,42 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
         fields.insert_field(xpath, NumericField { bkd, doc_values });
     }
 
+    Ok(fields)
+}
+
+fn read_bool_points(
+    bytes: &[u8],
+    footer: &SegmentFooter,
+) -> io::Result<BTreeMap<XPathId, BoolField>> {
+    let start = footer.bool_fields_offset as usize;
+    let len = footer.bool_fields_len as usize;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bool fields offset overflow"))?;
+    if end > bytes.len() - FOOTER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bool fields outside segment bounds",
+        ));
+    }
+
+    let mut cursor = Cursor::new(&bytes[start..end]);
+    let count = cursor.read_u32()? as usize;
+    let mut fields = BTreeMap::new();
+    for _ in 0..count {
+        let xpath = cursor.read_u32()?;
+        let true_len = cursor.read_u64()? as usize;
+        let true_ids = RoaringTreemap::deserialize_from(cursor.take(true_len)?)?;
+        let false_len = cursor.read_u64()? as usize;
+        let false_ids = RoaringTreemap::deserialize_from(cursor.take(false_len)?)?;
+        fields.insert(
+            xpath,
+            BoolField {
+                true_ids,
+                false_ids,
+            },
+        );
+    }
     Ok(fields)
 }
 

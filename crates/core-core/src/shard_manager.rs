@@ -16,7 +16,7 @@ use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{
-    DidYouMeanRequest, LookupCommand, LookupResponse, SearchCommand,
+    DidYouMeanRequest, LookupCommand, LookupResponse, SearchCommand, SortMode,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
@@ -40,7 +40,7 @@ use std::time::{Duration, SystemTime};
 use std::{fs, u8};
 use tokio::task::JoinSet;
 
-use crate::shard_manager_helpers::{compile_filters, order_blended, resolve_sorts};
+use crate::shard_manager_helpers::{compile_filters, order_blended, order_strict, resolve_sorts};
 
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
@@ -960,7 +960,6 @@ impl ShardManager {
             &policy,
         )?;
 
-        println!("{:?}", query);
         let query = Arc::new(query);
 
         let filters = compile_filters(&self.analyzer, command, &policy)?;
@@ -968,7 +967,7 @@ impl ShardManager {
 
         let sort_xpaths: Option<Arc<Vec<XPathId>>> = sorts
             .as_ref()
-            .map(|specs| Arc::new(specs.iter().map(|s| s.xpath).collect()));
+            .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
 
         //INFO:                page * multiplier    min    max
         let window = fetch.saturating_mul(50).clamp(100, 5_000);
@@ -1030,9 +1029,11 @@ impl ShardManager {
         }
 
         //sort keys when sort given, otherwise just relevance/docid
-        if let Some(specs) = sorts.as_ref() {
-            //the cool crazy meged sort
-            order_blended(&mut items, specs);
+        if let Some(s) = sorts.as_ref() {
+            match s.mode {
+                SortMode::Blend => order_blended(&mut items, &s.fields),
+                SortMode::Strict => order_strict(&mut items, &s.fields),
+            }
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
         }

@@ -12,7 +12,7 @@ use core_index::{
 };
 use core_protocol::{command_reponse_definitions::Fuzziness, errors::CorelamoError};
 use indexmap::IndexMap;
-use simd_json::{OwnedValue, base::ValueAsScalar};
+use simd_json::{OwnedValue, StaticNode, base::ValueAsScalar};
 
 use crate::{
     Query,
@@ -229,6 +229,18 @@ fn build_node(
         if let Some(inner) = obj.get("range") {
             return resolve_range(field, inner);
         }
+    }
+
+    //          sis bisk porno bet simd sitaada strukturs
+    if let OwnedValue::Static(StaticNode::Bool(b)) = v {
+        if field.kind != FieldKind::Bool {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{}' is {} — expected a bool value (true/false)",
+                field.name,
+                field.kind.label()
+            )));
+        }
+        return Ok(Some(Query::Bool(*b)));
     }
 
     let node = parse_json_query(v)?;

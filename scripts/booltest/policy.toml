@@ -1,0 +1,52 @@
+[[fields]]
+name = "id"
+kind = "Id"
+
+[[fields]]
+name = "name"
+kind = "Text"
+exact = true
+
+[[fields]]
+name = "score"
+kind = "Integer"
+searchable = true
+
+[[fields]]
+name = "featured"
+kind = "Bool"
+
+# array of objects with a bool
+[[fields]]
+name = "cast"
+kind = "Struct"
+
+[[fields.subfields]]
+name = "name"
+kind = "Text"
+exact = true
+
+[[fields.subfields]]
+name = "is_lead"
+kind = "Bool"
+
+# nested array (array-in-array) with a bool + a number
+[[fields]]
+name = "grid"
+kind = "Struct"
+
+[[fields.subfields]]
+name = "row"
+kind = "Struct"
+
+[[fields.subfields.subfields]]
+name = "cell"
+kind = "Struct"
+
+[[fields.subfields.subfields.subfields]]
+name = "is_hot"
+kind = "Bool"
+
+[[fields.subfields.subfields.subfields]]
+name = "value"
+kind = "Integer"

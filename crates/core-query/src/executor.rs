@@ -387,9 +387,21 @@ where
                 }
                 EvalOutcome::Docs(out)
             }
+            Query::Bool(b) => {
+                let mut out = HashSet::new();
+                for &ctx in ctxs {
+                    if *b {
+                        out.extend(self.index.bool_true_ids(ctx.xpath).iter());
+                    } else {
+                        out.extend(self.index.bool_false_ids(ctx.xpath).iter());
+                    }
+                }
+                EvalOutcome::Docs(out)
+            }
+
             Query::Wand(parts) | Query::Or(parts) => self.eval_union(parts, ctxs, mode),
             Query::And(parts) => self.eval_and(parts, ctxs, mode),
-            //same_element is resolved by the filter driver (needs its binding tree)
+
             Query::SameElement(_) => EvalOutcome::Docs(HashSet::new()),
 
             Query::MatchAll => EvalOutcome::Docs(HashSet::new()),

@@ -1,3 +1,5 @@
+use roaring::RoaringTreemap;
+
 use crate::{
     document::policy::WeightInterval,
     numeric_values::NumericValue,
@@ -41,9 +43,16 @@ pub struct NumericPoint {
     pub value: NumericValue,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct BoolPoint {
     pub xpath: XPathId,
+    pub value: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BoolField {
+    pub true_ids: RoaringTreemap,
+    pub false_ids: RoaringTreemap,
 }
 
 impl IndexedDocument {

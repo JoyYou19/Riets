@@ -147,10 +147,10 @@ fn index_leaves(
                 }
             }
             FieldKind::Bool => {
-                //we only record "true" cuz roaringbitmap speed
-                if parse_bool(raw) == Some(true) {
+                if let Some(b) = parse_bool(raw) {
                     bool_points.push(BoolPoint {
                         xpath: field.xpath(policy),
+                        value: b,
                     });
                 }
             }

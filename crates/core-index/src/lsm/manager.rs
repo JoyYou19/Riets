@@ -1,7 +1,13 @@
-use std::{ io, path::PathBuf, sync::Arc, time::{Duration, Instant} };
+use std::{
+    io,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ahash::HashSet;
 use core_timing::timed;
+use roaring::RoaringTreemap;
 
 use crate::{
     analyzer::analyzer::Analyzer,
@@ -40,6 +46,9 @@ pub struct LsmIndex {
     max_array_row: ArrayRowId,
     last_ingest: Instant,
 }
+
+//INFO: WATAFAK - normunds
+
 //THIS DOESNT NEED TO BE CONFIGURABlE I THINK?
 /// Hard cap on in-memory generations so snapshot fan-out stays bounded.
 const MAX_GENERATIONS: usize = 16;
@@ -86,6 +95,16 @@ impl SearchIndex for LsmIndex {
 
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
         self.snapshot().doc_of_row(row)
+    }
+
+    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.snapshot().bool_true_ids(xpath)
+    }
+    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.snapshot().bool_false_ids(xpath)
+    }
+    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
+        self.snapshot().bool_value(xpath, doc_id)
     }
 
     #[timed(search)]
@@ -161,7 +180,7 @@ impl LsmIndex {
             next_segment_id: 0,
             next_compaction_job_id: 0,
             max_array_row: 0,
-            last_ingest:Instant::now()
+            last_ingest: Instant::now(),
         }
     }
 
@@ -186,9 +205,8 @@ impl LsmIndex {
 
             max_array_row = max_array_row.max(disk.array_row_index().max_array_row().unwrap_or(0));
 
-            if
-                let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) &&
-                let Some(id) = stem
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                && let Some(id) = stem
                     .strip_prefix("segment-")
                     .and_then(|value| value.parse::<u64>().ok())
             {
@@ -214,7 +232,7 @@ impl LsmIndex {
             next_doc_id,
             next_compaction_job_id: 0,
             max_array_row,
-            last_ingest:Instant::now()
+            last_ingest: Instant::now(),
         })
     }
 
@@ -222,7 +240,6 @@ impl LsmIndex {
         self.max_array_row
     }
 
-   
     //TEST
     #[timed(indexing_documents)]
     fn seal(&mut self) {
@@ -248,13 +265,12 @@ impl LsmIndex {
     }
 
     fn build_snapshot(&self, mem: Arc<MemIndex>) -> IndexSnapshot {
-        let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::with_capacity(
-            self.generations.len() + self.query_segments.len()
-        );
+        let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> =
+            Vec::with_capacity(self.generations.len() + self.query_segments.len());
         segments.extend(
             self.generations
                 .iter()
-                .map(|generation| Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>)
+                .map(|generation| Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>),
         );
         segments.extend(self.query_segments.iter().cloned());
         IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
@@ -305,9 +321,8 @@ impl LsmIndex {
             pending += 1;
 
             let staged = staging.estimated_size_bytes();
-            if
-                staged >= STAGING_LIMIT_BYTES ||
-                self.memtable_size() + staged >= self.flush_threshold
+            if staged >= STAGING_LIMIT_BYTES
+                || self.memtable_size() + staged >= self.flush_threshold
             {
                 self.mem.merge_from(std::mem::take(&mut staging));
                 added += pending;
@@ -337,8 +352,9 @@ impl LsmIndex {
     }
 
     pub fn memtable_size(&self) -> usize {
-        self.mem.estimated_size_bytes() +
-            self.generations
+        self.mem.estimated_size_bytes()
+            + self
+                .generations
                 .iter()
                 .map(|generation| generation.estimated_size_bytes())
                 .sum::<usize>()
@@ -377,7 +393,7 @@ impl LsmIndex {
     // Converts a mutable indexing state into a readonly segment
     // so we can query, share, serialize, compact the data
     #[timed(flushing)]
-   
+
     pub fn flush(&mut self) -> io::Result<()> {
         self.seal();
         if self.generations.is_empty() {
@@ -392,12 +408,10 @@ impl LsmIndex {
         }
 
         let Some((_, max_doc_id)) = merged_mem.doc_id_range() else {
-            return Err(
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "flushed generations contain no document ids"
-                )
-            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "flushed generations contain no document ids",
+            ));
         };
         self.next_doc_id = max_doc_id.saturating_add(1);
 
@@ -407,19 +421,18 @@ impl LsmIndex {
             Some(root) => {
                 let path = root.join(format!("segment-{}.idx", self.next_segment_id));
                 self.next_segment_id += 1;
-                write_segment(&path, &segment).map_err(|e|
-                    io::Error::new(e.kind(), format!("{}: {}", path.display(), e))
-                )?;
-                let disk = DiskSegment::open(&path).map_err(|e|
-                    io::Error::new(e.kind(), format!("{}: {}", path.display(), e))
-                )?;
+                write_segment(&path, &segment)
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
+                let disk = DiskSegment::open(&path)
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
                 manifest::append_segment(root, &path)?;
                 self.segment_handles.push(SegmentHandle::Disk(path));
                 drop_flushed_segment(segment);
                 Arc::new(disk)
             }
             None => {
-                self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
+                self.segment_handles
+                    .push(SegmentHandle::Memory(segment.clone()));
                 segment as Arc<dyn SearchReader + Send + Sync>
             }
         };
@@ -427,7 +440,7 @@ impl LsmIndex {
         Arc::make_mut(&mut self.query_segments).push(reader);
         Ok(())
     }
-    
+
     // pub fn snapshot(&self) -> IndexSnapshot {
     //     IndexSnapshot::new(
     //         self.mem.clone(),
@@ -497,113 +510,121 @@ impl LsmIndex {
     }
 
     #[timed(compaction)]
-  
 
-pub fn plan_compaction(&mut self, config: CompactionConfig) -> io::Result<Option<CompactionJob>> {
-    let Some(root) = &self.root else {
-        return Ok(None);
-    };
+    pub fn plan_compaction(
+        &mut self,
+        config: CompactionConfig,
+    ) -> io::Result<Option<CompactionJob>> {
+        let Some(root) = &self.root else {
+            return Ok(None);
+        };
 
-    let sizes: Vec<Option<u64>> = self
-        .segment_handles
-        .iter()
-        .map(|handle| match handle {
-            SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
-            SegmentHandle::Memory(_) => None,
-        })
-        .collect();
+        let sizes: Vec<Option<u64>> = self
+            .segment_handles
+            .iter()
+            .map(|handle| match handle {
+                SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
+                SegmentHandle::Memory(_) => None,
+            })
+            .collect();
 
-    let disk_segments = sizes.iter().filter(|size| size.is_some()).count();
-    if disk_segments < 2 {
-        return Ok(None);
+        let disk_segments = sizes.iter().filter(|size| size.is_some()).count();
+        if disk_segments < 2 {
+            return Ok(None);
+        }
+
+        let idle = self.last_ingest.elapsed() >= IDLE_FULL_MERGE_AFTER;
+        let all_disk = disk_segments == sizes.len();
+        let max_width = config.max_segments_per_compaction.max(MIN_COMPACTION_WIDTH);
+
+        let window = if idle && all_disk {
+            Some((0, sizes.len()))
+        } else if self.segment_count() >= config.compact_when_segments_at_least {
+            Self::tiered_window(&sizes, MIN_COMPACTION_WIDTH, max_width).or_else(|| {
+                (self.segment_count() > MAX_SEGMENTS_TARGET)
+                    .then(|| Self::cheapest_window(&sizes, max_width))
+                    .flatten()
+            })
+        } else {
+            None
+        };
+
+        let Some((start, end)) = window else {
+            return Ok(None);
+        };
+
+        let selected: Vec<SegmentHandle> = self.segment_handles[start..end].to_vec();
+        let output_path = root.join(format!("segment-{}.idx", self.next_segment_id));
+        self.next_segment_id += 1;
+        let job_id = self.next_compaction_job_id;
+        self.next_compaction_job_id += 1;
+
+        Ok(Some(CompactionJob {
+            job_id,
+            selected,
+            deleted: self.deleted.clone(),
+            delete_generation: self.delete_generation,
+            output_path,
+        }))
     }
 
-    let idle = self.last_ingest.elapsed() >= IDLE_FULL_MERGE_AFTER;
-    let all_disk = disk_segments == sizes.len();
-    let max_width = config.max_segments_per_compaction.max(MIN_COMPACTION_WIDTH);
+    /// Cheapest contiguous run of disk segments whose sizes are within
+    /// COMPACTION_SIZE_RATIO of each other, at least `min_width` long.
+    fn tiered_window(
+        sizes: &[Option<u64>],
+        min_width: usize,
+        max_width: usize,
+    ) -> Option<(usize, usize)> {
+        let mut best: Option<(usize, usize, u64)> = None;
 
-    let window = if idle && all_disk {
-        Some((0, sizes.len()))
-    } else if self.segment_count() >= config.compact_when_segments_at_least {
-        Self::tiered_window(&sizes, MIN_COMPACTION_WIDTH, max_width).or_else(|| {
-            (self.segment_count() > MAX_SEGMENTS_TARGET)
-                .then(|| Self::cheapest_window(&sizes, max_width))
-                .flatten()
-        })
-    } else {
-        None
-    };
+        for start in 0..sizes.len() {
+            let Some(first) = sizes[start] else { continue };
+            let (mut smallest, mut largest, mut total) = (first, first, first);
+            let mut end = start + 1;
 
-    let Some((start, end)) = window else {
-        return Ok(None);
-    };
-
-    let selected: Vec<SegmentHandle> = self.segment_handles[start..end].to_vec();
-    let output_path = root.join(format!("segment-{}.idx", self.next_segment_id));
-    self.next_segment_id += 1;
-    let job_id = self.next_compaction_job_id;
-    self.next_compaction_job_id += 1;
-
-    Ok(Some(CompactionJob {
-        job_id,
-        selected,
-        deleted: self.deleted.clone(),
-        delete_generation: self.delete_generation,
-        output_path,
-    }))
-}
-
-/// Cheapest contiguous run of disk segments whose sizes are within
-/// COMPACTION_SIZE_RATIO of each other, at least `min_width` long.
-fn tiered_window(sizes: &[Option<u64>], min_width: usize, max_width: usize) -> Option<(usize, usize)> {
-    let mut best: Option<(usize, usize, u64)> = None;
-
-    for start in 0..sizes.len() {
-        let Some(first) = sizes[start] else { continue };
-        let (mut smallest, mut largest, mut total) = (first, first, first);
-        let mut end = start + 1;
-
-        while end < sizes.len() && end - start < max_width {
-            let Some(size) = sizes[end] else { break };
-            let next_smallest = smallest.min(size);
-            let next_largest = largest.max(size);
-            if next_largest > next_smallest.saturating_mul(COMPACTION_SIZE_RATIO) {
-                break;
+            while end < sizes.len() && end - start < max_width {
+                let Some(size) = sizes[end] else { break };
+                let next_smallest = smallest.min(size);
+                let next_largest = largest.max(size);
+                if next_largest > next_smallest.saturating_mul(COMPACTION_SIZE_RATIO) {
+                    break;
+                }
+                smallest = next_smallest;
+                largest = next_largest;
+                total += size;
+                end += 1;
             }
-            smallest = next_smallest;
-            largest = next_largest;
-            total += size;
-            end += 1;
+
+            if end - start >= min_width
+                && best.map_or(true, |(_, _, best_total)| total < best_total)
+            {
+                best = Some((start, end, total));
+            }
         }
 
-        if end - start >= min_width && best.map_or(true, |(_, _, best_total)| total < best_total) {
-            best = Some((start, end, total));
-        }
+        best.map(|(start, end, _)| (start, end))
     }
 
-    best.map(|(start, end, _)| (start, end))
-}
+    /// Cheapest contiguous run of up to `width` disk segments, ignoring size ratios.
+    /// Used to keep the segment count bounded when no tiered run qualifies.
+    fn cheapest_window(sizes: &[Option<u64>], width: usize) -> Option<(usize, usize)> {
+        let mut best: Option<(usize, usize, u64)> = None;
 
-/// Cheapest contiguous run of up to `width` disk segments, ignoring size ratios.
-/// Used to keep the segment count bounded when no tiered run qualifies.
-fn cheapest_window(sizes: &[Option<u64>], width: usize) -> Option<(usize, usize)> {
-    let mut best: Option<(usize, usize, u64)> = None;
+        for start in 0..sizes.len() {
+            let mut total = 0u64;
+            let mut end = start;
+            while end < sizes.len() && end - start < width {
+                let Some(size) = sizes[end] else { break };
+                total += size;
+                end += 1;
+            }
+            if end - start >= 2 && best.map_or(true, |(_, _, best_total)| total < best_total) {
+                best = Some((start, end, total));
+            }
+        }
 
-    for start in 0..sizes.len() {
-        let mut total = 0u64;
-        let mut end = start;
-        while end < sizes.len() && end - start < width {
-            let Some(size) = sizes[end] else { break };
-            total += size;
-            end += 1;
-        }
-        if end - start >= 2 && best.map_or(true, |(_, _, best_total)| total < best_total) {
-            best = Some((start, end, total));
-        }
+        best.map(|(start, end, _)| (start, end))
     }
-
-    best.map(|(start, end, _)| (start, end))
-}
     #[timed(compaction)]
     pub fn install_compaction(&mut self, completed: CompletedCompaction) -> io::Result<bool> {
         let Some(root) = &self.root else {
@@ -637,7 +658,10 @@ fn cheapest_window(sizes: &[Option<u64>], width: usize) -> Option<(usize, usize)
             segs.remove(pos);
         }
 
-        self.segment_handles.insert(insert_pos, SegmentHandle::Disk(completed.output_path.clone()));
+        self.segment_handles.insert(
+            insert_pos,
+            SegmentHandle::Disk(completed.output_path.clone()),
+        );
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
         segs.insert(insert_pos, disk);
 
@@ -682,7 +706,7 @@ fn cheapest_window(sizes: &[Option<u64>], width: usize) -> Option<(usize, usize)
     }
 }
 
- #[timed(flushing)]
-    fn drop_flushed_segment(segment: Arc<crate::segment::ImmutableSegment>) {
-        drop(segment);
-    }
+#[timed(flushing)]
+fn drop_flushed_segment(segment: Arc<crate::segment::ImmutableSegment>) {
+    drop(segment);
+}
