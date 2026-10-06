@@ -34,6 +34,7 @@ pub struct DiskSegment {
     //TODO: we should look into this, if doc_lengths takes up too much RAM wikipedia-scale then we
     //could cache this
     doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
+    
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
     bool_fields: BTreeMap<XPathId, BoolField>,

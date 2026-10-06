@@ -490,6 +490,50 @@ pub fn conjunctive_top_k_groups<S: SearchStats>(
 }
 
 /// `phrase` requires single-term clauses, in phrase order.
+/// Exact scores of the listed documents in one field, computed the way the top-k walks
+/// compute them. `docs` must be sorted ascending without duplicates.
+///
+/// Conjunctive: a document counts only when every clause matches it; otherwise when any
+/// clause does. Only the listed documents are visited: each clause seeks from one to the
+/// next instead of walking its whole posting list, so a few hundred documents cost a few
+/// hundred seeks per clause.
+pub fn score_docs_groups<S: SearchStats>(
+    stats: &S,
+    xpath: XPathId,
+    groups: &[WeightedGroup<'_>],
+    docs: &[DocId],
+    conjunctive: bool,
+) -> Vec<WandHit> {
+    if docs.is_empty() || groups.is_empty() {
+        return Vec::new();
+    }
+    let doc_count = stats.doc_count(xpath);
+    let avg_doc_len = stats.avg_doc_len(xpath);
+    let mut clauses = clauses(groups, doc_count);
+    if clauses.is_empty() || (conjunctive && clauses.len() != groups.len()) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for &doc in docs {
+        let mut matched = 0usize;
+        for clause in &mut clauses {
+            clause.advance_to(doc);
+            if clause.doc_id() == Some(doc) {
+                matched += 1;
+            }
+        }
+        if matched == 0 || (conjunctive && matched != clauses.len()) {
+            continue;
+        }
+        let doc_len = stats.doc_len(doc, xpath).unwrap_or(avg_doc_len as u32);
+        let score = clauses.iter().fold(0u64, |sum, clause| {
+            sum.saturating_add(clause.score(doc, doc_len, avg_doc_len, doc_count))
+        });
+        out.push(WandHit { doc_id: doc, score, matched_terms: matched });
+    }
+    out
+}
+
 fn conjunctive_walk<S: SearchStats>(
     stats: &S,
     xpath: XPathId,

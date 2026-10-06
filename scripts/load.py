@@ -30,8 +30,8 @@ list = true
 exact = true
 stemming = "english"
 [fields.weight]
-min = 40
-max = 80
+min = 50
+max = 90
 
 [[fields]]
 name = "text"
@@ -40,7 +40,7 @@ list = true
 stemming = "english"
 [fields.weight]
 min = 1
-max = 100
+max = 10
 
 [[fields]]
 name = "random_year"

@@ -1,37 +1,4 @@
-//! Persistent, editable synonym dictionary, stored as TOML like the rest of
-//! the server's configuration.
-//!
-//! ```text
-//! <data root>/                         e.g. /tmp/corelamo
-//!   CorelamoSettings.toml
-//!   CorelamoDictionary.toml            template; written from the built-in copy on first start
-//!   databases/<db>/dictionary.toml     this database's dictionary, copied from the
-//!                                      template when the database is created
-//! ```
-//!
-//! File format:
-//!
-//! ```toml
-//! [roman]                      # all settings optional
-//! enabled = true
-//! denylist = ["MIX", "DIX"]
-//!
-//! [acronyms]
-//! groups = [
-//!   ["WWII", "~WW2", "world war ii"],
-//! ]
-//!
-//! [formulas]
-//! groups = [["~H2O", "water"]]
-//!
-//! [synonyms]
-//! groups = [["car", "automobile"]]
-//! ```
-//!
-//! Every database always has its own `dictionary.toml` and uses only that
-//! file; editing the template affects databases created afterwards. The file
-//! text is stored exactly as written (comments and layout are never rewritten),
-//! and every change is validated before it is saved or used.
+
 
 use std::collections::HashMap;
 use std::fmt;

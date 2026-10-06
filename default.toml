@@ -112,8 +112,8 @@ groups = [
   ["ADHD", "attention deficit hyperactivity disorder"],
 
   # History
-  ["~WWII", "~WW2", "world war ii"],
-  ["~WWI", "~WW1", "world war i"],
+  ["~WWII", "~WW2", "world war ii", "world war 2", "second world war"],
+  ["~WWI", "~WW1", "world war i", "world war 1", "first world war"],
 
   # --- From Wikipedia redirects (38,649 entries, sorted) -------------------------
   ["100BC", "100 bc"],
@@ -38774,7 +38774,7 @@ groups = [
   # lowercase form is not an ordinary word.
   ["~H2O", "water"],
   ["~CO2", "carbon dioxide"],
-  ["~NaCl", "sodium chloride", "table salt"],
+  ["~NaCl", "sodium chloride", "table salt", "common salt", "salt"],
   ["~CaCO3", "calcium carbonate"],
   ["~HCl", "hydrochloric acid", "hydrogen chloride"],
   ["~H2SO4", "sulfuric acid", "sulphuric acid"],
