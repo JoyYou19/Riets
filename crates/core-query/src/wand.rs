@@ -253,13 +253,24 @@ struct Clause<'a> {
 
 impl<'a> Clause<'a> {
     fn new(group: &[(&'a TermPostings, f64)], doc_count: u64) -> Self {
+        //Alternatives are scored as one term, with the document frequency of the form the user
+        //typed (the first alternative; the first one that occurs at all if the typed form is
+        //missing from this field). With their own, a rare synonym such as `viii` for `8` has a
+        //far larger idf and the group would score by the rare form; pooling to the largest
+        //instead would give a rare typed word the idf of its most common synonym. Using the
+        //typed form keeps a typed word's score exactly what it is without the dictionary.
+        let pooled_doc_freq = group
+            .iter()
+            .map(|(term, _)| term.doc_freq)
+            .find(|&doc_freq| doc_freq > 0)
+            .unwrap_or(0);
         let mut upper_bound = 0u64;
         let members = group
             .iter()
             .map(|&(term, weight)| {
-                let bound = bm25_upper_bound(term.max_weight, doc_count, term.doc_freq);
+                let bound = bm25_upper_bound(term.max_weight, doc_count, pooled_doc_freq);
                 upper_bound = upper_bound.max(weighted(bound, weight));
-                Member { cursor: PostingCursor::new(&term.postings), doc_freq: term.doc_freq, weight }
+                Member { cursor: PostingCursor::new(&term.postings), doc_freq: pooled_doc_freq, weight }
             })
             .collect();
         Self { members, upper_bound }
