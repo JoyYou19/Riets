@@ -188,6 +188,66 @@ pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> Posti
     // segments, so duplicates are real here — from_sorted merges them.
     PostingList::from_sorted(out)
 }
+/// Same result as `union_many`, but takes the lists by value and moves postings
+/// instead of cloning them: no per-posting allocation (each clone copies the
+/// positions), and a single list is passed straight through.
+pub fn union_many_owned(lists: Vec<PostingList>) -> PostingList {
+    let mut non_empty: Vec<Vec<Posting>> = lists
+        .into_iter()
+        .map(PostingList::into_items)
+        .filter(|items| !items.is_empty())
+        .collect();
+
+    match non_empty.len() {
+        0 => return PostingList::default(),
+        1 => return PostingList::from_sorted(non_empty.pop().unwrap_or_default()),
+        _ => {}
+    }
+
+    let total: usize = non_empty.iter().map(Vec::len).sum();
+
+    //Segments usually cover separate doc id ranges (flushed in order). Then the merge is
+    //just putting the lists one after another: no heap, no duplicate handling.
+    non_empty.sort_unstable_by_key(|items| items[0].doc_id);
+    let disjoint = non_empty
+        .windows(2)
+        .all(|pair| pair[0].last().map(|p| p.doc_id) < pair[1].first().map(|p| p.doc_id));
+    if disjoint {
+        let mut out: Vec<Posting> = Vec::with_capacity(total);
+        for mut items in non_empty {
+            out.append(&mut items);
+        }
+        return PostingList::from_sorted(out);
+    }
+
+    let mut sources: Vec<std::vec::IntoIter<Posting>> =
+        non_empty.into_iter().map(Vec::into_iter).collect();
+    //the posting each source is currently on; the heap orders sources by its doc id
+    let mut heads: Vec<Option<Posting>> = sources.iter_mut().map(Iterator::next).collect();
+    let mut heap: BinaryHeap<Reverse<(DocId, usize)>> = BinaryHeap::with_capacity(sources.len());
+    for (index, head) in heads.iter().enumerate() {
+        if let Some(posting) = head {
+            heap.push(Reverse((posting.doc_id, index)));
+        }
+    }
+
+    let mut out: Vec<Posting> = Vec::with_capacity(total);
+    while let Some(Reverse((_, index))) = heap.pop() {
+        let Some(posting) = heads[index].take() else { continue };
+        heads[index] = sources[index].next();
+        if let Some(next) = &heads[index] {
+            heap.push(Reverse((next.doc_id, index)));
+        }
+        out.push(posting);
+    }
+    PostingList::from_sorted(out)
+}
+
+
+
+
+
+
 /// Restricts `postings` to the doc_ids in `candidates`, keeping
 /// `postings`' own positions and weights. Driven from `candidates`
 /// (expected to be the smaller side) galloping into `postings`.

@@ -257,3 +257,24 @@ pub fn validate_settings(settings: &HashMap<String, String>) -> Result<(), Strin
 
     Ok(())
 }
+use core_query::dictionary::SynonymRegistry;
+use std::sync::OnceLock;
+static SYNONYM_REGISTRY: OnceLock<SynonymRegistry> = OnceLock::new();
+
+//CorelamoSynonyms.syn sits next to CorelamoSettings.toml; written from the built-in copy on first start
+pub fn init_synonyms(settings: &HashMap<String, String>) -> Result<(), String> {
+    let root_path = PathBuf::from(get(settings, "root-path"));
+    let registry = SynonymRegistry::open(&root_path)
+        .map_err(|e| format!("failed to load CorelamoSynonyms.syn: {e}"))?;
+    let log = slog_scope::logger();
+    info!(log, "synonyms loaded"; "template_path" => %registry.template_path().display());
+    SYNONYM_REGISTRY
+        .set(registry)
+        .map_err(|_| "synonym registry initialised twice".to_string())
+}
+
+pub fn synonym_registry() -> &'static SynonymRegistry {
+    SYNONYM_REGISTRY
+        .get()
+        .expect("synonym registry used before settings::init_synonyms in main")
+}
