@@ -23,10 +23,7 @@ use crate::{
     wand::{
         WandHit,
         WeightedGroup,
-        conjunctive_top_k,
         conjunctive_top_k_groups,
-        phrase_top_k,
-        wand_top_k,
         wand_top_k_groups,
     },
 };

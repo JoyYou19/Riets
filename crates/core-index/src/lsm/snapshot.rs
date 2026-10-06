@@ -5,7 +5,7 @@ use arc_swap::ArcSwap;
 use core_timing::timed;
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions}, mem::MemIndex, numeric_values::{NumericBound, NumericValue}, posting::{DeleteSet, PostingList, ops::{union_many, union_many_owned}}, search::{SearchIndex, SearchNumeric, SearchReader, SearchStats}, types::{ArrayRowId, DocId, XPathId}, wildcard::WildcardPattern,
+    fuzzy::{FuzzyExpansion, FuzzyOptions}, mem::MemIndex, numeric_values::{NumericBound, NumericValue}, posting::{DeleteSet, PostingList, ops::union_many_owned}, search::{SearchIndex, SearchNumeric, SearchReader, SearchStats}, types::{ArrayRowId, DocId, XPathId}, wildcard::WildcardPattern,
 };
 
 /*
