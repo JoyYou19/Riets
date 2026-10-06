@@ -3,7 +3,6 @@ use crate::types::{ArrayRowId, DocId};
 pub const NO_PARENT_ROW: ArrayRowId = ArrayRowId::MAX;
 
 //INFO: one rowid per array element in a database
-
 #[derive(Debug, Clone, Default)]
 pub struct ArrayRowAllocator {
     next: ArrayRowId,
