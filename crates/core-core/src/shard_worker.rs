@@ -325,6 +325,11 @@ impl ShardHandle {
                         snapshot
                             .numeric_value(xpath, hit.doc_id)
                             .map(|value| value.as_f64())
+                            .or_else(|| {
+                                snapshot
+                                    .bool_value(xpath, hit.doc_id)
+                                    .map(|b| if b { 1.0 } else { 0.0 })
+                            })
                     })
                     .collect();
                 (hit, keys)

@@ -61,6 +61,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
         Query::Fuzzy(term, fuzziness, spec) => Some(Query::Fuzzy(term, fuzziness, spec)),
 
         Query::Range(range) => Some(Query::Range(range)),
+        Query::Bool(b) => Some(Query::Bool(b)),
         Query::SameElement(children) => {
             let kept: Vec<Query> = children
                 .into_iter()

@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use crate::segment::ImmutableSegment;
 
 // What segment exists?
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SegmentHandle {
     Memory(Arc<ImmutableSegment>),
     Disk(PathBuf),

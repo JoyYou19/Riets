@@ -72,6 +72,10 @@ min = 1
 max = 70
 
 [[fields]]
+name = "is_cool"
+kind = "Bool"
+
+[[fields]]
 name = "href"
 kind = "Text"
 exact = true

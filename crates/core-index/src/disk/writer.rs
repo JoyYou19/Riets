@@ -1,4 +1,6 @@
 use core_timing::timed;
+use roaring::RoaringTreemap;
+use std::collections::BTreeMap;
 use std::io::SeekFrom;
 use std::{
     fs::File,
@@ -7,6 +9,7 @@ use std::{
 };
 
 use crate::array_rows::ArrayRowIndex;
+use crate::document::document::BoolField;
 use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
@@ -95,7 +98,9 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
     write_u64(out, footer.min_doc_id)?;
     write_u64(out, footer.max_doc_id)?;
     write_u64(out, footer.array_row_index_offset)?;
-    write_u64(out, footer.array_row_index_len)
+    write_u64(out, footer.array_row_index_len)?;
+    write_u64(out, footer.bool_fields_offset)?;
+    write_u64(out, footer.bool_fields_len)
 }
 
 fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io::Result<()> {
@@ -146,6 +151,25 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
     Ok(())
 }
 
+fn write_bool_fields(
+    out: &mut impl Write,
+    fields: &std::collections::BTreeMap<XPathId, BoolField>,
+) -> io::Result<()> {
+    write_u32(out, fields.len() as u32)?;
+    for (xpath, field) in fields {
+        write_u32(out, *xpath)?;
+        let mut buf = Vec::new();
+        field.true_ids.serialize_into(&mut buf)?;
+        write_u64(out, buf.len() as u64)?;
+        out.write_all(&buf)?;
+        buf.clear();
+        field.false_ids.serialize_into(&mut buf)?;
+        write_u64(out, buf.len() as u64)?;
+        out.write_all(&buf)?;
+    }
+    Ok(())
+}
+
 #[timed(writing_files)]
 pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::Result<()> {
     let file = File::create(path)?;
@@ -186,6 +210,10 @@ pub fn write_segment_to<W: Write + Seek>(
     write_array_row_index(out, segment.array_row_index())?;
     let array_row_index_end = out.stream_position()?;
 
+    let bool_fields_offset = out.stream_position()?;
+    write_bool_fields(out, segment.bool_fields())?;
+    let bool_fields_end = out.stream_position()?;
+
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
@@ -195,6 +223,8 @@ pub fn write_segment_to<W: Write + Seek>(
         numeric_fields_len: numeric_fields_end - numeric_fields_offset,
         array_row_index_offset,
         array_row_index_len: array_row_index_end - array_row_index_offset,
+        bool_fields_offset,
+        bool_fields_len: bool_fields_end - bool_fields_offset,
         term_count,
         min_doc_id: doc_id_range.0,
         max_doc_id: doc_id_range.1,
@@ -260,9 +290,10 @@ fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
 pub fn write_merged_segment(
     path: impl AsRef<Path>,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
-    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+    doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
     array_row_index: &ArrayRowIndex,
+    bool_fields: &BTreeMap<XPathId, BoolField>,
 ) -> io::Result<()> {
     let file = File::create(path)?;
     let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
@@ -272,6 +303,7 @@ pub fn write_merged_segment(
         doc_lengths,
         numeric_fields,
         array_row_index,
+        bool_fields,
     )?;
 
     finish_file(out)
@@ -284,6 +316,7 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
     array_row_index: &ArrayRowIndex,
+    bool_fields: &std::collections::BTreeMap<XPathId, BoolField>,
 ) -> io::Result<()> {
     write_header(out)?;
 
@@ -313,6 +346,10 @@ pub fn write_merged_segment_to<W: Write + Seek>(
     write_array_row_index(out, array_row_index)?;
     let array_row_index_end = out.stream_position()?;
 
+    let bool_fields_offset = out.stream_position()?;
+    write_bool_fields(out, bool_fields)?;
+    let bool_fields_end = out.stream_position()?;
+
     let footer = SegmentFooter {
         doc_lengths_offset,
         doc_lengths_len: doc_lengths_end - doc_lengths_offset,
@@ -322,6 +359,8 @@ pub fn write_merged_segment_to<W: Write + Seek>(
         numeric_fields_len: numeric_fields_end - numeric_fields_offset,
         array_row_index_offset,
         array_row_index_len: array_row_index_end - array_row_index_offset,
+        bool_fields_offset,
+        bool_fields_len: bool_fields_end - bool_fields_offset,
         term_count,
         min_doc_id: doc_id_range.0,
         max_doc_id: doc_id_range.1,
