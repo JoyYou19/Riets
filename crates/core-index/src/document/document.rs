@@ -1,3 +1,5 @@
+use roaring::RoaringTreemap;
+
 use crate::{
     document::policy::WeightInterval,
     numeric_values::NumericValue,
@@ -11,6 +13,7 @@ pub struct IndexedDocument {
     pub parts: Vec<DocumentPart>,
     pub numeric_points: Vec<NumericPoint>,
     pub array_rows: Vec<ArrayRow>,
+    pub bool_points: Vec<BoolPoint>,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +22,7 @@ pub struct ArrayRow {
     pub parent: Option<ArrayRowId>,
     pub parts: Vec<DocumentPart>,
     pub numeric_points: Vec<NumericPoint>,
+    pub bool_points: Vec<BoolPoint>,
 }
 
 impl ArrayRow {
@@ -28,6 +32,7 @@ impl ArrayRow {
             parent,
             parts: Vec::new(),
             numeric_points: Vec::new(),
+            bool_points: Vec::new(),
         }
     }
 }
@@ -38,6 +43,18 @@ pub struct NumericPoint {
     pub value: NumericValue,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct BoolPoint {
+    pub xpath: XPathId,
+    pub value: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BoolField {
+    pub true_ids: RoaringTreemap,
+    pub false_ids: RoaringTreemap,
+}
+
 impl IndexedDocument {
     pub fn new(doc_id: DocId) -> Self {
         Self {
@@ -45,6 +62,7 @@ impl IndexedDocument {
             parts: Vec::new(),
             numeric_points: Vec::new(),
             array_rows: Vec::new(),
+            bool_points: Vec::new(),
         }
     }
 }

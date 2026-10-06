@@ -1,10 +1,19 @@
 use core_index::array_rows::ArrayRowAllocator;
-use core_index::document::document::{ArrayRow, NumericPoint};
+use core_index::document::document::{ArrayRow, BoolPoint, NumericPoint};
 use core_index::document::{DocumentPart, IndexPolicy, IndexedDocument, policy::FieldKind};
 use core_index::numeric_values::{parse_float, parse_integer};
 use core_index::types::{ArrayRowId, DocId};
 
 use crate::json_parse::{ArrayField, LeafValue, ParsedNode};
+
+fn parse_bool(raw: &str) -> Option<bool> {
+    //allows true false "true" "false"
+    match raw.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
 
 pub fn index_document(
     doc_id: DocId,
@@ -17,6 +26,7 @@ pub fn index_document(
         &parsed.leaves,
         &mut indexed.parts,
         &mut indexed.numeric_points,
+        &mut indexed.bool_points,
         policy,
     );
     index_arrays(
@@ -24,6 +34,7 @@ pub fn index_document(
         doc_id,
         None,
         &mut indexed.array_rows,
+        &mut indexed.bool_points,
         policy,
         allocator,
     );
@@ -35,6 +46,7 @@ fn index_arrays(
     doc_id: DocId,
     parent_row: Option<ArrayRowId>,
     rows: &mut Vec<ArrayRow>,
+    bool_points: &mut Vec<BoolPoint>,
     policy: &IndexPolicy,
     allocator: &mut ArrayRowAllocator,
 ) {
@@ -47,14 +59,17 @@ fn index_arrays(
                 &element.leaves,
                 &mut row.parts,
                 &mut row.numeric_points,
+                &mut row.bool_points,
                 policy,
             );
+
             rows.push(row);
             index_arrays(
                 &element.arrays,
                 doc_id,
                 Some(row_id),
                 rows,
+                bool_points,
                 policy,
                 allocator,
             );
@@ -66,6 +81,7 @@ fn index_leaves(
     leaves: &[LeafValue],
     parts: &mut Vec<DocumentPart>,
     numeric: &mut Vec<NumericPoint>,
+    bool_points: &mut Vec<BoolPoint>,
     policy: &IndexPolicy,
 ) {
     for leaf in leaves {
@@ -128,6 +144,14 @@ fn index_leaves(
                             exact: true,
                         });
                     }
+                }
+            }
+            FieldKind::Bool => {
+                if let Some(b) = parse_bool(raw) {
+                    bool_points.push(BoolPoint {
+                        xpath: field.xpath(policy),
+                        value: b,
+                    });
                 }
             }
             _ => {}

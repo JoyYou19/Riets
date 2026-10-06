@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
-use crate::document::document::NumericPoint;
+use crate::document::document::{BoolField, BoolPoint, NumericPoint};
 use crate::document::{DocumentPart, IndexedDocument};
 use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
 use crate::posting::{Posting, PostingList};
@@ -12,6 +13,7 @@ use crate::wildcard::WildcardPattern;
 use ahash::AHashMap;
 use ahash::HashSet;
 use core_timing::timed;
+use roaring::RoaringTreemap;
 
 // Memory inverted index, the core of the index
 #[derive(Debug, Clone)]
@@ -20,6 +22,7 @@ pub struct MemIndex {
     doc_lengths: AHashMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_points: NumericPoints,
+    bool_fields: AHashMap<XPathId, BoolField>,
     estimated_bytes: usize,
     min_doc_id: Option<DocId>,
     max_doc_id: Option<DocId>,
@@ -33,6 +36,7 @@ impl Default for MemIndex {
             doc_lengths: AHashMap::default(),
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
+            bool_fields: AHashMap::new(),
             estimated_bytes: 0,
             min_doc_id: None,
             max_doc_id: None,
@@ -57,6 +61,30 @@ impl SearchIndex for MemIndex {
 
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
         self.array_row_index.doc_of(row)
+    }
+
+    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.bool_fields
+            .get(&xpath)
+            .map(|f| f.true_ids.clone())
+            .unwrap_or_default()
+    }
+    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.bool_fields
+            .get(&xpath)
+            .map(|f| f.false_ids.clone())
+            .unwrap_or_default()
+    }
+
+    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
+        let f = self.bool_fields.get(&xpath)?;
+        if f.true_ids.contains(doc_id) {
+            Some(true)
+        } else if f.false_ids.contains(doc_id) {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     fn terms(&self, xpath: XPathId) -> Vec<String> {
@@ -135,6 +163,7 @@ impl MemIndex {
             doc_lengths: AHashMap::new(),
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
+            bool_fields: AHashMap::new(),
             estimated_bytes: 0,
             min_doc_id: None,
             max_doc_id: None,
@@ -147,6 +176,7 @@ impl MemIndex {
             doc_lengths: AHashMap::with_capacity(expected_docs),
             field_stats: BTreeMap::new(),
             numeric_points: NumericPoints::default(),
+            bool_fields: AHashMap::new(),
             estimated_bytes: 0,
             min_doc_id: None,
             max_doc_id: None,
@@ -159,12 +189,14 @@ impl MemIndex {
         let terms: BTreeMap<_, _> = self.terms.into_iter().collect();
         let doc_lengths: BTreeMap<_, _> = self.doc_lengths.into_iter().collect();
         let field_stats = self.field_stats;
+        let bool_fields: BTreeMap<_, _> = self.bool_fields.into_iter().collect();
 
         crate::segment::ImmutableSegment::new(
             terms,
             doc_lengths,
             field_stats,
             self.numeric_points.build(),
+            bool_fields,
             self.array_row_index,
         )
     }
@@ -316,6 +348,7 @@ impl MemIndex {
             document.doc_id,
             &document.parts,
             &document.numeric_points,
+            &document.bool_points,
         );
 
         //each array in documents
@@ -323,7 +356,13 @@ impl MemIndex {
             self.array_row_index
                 .push_row(row.array_row_id, document.doc_id, row.parent);
 
-            self.add_parts_and_points(analyzer, row.array_row_id, &row.parts, &row.numeric_points);
+            self.add_parts_and_points(
+                analyzer,
+                row.array_row_id,
+                &row.parts,
+                &row.numeric_points,
+                &row.bool_points,
+            );
         }
     }
 
@@ -334,6 +373,7 @@ impl MemIndex {
         target_id: DocId, //array row id uses the same type for id
         parts: &[DocumentPart],
         numeric_points: &[NumericPoint],
+        bool_points: &[BoolPoint],
     ) {
         for part in parts {
             if part.exact {
@@ -353,6 +393,15 @@ impl MemIndex {
         for point in numeric_points {
             self.numeric_points
                 .insert(point.xpath, point.value, target_id);
+        }
+
+        for point in bool_points {
+            let slot = self.bool_fields.entry(point.xpath).or_default();
+            if point.value {
+                slot.true_ids.insert(target_id);
+            } else {
+                slot.false_ids.insert(target_id);
+            }
         }
     }
 
@@ -449,6 +498,23 @@ impl MemIndex {
             self.field_stats.entry(xpath).or_default().add(&stats);
         }
         self.numeric_points.merge(newer.numeric_points);
+
+        for (xpath, field) in newer.bool_fields {
+            match self.bool_fields.entry(xpath) {
+                Entry::Vacant(entry) => {
+                    // Key doesn't exist yet: move the entire field in directly!
+                    entry.insert(field);
+                }
+                Entry::Occupied(mut entry) => {
+                    // Key already exists: perform the in-place union
+                    let slot = entry.get_mut();
+                    slot.true_ids |= &field.true_ids;
+                    slot.false_ids |= &field.false_ids;
+                }
+            }
+        }
+        self.array_row_index.merge_from(&newer.array_row_index);
+
         self.array_row_index.merge_from(&newer.array_row_index);
         self.estimated_bytes += newer.estimated_bytes;
 

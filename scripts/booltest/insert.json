@@ -1,0 +1,17 @@
+[
+  {"id":"1","name":"alpha","score":10,"featured":true,
+   "cast":[{"name":"a1","is_lead":true},{"name":"a2","is_lead":false}],
+   "grid":[{"row":[{"cell":[{"is_hot":true,"value":1},{"is_hot":false,"value":2}]}]}]},
+  {"id":"2","name":"beta","score":90,"featured":false,
+   "cast":[{"name":"b1","is_lead":false}],
+   "grid":[{"row":[{"cell":[{"is_hot":false,"value":3}]}]}]},
+  {"id":"3","name":"gamma","score":50,"featured":true,
+   "cast":[{"name":"c1","is_lead":true},{"name":"c2","is_lead":true}],
+   "grid":[{"row":[{"cell":[{"is_hot":true,"value":4}]}]}]},
+  {"id":"4","name":"delta","score":70,"featured":false,
+   "cast":[{"name":"d1","is_lead":false}],
+   "grid":[{"row":[{"cell":[{"is_hot":true,"value":5}]}]}]},
+  {"id":"5","name":"epsilon","score":30,"featured":true,
+   "cast":[{"name":"e1","is_lead":false}],
+   "grid":[{"row":[{"cell":[{"is_hot":false,"value":6}]}]}]}
+]

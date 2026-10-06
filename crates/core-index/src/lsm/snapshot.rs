@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ahash::HashSet;
 use arc_swap::ArcSwap;
 use core_timing::timed;
+use roaring::RoaringTreemap;
 
 use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions}, mem::MemIndex, numeric_values::{NumericBound, NumericValue}, posting::{DeleteSet, PostingList, ops::union_many_owned}, search::{SearchIndex, SearchNumeric, SearchReader, SearchStats}, types::{ArrayRowId, DocId, XPathId}, wildcard::WildcardPattern,
@@ -64,6 +65,34 @@ impl SearchIndex for IndexSnapshot {
             return Some(d);
         }
         self.segments.iter().find_map(|seg| seg.doc_of_row(row))
+    }
+
+    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        let mut out = self.mem.bool_true_ids(xpath);
+        for seg in self.segments.iter() {
+            out |= seg.bool_true_ids(xpath);
+        }
+        self.apply_deletes_to_bitset(out)
+    }
+
+    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        let mut out = self.mem.bool_false_ids(xpath);
+        for seg in self.segments.iter() {
+            out |= seg.bool_false_ids(xpath);
+        }
+        self.apply_deletes_to_bitset(out)
+    }
+
+    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
+        if self.deleted.contains(doc_id) {
+            return None;
+        }
+        if let Some(value) = self.mem.bool_value(xpath, doc_id) {
+            return Some(value);
+        }
+        self.segments
+            .iter()
+            .find_map(|seg| seg.bool_value(xpath, doc_id))
     }
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
@@ -235,6 +264,16 @@ impl IndexSnapshot {
     fn apply_deletes(&self, mut postings: PostingList) -> PostingList {
         self.deleted.filter_in_place(&mut postings);
         postings
+    }
+
+    fn apply_deletes_to_bitset(&self, mut bitset: RoaringTreemap) -> RoaringTreemap {
+        if self.deleted.is_empty() {
+            return bitset;
+        }
+        for doc_id in self.deleted.iter() {
+            bitset.remove(doc_id);
+        }
+        bitset
     }
 
     #[timed(search)]

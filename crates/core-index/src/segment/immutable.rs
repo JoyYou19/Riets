@@ -2,21 +2,29 @@ use std::collections::BTreeMap;
 
 use ahash::HashSet;
 use core_timing::timed;
+use roaring::RoaringTreemap;
 
 use crate::{
-    array_rows::ArrayRowIndex, numeric_values::{NumericBound, NumericFields, NumericValue}, posting::{Posting, PostingList}, search::{SearchIndex, SearchNumeric, SearchStats}, segment::{build_field_stats, compute_doc_id_range}, types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId}, wildcard::WildcardPattern,
-   
+    array_rows::ArrayRowIndex,
+    document::document::BoolField,
+    numeric_values::{NumericBound, NumericFields, NumericValue},
+    posting::{Posting, PostingList},
+    search::{SearchIndex, SearchNumeric, SearchStats},
+    segment::{build_field_stats, compute_doc_id_range},
+    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
+    wildcard::WildcardPattern,
 };
 
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
 //
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImmutableSegment {
     terms: BTreeMap<TermKey, PostingList>,
     doc_lengths: BTreeMap<(DocId, XPathId), u32>,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
-    doc_id_range:Option<(DocId,DocId)>,
+    bool_fields: BTreeMap<XPathId, BoolField>,
+    doc_id_range: Option<(DocId, DocId)>,
     array_row_index: ArrayRowIndex,
 }
 
@@ -53,6 +61,30 @@ impl SearchIndex for ImmutableSegment {
         self.array_row_index.parent_of(row)
     }
 
+    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.bool_fields
+            .get(&xpath)
+            .map(|f| f.true_ids.clone())
+            .unwrap_or_default()
+    }
+    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
+        self.bool_fields
+            .get(&xpath)
+            .map(|f| f.false_ids.clone())
+            .unwrap_or_default()
+    }
+
+    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
+        let f = self.bool_fields.get(&xpath)?;
+        if f.true_ids.contains(doc_id) {
+            Some(true)
+        } else if f.false_ids.contains(doc_id) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         ImmutableSegment::lookup_prefix(self, prefix, xpath)
     }
@@ -83,28 +115,28 @@ impl SearchNumeric for ImmutableSegment {
 }
 
 impl SearchStats for ImmutableSegment {
-     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
-         self.doc_lengths.get(&(doc_id, xpath)).copied()
-     }
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        self.doc_lengths.get(&(doc_id, xpath)).copied()
+    }
 
-     fn doc_count(&self, xpath: XPathId) -> u64 {
-         self.field_stats
-             .get(&xpath)
-             .map(|s| s.doc_count)
-             .unwrap_or(0)
-     }
+    fn doc_count(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.doc_count)
+            .unwrap_or(0)
+    }
 
-     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-         self.field_stats
-             .get(&xpath)
-             .map(|s| s.total_doc_len)
-             .unwrap_or(0)
-     }
+    fn total_doc_len(&self, xpath: XPathId) -> u64 {
+        self.field_stats
+            .get(&xpath)
+            .map(|s| s.total_doc_len)
+            .unwrap_or(0)
+    }
 
-     fn doc_range(&self) -> Option<(DocId, DocId)> {
-         self.doc_id_range
-     }
- }
+    fn doc_range(&self) -> Option<(DocId, DocId)> {
+        self.doc_id_range
+    }
+}
 
 impl ImmutableSegment {
     pub fn new(
@@ -112,19 +144,21 @@ impl ImmutableSegment {
         doc_lengths: BTreeMap<(DocId, XPathId), u32>,
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
+        bool_fields: BTreeMap<XPathId, BoolField>,
         array_row_index: ArrayRowIndex,
     ) -> Self {
-         debug_assert_eq!(
-             field_stats,
-             build_field_stats(&doc_lengths),
-             "field_stats must be derivable from doc_lengths"
-         );
-         let doc_id_range = compute_doc_id_range(&doc_lengths, &numeric_fields);
+        debug_assert_eq!(
+            field_stats,
+            build_field_stats(&doc_lengths),
+            "field_stats must be derivable from doc_lengths"
+        );
+        let doc_id_range = compute_doc_id_range(&doc_lengths, &numeric_fields);
         Self {
             terms,
             doc_lengths,
             field_stats,
             numeric_fields,
+            bool_fields,
             doc_id_range,
             array_row_index,
         }
@@ -133,10 +167,13 @@ impl ImmutableSegment {
     pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
     }
-     pub fn doc_range(&self) -> Option<(DocId, DocId)> {
-         self.doc_id_range
-     }
-     
+    pub fn doc_range(&self) -> Option<(DocId, DocId)> {
+        self.doc_id_range
+    }
+
+    pub fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
+        &self.bool_fields
+    }
 
     pub fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
@@ -203,5 +240,4 @@ impl ImmutableSegment {
     pub fn term_count(&self) -> usize {
         self.terms.len()
     }
-    
 }

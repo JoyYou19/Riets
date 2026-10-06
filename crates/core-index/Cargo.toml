@@ -27,6 +27,7 @@ arc-swap = "1.9.1"
 
 # Utilities
 smallvec = "1.13"
+roaring = "0.10"
 ahash = "0.8"
 
 # Optional compression experiments

@@ -113,7 +113,36 @@ pub struct SearchCommand {
     pub docs: Option<usize>,
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,
-    pub sort: Option<IndexMap<String, SortSpec>>,
+    pub sort: Option<SortCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortMode {
+    #[default]
+    //the one with the ratios
+    Blend,
+
+    //strict first then second then third
+    Strict,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SortCommand {
+    #[serde(default)]
+    pub mode: SortMode,
+    //bisk serde porno jo gribaas defaul mode = blend bet ja mode=strict tad vajag
+    //fields:{year/pagerank...}
+    #[serde(default)]
+    pub fields: Option<IndexMap<String, SortSpec>>,
+    #[serde(default, flatten)]
+    pub flat: IndexMap<String, SortSpec>,
+}
+
+impl SortCommand {
+    pub fn sort_fields(&self) -> &IndexMap<String, SortSpec> {
+        self.fields.as_ref().unwrap_or(&self.flat)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

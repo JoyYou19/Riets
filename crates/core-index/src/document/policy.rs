@@ -437,6 +437,7 @@ pub enum FieldKind {
     Id,
     IdAuto,
     Struct, //list of objects
+    Bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -481,6 +482,12 @@ impl FieldKind {
                 weight: WeightInterval::DEFAULT,
                 exact: false,
             },
+            FieldKind::Bool => FieldDefaults {
+                searchable: false,
+                list: true,
+                weight: WeightInterval::DEFAULT,
+                exact: true,
+            },
             FieldKind::None => FieldDefaults {
                 searchable: false,
                 list: true,
@@ -494,6 +501,10 @@ impl FieldKind {
         matches!(self, FieldKind::Integer | FieldKind::Float)
     }
 
+    pub fn is_bool(self) -> bool {
+        matches!(self, FieldKind::Bool)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             FieldKind::None => "none",
@@ -504,6 +515,7 @@ impl FieldKind {
             FieldKind::Id => "id",
             FieldKind::IdAuto => "id",
             FieldKind::Struct => "struct",
+            FieldKind::Bool => "bool",
         }
     }
 
@@ -511,6 +523,7 @@ impl FieldKind {
         let valid = match self {
             FieldKind::Integer => parse_integer(raw).is_some(),
             FieldKind::Float => parse_float(raw).is_some(),
+            FieldKind::Bool => matches!(raw.trim(), "true" | "false"),
             _ => true,
         };
         if valid {

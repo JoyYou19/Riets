@@ -13,6 +13,7 @@ use core_timing::timed;
 use crate::{
     array_rows::ArrayRowIndex,
     disk::{reader::DiskSegment, writer::write_merged_segment},
+    document::document::BoolField,
     numeric_values::{NumericFields, NumericPoints, unpack},
     posting::{DeleteSet, PostingList},
     segment::{ImmutableSegment, SegmentHandle},
@@ -38,6 +39,13 @@ impl OpenSegment {
         match self {
             OpenSegment::Disk(d) => d.numeric_fields(),
             OpenSegment::Memory(m) => m.numeric_fields(),
+        }
+    }
+
+    fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
+        match self {
+            OpenSegment::Disk(d) => d.bool_fields(),
+            OpenSegment::Memory(m) => m.bool_fields(),
         }
     }
 
@@ -159,6 +167,25 @@ pub fn compact_segments_streaming(
         }
     }
 
+    let mut merged_bool_fields: BTreeMap<XPathId, BoolField> = BTreeMap::new();
+    for segment in &opened {
+        for (xpath, field) in segment.bool_fields() {
+            let slot = merged_bool_fields
+                .entry(*xpath)
+                .or_insert_with(BoolField::default);
+            for id in field.true_ids.iter() {
+                if !deleted.contains(id) {
+                    slot.true_ids.insert(id);
+                }
+            }
+            for id in field.false_ids.iter() {
+                if !deleted.contains(id) {
+                    slot.false_ids.insert(id);
+                }
+            }
+        }
+    }
+
     let mut merged_array_rows = ArrayRowIndex::default();
     for segment in &opened {
         merged_array_rows.merge_from(segment.array_row_index());
@@ -173,6 +200,7 @@ pub fn compact_segments_streaming(
         &merged_doc_lengths,
         &merged_points.build(),
         &merged_array_rows,
+        &merged_bool_fields,
     )
 }
 
@@ -187,8 +215,6 @@ impl Default for CompactionConfig {
         Self {
             max_segments_per_compaction: 16,
             compact_when_segments_at_least: 2,
-            
-
         }
     }
 }
