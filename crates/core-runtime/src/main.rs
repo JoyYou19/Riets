@@ -116,7 +116,7 @@ async fn main() -> io::Result<()> {
     let settings = corelamo_settings::load_or_init_settings(cli_overrides)?;
     corelamo_settings::validate_settings(&settings).map_err(std::io::Error::other)?;
     corelamo_settings::init_synonyms(&settings).unwrap_or_else(|e| {
-        eprintln!("{e}");
+
         std::process::exit(1);
     });
 
@@ -127,9 +127,9 @@ async fn main() -> io::Result<()> {
     let (log, _guard) = logger::program_logger(&root_path);
     let _slog_guard = slog_scope::set_global_logger(log.clone());
     info!(log, "Program started");
-    let synonyms = Arc::new(
-        SynonymRegistry::open(&root_path).expect("failed to load CorelamoSynonyms.syn")
-    );
+    // let synonyms = Arc::new(
+    //     SynonymRegistry::open(&root_path).expect("failed to load CorelamoSynonyms.syn")
+    // );
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
     let port = corelamo_settings::get(&settings, "port");
@@ -140,10 +140,7 @@ async fn main() -> io::Result<()> {
     let enable_auth = corelamo_settings::get(&settings, "auth") != "false";
     info!(log, "auth setting resolved";"info" => %enable_auth);
     let default_format = Format::JSON;
-    // Format::try_from(default_format_str.as_str()).unwrap_or_else(|e| {
-    //     eprintln!("error: invalid 'format' in config/cli: {e}");
-    //     process::exit(1);
-    // });
+    
 
     info!(log,
         "Server configuration";
@@ -236,24 +233,16 @@ async fn main() -> io::Result<()> {
         .route("/api/databases/{db_name}/get-config", get(handlers::get_config_handler))
         .route("/api/databases/{db_name}/set-config", post(handlers::set_config_handler))
         .route("/api/databases/{db_name}/all-fields", get(handlers::get_all_fields_handler))
-        .route(
-            "/api/databases/{db_name}/restart-database",
-            post(handlers::restart_database_handler)
-        )
+        .route("/api/databases/{db_name}/restart-database",post(handlers::restart_database_handler))
         .route("/api/databases/{db_name}/backup", post(handlers::backup_handler))
-        .route(
-            "/api/databases/{db_name}/delete-backup/{backup_id}",
-            delete(handlers::backup_delete_handler)
-        )
-        .route(
-            "/api/databases/{db_name}/backup/incremental",
-            post(handlers::backup_incremental_handler)
-        )
+        .route("/api/databases/{db_name}/delete-backup/{backup_id}",delete(handlers::backup_delete_handler))
+        .route("/api/databases/{db_name}/backup/incremental",post(handlers::backup_incremental_handler))
         .route("/api/databases/{db_name}/list-backups", get(handlers::list_backups_handler))
-        .route(
-            "/api/databases/{db_name}/restore-backup/{backup_id}",
-            post(handlers::backup_restore_handler)
-        )
+        .route("/api/databases/{db_name}/restore-backup/{backup_id}",post(handlers::backup_restore_handler))
+        .route("/api/databases/{db}/dictionary", get(handlers::get_dictionary_handler))
+        .route("/api/databases/{db}/dictionary/reload", post(handlers::reload_dictionary_handler))
+        // .route("/api/databases/{db}/dictionary/reset", post(handlers::reset_dictionary_handler))
+        // .route("/api/dictionary/default", get(handlers::get_default_dictionary_handler).put(set_default_dictionary_handler))
         .route("/api/timings", post(handlers::timings_handler))
         .route("/api/databases/{db_name}/disk-usage", get(handlers::disk_usage_handler));
 

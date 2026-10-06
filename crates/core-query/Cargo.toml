@@ -10,6 +10,8 @@ core-index = { path = "../core-index" }
 core-protocol = {path = "../core-protocol"}
 core-timing = { path = "../core-timing" }
 indexmap = "2.14.2"
+toml = "1.1.6"
+serde.workspace = true
 
 [features]
 timing = ["core-timing/timing", "core-index/timing"]

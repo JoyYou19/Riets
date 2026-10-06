@@ -13,7 +13,9 @@ use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit, ast::Query, resolver::{ FieldCtx, FieldQuery, SameElementBinding }, scorer::{ fuzzy_decay, score_term_hybrid, score_term_into }, syn::{ QueryNode, SynonymDictionary, tokenize }, wand::{ WandHit, WeightedGroup, conjunctive_top_k, conjunctive_top_k_groups, wand_top_k, wand_top_k_groups },
+    ScoredPosting, SearchHit, TopHit, ast::Query, resolver::{ FieldCtx, FieldQuery, SameElementBinding }, scorer::{ fuzzy_decay, score_term_hybrid, score_term_into }, syn::{ QueryNode, SynonymDictionary, tokenize }, wand::{
+        WandHit, WeightedGroup, conjunctive_top_k, conjunctive_top_k_groups, phrase_top_k, wand_top_k, wand_top_k_groups,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -100,24 +102,31 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             .collect()
     }
 
-    //WAND/conjunctive fast path for flat term lists (skips the general traversal)
+ 
     fn execute_top_k_retrieval(
         &self,
         query: &Query,
-        ctx:FieldCtx,
+        ctx: FieldCtx,
         k: usize,
-        restrict: Option<&HashSet<DocId>>
+        restrict: Option<&HashSet<DocId>>,
     ) -> Option<Vec<WandHit>> {
-        
-         let xpath = ctx.xpath;
-        //terms and synonym groups of terms: one grouped WAND search per field
-        if let Some((conjunctive, groups)) = term_groups(query) {
+        let xpath = ctx.xpath;
+
+        //terms, and synonym groups of terms: one grouped search per field
+        //terms, phrases and synonym groups of them: one grouped search per field
+        if let Some((conjunctive, groups)) = term_groups(query, ctx.exact_xpath.is_some()) {
             let fetched: Vec<Vec<(TermPostings, f64)>> = groups
                 .iter()
                 .map(|group| {
                     group
                         .iter()
-                        .map(|&(term, weight)| (self.index.lookup_term(term, xpath), weight))
+                        .map(|(alt, weight)| {
+                            let postings = match alt {
+                                Alt::Term(term) => self.index.lookup_term(term, xpath),
+                                Alt::Phrase(words) => self.phrase_as_term(words, xpath),
+                            };
+                            (postings, *weight)
+                        })
                         .collect()
                 })
                 .collect();
@@ -131,27 +140,48 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 wand_top_k_groups(self.index, xpath, &clauses, k, restrict)
             });
         }
-        
-        
-        if let Some(terms) = additive_terms(query) {
-            let postings = self.fetch_term_postings(&terms, xpath);
-            return Some(wand_top_k(self.index, xpath, &postings, k, restrict));
+
+        //synonyms with multi-word or exact alternatives: one fast search per alternative
+        if let Some(variants) = synonym_variants(query) {
+            let mut best: HashMap<DocId, WandHit> = HashMap::new();
+            for variant in variants {
+                let lookup_xpath = if variant.exact {
+                    match ctx.exact_xpath {
+                        Some(exact_xpath) => exact_xpath,
+                        //no case-preserving index on this field: nothing can match
+                        None => continue,
+                    }
+                } else {
+                    xpath
+                };
+                let postings = self.fetch_term_postings(&variant.terms, lookup_xpath);
+                let hits = if variant.phrase && variant.terms.len() > 1 {
+                    phrase_top_k(self.index, lookup_xpath, &postings, k, restrict)
+                } else if variant.conjunctive && variant.terms.len() > 1 {
+                    conjunctive_top_k(self.index, lookup_xpath, &postings, k, restrict)
+                } else {
+                    wand_top_k(self.index, lookup_xpath, &postings, k, restrict)
+                };
+                for mut hit in hits {
+                    hit.score = ((hit.score as f64) * variant.weight) as u64;
+                    match best.entry(hit.doc_id) {
+                        Entry::Vacant(e) => {
+                            e.insert(hit);
+                        }
+                        Entry::Occupied(mut e) => {
+                            if hit.score > e.get().score {
+                                e.insert(hit);
+                            }
+                        }
+                    }
+                }
+            }
+            let mut merged: Vec<WandHit> = best.into_values().collect();
+            merged.sort_unstable_by(|a, b| b.score.cmp(&a.score).then_with(|| a.doc_id.cmp(&b.doc_id)));
+            merged.truncate(k);
+            return Some(merged);
         }
 
-        //conjunctive flat-term case (And) -> conjunctive top-k
-         if let Query::And(parts) = query {
-            if let Some(terms) = plain_terms(parts) {
-                let postings = self.fetch_term_postings(&terms, xpath);
-                return Some(conjunctive_top_k(self.index, xpath, &postings, k, restrict));
-            }
-        }
-        ///let hits = if variant.phrase && variant.terms.len() > 1 {
-                //     phrase_top_k(self.index, lookup_xpath, &postings, k, restrict)
-                // } else if variant.conjunctive && variant.terms.len() > 1 {
-                //     conjunctive_top_k(self.index, lookup_xpath, &postings, k, restrict)
-                // } else {
-                //     wand_top_k(self.index, lookup_xpath, &postings, k, restrict)
-                // };
         None
     }
 
@@ -187,7 +217,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     // A document matches only if rust and database appear in it in order rust + database so
     // position and position + 1
     #[timed(search)]
-    #[timed(search)]
+  
     fn execute_phrase(&self, terms: &[String], xpath: XPathId) -> PostingList {
         let lists: Vec<PostingList> = terms
             .iter()
@@ -230,9 +260,23 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     fn fuzzy_words(&self, raw: &str) -> Vec<String> {
         fuzzable_words(self.analyzer, raw)
     }
+    //a phrase's matching documents as a term-like posting list, so it takes part in WAND like any term
+    fn phrase_as_term(&self, words: &[String], xpath: XPathId) -> TermPostings {
+        let phrase = self.execute_phrase(words, xpath);
+       
+        let items: Vec<Posting> = phrase
+            .items()
+            .iter()
+            .map(|p| Posting::with_weight(p.doc_id, p.positions.to_vec(), p.weight.max(1)))
+            .collect();
+        TermPostings {
+            doc_freq: items.len() as u32,
+            max_weight: items.iter().map(|p| p.weight).max().unwrap_or(0),
+            postings: PostingList::from_sorted(items),
+        }
+    }
+    #[timed(search)]
 
-    #[timed(search)]
-    #[timed(search)]
     fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
         let raw = raw.trim();
         //incase someone did phrase + exact we can be forgiving and drop the ""
@@ -349,7 +393,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 let mut acc: HashMap<DocId, ScoredPosting> = HashMap::new();
                 for &ctx in ctxs {
                     let (postings, xpath) = fetch(ctx);
-                    for hit in score_term_hybrid(self.index, &postings, xpath, postings.len() as f32) {
+                    for hit in score_term_hybrid(
+                        self.index,
+                        &postings,
+                        xpath,
+                        postings.len() as f32
+                    ) {
                         add_into(&mut acc, hit);
                     }
                 }
@@ -380,7 +429,6 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             EvalMode::Rank => EvalOutcome::Scored(self.score_union(parts, ctxs)),
         }
     }
-   
 
     //synonym alternatives: union for filtering, best alternative per doc for ranking
     //(summing would double-credit docs that contain both "CaP" and "calcium phosphate")
@@ -622,6 +670,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         if k == 0 || restrict.is_some_and(|d| d.is_empty()) || self.index.doc_range().is_none() {
             return Vec::new();
         }
+
         //no query
         let Some(query) = query else {
             return match restrict {
@@ -633,23 +682,16 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         if let Query::MatchAll = query {
             return match (restrict, self.index.doc_range()) {
                 (Some(allowed), _) => top_k_from_hits(allowed.iter().copied().map(unscored_hit), k),
-                (None, Some((min, max))) => top_k_from_hits(
-                    (min..=max).filter(|id| !self.index.is_deleted(*id)).map(unscored_hit),
-                    k,
-                ),
+                (None, Some((min, max))) =>
+                    top_k_from_hits(
+                        (min..=max).filter(|id| !self.index.is_deleted(*id)).map(unscored_hit),
+                        k
+                    ),
                 (None, None) => Vec::new(),
             };
         }
-        eprintln!(
-            "rank: variants={:?} array_groups={} row_keyed_ctxs={} ctxs={}",
-            synonym_variants(query).map(| v|  v.len()),
-            include_array_groups && !self.array_groups.is_empty(),
-            ctxs
-                .iter()
-                .filter(|c| c.row_keyed)
-                .count(),
-            ctxs.len()
-        );
+       
+       
         let mut by_doc: HashMap<DocId, SearchHit> = HashMap::new();
 
         //same-element relevance across array subfields (bonus on top of field search)
@@ -675,6 +717,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     }
                     continue;
                 }
+               
             }
 
             let EvalOutcome::Scored(scored) = self.evaluate(query, &[ctx], EvalMode::Rank) else {
@@ -701,6 +744,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     score: ((p.score as f32) / 1000.0) * p.density,
                 });
             }
+            // note_general_path(query);
         }
 
         top_k_from_hits(by_doc.into_values(), k)
@@ -846,7 +890,11 @@ fn phrase_postings(lists: &[PostingList]) -> PostingList {
             }
         }
         if phrase_matches(&position_lists) {
-            result.push(Posting::new(first.doc_id, first.positions.clone()));
+            //Posting::new leaves the weight at 0, and both BM25 and WAND's upper bound scale
+            //with it, so a phrase hit would never contribute to a score
+            let mut posting = Posting::new(first.doc_id, first.positions.clone());
+            posting.weight = first.weight;
+            result.push(posting);
         }
     }
     PostingList::from_items(result)
@@ -947,7 +995,16 @@ pub fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize)
         expansions.truncate(max_expansions);
     }
 }
-
+// fn note_general_path(query: &Query) {
+//     use std::sync::{Mutex, OnceLock};
+//     static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+//     let Ok(mut seen) = SEEN.get_or_init(Default::default).lock() else { return };
+//     let text = format!("{query:?}");
+//     //each distinct query shape is printed once, at most 40 in total
+//     if seen.len() < 40 && seen.insert(text.clone()) {
+//         eprintln!("GENERAL PATH {text}");
+//     }
+// }
 //fuzzable words for did_you_mean
 pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
     raw.split_whitespace()
@@ -971,13 +1028,7 @@ fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
     }
 }
 
-fn additive_terms(query: &Query) -> Option<Vec<&str>> {
-    match query {
-        Query::Term(term) => Some(vec![term.as_str()]),
-        Query::Wand(parts) | Query::Or(parts) => plain_terms(parts),
-        _ => None,
-    }
-}
+
 
 //vibe vibe vibe
 type Combinator = fn(Vec<Query>) -> Query;
@@ -992,7 +1043,7 @@ struct Variant<'q> {
     weight: f64,
     //look the terms up in the field's case-preserving index
     exact: bool,
-    phrase:bool
+    phrase: bool,
 }
 #[timed(search)]
 /// Plain-term searches that together answer `query`, each with its weight,
@@ -1010,41 +1061,46 @@ fn synonym_variants(query: &Query) -> Option<Vec<Variant<'_>>> {
                     let weight_for = |term: &str| alternative_weight(index, term);
                     let fixed_weight = if index == 0 { 1.0 } else { SYNONYM_WEIGHT };
                     match alternative {
-                        Query::Term(term) => Some(Variant {
-                            terms: vec![term.as_str()],
-                            conjunctive: false,
-                            weight: weight_for(term),
-                            exact: false,
-                            phrase:false
-                        }),
-                        Query::And(parts) => Some(Variant {
-                            terms: plain_terms(parts)?,
-                            conjunctive: true,
-                            weight: fixed_weight,
-                            exact: false,
-                            phrase:false
-                        }),
-                        Query::Wand(parts) | Query::Or(parts) => Some(Variant {
-                            terms: plain_terms(parts)?,
-                            conjunctive: false,
-                            weight: fixed_weight,
-                            exact: false,
-                            phrase:false
-                        }),
-                        Query::Phrase(words) => Some(Variant {
-                            terms: words.iter().map(String::as_str).collect(),
-                            conjunctive: true,
-                            weight: fixed_weight,
-                            exact: false,
-                            phrase: true,
-                        }),
-                        Query::Exact(text) => Some(Variant {
-                            terms: text.split_whitespace().collect(),
-                            conjunctive: true,
-                            weight: fixed_weight,
-                            exact: true,
-                            phrase: true,
-                        }),
+                        Query::Term(term) =>
+                            Some(Variant {
+                                terms: vec![term.as_str()],
+                                conjunctive: false,
+                                weight: weight_for(term),
+                                exact: false,
+                                phrase: false,
+                            }),
+                        Query::And(parts) =>
+                            Some(Variant {
+                                terms: plain_terms(parts)?,
+                                conjunctive: true,
+                                weight: fixed_weight,
+                                exact: false,
+                                phrase: false,
+                            }),
+                        Query::Wand(parts) | Query::Or(parts) =>
+                            Some(Variant {
+                                terms: plain_terms(parts)?,
+                                conjunctive: false,
+                                weight: fixed_weight,
+                                exact: false,
+                                phrase: false,
+                            }),
+                        Query::Phrase(words) =>
+                            Some(Variant {
+                                terms: words.iter().map(String::as_str).collect(),
+                                conjunctive: true,
+                                weight: fixed_weight,
+                                exact: false,
+                                phrase: true,
+                            }),
+                        Query::Exact(text) =>
+                            Some(Variant {
+                                terms: text.split_whitespace().collect(),
+                                conjunctive: true,
+                                weight: fixed_weight,
+                                exact: true,
+                                phrase: true,
+                            }),
                         _ => None,
                     }
                 })
@@ -1068,7 +1124,9 @@ fn synonym_variants(query: &Query) -> Option<Vec<Variant<'_>>> {
                         }
                         options
                     }
-                    _ => return None,
+                    _ => {
+                        return None;
+                    }
                 };
                 if combos.len() * options.len() > MAX_SYNONYM_VARIANTS {
                     return None;
@@ -1087,46 +1145,75 @@ fn synonym_variants(query: &Query) -> Option<Vec<Variant<'_>>> {
             has_synonym.then(|| {
                 combos
                     .into_iter()
-                    .map(|(terms, weight)| Variant { terms, conjunctive, weight, exact: false, phrase:false })
+                    .map(|(terms, weight)| Variant {
+                        terms,
+                        conjunctive,
+                        weight,
+                        exact: false,
+                        phrase: false,
+                    })
                     .collect()
             })
         }
         _ => None,
     }
 }
-/// A Term, a Synonym of Terms, or an And/Wand/Or whose children are those:
-/// the weighted clauses for one grouped WAND search. bool = conjunctive.
-fn term_groups(query: &Query) -> Option<(bool, Vec<Vec<(&str, f64)>>)> {
+/// One alternative of a clause, borrowed from the query.
+enum Alt<'q> {
+    Term(&'q str),
+    Phrase(&'q [String]),
+}
+
+/// Terms, phrases and synonym groups of them, combined with And/Wand/Or: the weighted
+/// clauses for one grouped search. bool = conjunctive.
+///
+/// `exact_field`: does this field have a case-preserving index? Exact alternatives can
+/// only be answered there. Without one they match nothing (as in the general path), so
+/// they are dropped; with one, the query needs the general path.
+fn term_groups(query: &Query, exact_field: bool) -> Option<(bool, Vec<Vec<(Alt<'_>, f64)>>)> {
     match query {
-        Query::Term(_) | Query::Synonym(_) => Some((false, vec![term_clause(query)?])),
+        Query::Term(_) | Query::Phrase(_) | Query::Synonym(_) => {
+            Some((false, vec![clause(query, exact_field)?]))
+        }
         Query::And(parts) | Query::Wand(parts) | Query::Or(parts) => {
-            let groups = parts.iter().map(term_clause).collect::<Option<Vec<_>>>()?;
+            let groups = parts
+                .iter()
+                .map(|part| clause(part, exact_field))
+                .collect::<Option<Vec<_>>>()?;
             Some((matches!(query, Query::And(_)), groups))
         }
         _ => None,
     }
 }
 
-fn term_clause(part: &Query) -> Option<Vec<(&str, f64)>> {
+fn clause(part: &Query, exact_field: bool) -> Option<Vec<(Alt<'_>, f64)>> {
     match part {
-        Query::Term(term) => Some(vec![(term.as_str(), 1.0)]),
-        Query::Synonym(alternatives) => alternatives
-            .iter()
-            .enumerate()
-            .map(|(index, alternative)| match alternative {
-                Query::Term(term) => Some((term.as_str(), alternative_weight(index, term))),
-                _ => None,
-            })
-            .collect(),
+        Query::Term(term) => Some(vec![(Alt::Term(term), 1.0)]),
+        Query::Phrase(words) => Some(vec![(Alt::Phrase(words), 1.0)]),
+        Query::Synonym(alternatives) => {
+            let mut out = Vec::with_capacity(alternatives.len());
+            for (index, alternative) in alternatives.iter().enumerate() {
+                let typed_or_synonym = if index == 0 { 1.0 } else { SYNONYM_WEIGHT };
+                match alternative {
+                    Query::Term(term) => out.push((Alt::Term(term), alternative_weight(index, term))),
+                    Query::Phrase(words) => out.push((Alt::Phrase(words), typed_or_synonym)),
+                    Query::Exact(_) if !exact_field => {}
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
         _ => None,
     }
 }
 fn plain_terms(parts: &[Query]) -> Option<Vec<&str>> {
     parts
         .iter()
-        .map(|part| match part {
-            Query::Term(term) => Some(term.as_str()),
-            _ => None,
+        .map(|part| {
+            match part {
+                Query::Term(term) => Some(term.as_str()),
+                _ => None,
+            }
         })
         .collect()
 }
@@ -1255,12 +1342,19 @@ fn expand_run(words: Vec<String>, dictionary: &SynonymDictionary, wrap: Combinat
             if covered.len() > 1 || len > 1 {
                 alternatives.push(original_form(covered, wrap));
                 push_alternatives(node, &mut alternatives);
-                let typed: Vec<String> =
-                    tokens[start..start + len].iter().map(|t| t.to_lowercase()).collect();
+                let typed: Vec<String> = tokens[start..start + len]
+                    .iter()
+                    .map(|t| t.to_lowercase())
+                    .collect();
                 alternatives.retain(|alt| !matches!(alt, Query::Phrase(words) if *words == typed));
             } else {
                 push_alternatives(node, &mut alternatives);
-                move_typed_form_first(&mut alternatives, &words[index]);
+                // move_typed_form_first(&mut alternatives, &words[index]);
+                 //the dictionary's phrase for the very words typed only re-finds what the
+                //original form already finds, and costs a phrase scan
+                let typed: Vec<String> =
+                    tokens[start..start + len].iter().map(|t| t.to_lowercase()).collect();
+                alternatives.retain(|alt| !matches!(alt, Query::Phrase(words) if *words == typed));
             }
             out.push(synonym(alternatives));
             index = last + 1;
@@ -1288,18 +1382,18 @@ fn expand_run(words: Vec<String>, dictionary: &SynonymDictionary, wrap: Combinat
 /// word that is the matched dictionary variant: `Term` for a case-insensitive
 /// entry (`piss`), `Exact` for a case-sensitive one (`CaP`).
 
-fn move_typed_form_first(alternatives: &mut [Query], word: &str) {
-    let typed = alternatives.iter().position(|alternative| {
-        match alternative {
-            Query::Exact(text) => text == word,
-            Query::Term(term) => term.eq_ignore_ascii_case(word) || *term == word.to_lowercase(),
-            _ => false,
-        }
-    });
-    if let Some(position) = typed {
-        alternatives[..=position].rotate_right(1);
-    }
-}
+// fn move_typed_form_first(alternatives: &mut [Query], word: &str) {
+//     let typed = alternatives.iter().position(|alternative| {
+//         match alternative {
+//             Query::Exact(text) => text == word,
+//             Query::Term(term) => term.eq_ignore_ascii_case(word) || *term == word.to_lowercase(),
+//             _ => false,
+//         }
+//     });
+//     if let Some(position) = typed {
+//         alternatives[..=position].rotate_right(1);
+//     }
+// }
 
 fn original_form(words: &[String], wrap: Combinator) -> Query {
     match words {

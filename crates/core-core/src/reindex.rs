@@ -134,7 +134,6 @@ fn worker_loop(rx: Receiver<PendingReindexJob>) {
 /// Builds a fresh index into index.new. Reads the shard's document store but
 /// touches nothing the shard thread owns.
 #[timed(reindex)]
-#[timed(reindex)]
 fn build_staging_index(
     params: &mut ReindexParams,
     progress: &ReindexProgress,

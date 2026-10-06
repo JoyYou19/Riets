@@ -20,7 +20,7 @@ use core_protocol::command_reponse_definitions::{
 };
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
-use core_query::dictionary::{SynonymManager, SynonymRegistry};
+use core_query::dictionary::{DictionaryDocument, SynonymManager, SynonymRegistry};
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
 use core_query::resolver::{
     compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
@@ -55,7 +55,7 @@ pub struct ShardManager {
     db_stats: Arc<DbStats>,
     backup_dir: PathBuf,
     all_fields: RwLock<AllFields>,
-    synonyms: SynonymManager,
+    synonyms: Arc<SynonymManager>,
   
 }
 
@@ -89,7 +89,7 @@ impl ShardManager {
         let mut joins = Vec::new();
         let mut boot_rxs = Vec::new();
         let all_fields = AllFields::new();
-        let synonyms = synonym_registry.open_database(&root)?;
+        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
         all_fields.save(&root)?;
 
         for shard_id in 0..shard_count {
@@ -562,7 +562,7 @@ impl ShardManager {
         let mut joins = Vec::new();
         let mut boot_rxs = Vec::new();
         let all_fields = AllFields::load(&root)?;
-        let synonyms = synonym_registry.open_database(&root)?;
+        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
         //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
@@ -600,7 +600,7 @@ impl ShardManager {
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
-    pub fn synonyms(&self) -> &SynonymManager {
+    pub fn dictionary(&self) -> &SynonymManager {
         &self.synonyms
     }
 
@@ -732,6 +732,38 @@ impl ShardManager {
         }
 
         Ok(())
+    }
+    //dictionary
+    pub fn dictionary_text(&self) -> String {
+        self.synonyms.config_text()
+    }
+
+    //the document is already parsed by the handler; compiling and saving take a few
+    //hundred ms, so they run off the async threads
+    pub async fn set_dictionary(&self, document: DictionaryDocument) -> Result<(), CorelamoError> {
+        let synonyms = Arc::clone(&self.synonyms);
+        tokio::task::spawn_blocking(move || synonyms.replace_document(document))
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("dictionary update failed: {e}")))?
+            .map_err(CorelamoError::from)
+    }
+
+    //re-read dictionary.toml after a hand edit
+    pub async fn reload_dictionary(&self) -> Result<(), CorelamoError> {
+        let synonyms = Arc::clone(&self.synonyms);
+        tokio::task::spawn_blocking(move || synonyms.reload())
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("dictionary reload failed: {e}")))?
+            .map_err(CorelamoError::from)
+    }
+
+    //copy the current default (CorelamoDictionary.toml) over this database's dictionary
+    pub async fn reset_dictionary(&self) -> Result<(), CorelamoError> {
+        let synonyms = Arc::clone(&self.synonyms);
+        tokio::task::spawn_blocking(move || synonyms.reset_to_template())
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("dictionary reset failed: {e}")))?
+            .map_err(CorelamoError::from)
     }
 
     #[timed(reindex)]
@@ -975,7 +1007,7 @@ impl ShardManager {
             Some(&dictionary),
         )?;
 
-        println!("{:?}", query);
+        // println!("{:?}", query);
         let query = Arc::new(query);
 
         let filters = compile_filters(&self.analyzer, command, &policy)?;
@@ -1621,4 +1653,5 @@ impl ShardManager {
             }
         });
     }
+
 }

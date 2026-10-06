@@ -503,7 +503,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 let node = match parse_source_into_node(&doc.source, policy) {
                     Ok(node) => node,
                     Err(e) => {
-                        eprintln!("[reindex] skipping document {}: {e:?}", doc.external_id);
+                       io::Error::other(format!("document ID space exhausted for shard {}", self.shard_id));
                         return Ok(());
                     }
                 };

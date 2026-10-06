@@ -26,7 +26,7 @@ pub enum DictionaryError {
     GroupTooSmall { variants: usize },
     Line { line: usize, source: Box<DictionaryError> },
 }
-
+//Errors
 impl fmt::Display for DictionaryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -44,7 +44,6 @@ impl fmt::Display for DictionaryError {
         }
     }
 }
-
 impl std::error::Error for DictionaryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -54,6 +53,9 @@ impl std::error::Error for DictionaryError {
     }
 }
 
+
+
+//Case mode Sensitive - important big letters insensitive not important 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CaseMode {
     Sensitive,
@@ -67,7 +69,7 @@ pub struct Variant {
 }
 
 impl Variant {
-    /// Case-sensitive iff the text contains any uppercase letter.
+    /// Case-sensitive if the text contains any uppercase letter.
     pub fn new(text: &str) -> Result<Self, DictionaryError> {
         let case = if text.chars().any(char::is_uppercase) {
             CaseMode::Sensitive
@@ -334,7 +336,7 @@ impl DictionaryBuilder {
         self.add_group(parsed)
     }
 
-    /// Atomic: on error the builder is left unchanged.
+   
     pub fn parse(&mut self, source: &str) -> Result<&mut Self, DictionaryError> {
         let mut parsed = Vec::new();
         for (index, raw) in source.lines().enumerate() {
@@ -402,7 +404,7 @@ impl SynonymDictionary {
     pub fn builder() -> DictionaryBuilder {
         DictionaryBuilder::default()
     }
-
+    
     pub fn from_source(source: &str) -> Result<Self, DictionaryError> {
         Ok(Self::builder().parse(source)?.build())
     }

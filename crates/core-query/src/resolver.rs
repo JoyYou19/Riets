@@ -15,7 +15,7 @@ use indexmap::IndexMap;
 use simd_json::{OwnedValue, base::ValueAsScalar};
 
 use crate::{
-    Query, dictionary, executor::expand_synonyms, query_string_parser::{analyze_query, parse_json_query}, syn::SynonymDictionary,
+    Query, executor::expand_synonyms, query_string_parser::{analyze_query, parse_json_query}, syn::SynonymDictionary,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -69,7 +69,7 @@ pub fn compile_query(
     //query shouldnt have range like >2000 or same_element
     reject_filter_only_operators(raw)?;
 
-    let raw_query = parse_json_query(raw)?;
+  
     let parsed = parse_json_query(raw)?;
     let parsed = match synonyms {
         Some(dictionary) => expand_synonyms(parsed, dictionary),
