@@ -59,7 +59,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
 
         Query::Exact(term) => Some(Query::Exact(term)),
         Query::Fuzzy(term, fuzziness, spec) => Some(Query::Fuzzy(term, fuzziness, spec)),
-
+        Query::Synonym(subs) => combine(subs, analyzer, Query::Synonym),
         Query::Range(range) => Some(Query::Range(range)),
         Query::SameElement(children) => {
             let kept: Vec<Query> = children

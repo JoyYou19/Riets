@@ -15,8 +15,7 @@ use indexmap::IndexMap;
 use simd_json::{OwnedValue, base::ValueAsScalar};
 
 use crate::{
-    Query,
-    query_string_parser::{analyze_query, parse_json_query},
+    Query, dictionary, executor::expand_synonyms, query_string_parser::{analyze_query, parse_json_query}, syn::SynonymDictionary,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +60,7 @@ pub fn compile_query(
     search_fields: Option<&[String]>,
     analyzer: &Analyzer,
     policy: &IndexPolicy,
+    synonyms: Option<&SynonymDictionary>,
 ) -> Result<(Option<Query>, Arc<Vec<FieldCtx>>), CorelamoError> {
     if is_blank_query(raw) {
         return Ok((None, Arc::new(Vec::new())));
@@ -70,7 +70,12 @@ pub fn compile_query(
     reject_filter_only_operators(raw)?;
 
     let raw_query = parse_json_query(raw)?;
-    let query = analyze_query(raw_query, analyzer);
+    let parsed = parse_json_query(raw)?;
+    let parsed = match synonyms {
+        Some(dictionary) => expand_synonyms(parsed, dictionary),
+        None => parsed,
+    };
+    let query = analyze_query(parsed, analyzer);
 
     let ctxs: Vec<FieldCtx> = match search_fields {
         Some(names) => resolve_search_fields(names, query.as_ref(), policy)?,

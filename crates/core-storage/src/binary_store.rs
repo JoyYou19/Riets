@@ -39,7 +39,7 @@ pub const DEFAULT_SEGMENT_SIZE: u64 = 128 * 1024 * 1024;
 //JAUNS COMPACTIONS KONCEPTS
 const MAPS_EXTENTION: &str = "maps.bin";
 pub const MAPS_TMP_EXTENTION: &str = "maps.bin.tmp";
-const COMPACTION_IO_BUFFER: usize = 1 << 20;
+pub const COMPACTION_IO_BUFFER: usize = 1 << 20;
 const COMPACTION_MAX_BYTES_PER_SEC: u64 = 64 * 1024 * 1024;
 const MAX_CONCURRENT_COMPACTIONS: usize = 2;
 
@@ -95,7 +95,7 @@ impl Throttle {
     }
 }
 
-fn with_path(err: io::Error, path: &Path) -> io::Error {
+pub fn with_path(err: io::Error, path: &Path) -> io::Error {
     io::Error::new(err.kind(), format!("{}: {}", path.display(), err))
 }
 
@@ -649,7 +649,7 @@ fn write_document(writer: &mut impl Write, doc: &StoredDocument) -> io::Result<(
     Ok(())
 }
 
-fn read_document(reader: &mut impl Read) -> io::Result<StoredDocument> {
+pub fn read_document(reader: &mut impl Read) -> io::Result<StoredDocument> {
     let external_id = read_string(reader)?;
     let internal_id = read_u64(reader)?;
     let format = Format::try_from(read_u8(reader)?).map_err(io::Error::from)?;

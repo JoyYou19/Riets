@@ -1259,7 +1259,7 @@ pub async fn create_database_handler(
     }
 
     let created = tokio::task::spawn_blocking(move || {
-        ShardManager::create(db_path, DatabaseOptions::default(), shard_count)
+       ShardManager::create(db_path, DatabaseOptions::default(), shard_count, crate::corelamo_settings::synonym_registry())
     })
     .await;
 
@@ -1436,7 +1436,7 @@ pub async fn stats_handler(
             "metrics": {
                 "search_requests": metrics.search_requests,
                 "search_errors": metrics.search_errors,
-                "average_search_us": metrics.average_search_time()
+                "average_search_ms": metrics.average_search_time()
                     .map(|d| d.as_millis() as u64),
                 "indexing_requests": metrics.indexing_requests,
                 "indexing_errors": metrics.indexing_errors,
@@ -2117,7 +2117,7 @@ pub async fn rename_database_handler(
                 "failed to rename '{old_name_for_task}' to '{new_name_for_task}' on disk: {e}"
             ))
         })?;
-        ShardManager::load(new_path.clone(), false).map_err(|e| {
+        ShardManager::load(new_path.clone(), false, crate::corelamo_settings::synonym_registry()).map_err(|e| {
             CorelamoError::Internal(format!(
                 "renamed on disk but failed to reopen as '{new_name_for_task}': {e}. \
                  the data is safe at its new path and will be picked up on the next server restart"

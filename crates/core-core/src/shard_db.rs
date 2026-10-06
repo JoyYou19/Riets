@@ -41,14 +41,8 @@ use crate::{
 use core_logs::logger;
 use core_storage::{
     binary_store::{
-        BinaryDocumentStore,
-        CompletedSegmentCompaction,
-        DEFAULT_SEGMENT_SIZE,
-        SegmentCompactionJob,
-        save_maps,
-    },
-    document_store::StoredDocument,
-    search_database::{
+        BinaryDocumentStore, CompletedSegmentCompaction, DEFAULT_SEGMENT_SIZE, DocLocation, SegmentCompactionJob, save_maps,
+    }, document_store::StoredDocument, search_database::{
         DeleteReport,
         DocumentInput,
         IndexMode,
@@ -56,8 +50,7 @@ use core_storage::{
         ReplaceReport,
         SearchDatabase,
         SearchDocumentHit,
-    },
-    wal::{ Wal, WalRecord },
+    }, wal::{ Wal, WalRecord },
 };
 use slog::{ Logger, error, info, warn };
 
@@ -675,12 +668,12 @@ impl ShardDb {
         //let t0 = std::time::Instant::now();
         self.flush()?;
         //eprintln!("flush: {:?}", t0.elapsed());
-
+        let locations: Vec<DocLocation> = self.shared.locations.iter().map(|entry| *entry.value()).collect();
         //let t1 = std::time::Instant::now();
         if let Some(worker) = self.compaction_worker.take() {
             let _ = worker.stop_async();
         }
-        //eprintln!("compaction stop: {:?}", t1.elapsed());
+      
 
         self.generation += 1;
 
@@ -692,6 +685,7 @@ impl ShardDb {
             wal_watermark: self.wal.durable_offset(),
             doc_count: self.document_count(),
             generation: self.generation,
+            locations: locations
         })
     }
 
@@ -729,58 +723,7 @@ impl ShardDb {
         Ok(())
     }
 
-    #[timed(modifying_database_documents)]
-    // pub fn partial_replace(
-    //     &mut self,
-    //     items: Vec<(String, simd_json::Value)>,
-    //     user: String,
-    // ) -> Result<ReplaceReport, CorelamoError> {
-    //     let started = std::time::Instant::now();
-    //     let count = items.len();
-    //     let mut replaced: u32 = 0;
-    //     let mut failures: Vec<DocFailure> = Vec::new();
-
-    //     let db = self
-    //         .db_mut()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
-    //     for (external_id, patch) in items {
-    //         match db.partial_replace_document(&external_id, &patch) {
-    //             Ok(Some(_)) => {
-    //                 replaced += 1;
-    //             }
-    //             Ok(None) => {
-    //                 failures.push(DocFailure::new(
-    //                     None,
-    //                     Some(external_id),
-    //                     FailReason::NotFound,
-    //                 ));
-    //             }
-    //             Err(e) => {
-    //                 failures.push(DocFailure::new(
-    //                     None,
-    //                     Some(external_id),
-    //                     FailReason::Internal(e.to_string()),
-    //                 ));
-    //             }
-    //         }
-    //     }
-
-    //     db.flush()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
-    //     let elapsed = started.elapsed();
-    //     info!(self.log, "partial replace batch";
-    //         "user" => user.clone(),
-    //         "shard_id" => %self.shard_id,
-    //         "requested" => count,
-    //         "replaced" => replaced,
-    //         "failed" => failures.len(),
-    //         "elapsed_ms" => elapsed.as_millis(),
-    //     );
-
-    //     Ok(ReplaceReport { replaced, failures })
-    // }
+    
     #[timed(modifying_database_documents)]
     pub fn replace(
         &mut self,

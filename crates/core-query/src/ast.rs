@@ -14,6 +14,7 @@ pub enum Query {
     Phrase(Vec<String>),
     Exact(String),
     Fuzzy(String, Fuzziness, FuzzySpec),
+    Synonym(Vec<Query>),
 
     // Not(Box<Query>),
     //
