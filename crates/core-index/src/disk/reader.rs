@@ -46,74 +46,119 @@ pub struct DiskSegment {
 /// index where a B-tree needed a search of about ten cache misses.
 const NO_LENGTH: u32 = u32::MAX;
 pub struct DocLengths {
-    base: DocId,
+   
     //few fields per database, so a sorted vector beats a map
-    fields: Vec<(XPathId, Vec<u32>)>,
+    fields: Vec<(XPathId, FieldLengths)>,
+}
+enum FieldLengths {
+    /// One slot per id from `base`; `NO_LENGTH` where an id has no value.
+    Dense { base: DocId, lengths: Vec<u32> },
+    /// Ids too spread out for a slot each: sorted (id, length) pairs.
+    Sparse(Vec<(DocId, u32)>),
+}
+impl FieldLengths {
+    fn from_sorted(pairs: Vec<(DocId, u32)>) -> Self {
+        let (Some(&(first, _)), Some(&(last, _))) = (pairs.first(), pairs.last()) else {
+            return FieldLengths::Sparse(pairs);
+        };
+        //a slot per id costs 4 bytes; allow that up to 4x the stored values (plus a little),
+        //beyond that the 16-byte pairs are smaller
+        let span = last - first + 1;
+        if span > (pairs.len() as u64).saturating_mul(4).saturating_add(1024) {
+            return FieldLengths::Sparse(pairs);
+        }
+        let mut lengths = vec![NO_LENGTH; span as usize];
+        for (id, len) in pairs {
+            lengths[(id - first) as usize] = len;
+        }
+        FieldLengths::Dense { base: first, lengths }
+    }
+
+    fn get(&self, id: DocId) -> Option<u32> {
+        match self {
+            FieldLengths::Dense { base, lengths } => {
+                let index = usize::try_from(id.checked_sub(*base)?).ok()?;
+                let len = *lengths.get(index)?;
+                (len != NO_LENGTH).then_some(len)
+            }
+            FieldLengths::Sparse(pairs) => pairs
+                .binary_search_by_key(&id, |&(stored, _)| stored)
+                .ok()
+                .map(|index| pairs[index].1),
+        }
+    }
+
+    fn entries(&self) -> Vec<(DocId, u32)> {
+        match self {
+            FieldLengths::Dense { base, lengths } => lengths
+                .iter()
+                .enumerate()
+                .filter(|&(_, &len)| len != NO_LENGTH)
+                .map(|(offset, &len)| (base + offset as u64, len))
+                .collect(),
+            FieldLengths::Sparse(pairs) => pairs.clone(),
+        }
+    }
 }
 impl DocLengths {
     pub fn empty() -> Self {
-        Self { base: 0, fields: Vec::new() }
+        Self { fields: Vec::new() }
     }
 
     /// Builds from `(doc_id, xpath, length)` entries in any order.
-    pub fn from_entries(entries: impl Iterator<Item = (DocId, XPathId, u32)> + Clone) -> Self {
-        let Some(first) = entries.clone().map(|(doc, _, _)| doc).min() else {
-            return Self::empty();
-        };
-        let last = entries.clone().map(|(doc, _, _)| doc).max().unwrap_or(first);
-        let span = (last - first + 1) as usize;
-        let mut fields: Vec<(XPathId, Vec<u32>)> = Vec::new();
-        for (doc, xpath, len) in entries {
-            let slot = match fields.binary_search_by_key(&xpath, |(x, _)| *x) {
-                Ok(slot) => slot,
-                Err(slot) => {
-                    fields.insert(slot, (xpath, vec![NO_LENGTH; span]));
-                    slot
-                }
-            };
-            fields[slot].1[(doc - first) as usize] = len;
+    pub fn from_entries(entries: impl Iterator<Item = (DocId, XPathId, u32)>) -> Self {
+        let mut by_field: BTreeMap<XPathId, Vec<(DocId, u32)>> = BTreeMap::new();
+        for (id, xpath, len) in entries {
+            by_field.entry(xpath).or_default().push((id, len));
         }
-        Self { base: first, fields }
-    }
-
-    pub fn get(&self, doc: DocId, xpath: XPathId) -> Option<u32> {
-        let index = usize::try_from(doc.checked_sub(self.base)?).ok()?;
-        let (_, lengths) = self.fields.iter().find(|(x, _)| *x == xpath)?;
-        let len = *lengths.get(index)?;
-        (len != NO_LENGTH).then_some(len)
-    }
-
-    /// Every stored length in (doc_id, xpath) order, the order the B-tree had.
-    pub fn iter(&self) -> impl Iterator<Item = ((DocId, XPathId), u32)> + '_ {
-        let span = self.fields.first().map_or(0, |(_, lengths)| lengths.len());
-        (0..span).flat_map(move |offset| {
-            self.fields.iter().filter_map(move |(xpath, lengths)| {
-                let len = lengths[offset];
-                (len != NO_LENGTH).then_some(((self.base + offset as u64, *xpath), len))
+        let fields = by_field
+            .into_iter()
+            .map(|(xpath, mut pairs)| {
+                //reverse, then a stable sort: the later of two equal ids comes first and is kept
+                pairs.reverse();
+                pairs.sort_by_key(|&(id, _)| id);
+                pairs.dedup_by_key(|&mut (id, _)| id);
+                (xpath, FieldLengths::from_sorted(pairs))
             })
-        })
+            .collect();
+        Self { fields }
+    }
+
+
+    pub fn get(&self, id: DocId, xpath: XPathId) -> Option<u32> {
+        let (_, field) = self.fields.iter().find(|(stored, _)| *stored == xpath)?;
+        field.get(id)
+    }
+
+    /// Every stored length in (id, xpath) order, the order the B-tree had.
+    pub fn iter(&self) -> impl Iterator<Item = ((DocId, XPathId), u32)> + '_ {
+        let mut all: Vec<((DocId, XPathId), u32)> = self
+            .fields
+            .iter()
+            .flat_map(|(xpath, field)| {
+                field.entries().into_iter().map(move |(id, len)| ((id, *xpath), len))
+            })
+            .collect();
+        all.sort_unstable_by_key(|&(key, _)| key);
+        all.into_iter()
     }
 
     pub fn len(&self) -> usize {
-        self.fields
-            .iter()
-            .map(|(_, lengths)| lengths.iter().filter(|&&len| len != NO_LENGTH).count())
-            .sum()
+        self.fields.iter().map(|(_, field)| field.entries().len()).sum()
     }
 
     pub fn field_stats(&self) -> BTreeMap<XPathId, FieldStats> {
         self.fields
             .iter()
-            .map(|(xpath, lengths)| {
-                let present = lengths.iter().filter(|&&len| len != NO_LENGTH);
-                let doc_count = present.clone().count() as u64;
-                let total_doc_len = present.map(|&len| len as u64).sum();
+            .map(|(xpath, field)| {
+                let entries = field.entries();
+                let doc_count = entries.len() as u64;
+                let total_doc_len = entries.iter().map(|&(_, len)| len as u64).sum();
                 (*xpath, FieldStats { doc_count, total_doc_len })
             })
             .collect()
     }
 }
-
 impl SearchStats for DiskSegment {
     fn doc_count(&self, xpath: XPathId) -> u64 {
         self.field_stats
