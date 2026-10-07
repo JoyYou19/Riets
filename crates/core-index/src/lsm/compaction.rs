@@ -11,13 +11,7 @@ use serde::{Deserialize, Serialize};
 use core_timing::timed;
 
 use crate::{
-    array_rows::ArrayRowIndex,
-    disk::{reader::DiskSegment, writer::write_merged_segment},
-    document::document::BoolField,
-    numeric_values::{NumericFields, NumericPoints, unpack},
-    posting::{DeleteSet, PostingList},
-    segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, TermKey, XPathId},
+    array_rows::ArrayRowIndex, disk::{reader::DiskSegment, writer::write_merged_segment}, document::document::BoolField, numeric_values::{NumericFields, NumericPoints, unpack}, posting::{DeleteSet, PostingList}, segment::{ImmutableSegment, SegmentHandle}, types::{DocId, TermKey, XPathId},
 };
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
@@ -28,10 +22,10 @@ enum OpenSegment {
 }
 
 impl OpenSegment {
-    fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
+    fn doc_lengths(&self) -> Box<dyn Iterator<Item = ((DocId, XPathId), u32)> + '_> {
         match self {
-            OpenSegment::Disk(d) => d.doc_lengths(),
-            OpenSegment::Memory(m) => m.doc_lengths(),
+            OpenSegment::Disk(d) => Box::new(d.doc_lengths().iter()),
+            OpenSegment::Memory(m) => Box::new(m.doc_lengths().iter().map(|(&key, &len)| (key, len))),
         }
     }
 
@@ -146,7 +140,7 @@ pub fn compact_segments_streaming(
     // merging it eagerly here is a deliberate simplification, not an oversight.
     let mut merged_doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
     for segment in &opened {
-        for (&(doc_id, xpath), &len) in segment.doc_lengths() {
+        for ((doc_id, xpath), len) in segment.doc_lengths() {
             if deleted.contains(doc_id) {
                 continue;
             }

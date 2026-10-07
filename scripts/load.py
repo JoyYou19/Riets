@@ -9,10 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 INPUT_FILE = "fever/corpus.jsonl"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
-SHARD_COUNT = 4
+SHARD_COUNT = 2
 
 BATCH_SIZE = 50_000   # documents per insert request
-IN_FLIGHT = 12      # insert requests running at the same time
+IN_FLIGHT = 10      # insert requests running at the same time
 
 POLICY = """\
 [[fields]]
@@ -30,8 +30,8 @@ list = true
 exact = true
 stemming = "english"
 [fields.weight]
-min = 40
-max = 80
+min = 50
+max = 90
 
 [[fields]]
 name = "text"
@@ -40,7 +40,7 @@ list = true
 stemming = "english"
 [fields.weight]
 min = 1
-max = 100
+max = 10
 
 [[fields]]
 name = "random_year"

@@ -27,7 +27,7 @@ pub fn load_saved_shard_managers(
         }
         let name = entry.file_name().to_string_lossy().to_string();
 
-        let manager = match ShardManager::load(path, true) {
+        let manager = match ShardManager::load(path, true,crate::corelamo_settings::synonym_registry()) {
             Ok(mgr) => mgr,
             Err(e) => {
                 error!(log,"database failed to load";"name"=>%name,"error"=>%e);

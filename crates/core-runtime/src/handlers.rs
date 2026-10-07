@@ -25,6 +25,7 @@ use core_protocol::{
     document_out::DocumentOut,
     errors::CorelamoError,
 };
+use core_query::dictionary::DictionaryDocument;
 use core_storage::document_projections::id_path_to_strip;
 use core_timing::timed;
 use simd_json::owned::Object;
@@ -1259,7 +1260,7 @@ pub async fn create_database_handler(
     }
 
     let created = tokio::task::spawn_blocking(move || {
-        ShardManager::create(db_path, DatabaseOptions::default(), shard_count)
+       ShardManager::create(db_path, DatabaseOptions::default(), shard_count, crate::corelamo_settings::synonym_registry())
     })
     .await;
 
@@ -1436,7 +1437,7 @@ pub async fn stats_handler(
             "metrics": {
                 "search_requests": metrics.search_requests,
                 "search_errors": metrics.search_errors,
-                "average_search_us": metrics.average_search_time()
+                "average_search_ms": metrics.average_search_time()
                     .map(|d| d.as_millis() as u64),
                 "indexing_requests": metrics.indexing_requests,
                 "indexing_errors": metrics.indexing_errors,
@@ -2117,7 +2118,7 @@ pub async fn rename_database_handler(
                 "failed to rename '{old_name_for_task}' to '{new_name_for_task}' on disk: {e}"
             ))
         })?;
-        ShardManager::load(new_path.clone(), false).map_err(|e| {
+        ShardManager::load(new_path.clone(), false, crate::corelamo_settings::synonym_registry()).map_err(|e| {
             CorelamoError::Internal(format!(
                 "renamed on disk but failed to reopen as '{new_name_for_task}': {e}. \
                  the data is safe at its new path and will be picked up on the next server restart"
@@ -2267,4 +2268,67 @@ pub async fn disk_usage_handler(
     };
 
     HttpOk::with_data(format!("disk usage for '{db_name}'"), usage, &ctx).into_response()
+}
+pub async fn get_dictionary_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    HttpOk::raw(StatusCode::OK, "application/toml", manager.dictionary_text(), &ctx)
+}
+
+pub async fn set_dictionary_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    //parse first - TOML parsing needs no database
+    let document = match DictionaryDocument::parse(&db_name, &body) {
+        Ok(d) => d,
+        Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+    };
+
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    //compiling takes a few hundred ms, so it stays off the async threads
+    match manager.set_dictionary(document).await {
+        Ok(()) => HttpOk::new(format!("dictionary updated for '{db_name}'"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
+}
+
+pub async fn reload_dictionary_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    let manager = match state.lookup(&db_name) {
+        Ok(h) => h,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    match manager.reload_dictionary().await {
+        Ok(()) => HttpOk::new(format!("dictionary reloaded for '{db_name}'"), &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    }
 }

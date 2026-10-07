@@ -679,7 +679,9 @@ dependencies = [
  "core-timing",
  "criterion",
  "indexmap",
+ "serde",
  "simd-json",
+ "toml",
 ]
 
 [[package]]

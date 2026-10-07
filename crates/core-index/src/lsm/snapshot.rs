@@ -6,13 +6,7 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions},
-    mem::MemIndex,
-    numeric_values::{NumericBound, NumericValue},
-    posting::{DeleteSet, PostingList, ops::union_many},
-    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
-    types::{ArrayRowId, DocId, XPathId},
-    wildcard::WildcardPattern,
+    fuzzy::{FuzzyExpansion, FuzzyOptions}, mem::MemIndex, numeric_values::{NumericBound, NumericValue}, posting::{DeleteSet, PostingList, ops::union_many_owned}, search::{SearchIndex, SearchNumeric, SearchReader, SearchStats}, types::{ArrayRowId, DocId, XPathId}, wildcard::WildcardPattern,
 };
 
 /*
@@ -167,7 +161,7 @@ impl SearchNumeric for IndexSnapshot {
             lists.push(segment.numeric_range(xpath, lo, hi));
         }
 
-        self.apply_deletes(union_many(lists.iter()))
+        self.apply_deletes(union_many_owned(lists))
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -284,21 +278,19 @@ impl IndexSnapshot {
 
     #[timed(search)]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
-        let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
+        let mut lists: Vec<PostingList> = Vec::with_capacity(1 + self.segments.len());
 
-        let segment_lists: Vec<PostingList> = self
-            .segments
-            .iter()
-            .map(|segment| segment.lookup(term, xpath))
-            .collect();
-
-        let mut lists: Vec<&PostingList> = Vec::with_capacity(1 + segment_lists.len());
-        if let Some(list) = mem_list {
-            lists.push(list);
+        //the memtable list is borrowed, so it is copied
+        if let Some(list) = self.mem.lookup(term, xpath) {
+            lists.push(PostingList::from_sorted(list.items().to_vec()));
         }
-        lists.extend(segment_lists.iter());
 
-        self.apply_deletes(union_many(lists))
+        //segment lists are freshly decoded and owned: moved into the merge, not copied
+        for segment in self.segments.iter() {
+            lists.push(segment.lookup(term, xpath));
+        }
+
+        self.apply_deletes(union_many_owned(lists))
     }
 
     #[timed(search)]
@@ -311,7 +303,7 @@ impl IndexSnapshot {
             lists.push(segment.lookup_prefix(prefix, xpath));
         }
 
-        self.apply_deletes(union_many(lists.iter()))
+        self.apply_deletes(union_many_owned(lists))
     }
 
     #[timed(search)]
@@ -324,7 +316,7 @@ impl IndexSnapshot {
             lists.push(segment.lookup_wildcard(pattern, xpath));
         }
 
-        self.apply_deletes(union_many(lists.iter()))
+        self.apply_deletes(union_many_owned(lists))
     }
 
     #[timed(search)]
@@ -337,7 +329,7 @@ impl IndexSnapshot {
             lists.push(segment.lookup_fuzzy(term, xpath, opts));
         }
 
-        self.apply_deletes(union_many(lists.iter()))
+        self.apply_deletes(union_many_owned(lists))
     }
 }
 
