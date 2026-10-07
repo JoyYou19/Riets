@@ -229,20 +229,10 @@ fn fold_max(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     }
 }
 
-//helper to het the global min-max across all shards
-pub fn global_sort_bounds(
-    shards: &[ShardHandle],
+pub fn fold_sort_bounds(
     fields: &[SortField],
+    per_shard: impl IntoIterator<Item = Vec<(Option<f64>, Option<f64>)>>,
 ) -> Vec<(Option<f64>, Option<f64>)> {
-    let xpaths: Vec<XPathId> = fields.iter().map(|f| f.xpath).collect();
-
-    //fetch in paralel
-    let per_shard: Vec<Vec<(Option<f64>, Option<f64>)>> = shards
-        .par_iter()
-        .map(|shard| shard.sort_bounds(&xpaths))
-        .collect();
-
-    //bool fields are fixed
     let mut bounds: Vec<(Option<f64>, Option<f64>)> = fields
         .iter()
         .map(|f| {
@@ -254,7 +244,6 @@ pub fn global_sort_bounds(
         })
         .collect();
 
-    //populate numeric fields
     for shard_bounds in per_shard {
         for (i, (min, max)) in shard_bounds.into_iter().enumerate() {
             if fields[i].is_bool {

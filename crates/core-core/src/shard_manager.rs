@@ -41,7 +41,7 @@ use std::{fs, u8};
 use tokio::task::JoinSet;
 
 use crate::shard_manager_helpers::{
-    compile_filters, global_sort_bounds, order_blended, order_strict, resolve_sorts,
+    compile_filters, fold_sort_bounds, order_blended, order_strict, resolve_sorts,
 };
 
 pub struct ShardManager {
@@ -1005,24 +1005,32 @@ impl ShardManager {
                         groups,
                         include_array_groups,
                     )?;
-                    Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
+                    Ok((
+                        hits.into_iter().map(|hit| (hit, Vec::new())).collect(),
+                        Vec::new(),
+                    ))
                 }
             });
         }
 
         //join results
         let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
+        let mut per_shard_bounds: Vec<Vec<(Option<f64>, Option<f64>)>> = Vec::new();
         let mut first_err = None;
+
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Ok(hits)) => items.extend(hits),
-                Ok(Err(e)) if first_err.is_none() => {
-                    first_err = Some(e);
+                Ok(Ok((hits, shard_bounds))) => {
+                    items.extend(hits);
+                    if !shard_bounds.is_empty() {
+                        per_shard_bounds.push(shard_bounds);
+                    }
                 }
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
                 Err(je) if first_err.is_none() => {
                     first_err = Some(CorelamoError::Internal(format!(
                         "shard search panicked: {je}"
-                    )));
+                    )))
                 }
                 _ => {}
             }
@@ -1033,9 +1041,7 @@ impl ShardManager {
 
         //sort keys when sort given, otherwise just relevance/docid
         if let Some(specs) = sorts.as_ref() {
-            //compute boinuds
-            let bounds = global_sort_bounds(&self.shards, &specs.fields);
-
+            let bounds = fold_sort_bounds(&specs.fields, per_shard_bounds);
             match specs.mode {
                 SortMode::Blend => order_blended(&mut items, &specs.fields, &bounds),
                 SortMode::Strict => order_strict(&mut items, &specs.fields),
