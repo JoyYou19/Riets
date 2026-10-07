@@ -1,6 +1,6 @@
 //K = 1 BKD tree for now, later need something smarter for multi-number values like (lat long)
 use crate::{
-    numeric_values::{NumericBound, NumericKind, NumericValue, pack},
+    numeric_values::{NumericBound, NumericKind, NumericValue, pack, unpack},
     types::DocId,
 };
 
@@ -60,6 +60,18 @@ impl Bkd {
     //array of ascending values
     pub fn points(&self) -> &[(u64, DocId)] {
         &self.points
+    }
+
+    //for bounds lol
+    pub fn min(&self) -> Option<NumericValue> {
+        self.points
+            .first()
+            .map(|(packed, _)| unpack(*packed, self.kind))
+    }
+    pub fn max(&self) -> Option<NumericValue> {
+        self.points
+            .last()
+            .map(|(packed, _)| unpack(*packed, self.kind))
     }
 
     //Doc ids whose value lies inside the bounds, ascending and deduped.

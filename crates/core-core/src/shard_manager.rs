@@ -40,7 +40,9 @@ use std::time::{Duration, SystemTime};
 use std::{fs, u8};
 use tokio::task::JoinSet;
 
-use crate::shard_manager_helpers::{compile_filters, order_blended, order_strict, resolve_sorts};
+use crate::shard_manager_helpers::{
+    compile_filters, global_sort_bounds, order_blended, order_strict, resolve_sorts,
+};
 
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
@@ -970,6 +972,7 @@ impl ShardManager {
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
 
         //INFO:                page * multiplier    min    max
+        //WARN: results may change based on the "docs": x
         let window = fetch.saturating_mul(50).clamp(100, 5_000);
 
         let mut set = JoinSet::new();
@@ -1029,10 +1032,13 @@ impl ShardManager {
         }
 
         //sort keys when sort given, otherwise just relevance/docid
-        if let Some(s) = sorts.as_ref() {
-            match s.mode {
-                SortMode::Blend => order_blended(&mut items, &s.fields),
-                SortMode::Strict => order_strict(&mut items, &s.fields),
+        if let Some(specs) = sorts.as_ref() {
+            //compute boinuds
+            let bounds = global_sort_bounds(&self.shards, &specs.fields);
+
+            match specs.mode {
+                SortMode::Blend => order_blended(&mut items, &specs.fields, &bounds),
+                SortMode::Strict => order_strict(&mut items, &specs.fields),
             }
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));

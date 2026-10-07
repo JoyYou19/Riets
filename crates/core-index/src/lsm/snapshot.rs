@@ -187,6 +187,24 @@ impl SearchNumeric for IndexSnapshot {
 
         None
     }
+
+    fn numeric_bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
+        let mut result = self.mem.numeric_bounds(xpath);
+        for seg in self.segments.iter() {
+            let (seg_min, seg_max) = seg.numeric_bounds(xpath);
+            result.0 = match (result.0, seg_min) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (None, b) => b,
+                (a, _) => a,
+            };
+            result.1 = match (result.1, seg_max) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (None, b) => b,
+                (a, _) => a,
+            };
+        }
+        result
+    }
 }
 
 impl SearchStats for IndexSnapshot {

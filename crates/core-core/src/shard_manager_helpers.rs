@@ -5,9 +5,13 @@ use core_protocol::command_reponse_definitions::{SearchCommand, SortMode, SortOr
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
+use rayon::iter::IntoParallelRefIterator;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use crate::shard_worker::ShardHandle;
+use rayon::prelude::*;
 
 pub fn compile_filters(
     analyzer: &Analyzer,
@@ -24,6 +28,7 @@ pub struct SortField {
     pub xpath: XPathId,
     pub order: SortOrderRequest,
     pub ratio: u8,
+    pub is_bool: bool,
 }
 
 pub struct ResolvedSort {
@@ -89,6 +94,7 @@ pub fn resolve_sorts(
             xpath: field_pol.xpath(&policy),
             order: spec.order,
             ratio,
+            is_bool: field_pol.kind.is_bool(),
         });
     }
     Ok(Some(ResolvedSort {
@@ -138,29 +144,19 @@ fn cmp_asc(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
 }
 
 /// relevance_norm = score / rel_best                    → 0..1 (or 0)
-/// field_norm     = (value - min) / (max - min)         → 0..1 position in the current window
+/// field_norm     = value/overall_max so its 0..1
 /// direction      = desc ? field_norm : 1 - field_norm  → "how good is this doc's value"
 /// blend          = (rel_weight * relevance_norm + Σ ratio_i * direction_i) / denom
 //                                  hit          sort fields like year, imdb...
-pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[SortField]) {
+pub fn order_blended(
+    items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
+    specs: &[SortField],
+    bounds: &[(Option<f64>, Option<f64>)], //min max per field
+) {
     if items.is_empty() {
         return;
     }
 
-    //find the min/max values for normalization across all fields
-    let mut mins = vec![f64::INFINITY; specs.len()];
-    let mut maxs = vec![f64::NEG_INFINITY; specs.len()];
-    for (_, keys) in items.iter() {
-        for (index, _spec) in specs.iter().enumerate() {
-            let value = keys[index];
-            if let Some(v) = value {
-                mins[index] = mins[index].min(v);
-                maxs[index] = maxs[index].max(v);
-            }
-        }
-    }
-
-    //same for relevance just some dark magic to normalize everything 0-100
     let rel_best = items
         .iter()
         .fold(0.0f32, |best, (hit, _)| best.max(hit.score));
@@ -172,39 +168,32 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[So
         .iter()
         .map(|(hit, keys)| {
             let relevance = if rel_best > 0.0 {
-                // score relative to the best
                 (hit.score / rel_best).clamp(0.0, 1.0)
             } else {
                 0.0
             };
-
             let mut field_sum = 0.0f32;
             for (index, spec) in specs.iter().enumerate() {
-                let value = keys[index];
-                let component = match value {
-                    None => 0.0, // missing contributes nothing
-                    Some(v) => {
-                        if !mins[index].is_finite() || mins[index] == maxs[index] {
-                            1.0 // no spread -> all equal
-                        } else {
-                            let norm = ((v - mins[index]) / (maxs[index] - mins[index])) as f32;
+                let component = match keys[index] {
+                    None => 0.0,
+                    Some(v) => match bounds[index] {
+                        (Some(min), Some(max)) if max > min => {
+                            let norm = ((v - min) / (max - min)) as f32;
                             match spec.order {
-                                //for ascending its the same only negative basically (smaller better)
                                 SortOrderRequest::Asc => 1.0 - norm,
                                 SortOrderRequest::Desc => norm,
                             }
                         }
-                    }
+                        _ => 1.0,
+                    },
                 };
-                //weight math
                 field_sum += spec.ratio as f32 * component;
             }
-
             (rel_weight * relevance + field_sum) / denom
         })
         .collect();
 
-    //sorting
+    //sorting by computed vals
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_unstable_by(|&a, &b| {
         blends[b]
@@ -224,4 +213,57 @@ pub fn order_blended(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[So
         })
         .collect();
     *items = reordered;
+}
+
+fn fold_min(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        _ => a.or(b),
+    }
+}
+
+fn fold_max(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        _ => a.or(b),
+    }
+}
+
+//helper to het the global min-max across all shards
+pub fn global_sort_bounds(
+    shards: &[ShardHandle],
+    fields: &[SortField],
+) -> Vec<(Option<f64>, Option<f64>)> {
+    let xpaths: Vec<XPathId> = fields.iter().map(|f| f.xpath).collect();
+
+    //fetch in paralel
+    let per_shard: Vec<Vec<(Option<f64>, Option<f64>)>> = shards
+        .par_iter()
+        .map(|shard| shard.sort_bounds(&xpaths))
+        .collect();
+
+    //bool fields are fixed
+    let mut bounds: Vec<(Option<f64>, Option<f64>)> = fields
+        .iter()
+        .map(|f| {
+            if f.is_bool {
+                (Some(0.0), Some(1.0))
+            } else {
+                (None, None)
+            }
+        })
+        .collect();
+
+    //populate numeric fields
+    for shard_bounds in per_shard {
+        for (i, (min, max)) in shard_bounds.into_iter().enumerate() {
+            if fields[i].is_bool {
+                continue;
+            }
+            bounds[i].0 = fold_min(bounds[i].0, min);
+            bounds[i].1 = fold_max(bounds[i].1, max);
+        }
+    }
+
+    bounds
 }

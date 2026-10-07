@@ -19,6 +19,12 @@ pub struct NumericField {
     pub doc_values: DocValues,
 }
 
+impl NumericField {
+    pub fn bounds(&self) -> (Option<NumericValue>, Option<NumericValue>) {
+        (self.bkd.min(), self.bkd.max())
+    }
+}
+
 //every numeic value for a segment per xpath
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NumericFields {
@@ -41,6 +47,12 @@ impl NumericFields {
                 })
                 .collect(),
         }
+    }
+
+    pub fn bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
+        self.field(xpath)
+            .map(NumericField::bounds)
+            .unwrap_or((None, None))
     }
 
     pub fn field(&self, xpath: XPathId) -> Option<&NumericField> {
@@ -71,9 +83,9 @@ impl NumericFields {
     pub fn iter(&self) -> impl Iterator<Item = (XPathId, &NumericField)> + '_ {
         self.fields.iter().map(|(&xpath, field)| (xpath, field))
     }
-     pub fn is_empty(&self) -> bool {
-         self.fields.is_empty()
-     }
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
 }
 
 //sits only in ram, cause documents come in docid order so btree map is faster in ram for ranges n
@@ -121,13 +133,23 @@ impl NumericPoints {
         docs
     }
     //TEST
-    
-        pub fn merge(&mut self, other: NumericPoints) {
+
+    pub fn merge(&mut self, other: NumericPoints) {
         for (xpath, mut points) in other.points {
             self.points.entry(xpath).or_default().append(&mut points);
         }
     }
+
+    pub fn bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
+        let Some(points) = self.points.get(&xpath) else {
+            return (None, None);
+        };
+        let vals = points.iter().map(|(_, v)| *v);
+        (vals.clone().min(), vals.max())
+    }
 }
+
+impl NumericPoints {}
 
 #[derive(Debug, Clone, Copy)]
 pub enum NumericValue {

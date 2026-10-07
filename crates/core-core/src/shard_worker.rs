@@ -303,6 +303,7 @@ impl ShardHandle {
         }
 
         let snapshot = self.shared.snapshot.get();
+        //relevance calc
         let candidates = self.rank_candidates(
             &snapshot,
             query,
@@ -316,6 +317,7 @@ impl ShardHandle {
             return Ok(Vec::new());
         }
 
+        //get numeric values for sorts
         Ok(candidates
             .into_iter()
             .map(|hit| {
@@ -335,6 +337,18 @@ impl ShardHandle {
                 (hit, keys)
             })
             .collect())
+    }
+
+    //helper to get the min max
+    pub fn sort_bounds(&self, sort_xpaths: &[XPathId]) -> Vec<(Option<f64>, Option<f64>)> {
+        let snapshot = self.shared.snapshot.get();
+        sort_xpaths
+            .iter()
+            .map(|&x| {
+                let (min, max) = snapshot.numeric_bounds(x);
+                (min.map(|v| v.as_f64()), max.map(|v| v.as_f64()))
+            })
+            .collect()
     }
 
     #[timed(retrieve_opps)]

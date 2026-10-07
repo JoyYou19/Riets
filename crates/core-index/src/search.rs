@@ -160,6 +160,9 @@ pub trait SearchNumeric {
 
     //quick docid+xpath->numeric_value
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue>;
+
+    //for min max value for order-blended
+    fn numeric_bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>);
 }
 
 pub trait SearchReader: SearchIndex + SearchStats + SearchNumeric {}
