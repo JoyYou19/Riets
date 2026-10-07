@@ -453,6 +453,32 @@ pub fn phrase_top_k<S: SearchStats>(
     conjunctive_walk(stats, xpath, &single_term_groups(term_postings), k, restrict, true)
 }
 
+/// Whether the lists' words occur in order, each at most `max_gap` positions after the one
+/// before. Positions keep the gaps of removed stopwords ("nutrition and health" has "health"
+/// two after "nutrition"), so a gap of 1 would miss most real phrases in titles.
+fn in_order_within(position_lists: &[&[u32]], max_gap: u32) -> bool {
+    let Some((first, rest)) = position_lists.split_first() else {
+        return false;
+    };
+    let mut reachable: Vec<u32> = first.to_vec();
+    for positions in rest {
+        let mut next = Vec::new();
+        for &position in positions.iter() {
+            //some reachable r with position - max_gap <= r < position
+            let low = position.saturating_sub(max_gap);
+            let index = reachable.partition_point(|&r| r < low);
+            if index < reachable.len() && reachable[index] < position {
+                next.push(position);
+            }
+        }
+        if next.is_empty() {
+            return false;
+        }
+        reachable = next;
+    }
+    true
+}
+
 /// Positions of term i must include start + i for some start of term 0.
 fn consecutive(position_lists: &[&[u32]]) -> bool {
     let Some((first, rest)) = position_lists.split_first() else {
@@ -530,6 +556,62 @@ pub fn score_docs_groups<S: SearchStats>(
             sum.saturating_add(clause.score(doc, doc_len, avg_doc_len, doc_count))
         });
         out.push(WandHit { doc_id: doc, score, matched_terms: matched });
+    }
+    out
+}
+
+/// For each listed document where the clauses' typed words (each group's first alternative)
+/// occur in clause order, each at most `max_gap` positions after the one before, the sum of
+/// those clauses' scores in this field, computed as the walks compute them. Other documents
+/// are left out. `docs` must be sorted ascending; only they are visited, by seeking, so a few
+/// hundred cost microseconds.
+pub fn phrase_scores<S: SearchStats>(
+    stats: &S,
+    xpath: XPathId,
+    groups: &[WeightedGroup<'_>],
+    docs: &[DocId],
+    max_gap: u32,
+) -> Vec<(DocId, u64)> {
+    if docs.is_empty() || groups.len() < 2 {
+        return Vec::new();
+    }
+    let typed: Vec<WeightedGroup<'_>> = groups
+        .iter()
+        .filter_map(|group| group.first().map(|&member| vec![member]))
+        .collect();
+    if typed.len() != groups.len() {
+        return Vec::new();
+    }
+    let doc_count = stats.doc_count(xpath);
+    let avg_doc_len = stats.avg_doc_len(xpath);
+    let mut clauses = clauses(&typed, doc_count);
+    if clauses.len() != typed.len() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for &doc in docs {
+        let mut all_on_doc = true;
+        for clause in &mut clauses {
+            clause.advance_to(doc);
+            if clause.doc_id() != Some(doc) {
+                all_on_doc = false;
+            }
+        }
+        if !all_on_doc {
+            continue;
+        }
+        let positions: Vec<&[u32]> = clauses
+            .iter()
+            .map(|clause| clause.members[0].cursor.current().unwrap().positions.as_slice())
+            .collect();
+        if !in_order_within(&positions, max_gap) {
+            continue;
+        }
+        let doc_len = stats.doc_len(doc, xpath).unwrap_or(avg_doc_len as u32);
+        let score = clauses.iter().fold(0u64, |sum, clause| {
+            sum.saturating_add(clause.score(doc, doc_len, avg_doc_len, doc_count))
+        });
+        out.push((doc, score));
     }
     out
 }

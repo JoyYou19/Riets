@@ -25,7 +25,7 @@ use core_protocol::{
     document_out::DocumentOut,
     errors::CorelamoError,
 };
-use core_query::dictionary::{self, DictionaryDocument};
+use core_query::dictionary::DictionaryDocument;
 use core_storage::document_projections::id_path_to_strip;
 use core_timing::timed;
 use simd_json::owned::Object;

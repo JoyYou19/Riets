@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use core_timing::timed;
 
 use crate::{
-    array_rows::ArrayRowIndex, disk::{reader::{DiskSegment, DocLengths}, writer::write_merged_segment}, document::document::BoolField, numeric_values::{NumericFields, NumericPoints, unpack}, posting::{DeleteSet, PostingList}, segment::{ImmutableSegment, SegmentHandle}, types::{DocId, TermKey, XPathId},
+    array_rows::ArrayRowIndex, disk::{reader::DiskSegment, writer::write_merged_segment}, document::document::BoolField, numeric_values::{NumericFields, NumericPoints, unpack}, posting::{DeleteSet, PostingList}, segment::{ImmutableSegment, SegmentHandle}, types::{DocId, TermKey, XPathId},
 };
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;

@@ -17,10 +17,18 @@ use crate::{
     SearchHit,
     TopHit,
     ast::Query,
+    planner::{ MAX_GAP, QueryPlanner, QuerySignal },
     resolver::{ FieldCtx, FieldQuery, SameElementBinding },
     scorer::{ fuzzy_decay, score_term_hybrid, score_term_into },
     syn::{ QueryNode, SynonymDictionary, tokenize },
-    wand::{ WandHit, WeightedGroup, conjunctive_top_k_groups, score_docs_groups, wand_top_k_groups },
+    wand::{
+        WandHit,
+        WeightedGroup,
+        conjunctive_top_k_groups,
+        phrase_scores,
+        score_docs_groups,
+        wand_top_k_groups,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -65,6 +73,10 @@ pub enum EvalOutcome {
 //Exact top-k across fields deepens the per-field lists by 4x per round when the first round
 //cannot prove its result; this caps the depth so a pathological query cannot loop for long.
 const MAX_EXACT_DEPTH: usize = 1 << 16;
+
+//Phrase signals reorder this many of the best documents (or the page, if larger). A fixed
+//pool keeps pages up to this size consistent with each other.
+const RERANK_POOL: usize = 200;
 
 /// One field's postings for a query, fetched once and walked as often as needed.
 struct FieldPostings {
@@ -169,18 +181,47 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
     }
 
-    /// The top `k` documents by their total over all fields, exactly as if every matching
-    /// document had been scored in every field, whatever `k` is.
-    ///
-    /// Each field contributes its best `depth` documents. Every candidate (any document in
-    /// a list, or in `complete`) then gets its exact score in every field. A document in no
-    /// list scores at most the lowest score of each full list, summed; once the k-th total
-    /// is above that bound, nothing outside can reach the top k and the result is exact.
-    /// Otherwise the lists are deepened and the round repeats. Usually one round suffices.
-    ///
-    /// `complete` holds contributions that already cover every matching document (array
-    /// groups and fields on the general path).
-    fn exact_top_k(
+    /// Adds, for each phrase signal and field, the signal's boost times the phrase words' score
+    /// in that field to every document where the typed words stand next to each other, then
+    /// re-sorts. Uses the postings already decoded for the query: no new lookups.
+    fn apply_phrase_signals(
+        &self,
+        fields: &[FieldPostings],
+        signals: &[QuerySignal],
+        hits: &mut Vec<SearchHit>
+    ) {
+        let mut docs: Vec<DocId> = hits.iter().map(|hit| hit.doc_id).collect();
+        docs.sort_unstable();
+        let mut bonus: HashMap<DocId, f32> = HashMap::new();
+        //signals refer to the clauses of the top-level AND, which a conjunctive field keeps in order
+        for field in fields.iter().filter(|field| field.conjunctive) {
+            let clauses = field.clauses();
+            for signal in signals {
+                let Some(groups) = clauses.get(signal.clauses.clone()) else {
+                    continue;
+                };
+                for (doc, score) in phrase_scores(self.index, field.xpath, groups, &docs, MAX_GAP) {
+                    *bonus.entry(doc).or_insert(0.0) += signal.boost * ((score as f32) / 1000.0);
+                }
+            }
+        }
+        if bonus.is_empty() {
+            return;
+        }
+        for hit in hits.iter_mut() {
+            if let Some(extra) = bonus.get(&hit.doc_id) {
+                hit.score += extra;
+            }
+        }
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.doc_id.cmp(&b.doc_id))
+        });
+    }
+
+        fn exact_top_k(
         &self,
         fields: &[FieldPostings],
         complete: HashMap<DocId, SearchHit>,
@@ -264,10 +305,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         self.index.lookup_wildcard(&pattern, xpath)
     }
 
-    // Phrase query,
-    // ["rust", "document"]
-    // A document matches only if rust and database appear in it in order rust + database so
-    // position and position + 1
+   
     #[timed(search)]
     fn execute_phrase(&self, terms: &[String], xpath: XPathId) -> PostingList {
         let lists: Vec<PostingList> = terms
@@ -494,11 +532,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
     }
 
-    //synonym alternatives: union for filtering, best alternative per doc for ranking
-    //(summing would double-credit docs that contain both "CaP" and "calcium phosphate").
-    //Weights come from `synonym_weight`: the typed form and exact equivalents count fully,
-    //loose synonyms less, so "piss" ranks Piss* titles above Urine* titles while still
-    //finding both, and "NaCl" counts "sodium chloride" as much as "NaCl" itself
+  
     fn eval_synonym(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         if mode == EvalMode::Filter {
             return self.eval_union(parts, ctxs, mode);
@@ -808,14 +842,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         if fast.is_empty() {
             return top_k_from_hits(complete.into_values(), k);
         }
-        self.exact_top_k(&fast, complete, k, restrict)
+        let signals = QueryPlanner::signals(query);
+        if signals.is_empty() {
+            return self.exact_top_k(&fast, complete, k, restrict);
+        }
+        let mut hits = self.exact_top_k(&fast, complete, k.max(RERANK_POOL), restrict);
+        self.apply_phrase_signals(&fast, &signals, &mut hits);
+        hits.truncate(k);
+        hits
     }
 
-    //INFO: Norca sito hujnu centaas izprast kkur 1h, seit visam ir jabut safe, ne passaprotami,
-    //bet safe robezaas
-    //optimizations:
-    //      Posting:
-    //    pub positions: SmallVec<[Position; INLINE_POSITIONS]>,
+   
     #[timed(search)]
     fn execute_scored_fuzzy(
         &self,
@@ -1467,3 +1504,4 @@ fn synonym(mut alternatives: Vec<Query>) -> Query {
     }
     Query::Synonym(alternatives)
 }
+

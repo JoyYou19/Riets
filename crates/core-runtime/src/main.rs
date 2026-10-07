@@ -241,7 +241,7 @@ async fn main() -> io::Result<()> {
         .route("/api/databases/{db_name}/restore-backup/{backup_id}",post(handlers::backup_restore_handler))
         .route("/api/databases/{db}/dictionary", get(handlers::get_dictionary_handler))
         .route("/api/databases/{db}/dictionary/reload", post(handlers::reload_dictionary_handler))
-        // .route("/api/databases/{db}/dictionary/reset", post(handlers::reset_dictionary_handler))
+        .route("/api/databases/{db}/dictionary/set", post(handlers::set_dictionary_handler))
         // .route("/api/dictionary/default", get(handlers::get_default_dictionary_handler).put(set_default_dictionary_handler))
         .route("/api/timings", post(handlers::timings_handler))
         .route("/api/databases/{db_name}/disk-usage", get(handlers::disk_usage_handler));
