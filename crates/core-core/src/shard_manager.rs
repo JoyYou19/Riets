@@ -16,7 +16,7 @@ use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{
-    DidYouMeanRequest, LookupCommand, LookupResponse, SearchCommand, SortMode,
+    DidYouMeanRequest, LookupCommand, LookupResponse, SearchCommand, SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
@@ -937,12 +937,12 @@ impl ShardManager {
     pub async fn search(
         &self,
         command: &SearchCommand,
-    ) -> Result<Vec<SearchDocumentHit>, CorelamoError> {
+    ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
         let limit = command.docs.unwrap_or(10);
         let offset = command.offset.unwrap_or(0);
         let fetch = offset.saturating_add(limit);
         if fetch == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), TotalHits::default()));
         }
         if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
             return Err(CorelamoError::InvalidData(
@@ -972,7 +972,7 @@ impl ShardManager {
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
 
         //INFO:                page * multiplier    min    max
-        //WARN: results may change based on the "docs": x
+        //WARN: results may change based on the "docs": x lol
         let window = fetch.saturating_mul(50).clamp(100, 5_000);
 
         let mut set = JoinSet::new();
@@ -984,7 +984,7 @@ impl ShardManager {
             let sort_xpaths = sort_xpaths.clone();
             let groups = groups.clone();
             set.spawn_blocking(move || {
-                //any sort mentioned? - we do smart thing
+                //any sort mentioned? - we do smart sort, else just relevance
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
                     handle.rank_sorted(
                         (*query).as_ref(),
@@ -996,19 +996,14 @@ impl ShardManager {
                         include_array_groups,
                     )
                 } else {
-                    //else just relevance
-                    let hits = handle.rank_top_k(
+                    handle.rank_top_k(
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,
                         fetch,
                         groups,
                         include_array_groups,
-                    )?;
-                    Ok((
-                        hits.into_iter().map(|hit| (hit, Vec::new())).collect(),
-                        Vec::new(),
-                    ))
+                    )
                 }
             });
         }
@@ -1016,21 +1011,23 @@ impl ShardManager {
         //join results
         let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
         let mut per_shard_bounds: Vec<Vec<(Option<f64>, Option<f64>)>> = Vec::new();
+        let mut total_hits: u64 = 0;
         let mut first_err = None;
 
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Ok((hits, shard_bounds))) => {
-                    items.extend(hits);
-                    if !shard_bounds.is_empty() {
-                        per_shard_bounds.push(shard_bounds);
+                Ok(Ok(r)) => {
+                    total_hits += r.total as u64;
+                    items.extend(r.items);
+                    if !r.bounds.is_empty() {
+                        per_shard_bounds.push(r.bounds);
                     }
                 }
                 Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
                 Err(je) if first_err.is_none() => {
                     first_err = Some(CorelamoError::Internal(format!(
                         "shard search panicked: {je}"
-                    )))
+                    )));
                 }
                 _ => {}
             }
@@ -1056,7 +1053,7 @@ impl ShardManager {
 
         let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
         if offset >= just_hits.len() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), TotalHits::default()));
         }
 
         //for the resolve hit to save position
@@ -1118,7 +1115,13 @@ impl ShardManager {
         if let Some(e) = first_err {
             return Err(e);
         }
-        Ok(resolved.into_iter().flatten().collect())
+
+        let total_hits = TotalHits {
+            value: total_hits.min(1000),
+            more: total_hits > 1000,
+        };
+
+        Ok((resolved.into_iter().flatten().collect(), total_hits))
     }
 
     pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
