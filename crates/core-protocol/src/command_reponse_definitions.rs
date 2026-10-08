@@ -7,7 +7,6 @@ use serde::de::DeserializeOwned;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, json};
 use std::collections::BTreeMap;
-use std::default;
 use strsim::levenshtein;
 
 use crate::command_response_helpers::escape_json_text;
@@ -239,8 +238,8 @@ pub struct TotalHits {
     pub more: bool,
 }
 
-impl TotalHits {
-    pub fn default() -> Self {
+impl Default for TotalHits {
+    fn default() -> Self {
         TotalHits {
             value: 0,
             more: false,
@@ -265,13 +264,6 @@ impl SearchResponse {
             strip_id,
             total_hits,
         }
-    }
-
-    fn extra_fields(&self) -> Vec<(String, OwnedValue)> {
-        vec![(
-            "total_hits".to_string(),
-            json!({ "value": self.total_hits.value, "more": self.total_hits.more}),
-        )]
     }
 }
 

@@ -5,13 +5,9 @@ use core_protocol::command_reponse_definitions::{SearchCommand, SortMode, SortOr
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
-use rayon::iter::IntoParallelRefIterator;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use crate::shard_worker::ShardHandle;
-use rayon::prelude::*;
 
 pub fn compile_filters(
     analyzer: &Analyzer,

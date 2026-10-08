@@ -184,8 +184,9 @@ fn envelope_raw(
     body.extend_from_slice(request_id.to_string().as_bytes());
     body.extend_from_slice(b"\",\"time_taken\":\"");
     body.extend_from_slice(escape_json_text(&time_taken).as_bytes());
+    body.extend_from_slice(b"\",\"data\":");
+    body.extend_from_slice(fragment);
 
-    //for now just total_hits
     for (key, value) in extra {
         body.extend_from_slice(b",\"");
         body.extend_from_slice(escape_json_text(key).as_bytes());
@@ -194,11 +195,10 @@ fn envelope_raw(
         body.extend_from_slice(value.as_bytes());
     }
 
-    body.extend_from_slice(b"\",\"data\":");
-    body.extend_from_slice(fragment);
-
     body.extend_from_slice(b"}");
-    body
+
+    //INFO: sorry valc par manu necienu pret semikolu neizmantosanu
+    return body;
 }
 
 pub struct HttpOk {
