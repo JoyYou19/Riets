@@ -12,18 +12,6 @@ use core_index::{
     wildcard::WildcardPattern,
 };
 
-//TODO: pielikt search komandai kko lidzigu sim preks highlight:
-//  "highlight": {
-//   "fields": {
-//     "content": {
-//       "fragment_size": 150,
-//       "number_of_fragments": 3,
-//       "pre_tags": ["<em>"],
-//       "post_tags": ["</em>"]
-//     }
-//   }
-// }
-
 //decide between prefix (dat*), a wildcard (da?ab*e), or just a word
 #[timed(search)]
 fn classify_word(word: &str) -> Query {
