@@ -131,6 +131,10 @@ impl SearchNumeric for MemIndex {
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
         self.numeric_points.get(xpath, doc_id)
     }
+
+    fn numeric_bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
+        self.numeric_points.bounds(xpath)
+    }
 }
 
 impl SearchStats for MemIndex {

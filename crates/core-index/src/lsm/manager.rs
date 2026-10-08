@@ -145,6 +145,11 @@ impl SearchNumeric for LsmIndex {
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
         self.snapshot().numeric_value(xpath, doc_id)
     }
+
+    #[timed(search)]
+    fn numeric_bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
+        self.snapshot().numeric_bounds(xpath)
+    }
 }
 
 impl SearchStats for LsmIndex {

@@ -112,6 +112,10 @@ impl SearchNumeric for ImmutableSegment {
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
         self.numeric_fields.get(xpath, doc_id)
     }
+
+    fn numeric_bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
+        self.numeric_fields.bounds(xpath)
+    }
 }
 
 impl SearchStats for ImmutableSegment {

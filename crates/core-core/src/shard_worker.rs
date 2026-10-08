@@ -297,12 +297,20 @@ impl ShardHandle {
         window: usize,
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
-    ) -> Result<Vec<(SearchHit, Vec<Option<f64>>)>, CorelamoError> {
+        //kruts formateris
+    ) -> Result<
+        (
+            Vec<(SearchHit, Vec<Option<f64>>)>,
+            Vec<(Option<f64>, Option<f64>)>,
+        ),
+        CorelamoError,
+    > {
         if window == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let snapshot = self.shared.snapshot.get();
+        //relevance calc
         let candidates = self.rank_candidates(
             &snapshot,
             query,
@@ -313,10 +321,20 @@ impl ShardHandle {
             include_array_groups,
         );
         if candidates.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
-        Ok(candidates
+        //min max per xpath
+        let bounds: Vec<(Option<f64>, Option<f64>)> = sort_xpaths
+            .iter()
+            .map(|&x| {
+                let (min, max) = snapshot.numeric_bounds(x);
+                (min.map(|v| v.as_f64()), max.map(|v| v.as_f64()))
+            })
+            .collect();
+
+        //get numeric values for sorts
+        let items = candidates
             .into_iter()
             .map(|hit| {
                 let keys = sort_xpaths
@@ -324,7 +342,7 @@ impl ShardHandle {
                     .map(|&xpath| {
                         snapshot
                             .numeric_value(xpath, hit.doc_id)
-                            .map(|value| value.as_f64())
+                            .map(|v| v.as_f64())
                             .or_else(|| {
                                 snapshot
                                     .bool_value(xpath, hit.doc_id)
@@ -334,7 +352,9 @@ impl ShardHandle {
                     .collect();
                 (hit, keys)
             })
-            .collect())
+            .collect();
+
+        Ok((items, bounds))
     }
 
     #[timed(retrieve_opps)]

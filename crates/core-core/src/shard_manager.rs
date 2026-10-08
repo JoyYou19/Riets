@@ -40,7 +40,9 @@ use std::time::{Duration, SystemTime};
 use std::{fs, u8};
 use tokio::task::JoinSet;
 
-use crate::shard_manager_helpers::{compile_filters, order_blended, order_strict, resolve_sorts};
+use crate::shard_manager_helpers::{
+    compile_filters, fold_sort_bounds, order_blended, order_strict, resolve_sorts,
+};
 
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
@@ -970,6 +972,7 @@ impl ShardManager {
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
 
         //INFO:                page * multiplier    min    max
+        //WARN: results may change based on the "docs": x
         let window = fetch.saturating_mul(50).clamp(100, 5_000);
 
         let mut set = JoinSet::new();
@@ -1002,24 +1005,32 @@ impl ShardManager {
                         groups,
                         include_array_groups,
                     )?;
-                    Ok(hits.into_iter().map(|hit| (hit, Vec::new())).collect())
+                    Ok((
+                        hits.into_iter().map(|hit| (hit, Vec::new())).collect(),
+                        Vec::new(),
+                    ))
                 }
             });
         }
 
         //join results
         let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
+        let mut per_shard_bounds: Vec<Vec<(Option<f64>, Option<f64>)>> = Vec::new();
         let mut first_err = None;
+
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Ok(hits)) => items.extend(hits),
-                Ok(Err(e)) if first_err.is_none() => {
-                    first_err = Some(e);
+                Ok(Ok((hits, shard_bounds))) => {
+                    items.extend(hits);
+                    if !shard_bounds.is_empty() {
+                        per_shard_bounds.push(shard_bounds);
+                    }
                 }
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
                 Err(je) if first_err.is_none() => {
                     first_err = Some(CorelamoError::Internal(format!(
                         "shard search panicked: {je}"
-                    )));
+                    )))
                 }
                 _ => {}
             }
@@ -1029,10 +1040,11 @@ impl ShardManager {
         }
 
         //sort keys when sort given, otherwise just relevance/docid
-        if let Some(s) = sorts.as_ref() {
-            match s.mode {
-                SortMode::Blend => order_blended(&mut items, &s.fields),
-                SortMode::Strict => order_strict(&mut items, &s.fields),
+        if let Some(specs) = sorts.as_ref() {
+            let bounds = fold_sort_bounds(&specs.fields, per_shard_bounds);
+            match specs.mode {
+                SortMode::Blend => order_blended(&mut items, &specs.fields, &bounds),
+                SortMode::Strict => order_strict(&mut items, &specs.fields),
             }
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
