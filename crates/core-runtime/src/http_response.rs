@@ -170,6 +170,7 @@ fn envelope_raw(
     request_id: Uuid,
     time_start: Instant,
     fragment: &[u8],
+    extra: &[(String, OwnedValue)],
 ) -> Vec<u8> {
     let time_taken = format!("{:?}", time_start.elapsed());
     let mut body = Vec::with_capacity(fragment.len() + 256);
@@ -185,8 +186,19 @@ fn envelope_raw(
     body.extend_from_slice(escape_json_text(&time_taken).as_bytes());
     body.extend_from_slice(b"\",\"data\":");
     body.extend_from_slice(fragment);
+
+    for (key, value) in extra {
+        body.extend_from_slice(b",\"");
+        body.extend_from_slice(escape_json_text(key).as_bytes());
+        body.extend_from_slice(b"\":");
+        let value = simd_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+        body.extend_from_slice(value.as_bytes());
+    }
+
     body.extend_from_slice(b"}");
-    body
+
+    //INFO: sorry valc par manu necienu pret semikolu neizmantosanu
+    return body;
 }
 
 pub struct HttpOk {
@@ -297,6 +309,12 @@ impl IntoResponse for HttpOk {
     fn into_response(self) -> Response {
         match self.format {
             Format::JSON => {
+                let extra: Vec<(String, OwnedValue)> = self
+                    .data
+                    .as_ref()
+                    .map(|d| d.extra_fields())
+                    .unwrap_or_default();
+
                 if !self.pretty {
                     if let Some(fragment) = self.data.as_ref().and_then(|d| d.to_raw_json()) {
                         let body = envelope_raw(
@@ -306,6 +324,7 @@ impl IntoResponse for HttpOk {
                             self.request_id,
                             self.time_start,
                             &fragment,
+                            &extra,
                         );
                         return Response::builder()
                             .status(self.status)
@@ -343,6 +362,11 @@ impl IntoResponse for HttpOk {
                     OwnedValue::String(self.request_id.to_string()),
                 );
                 obj.insert("time_taken".into(), OwnedValue::String(time_taken.into()));
+
+                for (k, v) in extra {
+                    obj.insert(k, v);
+                }
+
                 if let Some(v) = data_value {
                     obj.insert("data".into(), v);
                 }

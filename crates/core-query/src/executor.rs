@@ -608,6 +608,34 @@ where
             .collect()
     }
 
+    pub fn count_matches(
+        &self,
+        query: Option<&Query>,
+        ctxs: &[FieldCtx],
+        restrict: Option<&HashSet<DocId>>,
+    ) -> usize {
+        match query {
+            None => restrict.map(|r| r.len()).unwrap_or(0),
+
+            Some(Query::MatchAll) => match restrict {
+                Some(r) => r.len(),
+                None => self
+                    .index
+                    .doc_range()
+                    .map(|(lo, hi)| (hi.saturating_sub(lo).saturating_add(1)) as usize)
+                    .unwrap_or(0),
+            },
+
+            Some(q) => match self.evaluate(q, ctxs, EvalMode::Filter) {
+                EvalOutcome::Docs(matched) => match restrict {
+                    Some(r) => matched.intersection(r).count(),
+                    None => matched.len(),
+                },
+                _ => 0,
+            },
+        }
+    }
+
     #[timed(search)]
     pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldQuery>) -> Option<HashSet<DocId>> {
         if filters.is_empty() {

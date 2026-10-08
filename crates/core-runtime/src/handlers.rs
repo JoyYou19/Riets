@@ -330,7 +330,8 @@ pub async fn search_handler(
     };
 
     handle.record_search(false, start.elapsed());
-    let hit_count = hits.len();
+    let hit_count = hits.0.len();
+    let total_hits = hits.1;
 
     let policy = handle.policy();
     let strip_id = id_path_to_strip(
@@ -340,11 +341,12 @@ pub async fn search_handler(
     .map(String::from);
 
     let docs: Vec<(String, f32, DocumentOut)> = hits
+        .0
         .into_iter()
         .map(|hit| (hit.external_id, hit.score, hit.doc))
         .collect();
 
-    let resp = SearchResponse::new(docs, strip_id);
+    let resp = SearchResponse::new(docs, strip_id, total_hits);
 
     HttpOk::with_response(format!("{hit_count} hit(s) for '{query:?}'"), resp, &ctx).into_response()
 }

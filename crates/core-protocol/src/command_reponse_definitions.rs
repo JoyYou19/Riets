@@ -102,6 +102,9 @@ pub trait ResponseData {
     fn to_raw_json(&self) -> Option<Vec<u8>> {
         None
     }
+    fn extra_fields(&self) -> Vec<(String, OwnedValue)> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,14 +233,37 @@ pub struct SortSpec {
     pub ratio: Option<u8>,
 }
 
+pub struct TotalHits {
+    pub value: u64,
+    pub more: bool,
+}
+
+impl Default for TotalHits {
+    fn default() -> Self {
+        TotalHits {
+            value: 0,
+            more: false,
+        }
+    }
+}
+
 pub struct SearchResponse {
     docs: Vec<(String, f32, DocumentOut)>,
     strip_id: Option<String>,
+    total_hits: TotalHits,
 }
 
 impl SearchResponse {
-    pub fn new(docs: Vec<(String, f32, DocumentOut)>, strip_id: Option<String>) -> Self {
-        Self { docs, strip_id }
+    pub fn new(
+        docs: Vec<(String, f32, DocumentOut)>,
+        strip_id: Option<String>,
+        total_hits: TotalHits,
+    ) -> Self {
+        Self {
+            docs,
+            strip_id,
+            total_hits,
+        }
     }
 }
 
@@ -275,6 +301,13 @@ impl ResponseData for SearchResponse {
         }
         out.push(b']');
         Some(out)
+    }
+
+    fn extra_fields(&self) -> Vec<(String, OwnedValue)> {
+        vec![(
+            "total_hits".to_string(),
+            json!({ "value": self.total_hits.value, "more": self.total_hits.more }),
+        )]
     }
 }
 

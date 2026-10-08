@@ -1,5 +1,4 @@
 use core_timing::timed;
-use roaring::RoaringTreemap;
 use std::collections::BTreeMap;
 use std::io::SeekFrom;
 use std::{

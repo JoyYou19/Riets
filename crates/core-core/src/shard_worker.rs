@@ -37,6 +37,13 @@ use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
 
+//info: i genuenly made this so that the fucking function response isnt this:
+pub struct ShardRankedResult {
+    pub total: usize,
+    pub items: Vec<(SearchHit, Vec<Option<f64>>)>,
+    pub bounds: Vec<(Option<f64>, Option<f64>)>,
+}
+
 //insane portno kur dazaam komandam ir crossbeam_channel dazam ir oneshot
 pub enum ShardCmd {
     Insert {
@@ -251,9 +258,9 @@ impl ShardHandle {
         k: usize,
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
-    ) -> Vec<SearchHit> {
+    ) -> (usize, Vec<SearchHit>) {
         if k == 0 {
-            return Vec::new();
+            return (0, Vec::new());
         }
 
         let executor = QueryExecutor::new(snapshot, &self.analyzer, groups);
@@ -261,8 +268,12 @@ impl ShardHandle {
         //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
 
+        let count = executor.count_matches(query, ctxs, restrict.as_ref());
+
         //main entry point for query yes?
-        executor.rank(query, ctxs, k, restrict.as_ref(), include_array_groups)
+        let hits = executor.rank(query, ctxs, k, restrict.as_ref(), include_array_groups);
+
+        (count, hits)
     }
 
     #[timed(search)]
@@ -274,9 +285,9 @@ impl ShardHandle {
         k: usize,
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
-    ) -> Result<Vec<SearchHit>, CorelamoError> {
+    ) -> Result<ShardRankedResult, CorelamoError> {
         let snapshot = self.shared.snapshot.get();
-        Ok(self.rank_candidates(
+        let (total, hits) = self.rank_candidates(
             &snapshot,
             query,
             filters,
@@ -284,7 +295,13 @@ impl ShardHandle {
             k,
             groups,
             include_array_groups,
-        ))
+        );
+        Ok(ShardRankedResult {
+            total,
+            items: hits.into_iter().map(|hit| (hit, Vec::new())).collect(),
+            //empty placeholder
+            bounds: Vec::new(),
+        })
     }
 
     #[timed(search)]
@@ -297,21 +314,17 @@ impl ShardHandle {
         window: usize,
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
-        //kruts formateris
-    ) -> Result<
-        (
-            Vec<(SearchHit, Vec<Option<f64>>)>,
-            Vec<(Option<f64>, Option<f64>)>,
-        ),
-        CorelamoError,
-    > {
+    ) -> Result<ShardRankedResult, CorelamoError> {
         if window == 0 {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(ShardRankedResult {
+                total: 0,
+                items: Vec::new(),
+                bounds: Vec::new(),
+            });
         }
 
         let snapshot = self.shared.snapshot.get();
-        //relevance calc
-        let candidates = self.rank_candidates(
+        let (total, candidates) = self.rank_candidates(
             &snapshot,
             query,
             filters,
@@ -321,10 +334,14 @@ impl ShardHandle {
             include_array_groups,
         );
         if candidates.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(ShardRankedResult {
+                total,
+                items: Vec::new(),
+                bounds: Vec::new(),
+            });
         }
 
-        //min max per xpath
+        // bounds from the SAME snapshot as the keys
         let bounds: Vec<(Option<f64>, Option<f64>)> = sort_xpaths
             .iter()
             .map(|&x| {
@@ -333,8 +350,7 @@ impl ShardHandle {
             })
             .collect();
 
-        //get numeric values for sorts
-        let items = candidates
+        let items: Vec<(SearchHit, Vec<Option<f64>>)> = candidates
             .into_iter()
             .map(|hit| {
                 let keys = sort_xpaths
@@ -354,7 +370,11 @@ impl ShardHandle {
             })
             .collect();
 
-        Ok((items, bounds))
+        Ok(ShardRankedResult {
+            total,
+            items,
+            bounds,
+        })
     }
 
     #[timed(retrieve_opps)]
