@@ -1118,7 +1118,7 @@ impl ShardManager {
 
         let total_hits = TotalHits {
             value: total_hits.min(1000),
-            more: total_hits > 1000,
+            more: total_hits >= 1000,
         };
 
         Ok((resolved.into_iter().flatten().collect(), total_hits))
