@@ -163,7 +163,7 @@ pub fn order_blended(
     let blends: Vec<f32> = items
         .iter()
         .map(|(hit, keys)| {
-            //if the relevance of a document if FAR less than the besat one we dont let some numeric
+            //INFO: if the relevance of a document if FAR less than the besat one we dont let some numeric
             //sort to somehow bring it up
             let relevance = if rel_best > 0.0 && hit.score < rel_best * 0.3 {
                 0.0

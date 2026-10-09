@@ -958,6 +958,7 @@ impl ShardManager {
         let groups = policy.array_groups();
         //if no search_fields we should search in the arrays
         let include_array_groups = command.search_fields.is_none();
+        let matchmode = command.match_mode;
 
         let (query, ctxs) = compile_query(
             &command.query,
@@ -1018,6 +1019,7 @@ impl ShardManager {
                         window,
                         groups,
                         include_array_groups,
+                        matchmode,
                     )
                 } else {
                     handle.rank_top_k(
@@ -1027,6 +1029,7 @@ impl ShardManager {
                         window,
                         groups,
                         include_array_groups,
+                        matchmode,
                     )
                 }
             });

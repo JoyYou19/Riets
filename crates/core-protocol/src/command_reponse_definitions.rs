@@ -117,6 +117,17 @@ pub struct SearchCommand {
     pub return_fields: Option<IndexMap<String, bool>>,
     pub sort: Option<SortCommand>,
     pub highlight: Option<HighlightCommand>,
+
+    #[serde(default)]
+    pub match_mode: MatchMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchMode {
+    #[default]
+    CrossFields, // term A anywhere AND term B anywhere
+    BestFields, // term A AND term B in the SAME field
 }
 
 #[derive(Debug, Clone, Deserialize)]

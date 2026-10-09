@@ -11,7 +11,7 @@ use core_index::analyzer::Analyzer;
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
 use core_index::search::{SearchIndex, SearchNumeric};
-use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse};
+use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse, MatchMode};
 use core_query::resolver::{FieldCtx, FieldQuery};
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
 use core_storage::document_projections::{id_path_to_strip, project_document};
@@ -258,6 +258,7 @@ impl ShardHandle {
         k: usize,
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
+        mactmode: MatchMode,
     ) -> (usize, Vec<SearchHit>) {
         if k == 0 {
             return (0, Vec::new());
@@ -269,7 +270,14 @@ impl ShardHandle {
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
 
         //main entry point for query yes
-        let hits = executor.rank(query, ctxs, k, restrict.as_ref(), include_array_groups);
+        let hits = executor.rank(
+            query,
+            ctxs,
+            k,
+            restrict.as_ref(),
+            include_array_groups,
+            mactmode,
+        );
 
         (hits.len(), hits)
     }
@@ -283,6 +291,7 @@ impl ShardHandle {
         k: usize,
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
+        mactmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
         let snapshot = self.shared.snapshot.get();
         let (total, hits) = self.rank_candidates(
@@ -293,6 +302,7 @@ impl ShardHandle {
             k,
             groups,
             include_array_groups,
+            mactmode,
         );
         Ok(ShardRankedResult {
             total,
@@ -312,6 +322,7 @@ impl ShardHandle {
         window: usize,
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
+        matchmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
         if window == 0 {
             return Ok(ShardRankedResult {
@@ -330,6 +341,7 @@ impl ShardHandle {
             window,
             groups,
             include_array_groups,
+            matchmode,
         );
         if candidates.is_empty() {
             return Ok(ShardRankedResult {

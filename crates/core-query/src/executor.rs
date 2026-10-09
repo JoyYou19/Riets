@@ -13,7 +13,7 @@ use std::{
 
 use ahash::{HashSet, HashSetExt};
 
-use core_protocol::command_reponse_definitions::Fuzziness;
+use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 use core_timing::timed;
 
 use crate::{
@@ -651,7 +651,6 @@ where
     }
 
     //passing xpaths: rank the query against every search field, merge additively
-    #[timed(search)]
     pub fn rank(
         &self,
         query: Option<&Query>,
@@ -659,6 +658,7 @@ where
         k: usize,
         restrict: Option<&HashSet<DocId>>,
         include_array_groups: bool,
+        match_mode: MatchMode,
     ) -> Vec<SearchHit> {
         if k == 0 || restrict.is_some_and(|d| d.is_empty()) || self.index.doc_range().is_none() {
             return Vec::new();
@@ -715,7 +715,7 @@ where
 
         let mut by_doc: HashMap<DocId, SearchHit> = HashMap::new();
 
-        //same-element relevance across array subfields (bonus on top of field search)
+        //same-element relevance across array subfields
         if include_array_groups {
             for hit in self.score_array_groups(query, restrict) {
                 by_doc
@@ -730,31 +730,68 @@ where
             }
         }
 
-        for &ctx in ctxs {
-            if !ctx.row_keyed {
-                if let Some(hits) = self.execute_top_k_retrieval(query, ctx.xpath, k, restrict) {
-                    for h in hits {
-                        let hit = wand_hit_to_search_hit(h);
-                        by_doc
-                            .entry(hit.doc_id)
-                            .and_modify(|e| {
-                                e.score += hit.score;
-                                e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                                e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                            })
-                            .or_insert(hit);
-                    }
-                    continue;
+        match match_mode {
+            MatchMode::BestFields => {
+                for &ctx in ctxs {
+                    self.rank_single_field(query, ctx, k, restrict, &mut by_doc);
                 }
             }
+            MatchMode::CrossFields => {
+                //row-keyed (array subfield) fields stay per-field: row -> doc resolve
+                for &ctx in ctxs {
+                    if ctx.row_keyed {
+                        self.rank_single_field(query, ctx, k, restrict, &mut by_doc);
+                    }
+                }
 
-            let EvalOutcome::Scored(scored) = self.evaluate(query, &[ctx], EvalMode::Rank) else {
-                continue;
-            };
+                //non-row-keyed fields: ONE cross-field evaluation over all of them
+                let plain: Vec<FieldCtx> = ctxs.iter().copied().filter(|c| !c.row_keyed).collect();
+                if !plain.is_empty() {
+                    if let EvalOutcome::Scored(scored) =
+                        self.evaluate(query, &plain, EvalMode::Rank)
+                    {
+                        for p in scored {
+                            if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
+                                continue;
+                            }
+                            let hit = SearchHit {
+                                doc_id: p.doc_id,
+                                matched_terms: p.matched_terms,
+                                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                                distance_factor: p.density,
+                                score: ((p.score as f32) / 1000.0) * p.density,
+                            };
+                            by_doc
+                                .entry(p.doc_id)
+                                .and_modify(|e| {
+                                    e.score += hit.score;
+                                    e.matched_terms =
+                                        e.matched_terms.saturating_add(hit.matched_terms);
+                                    e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                                })
+                                .or_insert(hit);
+                        }
+                    }
+                }
+            }
+        }
 
-            //row-keyed field: resolve row -> doc, keep the best element per doc
-            if ctx.row_keyed {
-                for hit in self.resolve_group_hits(scored, restrict) {
+        top_k_from_hits(by_doc.into_values(), k)
+    }
+
+    //per-field ranking: one ctx at a time (best_fields arm + row-keyed cross_fields arm)
+    fn rank_single_field(
+        &self,
+        query: &Query,
+        ctx: FieldCtx,
+        k: usize,
+        restrict: Option<&HashSet<DocId>>,
+        by_doc: &mut HashMap<DocId, SearchHit>,
+    ) {
+        if !ctx.row_keyed {
+            if let Some(hits) = self.execute_top_k_retrieval(query, ctx.xpath, k, restrict) {
+                for h in hits {
+                    let hit = wand_hit_to_search_hit(h);
                     by_doc
                         .entry(hit.doc_id)
                         .and_modify(|e| {
@@ -764,22 +801,19 @@ where
                         })
                         .or_insert(hit);
                 }
-                continue;
+                return;
             }
+        }
 
-            for p in scored {
-                if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
-                    continue;
-                }
-                let hit = SearchHit {
-                    doc_id: p.doc_id,
-                    matched_terms: p.matched_terms,
-                    weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
-                    distance_factor: p.density,
-                    score: ((p.score as f32) / 1000.0) * p.density,
-                };
+        let EvalOutcome::Scored(scored) = self.evaluate(query, &[ctx], EvalMode::Rank) else {
+            return;
+        };
+
+        //row-keyed field: resolve row -> doc, keep the best element per doc
+        if ctx.row_keyed {
+            for hit in self.resolve_group_hits(scored, restrict) {
                 by_doc
-                    .entry(p.doc_id)
+                    .entry(hit.doc_id)
                     .and_modify(|e| {
                         e.score += hit.score;
                         e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
@@ -787,9 +821,29 @@ where
                     })
                     .or_insert(hit);
             }
+            return;
         }
 
-        top_k_from_hits(by_doc.into_values(), k)
+        for p in scored {
+            if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
+                continue;
+            }
+            let hit = SearchHit {
+                doc_id: p.doc_id,
+                matched_terms: p.matched_terms,
+                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                distance_factor: p.density,
+                score: ((p.score as f32) / 1000.0) * p.density,
+            };
+            by_doc
+                .entry(p.doc_id)
+                .and_modify(|e| {
+                    e.score += hit.score;
+                    e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                    e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                })
+                .or_insert(hit);
+        }
     }
 
     //INFO: Norca sito hujnu centaas izprast kkur 1h, seit visam ir jabut safe, ne passaprotami,
