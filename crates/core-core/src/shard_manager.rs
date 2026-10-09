@@ -973,7 +973,7 @@ impl ShardManager {
 
         //INFO:                page * multiplier    min    max
         //WARN: results may change based on the "docs": x lol
-        let window = fetch.saturating_mul(50).clamp(100, 5_000);
+        let window = fetch.saturating_mul(50).clamp(1000, 5_000);
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
@@ -1000,7 +1000,7 @@ impl ShardManager {
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,
-                        fetch,
+                        window,
                         groups,
                         include_array_groups,
                     )
