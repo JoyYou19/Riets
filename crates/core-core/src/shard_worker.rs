@@ -268,7 +268,7 @@ impl ShardHandle {
         //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
 
-        //main entry point for query yes?
+        //main entry point for query yes
         let hits = executor.rank(query, ctxs, k, restrict.as_ref(), include_array_groups);
 
         (hits.len(), hits)
@@ -523,6 +523,7 @@ impl ShardHandle {
                 score: hits[i].score,
                 doc: project_document(&doc, policy, return_fields)
                     .map_err(|e| CorelamoError::Internal(e.to_string()))?,
+                highlights: Vec::new(),
             });
         }
 

@@ -340,10 +340,10 @@ pub async fn search_handler(
     )
     .map(String::from);
 
-    let docs: Vec<(String, f32, DocumentOut)> = hits
+    let docs: Vec<(String, f32, DocumentOut, Vec<String>)> = hits
         .0
         .into_iter()
-        .map(|hit| (hit.external_id, hit.score, hit.doc))
+        .map(|hit| (hit.external_id, hit.score, hit.doc, hit.highlights))
         .collect();
 
     let resp = SearchResponse::new(docs, strip_id, total_hits);

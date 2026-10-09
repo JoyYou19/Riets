@@ -89,3 +89,58 @@ pub fn candidates_within_one(term: &str) -> Vec<String> {
 
     out
 }
+
+pub fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut cur = vec![i; b.len() + 1];
+        for j in 1..=b.len() {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+#[derive(Debug, Clone)]
+pub struct FuzzyMatcher {
+    prefix: String,
+    suffix: String,
+    max_edits: u8,
+    candidates: Vec<String>,
+}
+
+impl FuzzyMatcher {
+    pub fn new(term: &str, max_edits: u8, prefix_length: usize) -> Self {
+        let term = term.to_lowercase();
+        let (prefix, suffix) = split_prefix(&term, prefix_length);
+        //INFO: for highlighting fuzzy resutls we sioply cant afford to check edits>1
+        let candidates = if max_edits == 1 {
+            candidates_within_one(suffix)
+        } else {
+            Vec::new()
+        };
+        Self {
+            prefix: prefix.to_string(),
+            suffix: suffix.to_string(),
+            max_edits,
+            candidates,
+        }
+    }
+
+    pub fn matches(&self, word: &str) -> bool {
+        if !word.starts_with(&self.prefix) {
+            return false;
+        }
+        let rest = &word[self.prefix.len()..];
+        match self.max_edits {
+            0 => rest == self.suffix,
+            1 => self.candidates.iter().any(|c| c == rest),
+            _ => levenshtein(rest, &self.suffix) <= self.max_edits as usize,
+        }
+    }
+}

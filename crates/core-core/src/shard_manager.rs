@@ -16,11 +16,15 @@ use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ShardId, XPathId, shard_of};
 use core_protocol::command_reponse_definitions::{
-    DidYouMeanRequest, LookupCommand, LookupResponse, SearchCommand, SortMode, TotalHits,
+    DidYouMeanRequest, HighlightFieldOptions, LookupCommand, LookupResponse, SearchCommand,
+    SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
+use core_query::highlight::{
+    HighlightMatcher, collect_highlight_matchers, field_texts, highlight_text,
+};
 use core_query::resolver::{
     compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
 };
@@ -967,6 +971,26 @@ impl ShardManager {
         let filters = compile_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
 
+        // resolve highlight fields once + collect query matchers once
+        let highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)> =
+            match &command.highlight {
+                Some(cmd) => {
+                    let mut fields = Vec::with_capacity(cmd.fields.len());
+                    for (name, opts) in &cmd.fields {
+                        let field = policy
+                            .field_by_path(name)
+                            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
+                        fields.push((field.full_path.clone(), opts.clone()));
+                    }
+                    let matchers = (*query)
+                        .as_ref()
+                        .map(|q| collect_highlight_matchers(q, &self.analyzer))
+                        .unwrap_or_default();
+                    Some((fields, matchers))
+                }
+                None => None,
+            };
+
         let sort_xpaths: Option<Arc<Vec<XPathId>>> = sorts
             .as_ref()
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
@@ -1114,6 +1138,29 @@ impl ShardManager {
         }
         if let Some(e) = first_err {
             return Err(e);
+        }
+
+        //populate highlights
+        if let Some((fields, matchers)) = &highlight {
+            for slot in &mut resolved {
+                let Some(hit) = slot else { continue };
+                let mut highlights = Vec::new();
+                if !matchers.is_empty() {
+                    if let Ok(value) = hit.doc.to_value(None) {
+                        for (full_path, opts) in fields {
+                            for text in field_texts(&value, full_path) {
+                                highlights.extend(highlight_text(
+                                    &text,
+                                    &self.analyzer,
+                                    matchers,
+                                    opts,
+                                ));
+                            }
+                        }
+                    }
+                }
+                hit.highlights = highlights;
+            }
         }
 
         let total_hits = TotalHits {

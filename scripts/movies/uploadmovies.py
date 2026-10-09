@@ -43,7 +43,7 @@ name = "name"
 kind = "Text"
 exact = true
 [fields.subfields.weight]
-min = 1
+min = 20
 max = 60
 
 [[fields.subfields]]
@@ -51,7 +51,7 @@ name = "surname"
 kind = "Text"
 exact = true
 [fields.subfields.weight]
-min = 1
+min = 20
 max = 60
 
 [[fields]]

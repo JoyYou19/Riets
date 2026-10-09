@@ -1,5 +1,12 @@
 use core_index::fuzzy::default_max_edits;
 //from abstract http text to our commands, useful for complex commands like search, retrieve....
+use crate::command_response_helpers::escape_json_text;
+use crate::document_out::DocumentOut;
+use crate::{
+    errors::{CorelamoError, DocFailure},
+    format::Format,
+};
+use core_index::fuzzy::levenshtein;
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -7,14 +14,6 @@ use serde::de::DeserializeOwned;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, json};
 use std::collections::BTreeMap;
-use strsim::levenshtein;
-
-use crate::command_response_helpers::escape_json_text;
-use crate::document_out::DocumentOut;
-use crate::{
-    errors::{CorelamoError, DocFailure},
-    format::Format,
-};
 
 //helper
 pub fn parse_json_command<T: DeserializeOwned>(body: &str) -> Result<T, CorelamoError> {
@@ -117,6 +116,48 @@ pub struct SearchCommand {
     pub offset: Option<usize>,
     pub return_fields: Option<IndexMap<String, bool>>,
     pub sort: Option<SortCommand>,
+    pub highlight: Option<HighlightCommand>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HighlightCommand {
+    pub fields: IndexMap<String, HighlightFieldOptions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HighlightFieldOptions {
+    #[serde(default = "default_fragment_size")]
+    pub fragment_size: usize,
+    #[serde(default = "default_number_of_fragments")]
+    pub number_of_fragments: usize,
+    #[serde(default = "default_pre_tags")]
+    pub pre_tags: Vec<String>,
+    #[serde(default = "default_post_tags")]
+    pub post_tags: Vec<String>,
+    #[serde(default)]
+    pub sentence: bool,
+}
+
+fn default_fragment_size() -> usize {
+    150
+}
+fn default_number_of_fragments() -> usize {
+    3
+}
+
+// fn default_pre_tags() -> Vec<String> {
+//     vec!["<em>".to_string()]
+// }
+// fn default_post_tags() -> Vec<String> {
+//     vec!["</em>".to_string()]
+// }
+
+fn default_pre_tags() -> Vec<String> {
+    vec!["======".to_string()]
+}
+fn default_post_tags() -> Vec<String> {
+    vec!["======".to_string()]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -126,7 +167,7 @@ pub enum SortMode {
     //the one with the ratios
     Blend,
 
-    //strict first then second then third
+    //strict first then second then third real primitive shit
     Strict,
 }
 
@@ -248,14 +289,14 @@ impl Default for TotalHits {
 }
 
 pub struct SearchResponse {
-    docs: Vec<(String, f32, DocumentOut)>,
+    docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
     strip_id: Option<String>,
     total_hits: TotalHits,
 }
 
 impl SearchResponse {
     pub fn new(
-        docs: Vec<(String, f32, DocumentOut)>,
+        docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
         strip_id: Option<String>,
         total_hits: TotalHits,
     ) -> Self {
@@ -272,35 +313,37 @@ impl ResponseData for SearchResponse {
         let items: Vec<OwnedValue> = self
             .docs
             .iter()
-            .map(|(id, score, doc)| {
+            .map(|(id, score, doc, highlights)| {
                 let data = doc.to_value(self.strip_id.as_deref())?;
-                Ok(json!({ "id": id, "score": score, "data": data }))
+                Ok(json!({ "id": id, "score": score, "data": data, "highlights": highlights }))
             })
             .collect::<Result<_, CorelamoError>>()?;
         Ok(OwnedValue::Array(Box::new(items)))
     }
 
     fn to_raw_json(&self) -> Option<Vec<u8>> {
-        if self.strip_id.is_some() {
-            return None;
-        }
-        let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64));
-        out.push(b'[');
-        for (i, (id, score, doc)) in self.docs.iter().enumerate() {
-            let bytes = doc.raw_bytes()?;
-            if i > 0 {
-                out.push(b',');
-            }
-            out.extend_from_slice(b"{\"id\":\"");
-            out.extend_from_slice(escape_json_text(id).as_bytes());
-            out.extend_from_slice(b"\",\"score\":");
-            out.extend_from_slice(score.to_string().as_bytes());
-            out.extend_from_slice(b",\"data\":");
-            out.extend_from_slice(bytes);
-            out.push(b'}');
-        }
-        out.push(b']');
-        Some(out)
+        return None;
+        todo!();
+        // if self.strip_id.is_some() {
+        //     return None;
+        // }
+        // let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64));
+        // out.push(b'[');
+        // for (i, (id, score, doc)) in self.docs.iter().enumerate() {
+        //     let bytes = doc.raw_bytes()?;
+        //     if i > 0 {
+        //         out.push(b',');
+        //     }
+        //     out.extend_from_slice(b"{\"id\":\"");
+        //     out.extend_from_slice(escape_json_text(id).as_bytes());
+        //     out.extend_from_slice(b"\",\"score\":");
+        //     out.extend_from_slice(score.to_string().as_bytes());
+        //     out.extend_from_slice(b",\"data\":");
+        //     out.extend_from_slice(bytes);
+        //     out.push(b'}');
+        // }
+        // out.push(b']');
+        // Some(out)
     }
 
     fn extra_fields(&self) -> Vec<(String, OwnedValue)> {

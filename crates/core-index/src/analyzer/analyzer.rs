@@ -118,6 +118,10 @@ impl Analyzer {
         })
     }
 
+    pub fn is_word_char(&self, c: char) -> bool {
+        c.is_alphanumeric() || self.literal_symbols.contains(&c)
+    }
+
     //For search same thing like spider-man spiderman the same thing is in index so it would match
     #[timed(search)]
     pub fn analyze_query(&self, input: &str) -> Vec<Token> {
@@ -130,6 +134,7 @@ impl Analyzer {
         self.analyze(&canonical)
     }
 }
+
 #[cfg(test)]
 mod cached_stemmer_equivalence {
     use super::*;
