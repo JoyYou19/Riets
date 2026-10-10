@@ -163,11 +163,19 @@ pub fn order_blended(
     let blends: Vec<f32> = items
         .iter()
         .map(|(hit, keys)| {
-            let relevance = if rel_best > 0.0 {
-                (hit.score / rel_best).clamp(0.0, 1.0)
-            } else {
+            //if the relevance of a document if FAR less than the besat one we dont let some numeric
+            //sort to somehow bring it up
+            let relevance = if rel_best > 0.0 && hit.score < rel_best * 0.3 {
                 0.0
+            } else {
+                (hit.score / rel_best).clamp(0.0, 1.0)
             };
+
+            // let relevance = if rel_best > 0.0 {
+            //     (hit.score / rel_best).clamp(0.0, 1.0)
+            // } else {
+            //     0.0
+            // };
             let mut field_sum = 0.0f32;
             for (index, spec) in specs.iter().enumerate() {
                 let component = match keys[index] {
