@@ -518,8 +518,6 @@ impl MemIndex {
             }
         }
         self.array_row_index.merge_from(&newer.array_row_index);
-
-        self.array_row_index.merge_from(&newer.array_row_index);
         self.estimated_bytes += newer.estimated_bytes;
 
         if let Some((min, max)) = newer_doc_range {

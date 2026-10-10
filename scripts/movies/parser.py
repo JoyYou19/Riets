@@ -7,7 +7,7 @@ import random
 
 INPUT_FILE = "movies.json"
 OUTPUT_DIR = "./movie_chunks"
-CHUNK_SIZE = 10000  # 10000 movies per file
+CHUNK_SIZE = 100  # 10000 movies per file
 
 
 def flatten_value(value):

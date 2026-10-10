@@ -106,19 +106,24 @@ fn resolve_search_fields(
             .field_by_path(name)
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
 
-        if !field.searchable() && !needs_exact {
-            return Err(CorelamoError::InvalidData(format!(
-                "field '{name}' is not searchable (add 'searchable = true' to its policy and reindex the database)"
-            )));
-        }
-        if needs_exact && field.exact_xpath(policy).is_none() {
-            return Err(CorelamoError::InvalidData(format!(
-                "field '{name}' has no exact index (add 'exact = true' to its policy)"
-            )));
-        }
+        let mut leaves: Vec<&FieldPolicy> = Vec::new();
+        field.collect_leaves(&mut leaves);
 
-        out.push(field_ctx(field, policy));
+        for leaf in leaves {
+            if !leaf.searchable() && !needs_exact {
+                return Err(CorelamoError::InvalidData(format!(
+                    "field '{name}' is not searchable ..."
+                )));
+            }
+            if needs_exact && leaf.exact_xpath(policy).is_none() {
+                return Err(CorelamoError::InvalidData(format!(
+                    "field '{name}' has no exact index ..."
+                )));
+            }
+            out.push(field_ctx(leaf, policy));
+        }
     }
+
     Ok(out)
 }
 

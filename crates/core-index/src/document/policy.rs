@@ -124,7 +124,7 @@ impl FieldPolicy {
     }
 
     // Yields the field itself if it's an indexed leaf, else recurses into Array subfields.
-    fn collect_leaves<'a>(&'a self, out: &mut Vec<&'a FieldPolicy>) {
+    pub fn collect_leaves<'a>(&'a self, out: &mut Vec<&'a FieldPolicy>) {
         if self.kind == FieldKind::Struct {
             for sub in &self.subfields {
                 sub.collect_leaves(out);
