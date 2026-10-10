@@ -126,7 +126,7 @@ impl ShardManager {
         self.all_fields.read().clone()
     }
 
-    //peak name
+    //peak name ik
     #[timed(shard_manager_doc_modifying)]
     fn update_all_fields_from_fields(
         &self,
