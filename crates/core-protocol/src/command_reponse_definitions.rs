@@ -344,28 +344,35 @@ impl ResponseData for SearchResponse {
     }
 
     fn to_raw_json(&self) -> Option<Vec<u8>> {
-        return None;
-        todo!();
-        // if self.strip_id.is_some() {
-        //     return None;
-        // }
-        // let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64));
-        // out.push(b'[');
-        // for (i, (id, score, doc)) in self.docs.iter().enumerate() {
-        //     let bytes = doc.raw_bytes()?;
-        //     if i > 0 {
-        //         out.push(b',');
-        //     }
-        //     out.extend_from_slice(b"{\"id\":\"");
-        //     out.extend_from_slice(escape_json_text(id).as_bytes());
-        //     out.extend_from_slice(b"\",\"score\":");
-        //     out.extend_from_slice(score.to_string().as_bytes());
-        //     out.extend_from_slice(b",\"data\":");
-        //     out.extend_from_slice(bytes);
-        //     out.push(b'}');
-        // }
-        // out.push(b']');
-        // Some(out)
+        if self.strip_id.is_some() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64) + 32);
+        out.push(b'[');
+        for (i, (id, score, doc, highlights)) in self.docs.iter().enumerate() {
+            let bytes = doc.raw_bytes()?;
+            if i > 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(b"{\"id\":\"");
+            out.extend_from_slice(escape_json_text(id).as_bytes());
+            out.extend_from_slice(b"\",\"score\":");
+            out.extend_from_slice(score.to_string().as_bytes());
+            out.extend_from_slice(b",\"data\":");
+            out.extend_from_slice(bytes);
+            out.extend_from_slice(b",\"highlights\":[");
+            for (j, h) in highlights.iter().enumerate() {
+                if j > 0 {
+                    out.push(b',');
+                }
+                out.push(b'"');
+                out.extend_from_slice(escape_json_text(h).as_bytes());
+                out.push(b'"');
+            }
+            out.extend_from_slice(b"]}");
+        }
+        out.push(b']');
+        Some(out)
     }
 
     fn extra_fields(&self) -> Vec<(String, OwnedValue)> {

@@ -163,7 +163,6 @@ pub fn order_blended(
     let blends: Vec<f32> = items
         .iter()
         .map(|(hit, keys)| {
-            //filter-only / MatchAll (score 0): relevance is flat, so sort purely by the fields
             let relevance = if hit.score > 0.0 { hit.score } else { 1.0 };
 
             let mut boost = 1.0f32;
