@@ -157,19 +157,19 @@ fn default_number_of_fragments() -> usize {
     3
 }
 
-// fn default_pre_tags() -> Vec<String> {
-//     vec!["<em>".to_string()]
-// }
-// fn default_post_tags() -> Vec<String> {
-//     vec!["</em>".to_string()]
-// }
-
 fn default_pre_tags() -> Vec<String> {
-    vec!["======".to_string()]
+    vec!["<em>".to_string()]
 }
 fn default_post_tags() -> Vec<String> {
-    vec!["======".to_string()]
+    vec!["</em>".to_string()]
 }
+
+// fn default_pre_tags() -> Vec<String> {
+//     vec!["======".to_string()]
+// }
+// fn default_post_tags() -> Vec<String> {
+//     vec!["======".to_string()]
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
