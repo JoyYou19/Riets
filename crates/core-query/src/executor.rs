@@ -4,10 +4,11 @@ use core_index::{
         DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec,
     },
     posting::{Posting, PostingList, ops::intersection},
-    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
+    search::{SearchIndex, SearchNumeric, SearchStats},
     types::{DocId, XPathId},
 };
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{BinaryHeap, HashMap, hash_map::Entry},
     u32,
@@ -22,9 +23,10 @@ use crate::{
     ScoredPosting, SearchHit, TopHit,
     ast::Query,
     corpus_stats::{CorpusStats, FieldTotals, LeafKey, ScoringStats},
+    prepared::PreparedQuery,
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
     scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
-    wand::{FieldTerms, WandHit, conjunctive_top_k_multi_field, wand_top_k_multi_field},
+    wand::{FieldTerms, TermRef, WandHit, conjunctive_top_k_multi_field, wand_top_k_multi_field},
 };
 
 #[derive(Debug, Clone)]
@@ -68,10 +70,17 @@ pub enum EvalOutcome {
 
 // One leaf query read in one field: the key its statistics are filed under, the field it was
 // looked up in (the exact field for an exact match) and the postings it found.
-struct Leaf {
+struct Leaf<'a> {
     key: LeafKey,
     xpath: XPathId,
-    postings: PostingList,
+    postings: Cow<'a, PostingList>,
+}
+
+// The postings of the terms of a flat query in one field, with the document frequency each is
+// scored with.
+struct FieldLists<'a> {
+    xpath: XPathId,
+    terms: Vec<(Cow<'a, PostingList>, u32)>,
 }
 
 // Turns the AST into a PostingList or SearchHit
@@ -90,6 +99,9 @@ where
     // Statistics of the whole search. Without them every score uses this index's own, which is
     // right when it holds all the documents.
     corpus: Option<&'a CorpusStats>,
+
+    // Posting lists this search has already read, so they are not read again.
+    prepared: Option<&'a PreparedQuery>,
 }
 
 impl<'a, I> QueryExecutor<'a, I>
@@ -119,12 +131,19 @@ where
             analyzer,
             array_groups,
             corpus: None,
+            prepared: None,
         }
     }
 
     /// Scores with the statistics of the whole search instead of this index's own.
     pub fn with_corpus(mut self, corpus: &'a CorpusStats) -> Self {
         self.corpus = Some(corpus);
+        self
+    }
+
+    /// Reads the posting lists `prepared` already holds from it instead of from the index.
+    pub fn with_prepared(mut self, prepared: &'a PreparedQuery) -> Self {
+        self.prepared = Some(prepared);
         self
     }
 
@@ -141,20 +160,31 @@ where
             .unwrap_or(local as u32)
     }
 
-    #[timed(search)]
-    fn fetch_term_postings(&self, terms: &[&str], xpath: XPathId) -> Vec<TermPostings> {
-        terms
+    fn fetch_field_lists(&self, terms: &[&str], xpaths: &[XPathId]) -> Vec<FieldLists<'a>> {
+        xpaths
             .iter()
-            .map(|term| {
-                let mut postings = self.index.lookup_term(term, xpath);
-                postings.doc_freq = self.leaf_doc_freq(
-                    xpath,
-                    &LeafKey::Term((*term).to_string()),
-                    postings.doc_freq as usize,
-                );
-                postings
+            .map(|&xpath| FieldLists {
+                xpath,
+                terms: terms
+                    .iter()
+                    .map(|term| self.fetch_term_list(term, xpath))
+                    .collect(),
             })
             .collect()
+    }
+
+    #[timed(search)]
+    fn fetch_term_list(&self, term: &str, xpath: XPathId) -> (Cow<'a, PostingList>, u32) {
+        let key = LeafKey::Term(term.to_string());
+        let (postings, local_doc_freq) = match self.prepared.and_then(|p| p.list(xpath, &key)) {
+            Some(list) => (Cow::Borrowed(list), list.len() as u32),
+            None => {
+                let found = self.index.lookup_term(term, xpath);
+                (Cow::Owned(found.postings), found.doc_freq)
+            }
+        };
+        let doc_freq = self.leaf_doc_freq(xpath, &key, local_doc_freq as usize);
+        (postings, doc_freq)
     }
 
     //WAND/conjunctive fast path for flat term lists (skips the general traversal)
@@ -167,8 +197,13 @@ where
     ) -> Option<Vec<WandHit>> {
         //disjunctive flat-term cases (Term / Wand / Or) -> additive WAND
         if let Some(terms) = additive_terms(query) {
-            let fields = self.fetch_field_terms(&terms, xpaths);
-            return Some(wand_top_k_multi_field(&self.stats(), &fields, k, restrict));
+            let lists = self.fetch_field_lists(&terms, xpaths);
+            return Some(wand_top_k_multi_field(
+                &self.stats(),
+                &field_terms(&lists),
+                k,
+                restrict,
+            ));
         }
 
         //conjunctive flat-term case (And) -> conjunctive top-k
@@ -181,10 +216,10 @@ where
                         _ => None,
                     })
                     .collect();
-                let fields = self.fetch_field_terms(&terms, xpaths);
+                let lists = self.fetch_field_lists(&terms, xpaths);
                 return Some(conjunctive_top_k_multi_field(
                     &self.stats(),
-                    &fields,
+                    &field_terms(&lists),
                     k,
                     restrict,
                 ));
@@ -192,16 +227,6 @@ where
         }
 
         None
-    }
-
-    fn fetch_field_terms(&self, terms: &[&str], xpaths: &[XPathId]) -> Vec<FieldTerms> {
-        xpaths
-            .iter()
-            .map(|&xpath| FieldTerms {
-                xpath,
-                terms: self.fetch_term_postings(terms, xpath),
-            })
-            .collect()
     }
 
     //Lookup a term
@@ -450,43 +475,38 @@ where
     }
 
     /// What a leaf query reads in one field.
-    fn leaf(&self, query: &Query, ctx: FieldCtx) -> Option<Leaf> {
-        let (key, xpath, postings) = match query {
-            Query::Term(v) => (
-                LeafKey::Term(v.clone()),
-                ctx.xpath,
-                self.execute_term(v, ctx.xpath).unwrap_or_default(),
+    fn leaf(&self, query: &Query, ctx: FieldCtx) -> Option<Leaf<'a>> {
+        let (key, xpath) = match query {
+            Query::Term(v) => (LeafKey::Term(v.clone()), ctx.xpath),
+            Query::Prefix(v) => (LeafKey::Prefix(v.clone()), ctx.xpath),
+            Query::Wildcard(p) => (LeafKey::Wildcard(p.clone()), ctx.xpath),
+            Query::Phrase(terms) => (LeafKey::Phrase(terms.clone()), ctx.xpath),
+            Query::Exact(v) => (
+                LeafKey::Exact(v.clone()),
+                ctx.exact_xpath.unwrap_or(ctx.xpath),
             ),
-            Query::Prefix(v) => (
-                LeafKey::Prefix(v.clone()),
-                ctx.xpath,
-                self.execute_prefix(v, ctx.xpath).unwrap_or_default(),
-            ),
-            Query::Wildcard(p) => (
-                LeafKey::Wildcard(p.clone()),
-                ctx.xpath,
-                self.execute_wildcard(p, ctx.xpath),
-            ),
-            Query::Phrase(terms) => (
-                LeafKey::Phrase(terms.clone()),
-                ctx.xpath,
-                self.execute_phrase(terms, ctx.xpath),
-            ),
-            Query::Exact(v) => {
-                let xpath = ctx.exact_xpath.unwrap_or(ctx.xpath);
-                (
-                    LeafKey::Exact(v.clone()),
-                    xpath,
-                    self.execute_exact(v, xpath),
-                )
-            }
             _ => return None,
+        };
+        let postings = match self.prepared.and_then(|p| p.list(xpath, &key)) {
+            Some(list) => Cow::Borrowed(list),
+            None => Cow::Owned(self.fetch_leaf(query, xpath)),
         };
         Some(Leaf {
             key,
             xpath,
             postings,
         })
+    }
+
+    fn fetch_leaf(&self, query: &Query, xpath: XPathId) -> PostingList {
+        match query {
+            Query::Term(v) => self.execute_term(v, xpath).unwrap_or_default(),
+            Query::Prefix(v) => self.execute_prefix(v, xpath).unwrap_or_default(),
+            Query::Wildcard(p) => self.execute_wildcard(p, xpath),
+            Query::Phrase(terms) => self.execute_phrase(terms, xpath),
+            Query::Exact(v) => self.execute_exact(v, xpath),
+            _ => PostingList::default(),
+        }
     }
 
     fn eval_leaf(&self, query: &Query, ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
@@ -689,40 +709,41 @@ where
             .collect()
     }
 
-    /// What this index contributes to the statistics of a search: the totals of every field the
-    /// query is scored in and the document frequency of every leaf in each of them.
+    /// Reads what the query needs from this index, once: the posting list of every leaf in every
+    /// field it is scored in, and from them this index's share of the statistics of the search
+    /// (the totals of those fields and the document frequency of every leaf).
     ///
-    /// Adding these up over all shards gives the statistics of the whole database, which every
-    /// shard then scores with (`with_corpus`).
-    pub fn local_stats(
+    /// Adding the statistics of all shards up gives those of the whole database, which every
+    /// shard then scores with (`with_corpus`), reading the lists from here (`with_prepared`).
+    pub fn prepare(
         &self,
         query: Option<&Query>,
         ctxs: &[FieldCtx],
         include_array_groups: bool,
-    ) -> CorpusStats {
-        let mut stats = CorpusStats::new();
+    ) -> PreparedQuery {
+        let mut prepared = PreparedQuery::default();
         let Some(query) = query else {
-            return stats;
+            return prepared;
         };
 
         for &ctx in ctxs {
-            self.collect_stats(query, ctx, &mut stats);
+            self.prepare_leaves(query, ctx, &mut prepared);
         }
         if include_array_groups {
             for group in &self.array_groups {
                 for &ctx in group {
-                    self.collect_stats(query, ctx, &mut stats);
+                    self.prepare_leaves(query, ctx, &mut prepared);
                 }
             }
         }
-        stats
+        prepared
     }
 
-    fn collect_stats(&self, query: &Query, ctx: FieldCtx, out: &mut CorpusStats) {
+    fn prepare_leaves(&self, query: &Query, ctx: FieldCtx, out: &mut PreparedQuery) {
         match query {
             Query::Wand(parts) | Query::Or(parts) | Query::And(parts) => {
                 for part in parts {
-                    self.collect_stats(part, ctx, out);
+                    self.prepare_leaves(part, ctx, out);
                 }
             }
             _ => {
@@ -734,7 +755,7 @@ where
                             total_doc_len: self.index.total_doc_len(leaf.xpath),
                         },
                     );
-                    out.insert_doc_freq(leaf.xpath, leaf.key, leaf.postings.len() as u64);
+                    out.insert_leaf(leaf.xpath, leaf.key, leaf.postings.into_owned());
                 }
             }
         }
@@ -1198,6 +1219,24 @@ fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
         distance_factor: 1.0,
         score: (hit.score as f32) / 1000.0,
     }
+}
+
+fn field_terms<'l>(lists: &'l [FieldLists<'_>]) -> Vec<FieldTerms<'l>> {
+    lists
+        .iter()
+        .map(|field| FieldTerms {
+            xpath: field.xpath,
+            terms: field
+                .terms
+                .iter()
+                .map(|(postings, doc_freq)| TermRef {
+                    postings,
+                    doc_freq: *doc_freq,
+                    max_weight: postings.max_weight(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 fn additive_terms(query: &Query) -> Option<Vec<&str>> {

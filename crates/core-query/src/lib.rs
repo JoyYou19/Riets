@@ -4,6 +4,7 @@ pub mod executor;
 pub use executor::{QueryExecutor, fuzzable_words, fuzzy_options, rank_and_cap};
 
 pub mod highlight;
+mod prepared;
 pub mod query_string_parser;
 pub mod resolver;
 mod scored_posting;
@@ -13,6 +14,7 @@ pub mod wand;
 
 pub use ast::Query;
 pub use corpus_stats::CorpusStats;
+pub use prepared::PreparedQuery;
 pub use scored_posting::ScoredPosting;
 pub use search_hit::SearchHit;
 pub use search_hit::TopHit;

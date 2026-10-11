@@ -18,10 +18,17 @@ use crate::scorer::{bm25_score_scaled, bm25_upper_bound};
 // The upper bound is what allows WAND to prove that some documents simply wont be looked at cause
 // they are simply too shit
 //teoretical CLAUDE test
+/// One query term's postings in a field, borrowed from wherever they were read.
+pub struct TermRef<'a> {
+    pub postings: &'a PostingList,
+    pub doc_freq: u32,
+    pub max_weight: u16,
+}
+
 /// Postings for every query term within one field.
-pub struct FieldTerms {
+pub struct FieldTerms<'a> {
     pub xpath: XPathId,
-    pub terms: Vec<TermPostings>,
+    pub terms: Vec<TermRef<'a>>,
 }
 
 struct MultiFieldTerm<'a> {
@@ -36,7 +43,7 @@ struct MultiFieldTerm<'a> {
 #[timed(search)]
 pub fn wand_top_k_multi_field<S: SearchStats>(
     stats: &S,
-    fields: &[FieldTerms],
+    fields: &[FieldTerms<'_>],
     k: usize,
     restrict: Option<&HashSet<DocId>>,
 ) -> Vec<WandHit> {
@@ -53,7 +60,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
     for (field_index, field) in fields.iter().enumerate() {
         let doc_count = field_stats[field_index].1;
         for term in &field.terms {
-            let cursor = PostingCursor::new(&term.postings);
+            let cursor = PostingCursor::new(term.postings);
             if cursor.is_exhausted() {
                 continue;
             }
@@ -444,7 +451,7 @@ struct FieldConjunction<'a> {
 
 impl<'a> FieldConjunction<'a> {
     /// `None` when the field cannot match: no terms, or a term without postings.
-    fn new<S: SearchStats>(stats: &S, field: &'a FieldTerms) -> Option<Self> {
+    fn new<S: SearchStats>(stats: &S, field: &FieldTerms<'a>) -> Option<Self> {
         if field.terms.is_empty() || field.terms.iter().any(|term| term.postings.is_empty()) {
             return None;
         }
@@ -457,9 +464,7 @@ impl<'a> FieldConjunction<'a> {
             terms: field
                 .terms
                 .iter()
-                .map(|term| {
-                    WandTerm::new(&term.postings, term.doc_freq, term.max_weight, doc_count)
-                })
+                .map(|term| WandTerm::new(term.postings, term.doc_freq, term.max_weight, doc_count))
                 .collect(),
             started: false,
         })
@@ -535,7 +540,7 @@ impl<'a> FieldConjunction<'a> {
 #[timed(search)]
 pub fn conjunctive_top_k_multi_field<S: SearchStats>(
     stats: &S,
-    fields: &[FieldTerms],
+    fields: &[FieldTerms<'_>],
     k: usize,
     restrict: Option<&HashSet<DocId>>,
 ) -> Vec<WandHit> {

@@ -32,7 +32,7 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_query::{CorpusStats, Query, QueryExecutor, SearchHit, fuzzable_words};
+use core_query::{CorpusStats, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
@@ -45,15 +45,16 @@ pub struct ShardRankedResult {
 }
 
 /// A shard's side of one search: the snapshot every step of the search reads, so the statistics
-/// and the ranking cannot see different writes, and what the shard adds to the statistics.
+/// and the ranking cannot see different writes, and what the shard read from it for the query.
 pub struct PreparedShardSearch {
     snapshot: Arc<IndexSnapshot>,
-    stats: CorpusStats,
+    prepared: PreparedQuery,
 }
 
 impl PreparedShardSearch {
+    /// What this shard adds to the statistics every shard scores the query with.
     pub fn stats(&self) -> &CorpusStats {
-        &self.stats
+        self.prepared.stats()
     }
 }
 
@@ -261,8 +262,8 @@ impl ShardHandle {
             .collect())
     }
 
-    /// Pins the snapshot the search reads and, when `collect_stats` is set, gathers what this shard
-    /// adds to the statistics every shard scores the query with.
+    /// Pins the snapshot the search reads and reads the query from it once: the posting lists
+    /// ranking needs, and from them what this shard adds to the statistics of the search.
     #[timed(search)]
     pub fn prepare_search(
         &self,
@@ -270,26 +271,22 @@ impl ShardHandle {
         ctxs: &[FieldCtx],
         groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
         include_array_groups: bool,
-        collect_stats: bool,
     ) -> PreparedShardSearch {
         let snapshot = self.shared.snapshot.get();
-        let stats = if collect_stats {
-            QueryExecutor::new(&*snapshot, &self.analyzer, groups).local_stats(
-                query,
-                ctxs,
-                include_array_groups,
-            )
-        } else {
-            CorpusStats::new()
-        };
-        PreparedShardSearch { snapshot, stats }
+        let prepared = QueryExecutor::new(&*snapshot, &self.analyzer, groups).prepare(
+            query,
+            ctxs,
+            include_array_groups,
+        );
+        PreparedShardSearch { snapshot, prepared }
     }
 
     //helper for the ranking
     fn rank_candidates(
         &self,
         snapshot: &IndexSnapshot,
-        corpus: Option<&CorpusStats>,
+        prepared: &PreparedQuery,
+        corpus: &CorpusStats,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -302,11 +299,9 @@ impl ShardHandle {
             return (0, Vec::new());
         }
 
-        let executor = QueryExecutor::new(snapshot, &self.analyzer, groups);
-        let executor = match corpus {
-            Some(corpus) => executor.with_corpus(corpus),
-            None => executor,
-        };
+        let executor = QueryExecutor::new(snapshot, &self.analyzer, groups)
+            .with_corpus(corpus)
+            .with_prepared(prepared);
 
         //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
@@ -328,7 +323,7 @@ impl ShardHandle {
     pub fn rank_top_k(
         &self,
         prepared: &PreparedShardSearch,
-        corpus: Option<&CorpusStats>,
+        corpus: &CorpusStats,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -340,6 +335,7 @@ impl ShardHandle {
         let snapshot = &prepared.snapshot;
         let (total, hits) = self.rank_candidates(
             snapshot,
+            &prepared.prepared,
             corpus,
             query,
             filters,
@@ -361,7 +357,7 @@ impl ShardHandle {
     pub fn rank_sorted(
         &self,
         prepared: &PreparedShardSearch,
-        corpus: Option<&CorpusStats>,
+        corpus: &CorpusStats,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -382,6 +378,7 @@ impl ShardHandle {
         let snapshot = &prepared.snapshot;
         let (total, candidates) = self.rank_candidates(
             snapshot,
+            &prepared.prepared,
             corpus,
             query,
             filters,

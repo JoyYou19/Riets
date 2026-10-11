@@ -1033,39 +1033,22 @@ impl ShardManager {
         let window = fetch.saturating_mul(50).clamp(1000, 5_000);
 
         //Scores must not depend on which shard a document is in, so every shard scores with the
-        //statistics of all shards together: first every shard reports its own, then all of them
-        //rank. A single shard already holds everything
-        let collect_stats = self.shards.len() > 1 && query.is_some();
+        //statistics of all shards together: first every shard reads the query and reports its
+        //own statistics, then all of them rank
         let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
-        let mut corpus = CorpusStats::new();
         let mut set = JoinSet::new();
         for (index, handle) in self.shards.iter().enumerate() {
             let handle = handle.clone();
             let query = Arc::clone(&query);
             let ctxs = Arc::clone(&ctxs);
             let groups = groups.clone();
-            if collect_stats {
-                set.spawn_blocking(move || {
-                    let shard = handle.prepare_search(
-                        (*query).as_ref(),
-                        &ctxs,
-                        groups,
-                        include_array_groups,
-                        true,
-                    );
-                    (index, shard)
-                });
-            } else {
-                let shard = handle.prepare_search(
-                    (*query).as_ref(),
-                    &ctxs,
-                    groups,
-                    include_array_groups,
-                    false,
-                );
-                prepared[index] = Some(Arc::new(shard));
-            }
+            set.spawn_blocking(move || {
+                let shard =
+                    handle.prepare_search((*query).as_ref(), &ctxs, groups, include_array_groups);
+                (index, shard)
+            });
         }
+        let mut corpus = CorpusStats::new();
         while let Some(res) = set.join_next().await {
             match res {
                 Ok((index, shard)) => {
@@ -1079,7 +1062,7 @@ impl ShardManager {
                 }
             }
         }
-        let corpus = collect_stats.then(|| Arc::new(corpus));
+        let corpus = Arc::new(corpus);
 
         let mut set = JoinSet::new();
         for (handle, prepared) in self.shards.iter().zip(prepared) {
@@ -1096,7 +1079,7 @@ impl ShardManager {
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
                     handle.rank_sorted(
                         &prepared,
-                        corpus.as_deref(),
+                        &corpus,
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,
@@ -1109,7 +1092,7 @@ impl ShardManager {
                 } else {
                     handle.rank_top_k(
                         &prepared,
-                        corpus.as_deref(),
+                        &corpus,
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,

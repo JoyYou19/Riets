@@ -202,14 +202,23 @@ fn search(
     mode: MatchMode,
 ) -> Searched {
     let ctxs = ctxs();
+    let prepared: Vec<_> = shards
+        .iter()
+        .map(|shard| {
+            QueryExecutor::new(&shard.snapshot, analyzer, Vec::new()).prepare(
+                Some(query),
+                &ctxs,
+                false,
+            )
+        })
+        .collect();
     let mut corpus = CorpusStats::new();
-    for shard in shards {
-        let executor = QueryExecutor::new(&shard.snapshot, analyzer, Vec::new());
-        corpus.merge(&executor.local_stats(Some(query), &ctxs, false));
+    for shard in &prepared {
+        corpus.merge(shard.stats());
     }
 
     let mut merged = Vec::new();
-    for shard in shards {
+    for (shard, prepared) in shards.iter().zip(&prepared) {
         let shard_restrict: Option<HashSet<DocId>> = restrict.map(|sources| {
             shard
                 .sources
@@ -218,7 +227,8 @@ fn search(
                 .map(|(&doc_id, _)| doc_id)
                 .collect()
         });
-        let executor = QueryExecutor::new(&shard.snapshot, analyzer, Vec::new());
+        let executor =
+            QueryExecutor::new(&shard.snapshot, analyzer, Vec::new()).with_prepared(prepared);
         let executor = match statistics {
             Statistics::Corpus => executor.with_corpus(&corpus),
             Statistics::PerShard => executor,
@@ -603,6 +613,46 @@ fn deleted_documents_leave_no_trace_in_the_statistics() {
                 expected,
                 "{query:?}, {mode:?}"
             );
+        }
+    }
+}
+
+// Reading the lists from the preparation instead of the index changes nothing but the work done.
+#[test]
+fn prepared_lists_rank_like_the_index() {
+    let analyzer = Analyzer::new();
+    let docs = corpus(5, 300);
+    let none = HashSet::new();
+    let shards = build_shards(&docs, 1, |_| 0, &none, FEVER_LIKE, &analyzer);
+    let ctxs = ctxs();
+    let queries = [
+        term(&analyzer, "penguin"),
+        Query::And(vec![term(&analyzer, "world"), term(&analyzer, "war")]),
+        Query::Or(vec![term(&analyzer, "emperor"), term(&analyzer, "bird")]),
+        Query::Prefix("pen".into()),
+        Query::Wildcard("b?ttl*".into()),
+        Query::And(vec![
+            term(&analyzer, "world"),
+            Query::Or(vec![term(&analyzer, "war"), term(&analyzer, "battle")]),
+        ]),
+    ];
+    let executor = QueryExecutor::new(&shards[0].snapshot, &analyzer, Vec::new());
+    for (mode, query) in MODES
+        .into_iter()
+        .flat_map(|mode| queries.iter().map(move |q| (mode, q)))
+    {
+        let prepared = executor.prepare(Some(query), &ctxs, false);
+        let with =
+            QueryExecutor::new(&shards[0].snapshot, &analyzer, Vec::new()).with_prepared(&prepared);
+        for k in [1, 10, 100] {
+            let plain = executor.rank(Some(query), &ctxs, k, None, false, mode);
+            let reused = with.rank(Some(query), &ctxs, k, None, false, mode);
+            let key = |hits: &[crate::SearchHit]| -> Vec<(DocId, u32)> {
+                hits.iter()
+                    .map(|hit| (hit.doc_id, hit.score.to_bits()))
+                    .collect()
+            };
+            assert_eq!(key(&plain), key(&reused), "{query:?}, {mode:?}, k {k}");
         }
     }
 }
