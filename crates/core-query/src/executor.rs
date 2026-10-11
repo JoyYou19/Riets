@@ -21,6 +21,7 @@ use core_timing::timed;
 use crate::{
     ScoredPosting, SearchHit, TopHit,
     ast::Query,
+    corpus_stats::{CorpusStats, FieldTotals, LeafKey, ScoringStats},
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
     scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
     wand::{FieldTerms, WandHit, conjunctive_top_k_multi_field, wand_top_k_multi_field},
@@ -65,6 +66,14 @@ pub enum EvalOutcome {
     Scored(Vec<ScoredPosting>),
 }
 
+// One leaf query read in one field: the key its statistics are filed under, the field it was
+// looked up in (the exact field for an exact match) and the postings it found.
+struct Leaf {
+    key: LeafKey,
+    xpath: XPathId,
+    postings: PostingList,
+}
+
 // Turns the AST into a PostingList or SearchHit
 pub struct QueryExecutor<'a, I>
 where
@@ -77,6 +86,10 @@ where
     // whaatever
     analyzer: &'a Analyzer,
     array_groups: Vec<Vec<FieldCtx>>,
+
+    // Statistics of the whole search. Without them every score uses this index's own, which is
+    // right when it holds all the documents.
+    corpus: Option<&'a CorpusStats>,
 }
 
 impl<'a, I> QueryExecutor<'a, I>
@@ -105,14 +118,42 @@ where
             index,
             analyzer,
             array_groups,
+            corpus: None,
         }
+    }
+
+    /// Scores with the statistics of the whole search instead of this index's own.
+    pub fn with_corpus(mut self, corpus: &'a CorpusStats) -> Self {
+        self.corpus = Some(corpus);
+        self
+    }
+
+    fn stats(&self) -> ScoringStats<'_, I> {
+        ScoringStats {
+            index: self.index,
+            corpus: self.corpus,
+        }
+    }
+
+    fn leaf_doc_freq(&self, xpath: XPathId, key: &LeafKey, local: usize) -> u32 {
+        self.corpus
+            .and_then(|corpus| corpus.doc_freq(xpath, key))
+            .unwrap_or(local as u32)
     }
 
     #[timed(search)]
     fn fetch_term_postings(&self, terms: &[&str], xpath: XPathId) -> Vec<TermPostings> {
         terms
             .iter()
-            .map(|term| self.index.lookup_term(term, xpath))
+            .map(|term| {
+                let mut postings = self.index.lookup_term(term, xpath);
+                postings.doc_freq = self.leaf_doc_freq(
+                    xpath,
+                    &LeafKey::Term((*term).to_string()),
+                    postings.doc_freq as usize,
+                );
+                postings
+            })
             .collect()
     }
 
@@ -127,7 +168,7 @@ where
         //disjunctive flat-term cases (Term / Wand / Or) -> additive WAND
         if let Some(terms) = additive_terms(query) {
             let fields = self.fetch_field_terms(&terms, xpaths);
-            return Some(wand_top_k_multi_field(self.index, &fields, k, restrict));
+            return Some(wand_top_k_multi_field(&self.stats(), &fields, k, restrict));
         }
 
         //conjunctive flat-term case (And) -> conjunctive top-k
@@ -142,7 +183,10 @@ where
                     .collect();
                 let fields = self.fetch_field_terms(&terms, xpaths);
                 return Some(conjunctive_top_k_multi_field(
-                    self.index, &fields, k, restrict,
+                    &self.stats(),
+                    &fields,
+                    k,
+                    restrict,
                 ));
             }
         }
@@ -344,28 +388,11 @@ where
     #[timed(search)]
     pub fn evaluate(&self, query: &Query, ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match query {
-            Query::Term(v) => self.eval_leaf(ctxs, mode, |ctx| {
-                (
-                    self.execute_term(v, ctx.xpath).unwrap_or_default(),
-                    ctx.xpath,
-                )
-            }),
-            Query::Prefix(v) => self.eval_leaf(ctxs, mode, |ctx| {
-                (
-                    self.execute_prefix(v, ctx.xpath).unwrap_or_default(),
-                    ctx.xpath,
-                )
-            }),
-            Query::Wildcard(p) => self.eval_leaf(ctxs, mode, |ctx| {
-                (self.execute_wildcard(p, ctx.xpath), ctx.xpath)
-            }),
-            Query::Phrase(terms) => self.eval_leaf(ctxs, mode, |ctx| {
-                (self.execute_phrase(terms, ctx.xpath), ctx.xpath)
-            }),
-            Query::Exact(v) => self.eval_leaf(ctxs, mode, |ctx| {
-                let xp = ctx.exact_xpath.unwrap_or(ctx.xpath);
-                (self.execute_exact(v, xp), xp)
-            }),
+            Query::Term(_)
+            | Query::Prefix(_)
+            | Query::Wildcard(_)
+            | Query::Phrase(_)
+            | Query::Exact(_) => self.eval_leaf(query, ctxs, mode),
             Query::Fuzzy(v, fz, spec) => match mode {
                 EvalMode::Filter => {
                     let mut out = HashSet::new();
@@ -422,27 +449,67 @@ where
         }
     }
 
-    fn eval_leaf(
-        &self,
-        ctxs: &[FieldCtx],
-        mode: EvalMode,
-        fetch: impl Fn(FieldCtx) -> (PostingList, XPathId),
-    ) -> EvalOutcome {
+    /// What a leaf query reads in one field.
+    fn leaf(&self, query: &Query, ctx: FieldCtx) -> Option<Leaf> {
+        let (key, xpath, postings) = match query {
+            Query::Term(v) => (
+                LeafKey::Term(v.clone()),
+                ctx.xpath,
+                self.execute_term(v, ctx.xpath).unwrap_or_default(),
+            ),
+            Query::Prefix(v) => (
+                LeafKey::Prefix(v.clone()),
+                ctx.xpath,
+                self.execute_prefix(v, ctx.xpath).unwrap_or_default(),
+            ),
+            Query::Wildcard(p) => (
+                LeafKey::Wildcard(p.clone()),
+                ctx.xpath,
+                self.execute_wildcard(p, ctx.xpath),
+            ),
+            Query::Phrase(terms) => (
+                LeafKey::Phrase(terms.clone()),
+                ctx.xpath,
+                self.execute_phrase(terms, ctx.xpath),
+            ),
+            Query::Exact(v) => {
+                let xpath = ctx.exact_xpath.unwrap_or(ctx.xpath);
+                (
+                    LeafKey::Exact(v.clone()),
+                    xpath,
+                    self.execute_exact(v, xpath),
+                )
+            }
+            _ => return None,
+        };
+        Some(Leaf {
+            key,
+            xpath,
+            postings,
+        })
+    }
+
+    fn eval_leaf(&self, query: &Query, ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match mode {
             EvalMode::Filter => {
                 let mut out = HashSet::new();
                 for &ctx in ctxs {
-                    let (postings, _) = fetch(ctx);
-                    out.extend(self.posting_ids(&postings));
+                    if let Some(leaf) = self.leaf(query, ctx) {
+                        out.extend(self.posting_ids(&leaf.postings));
+                    }
                 }
                 EvalOutcome::Docs(out)
             }
             EvalMode::Rank => {
+                let stats = self.stats();
                 let mut acc: HashMap<DocId, ScoredPosting> = HashMap::new();
                 for &ctx in ctxs {
-                    let (postings, xpath) = fetch(ctx);
+                    let Some(leaf) = self.leaf(query, ctx) else {
+                        continue;
+                    };
+                    let doc_freq = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
                     for hit in
-                        score_term_hybrid(self.index, &postings, xpath, postings.len() as f32)
+                        score_term_hybrid(&stats, &leaf.postings, leaf.xpath, doc_freq as f32)
                     {
                         match acc.entry(hit.doc_id) {
                             Entry::Vacant(e) => {
@@ -620,6 +687,57 @@ where
                 score: score as f32 / 1000.0,
             })
             .collect()
+    }
+
+    /// What this index contributes to the statistics of a search: the totals of every field the
+    /// query is scored in and the document frequency of every leaf in each of them.
+    ///
+    /// Adding these up over all shards gives the statistics of the whole database, which every
+    /// shard then scores with (`with_corpus`).
+    pub fn local_stats(
+        &self,
+        query: Option<&Query>,
+        ctxs: &[FieldCtx],
+        include_array_groups: bool,
+    ) -> CorpusStats {
+        let mut stats = CorpusStats::new();
+        let Some(query) = query else {
+            return stats;
+        };
+
+        for &ctx in ctxs {
+            self.collect_stats(query, ctx, &mut stats);
+        }
+        if include_array_groups {
+            for group in &self.array_groups {
+                for &ctx in group {
+                    self.collect_stats(query, ctx, &mut stats);
+                }
+            }
+        }
+        stats
+    }
+
+    fn collect_stats(&self, query: &Query, ctx: FieldCtx, out: &mut CorpusStats) {
+        match query {
+            Query::Wand(parts) | Query::Or(parts) | Query::And(parts) => {
+                for part in parts {
+                    self.collect_stats(part, ctx, out);
+                }
+            }
+            _ => {
+                if let Some(leaf) = self.leaf(query, ctx) {
+                    out.insert_field(
+                        leaf.xpath,
+                        FieldTotals {
+                            doc_count: self.index.doc_count(leaf.xpath),
+                            total_doc_len: self.index.total_doc_len(leaf.xpath),
+                        },
+                    );
+                    out.insert_doc_freq(leaf.xpath, leaf.key, leaf.postings.len() as u64);
+                }
+            }
+        }
     }
 
     #[timed(search)]
@@ -943,7 +1061,7 @@ where
                 let true_df = self.index.doc_freq(&expansion.term, xpath) as f32;
                 //BM25 scoring
                 score_term_into(
-                    self.index,
+                    &self.stats(),
                     &postings,
                     xpath,
                     true_df,

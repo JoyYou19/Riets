@@ -1,4 +1,5 @@
 mod ast;
+mod corpus_stats;
 pub mod executor;
 pub use executor::{QueryExecutor, fuzzable_words, fuzzy_options, rank_and_cap};
 
@@ -11,6 +12,7 @@ mod search_hit;
 pub mod wand;
 
 pub use ast::Query;
+pub use corpus_stats::CorpusStats;
 pub use scored_posting::ScoredPosting;
 pub use search_hit::SearchHit;
 pub use search_hit::TopHit;

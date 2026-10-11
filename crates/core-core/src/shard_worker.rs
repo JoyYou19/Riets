@@ -32,7 +32,7 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_query::{Query, QueryExecutor, SearchHit, fuzzable_words};
+use core_query::{CorpusStats, Query, QueryExecutor, SearchHit, fuzzable_words};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
@@ -42,6 +42,19 @@ pub struct ShardRankedResult {
     pub total: usize,
     pub items: Vec<(SearchHit, Vec<Option<f64>>)>,
     pub bounds: Vec<(Option<f64>, Option<f64>)>,
+}
+
+/// A shard's side of one search: the snapshot every step of the search reads, so the statistics
+/// and the ranking cannot see different writes, and what the shard adds to the statistics.
+pub struct PreparedShardSearch {
+    snapshot: Arc<IndexSnapshot>,
+    stats: CorpusStats,
+}
+
+impl PreparedShardSearch {
+    pub fn stats(&self) -> &CorpusStats {
+        &self.stats
+    }
 }
 
 //insane portno kur dazaam komandam ir crossbeam_channel dazam ir oneshot
@@ -248,10 +261,35 @@ impl ShardHandle {
             .collect())
     }
 
+    /// Pins the snapshot the search reads and, when `collect_stats` is set, gathers what this shard
+    /// adds to the statistics every shard scores the query with.
+    #[timed(search)]
+    pub fn prepare_search(
+        &self,
+        query: Option<&Query>,
+        ctxs: &[FieldCtx],
+        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
+        include_array_groups: bool,
+        collect_stats: bool,
+    ) -> PreparedShardSearch {
+        let snapshot = self.shared.snapshot.get();
+        let stats = if collect_stats {
+            QueryExecutor::new(&*snapshot, &self.analyzer, groups).local_stats(
+                query,
+                ctxs,
+                include_array_groups,
+            )
+        } else {
+            CorpusStats::new()
+        };
+        PreparedShardSearch { snapshot, stats }
+    }
+
     //helper for the ranking
     fn rank_candidates(
         &self,
         snapshot: &IndexSnapshot,
+        corpus: Option<&CorpusStats>,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -265,6 +303,10 @@ impl ShardHandle {
         }
 
         let executor = QueryExecutor::new(snapshot, &self.analyzer, groups);
+        let executor = match corpus {
+            Some(corpus) => executor.with_corpus(corpus),
+            None => executor,
+        };
 
         //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
@@ -285,6 +327,8 @@ impl ShardHandle {
     #[timed(search)]
     pub fn rank_top_k(
         &self,
+        prepared: &PreparedShardSearch,
+        corpus: Option<&CorpusStats>,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -293,9 +337,10 @@ impl ShardHandle {
         include_array_groups: bool,
         mactmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
-        let snapshot = self.shared.snapshot.get();
+        let snapshot = &prepared.snapshot;
         let (total, hits) = self.rank_candidates(
-            &snapshot,
+            snapshot,
+            corpus,
             query,
             filters,
             ctxs,
@@ -315,6 +360,8 @@ impl ShardHandle {
     #[timed(search)]
     pub fn rank_sorted(
         &self,
+        prepared: &PreparedShardSearch,
+        corpus: Option<&CorpusStats>,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -332,9 +379,10 @@ impl ShardHandle {
             });
         }
 
-        let snapshot = self.shared.snapshot.get();
+        let snapshot = &prepared.snapshot;
         let (total, candidates) = self.rank_candidates(
-            &snapshot,
+            snapshot,
+            corpus,
             query,
             filters,
             ctxs,

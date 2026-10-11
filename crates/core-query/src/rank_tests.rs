@@ -1,5 +1,6 @@
 //! Ranking checked against a brute-force model of the scoring: a search returns the exact top k of
-//! the BM25+ scores, so a smaller page is always a prefix of a larger one.
+//! the BM25+ scores, so a smaller page is always a prefix of a larger one, and a document scores
+//! the same in whichever shard it is stored.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -15,7 +16,7 @@ use core_index::{
 
 use core_protocol::command_reponse_definitions::MatchMode;
 
-use crate::{Query, QueryExecutor, resolver::FieldCtx, scorer::bm25_score_scaled};
+use crate::{CorpusStats, Query, QueryExecutor, resolver::FieldCtx, scorer::bm25_score_scaled};
 
 const TITLE: XPathId = 11;
 const TEXT: XPathId = 12;
@@ -176,21 +177,37 @@ fn shown(total_milli: u64) -> f32 {
     total_milli as f32 / 1000.0
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Statistics {
+    // Every shard scores with the sum of all shards' statistics (what the shard manager does).
+    Corpus,
+    // Every shard scores with its own statistics (what search did before).
+    PerShard,
+}
+
 struct Searched {
     // (source index, doc id, score) in rank order
     hits: Vec<(usize, DocId, f32)>,
 }
 
-// What the shard manager does with the shards' answers: merge by (score, doc id), keep k.
+// The shard manager's search, without the documents: every shard reports its statistics, they are
+// summed, every shard ranks with the sum, and the answers are merged by (score, doc id).
 fn search(
     shards: &[Shard],
     analyzer: &Analyzer,
     query: &Query,
     k: usize,
     restrict: Option<&HashSet<usize>>,
+    statistics: Statistics,
     mode: MatchMode,
 ) -> Searched {
     let ctxs = ctxs();
+    let mut corpus = CorpusStats::new();
+    for shard in shards {
+        let executor = QueryExecutor::new(&shard.snapshot, analyzer, Vec::new());
+        corpus.merge(&executor.local_stats(Some(query), &ctxs, false));
+    }
+
     let mut merged = Vec::new();
     for shard in shards {
         let shard_restrict: Option<HashSet<DocId>> = restrict.map(|sources| {
@@ -202,6 +219,10 @@ fn search(
                 .collect()
         });
         let executor = QueryExecutor::new(&shard.snapshot, analyzer, Vec::new());
+        let executor = match statistics {
+            Statistics::Corpus => executor.with_corpus(&corpus),
+            Statistics::PerShard => executor,
+        };
         for hit in executor.rank(Some(query), &ctxs, k, shard_restrict.as_ref(), false, mode) {
             let source = shard.sources[&hit.doc_id];
             merged.push((hit, source));
@@ -229,6 +250,10 @@ fn analyzed(analyzer: &Analyzer, word: &str) -> String {
         .next()
         .map(|token| token.text)
         .expect("vocabulary words are not stopwords")
+}
+
+fn term(analyzer: &Analyzer, word: &str) -> Query {
+    Query::Term(analyzed(analyzer, word))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -359,11 +384,16 @@ fn random_restrict(rng: &mut Rng, docs: usize) -> HashSet<usize> {
     (0..docs).filter(|_| rng.below(3) == 0).collect()
 }
 
+// More hits than any test corpus has documents.
+const EVERY_DOCUMENT: usize = 5_000;
+
+const MODES: [MatchMode; 2] = [MatchMode::BestFields, MatchMode::CrossFields];
+
 const FEVER_LIKE: Weights = Weights { title: 40, text: 1 };
 const BALANCED: Weights = Weights { title: 3, text: 2 };
 
 #[test]
-fn ranking_equals_brute_force_for_every_k() {
+fn ranking_equals_brute_force_for_every_k_and_sharding() {
     let analyzer = Analyzer::new();
     let mut rng = Rng(7);
     for (round, weights) in [FEVER_LIKE, BALANCED, FEVER_LIKE, BALANCED]
@@ -372,31 +402,48 @@ fn ranking_equals_brute_force_for_every_k() {
     {
         let docs = corpus(100 + round as u64, 400);
         let none = HashSet::new();
-        let shards = build_shards(&docs, 1, |_| 0, &none, weights, &analyzer);
-        for _ in 0..16 {
-            let term_count = 1 + rng.below(3);
-            let terms = random_terms(&mut rng, &analyzer, term_count);
-            let all = terms.len() > 1 && rng.below(2) == 0;
-            let query = match (all, terms.len()) {
-                (_, 1) => Query::Term(terms[0].clone()),
-                (true, _) => Query::And(terms.iter().cloned().map(Query::Term).collect()),
-                (false, _) => Query::Or(terms.iter().cloned().map(Query::Term).collect()),
-            };
-            let restrict = (rng.below(4) == 0).then(|| random_restrict(&mut rng, docs.len()));
+        for shard_count in [1usize, 3, 5] {
+            let shards = build_shards(
+                &docs,
+                shard_count,
+                |i| i * 7 + round,
+                &none,
+                weights,
+                &analyzer,
+            );
+            for _ in 0..12 {
+                let term_count = 1 + rng.below(3);
+                let terms = random_terms(&mut rng, &analyzer, term_count);
+                let all = terms.len() > 1 && rng.below(2) == 0;
+                let query = match (all, terms.len()) {
+                    (_, 1) => Query::Term(terms[0].clone()),
+                    (true, _) => Query::And(terms.iter().cloned().map(Query::Term).collect()),
+                    (false, _) => Query::Or(terms.iter().cloned().map(Query::Term).collect()),
+                };
+                let restrict = (rng.below(4) == 0).then(|| random_restrict(&mut rng, docs.len()));
 
-            for (mode, combine_all) in [
-                (MatchMode::BestFields, Combine::AllInOneField),
-                (MatchMode::CrossFields, Combine::AllInDocument),
-            ] {
-                let combine = if all { combine_all } else { Combine::Any };
-                let totals = brute_force(&docs, &none, weights, &analyzer, &terms, combine);
-                for k in [1, 2, 5, 10, 20, 40, 1000] {
-                    let got = search(&shards, &analyzer, &query, k, restrict.as_ref(), mode);
-                    let want = expected_top_k(&totals, &shards, restrict.as_ref(), k);
-                    assert_eq!(
-                        got.hits, want,
-                        "query {query:?}, {mode:?}, k {k}, round {round}"
-                    );
+                for (mode, combine_all) in [
+                    (MatchMode::BestFields, Combine::AllInOneField),
+                    (MatchMode::CrossFields, Combine::AllInDocument),
+                ] {
+                    let combine = if all { combine_all } else { Combine::Any };
+                    let totals = brute_force(&docs, &none, weights, &analyzer, &terms, combine);
+                    for k in [1, 2, 5, 10, 20, 40, 1000] {
+                        let got = search(
+                            &shards,
+                            &analyzer,
+                            &query,
+                            k,
+                            restrict.as_ref(),
+                            Statistics::Corpus,
+                            mode,
+                        );
+                        let want = expected_top_k(&totals, &shards, restrict.as_ref(), k);
+                        assert_eq!(
+                            got.hits, want,
+                            "query {query:?}, {mode:?}, k {k}, {shard_count} shards, round {round}"
+                        );
+                    }
                 }
             }
         }
@@ -408,22 +455,154 @@ fn smaller_pages_are_prefixes_of_larger_pages() {
     let analyzer = Analyzer::new();
     let docs = corpus(31, 600);
     let none = HashSet::new();
-    let shards = build_shards(&docs, 1, |_| 0, &none, FEVER_LIKE, &analyzer);
+    let shards = build_shards(&docs, 5, |i| i * 13 + 1, &none, FEVER_LIKE, &analyzer);
     let term = |word: &str| Query::Term(analyzed(&analyzer, word));
     let queries = [
         term("penguin"),
         Query::And(vec![term("world"), term("war")]),
         Query::Or(vec![term("emperor"), term("penguin")]),
         Query::Or(vec![term("world"), term("war"), term("battle")]),
+        Query::Prefix("pen".into()),
     ];
-    for mode in [MatchMode::BestFields, MatchMode::CrossFields] {
+    for mode in MODES {
         for query in &queries {
-            let all = search(&shards, &analyzer, query, 200, None, mode).hits;
+            let all = search(
+                &shards,
+                &analyzer,
+                query,
+                200,
+                None,
+                Statistics::Corpus,
+                mode,
+            )
+            .hits;
             assert!(!all.is_empty(), "{query:?} matched nothing");
             for k in 1..=all.len().min(60) {
-                let page = search(&shards, &analyzer, query, k, None, mode).hits;
+                let page =
+                    search(&shards, &analyzer, query, k, None, Statistics::Corpus, mode).hits;
                 assert_eq!(page, all[..k], "{query:?}, {mode:?}, k {k}");
             }
+        }
+    }
+}
+
+// Every matching document with its score, keyed by source document.
+fn scores_by_source(
+    shards: &[Shard],
+    analyzer: &Analyzer,
+    query: &Query,
+    statistics: Statistics,
+    mode: MatchMode,
+) -> HashMap<usize, u32> {
+    search(
+        shards,
+        analyzer,
+        query,
+        EVERY_DOCUMENT,
+        None,
+        statistics,
+        mode,
+    )
+    .hits
+    .into_iter()
+    .map(|(source, _, score)| (source, score.to_bits()))
+    .collect()
+}
+
+#[test]
+fn a_document_scores_the_same_in_any_shard() {
+    let analyzer = Analyzer::new();
+    let docs = corpus(55, 700);
+    let none = HashSet::new();
+    let queries = [
+        term(&analyzer, "penguin"),
+        term(&analyzer, "rocket"),
+        Query::And(vec![term(&analyzer, "english"), term(&analyzer, "king")]),
+        Query::Or(vec![term(&analyzer, "winter"), term(&analyzer, "summer")]),
+        Query::Prefix("ca".into()),
+        Query::Wildcard("b?ttl*".into()),
+        Query::And(vec![
+            term(&analyzer, "world"),
+            Query::Or(vec![term(&analyzer, "war"), term(&analyzer, "battle")]),
+        ]),
+    ];
+
+    let one = build_shards(&docs, 1, |_| 0, &none, BALANCED, &analyzer);
+    let three = build_shards(&docs, 3, |i| i, &none, BALANCED, &analyzer);
+    // Deliberately uneven: shard 0 gets every document whose title starts with a common word.
+    let skewed = build_shards(
+        &docs,
+        4,
+        |i| {
+            if docs[i].title.starts_with("penguin") {
+                0
+            } else {
+                1 + i % 3
+            }
+        },
+        &none,
+        BALANCED,
+        &analyzer,
+    );
+
+    let mut per_shard_differences = 0usize;
+    for mode in MODES {
+        for query in &queries {
+            let reference = scores_by_source(&one, &analyzer, query, Statistics::Corpus, mode);
+            assert!(!reference.is_empty(), "{query:?} matched nothing");
+            for shards in [&three, &skewed] {
+                assert_eq!(
+                    scores_by_source(shards, &analyzer, query, Statistics::Corpus, mode),
+                    reference,
+                    "{query:?}, {mode:?}"
+                );
+                let per_shard =
+                    scores_by_source(shards, &analyzer, query, Statistics::PerShard, mode);
+                per_shard_differences += reference
+                    .iter()
+                    .filter(|(source, score)| per_shard.get(*source) != Some(*score))
+                    .count();
+            }
+        }
+    }
+    // The control: with per-shard statistics the same documents score differently.
+    assert!(per_shard_differences > 0);
+}
+
+#[test]
+fn deleted_documents_leave_no_trace_in_the_statistics() {
+    let analyzer = Analyzer::new();
+    let docs = corpus(77, 500);
+    let mut rng = Rng(3);
+    let deleted: HashSet<usize> = (0..docs.len()).filter(|_| rng.below(5) == 0).collect();
+    let live_docs: Vec<SourceDoc> = (0..docs.len())
+        .filter(|i| !deleted.contains(i))
+        .map(|i| docs[i].clone())
+        .collect();
+    let live_source: Vec<usize> = (0..docs.len()).filter(|i| !deleted.contains(i)).collect();
+    let none = HashSet::new();
+
+    let with_deletes = build_shards(&docs, 3, |i| i, &deleted, FEVER_LIKE, &analyzer);
+    let rebuilt = build_shards(&live_docs, 2, |i| i * 5, &none, FEVER_LIKE, &analyzer);
+
+    let queries = [
+        term(&analyzer, "penguin"),
+        Query::And(vec![term(&analyzer, "world"), term(&analyzer, "war")]),
+        Query::Or(vec![term(&analyzer, "emperor"), term(&analyzer, "bird")]),
+        Query::Prefix("pen".into()),
+    ];
+    for mode in MODES {
+        for query in &queries {
+            let expected: HashMap<usize, u32> =
+                scores_by_source(&rebuilt, &analyzer, query, Statistics::Corpus, mode)
+                    .into_iter()
+                    .map(|(index, score)| (live_source[index], score))
+                    .collect();
+            assert_eq!(
+                scores_by_source(&with_deletes, &analyzer, query, Statistics::Corpus, mode),
+                expected,
+                "{query:?}, {mode:?}"
+            );
         }
     }
 }

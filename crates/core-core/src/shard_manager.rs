@@ -3,7 +3,7 @@ use crate::ShardDb;
 use crate::metrics::DbStats;
 use crate::reindex::{PendingReindexJob, ReindexPool};
 use crate::shard_db::DatabaseStats;
-use crate::shard_worker::{self, ShardCmd, ShardHandle};
+use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use core_backup::backup::compress_file;
 use core_backup::backup::{BackupManifest, BackupType};
@@ -20,7 +20,6 @@ use core_protocol::command_reponse_definitions::{
     SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
-use core_query::SearchHit;
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
 use core_query::highlight::{
     HighlightMatcher, collect_highlight_matchers, field_texts, highlight_text,
@@ -28,6 +27,7 @@ use core_query::highlight::{
 use core_query::resolver::{
     compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
 };
+use core_query::{CorpusStats, SearchHit};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
@@ -1032,9 +1032,60 @@ impl ShardManager {
         //WARN: results may change based on the "docs": x lol
         let window = fetch.saturating_mul(50).clamp(1000, 5_000);
 
+        //Scores must not depend on which shard a document is in, so every shard scores with the
+        //statistics of all shards together: first every shard reports its own, then all of them
+        //rank. A single shard already holds everything
+        let collect_stats = self.shards.len() > 1 && query.is_some();
+        let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
+        let mut corpus = CorpusStats::new();
         let mut set = JoinSet::new();
-        for handle in &self.shards {
+        for (index, handle) in self.shards.iter().enumerate() {
             let handle = handle.clone();
+            let query = Arc::clone(&query);
+            let ctxs = Arc::clone(&ctxs);
+            let groups = groups.clone();
+            if collect_stats {
+                set.spawn_blocking(move || {
+                    let shard = handle.prepare_search(
+                        (*query).as_ref(),
+                        &ctxs,
+                        groups,
+                        include_array_groups,
+                        true,
+                    );
+                    (index, shard)
+                });
+            } else {
+                let shard = handle.prepare_search(
+                    (*query).as_ref(),
+                    &ctxs,
+                    groups,
+                    include_array_groups,
+                    false,
+                );
+                prepared[index] = Some(Arc::new(shard));
+            }
+        }
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((index, shard)) => {
+                    corpus.merge(shard.stats());
+                    prepared[index] = Some(Arc::new(shard));
+                }
+                Err(je) => {
+                    return Err(CorelamoError::Internal(format!(
+                        "shard prepare panicked: {je}"
+                    )));
+                }
+            }
+        }
+        let corpus = collect_stats.then(|| Arc::new(corpus));
+
+        let mut set = JoinSet::new();
+        for (handle, prepared) in self.shards.iter().zip(prepared) {
+            let handle = handle.clone();
+            let prepared = prepared.expect("every shard was prepared");
+            let corpus = corpus.clone();
             let query = Arc::clone(&query);
             let filters = filters.clone();
             let ctxs = Arc::clone(&ctxs);
@@ -1044,6 +1095,8 @@ impl ShardManager {
                 //any sort mentioned? - we do smart sort, else just relevance
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
                     handle.rank_sorted(
+                        &prepared,
+                        corpus.as_deref(),
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,
@@ -1055,6 +1108,8 @@ impl ShardManager {
                     )
                 } else {
                     handle.rank_top_k(
+                        &prepared,
+                        corpus.as_deref(),
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,
