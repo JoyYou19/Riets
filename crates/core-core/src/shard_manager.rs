@@ -37,11 +37,11 @@ use crossbeam_channel::bounded;
 use parking_lot::RwLock;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
-use std::fs;
 use tokio::task::JoinSet;
 
 use crate::shard_manager_helpers::{
@@ -1177,25 +1177,29 @@ impl ShardManager {
 
         //populate highlights
         if let Some((fields, matchers)) = &highlight {
-            for slot in &mut resolved {
-                let Some(hit) = slot else { continue };
-                let mut highlights = Vec::new();
-                if !matchers.is_empty() {
-                    if let Ok(value) = hit.doc.to_value(None) {
-                        for (full_path, opts) in fields {
-                            for text in field_texts(&value, full_path) {
-                                highlights.extend(highlight_text(
-                                    &text,
-                                    &self.analyzer,
-                                    matchers,
-                                    opts,
-                                ));
+            let fields = fields.clone();
+            let matchers = matchers.clone();
+            let analyzer = self.analyzer.clone();
+            resolved = tokio::task::spawn_blocking(move || {
+                for slot in &mut resolved {
+                    let Some(hit) = slot else { continue };
+                    let mut highlights = Vec::new();
+                    if !matchers.is_empty() {
+                        if let Ok(value) = hit.doc.to_value(None) {
+                            for (full_path, opts) in &fields {
+                                for text in field_texts(&value, full_path) {
+                                    highlights
+                                        .extend(highlight_text(&text, &analyzer, &matchers, opts));
+                                }
                             }
                         }
                     }
+                    hit.highlights = highlights;
                 }
-                hit.highlights = highlights;
-            }
+                resolved
+            })
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("highlight task panicked: {e}")))?;
         }
 
         let total_hits = TotalHits {
