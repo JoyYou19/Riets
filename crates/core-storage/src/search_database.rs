@@ -29,7 +29,6 @@ use core_protocol::{
     errors::{DocFailure, FailReason},
     format::Format,
 };
-use core_query::SearchHit;
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
