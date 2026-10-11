@@ -2,6 +2,7 @@ mod ast;
 pub mod executor;
 pub use executor::{QueryExecutor, fuzzable_words, fuzzy_options, rank_and_cap};
 
+pub mod highlight;
 pub mod query_string_parser;
 pub mod resolver;
 mod scored_posting;

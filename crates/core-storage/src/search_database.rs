@@ -130,6 +130,7 @@ pub struct SearchDocumentHit {
     pub internal_id: DocId,
     pub score: f32,
     pub doc: DocumentOut,
+    pub highlights: Vec<String>,
 }
 
 pub struct SearchDocumentResults {
@@ -399,26 +400,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         )
         .map(String::from);
         Ok(LookupResponse::new(found, not_found, id_field))
-    }
-
-    #[timed(search)]
-    pub fn resolve_document_hits(
-        &self,
-        hits: Vec<SearchHit>,
-        return_fields: Option<&IndexMap<String, bool>>,
-    ) -> io::Result<Vec<SearchDocumentHit>> {
-        let mut results = Vec::new();
-        for hit in hits {
-            if let Some(doc) = self.store.get_by_internal_id(hit.doc_id)? {
-                results.push(SearchDocumentHit {
-                    external_id: doc.external_id.clone(),
-                    internal_id: doc.internal_id,
-                    score: hit.score,
-                    doc: project_document(&doc, &self.policy, return_fields)?,
-                });
-            }
-        }
-        Ok(results)
     }
 
     #[timed(flushing)]
