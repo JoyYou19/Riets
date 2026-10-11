@@ -1,7 +1,9 @@
 use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::types::XPathId;
-use core_protocol::command_reponse_definitions::{SearchCommand, SortMode, SortOrderRequest};
+use core_protocol::command_reponse_definitions::{
+    SearchCommand, SortMode, SortModifier, SortOrderRequest,
+};
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
@@ -25,6 +27,7 @@ pub struct SortField {
     pub order: SortOrderRequest,
     pub ratio: u8,
     pub is_bool: bool,
+    pub modifier: SortModifier,
 }
 
 pub struct ResolvedSort {
@@ -91,6 +94,7 @@ pub fn resolve_sorts(
             order: spec.order,
             ratio,
             is_bool: field_pol.kind.is_bool(),
+            modifier: spec.modifier,
         });
     }
     Ok(Some(ResolvedSort {
@@ -139,17 +143,14 @@ fn cmp_asc(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     }
 }
 
-/// relevance_norm = score / rel_best                    → 0..1 (or 0)
-/// field_norm     = value/overall_max so its 0..1
-/// direction      = desc ? field_norm : 1 - field_norm  → "how good is this doc's value"
-/// blend          = (rel_weight * relevance_norm + Σ ratio_i * direction_i) / denom
-//                                  hit          sort fields like year, imdb...
-/// multiplicative blend:
-///   final = relevance * (1 + Σ (ratio_i/100) * direction_i)
-/// direction_i ∈ [0,1] is the normalized sort value. A ratio of R lets that field boost
-/// relevance by at most (1 + R/100)×, so it reorders *within* a relevance band and can never
-/// promote an irrelevant doc above a clearly-relevant one. Raw relevance (no rel_best
-/// normalization, no 0.3 gate) -> no NaN.
+fn apply_modifier(v: f64, m: SortModifier) -> f64 {
+    match m {
+        SortModifier::None => v,
+        SortModifier::Log1p => (v + 1.0).ln(),
+        SortModifier::Sqrt => v.sqrt(),
+    }
+}
+
 pub fn order_blended(
     items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
     specs: &[SortField],
@@ -170,11 +171,18 @@ pub fn order_blended(
                 let component = match keys[index] {
                     None => 0.0,
                     Some(v) => match bounds[index] {
-                        (Some(min), Some(max)) if max > min => {
-                            let norm = ((v - min) / (max - min)) as f32;
-                            match spec.order {
-                                SortOrderRequest::Asc => 1.0 - norm,
-                                SortOrderRequest::Desc => norm,
+                        (Some(min), Some(max)) => {
+                            let min = apply_modifier(min, spec.modifier);
+                            let max = apply_modifier(max, spec.modifier);
+                            let v = apply_modifier(v, spec.modifier);
+                            if max > min {
+                                let norm = ((v - min) / (max - min)) as f32;
+                                match spec.order {
+                                    SortOrderRequest::Asc => 1.0 - norm,
+                                    SortOrderRequest::Desc => norm,
+                                }
+                            } else {
+                                1.0
                             }
                         }
                         _ => 1.0,

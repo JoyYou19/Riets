@@ -277,12 +277,23 @@ pub enum SortOrderRequest {
     Desc,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortModifier {
+    #[default]
+    None, //linear — year, price
+    Log1p, //ln(1 + v) — power-law fields (pagerank, views)
+    Sqrt,  //sqrt(v) — milder compression
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SortSpec {
     #[serde(default)]
     pub order: SortOrderRequest,
     pub ratio: Option<u8>,
+    #[serde(default)]
+    pub modifier: SortModifier,
 }
 
 pub struct TotalHits {
