@@ -1,7 +1,7 @@
 use core_index::{
     analyzer::analyzer::Analyzer,
     fuzzy::{
-        DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec,
+        FuzzyExpansion, FuzzyOptions, FuzzySpec,
     },
     posting::{Posting, PostingList, ops::intersection},
     search::{SearchIndex, SearchNumeric, SearchStats},
