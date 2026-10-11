@@ -23,7 +23,7 @@ use crate::{
     ast::Query,
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
     scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
-    wand::{WandHit, conjunctive_top_k, wand_top_k},
+    wand::{FieldTerms, WandHit, conjunctive_top_k_multi_field, wand_top_k_multi_field},
 };
 
 #[derive(Debug, Clone)]
@@ -120,14 +120,14 @@ where
     fn execute_top_k_retrieval(
         &self,
         query: &Query,
-        xpath: XPathId,
+        xpaths: &[XPathId],
         k: usize,
         restrict: Option<&HashSet<DocId>>,
     ) -> Option<Vec<WandHit>> {
         //disjunctive flat-term cases (Term / Wand / Or) -> additive WAND
         if let Some(terms) = additive_terms(query) {
-            let postings = self.fetch_term_postings(&terms, xpath);
-            return Some(wand_top_k(self.index, xpath, &postings, k, restrict));
+            let fields = self.fetch_field_terms(&terms, xpaths);
+            return Some(wand_top_k_multi_field(self.index, &fields, k, restrict));
         }
 
         //conjunctive flat-term case (And) -> conjunctive top-k
@@ -140,12 +140,24 @@ where
                         _ => None,
                     })
                     .collect();
-                let postings = self.fetch_term_postings(&terms, xpath);
-                return Some(conjunctive_top_k(self.index, xpath, &postings, k, restrict));
+                let fields = self.fetch_field_terms(&terms, xpaths);
+                return Some(conjunctive_top_k_multi_field(
+                    self.index, &fields, k, restrict,
+                ));
             }
         }
 
         None
+    }
+
+    fn fetch_field_terms(&self, terms: &[&str], xpaths: &[XPathId]) -> Vec<FieldTerms> {
+        xpaths
+            .iter()
+            .map(|&xpath| FieldTerms {
+                xpath,
+                terms: self.fetch_term_postings(terms, xpath),
+            })
+            .collect()
     }
 
     //Lookup a term
@@ -734,7 +746,36 @@ where
 
         match match_mode {
             MatchMode::BestFields => {
+                //flat term queries rank all the plain fields together: cutting every field to
+                //its own top k before adding the fields up drops contributions, and then a
+                //document's score depends on k
+                let plain_xpaths: Vec<XPathId> = ctxs
+                    .iter()
+                    .filter(|ctx| !ctx.row_keyed)
+                    .map(|ctx| ctx.xpath)
+                    .collect();
+                let flat_hits = if plain_xpaths.is_empty() {
+                    None
+                } else {
+                    self.execute_top_k_retrieval(query, &plain_xpaths, k, restrict)
+                };
+                let ranked_flat = flat_hits.is_some();
+                for h in flat_hits.into_iter().flatten() {
+                    let hit = wand_hit_to_search_hit(h);
+                    by_doc
+                        .entry(hit.doc_id)
+                        .and_modify(|e| {
+                            e.score += hit.score;
+                            e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                            e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                        })
+                        .or_insert(hit);
+                }
+
                 for &ctx in ctxs {
+                    if ranked_flat && !ctx.row_keyed {
+                        continue;
+                    }
                     self.rank_single_field(query, ctx, k, restrict, &mut by_doc);
                 }
             }
@@ -791,7 +832,7 @@ where
         by_doc: &mut HashMap<DocId, SearchHit>,
     ) {
         if !ctx.row_keyed {
-            if let Some(hits) = self.execute_top_k_retrieval(query, ctx.xpath, k, restrict) {
+            if let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
                 for h in hits {
                     let hit = wand_hit_to_search_hit(h);
                     by_doc

@@ -432,3 +432,149 @@ pub fn conjunctive_top_k<S: SearchStats>(
 
     finish_heap(heap)
 }
+
+/// The terms of one field that must all occur in the same document, advanced in step.
+struct FieldConjunction<'a> {
+    xpath: XPathId,
+    doc_count: u64,
+    avg_doc_len: f32,
+    terms: Vec<WandTerm<'a>>,
+    started: bool,
+}
+
+impl<'a> FieldConjunction<'a> {
+    /// `None` when the field cannot match: no terms, or a term without postings.
+    fn new<S: SearchStats>(stats: &S, field: &'a FieldTerms) -> Option<Self> {
+        if field.terms.is_empty() || field.terms.iter().any(|term| term.postings.is_empty()) {
+            return None;
+        }
+
+        let doc_count = stats.doc_count(field.xpath);
+        Some(Self {
+            xpath: field.xpath,
+            doc_count,
+            avg_doc_len: stats.avg_doc_len(field.xpath),
+            terms: field
+                .terms
+                .iter()
+                .map(|term| {
+                    WandTerm::new(&term.postings, term.doc_freq, term.max_weight, doc_count)
+                })
+                .collect(),
+            started: false,
+        })
+    }
+
+    /// The next document that contains every term, after the one returned last.
+    fn next_match(&mut self) -> Option<DocId> {
+        if self.started {
+            for term in &mut self.terms {
+                term.cursor.next();
+            }
+        }
+        self.started = true;
+
+        loop {
+            if self.terms.iter().any(|term| term.cursor.is_exhausted()) {
+                return None;
+            }
+
+            let target = self
+                .terms
+                .iter()
+                .map(|term| term.cursor.doc_id().unwrap())
+                .max()
+                .unwrap();
+
+            for term in &mut self.terms {
+                term.cursor.advance_to(target);
+            }
+
+            if self.terms.iter().any(|term| term.cursor.is_exhausted()) {
+                return None;
+            }
+
+            if self
+                .terms
+                .iter()
+                .all(|term| term.cursor.doc_id() == Some(target))
+            {
+                return Some(target);
+            }
+        }
+    }
+
+    /// The BM25 score of the document the conjunction is currently on.
+    fn score<S: SearchStats>(&self, stats: &S, doc_id: DocId) -> u64 {
+        let doc_len = stats
+            .doc_len(doc_id, self.xpath)
+            .unwrap_or(self.avg_doc_len as u32);
+
+        let mut score = 0u64;
+        for term in &self.terms {
+            let posting = term.cursor.current().unwrap();
+            score = score.saturating_add(bm25_score_scaled(
+                posting.positions.len() as u32,
+                posting.weight,
+                doc_len,
+                self.avg_doc_len,
+                self.doc_count,
+                term.doc_freq,
+            ));
+        }
+        score
+    }
+}
+
+/// Exact top-k where every term has to occur in one field, added up over the fields.
+///
+/// `conjunctive_top_k` for several fields at once: a document's score is the sum of its scores
+/// in every field that holds all the terms. Ranking the fields in one pass is what keeps the
+/// result independent of `k`; cutting every field to its own top k first would drop
+/// contributions of documents that are only just outside one of the fields' cut-offs.
+#[timed(search)]
+pub fn conjunctive_top_k_multi_field<S: SearchStats>(
+    stats: &S,
+    fields: &[FieldTerms],
+    k: usize,
+    restrict: Option<&HashSet<DocId>>,
+) -> Vec<WandHit> {
+    if k == 0 {
+        return Vec::new();
+    }
+
+    let mut conjunctions: Vec<FieldConjunction<'_>> = fields
+        .iter()
+        .filter_map(|field| FieldConjunction::new(stats, field))
+        .collect();
+    let mut current: Vec<Option<DocId>> = conjunctions
+        .iter_mut()
+        .map(|conjunction| conjunction.next_match())
+        .collect();
+
+    let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
+
+    while let Some(doc_id) = current.iter().flatten().min().copied() {
+        if restrict.is_none_or(|docs| docs.contains(&doc_id)) {
+            let mut score = 0u64;
+            let mut matched_terms = 0usize;
+
+            for (conjunction, at) in conjunctions.iter().zip(&current) {
+                if *at == Some(doc_id) {
+                    score = score.saturating_add(conjunction.score(stats, doc_id));
+                    matched_terms += conjunction.terms.len();
+                }
+            }
+
+            push_top_k(&mut heap, doc_id, score, matched_terms, k);
+        }
+
+        for (conjunction, at) in conjunctions.iter_mut().zip(current.iter_mut()) {
+            if *at == Some(doc_id) {
+                *at = conjunction.next_match();
+            }
+        }
+    }
+
+    finish_heap(heap)
+}

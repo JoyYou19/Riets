@@ -14,3 +14,6 @@ pub use ast::Query;
 pub use scored_posting::ScoredPosting;
 pub use search_hit::SearchHit;
 pub use search_hit::TopHit;
+
+#[cfg(test)]
+mod rank_tests;
