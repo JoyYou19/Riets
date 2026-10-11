@@ -21,7 +21,7 @@
 /scripts/fever
 /scripts/fever.zip
 /scripts/corpus.jsonl
-
+/scripts/eval
 # If all fixtures are generated and should never be committed:
 /crates/core-testkit/fixtures/*.jsonl
 !/crates/core-testkit/fixtures/small.jsonl

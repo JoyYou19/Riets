@@ -61,6 +61,9 @@ use slog::{Logger, error, info, warn};
 
 pub struct ShardDb {
     shard_id: ShardId,
+    // Number of shards in the database; `shard_for(id, shard_count)` must return `shard_id`
+    // for every document stored here.
+    shard_count: u16,
     root: PathBuf,
     policy: IndexPolicy,
     options: DatabaseOptions,
@@ -87,6 +90,7 @@ impl ShardDb {
         root: impl AsRef<Path>,
         db_root: impl AsRef<Path>,
         shard_id: ShardId,
+        shard_count: u16,
         options: DatabaseOptions,
         policy: IndexPolicy,
         stats: ShardStatsHandle,
@@ -114,6 +118,7 @@ impl ShardDb {
         let backup = BackupManager::new(&root, backup_dir, name.clone(), 0, 0);
         Ok(Self {
             shard_id,
+            shard_count,
             shared: Arc::new(SharedShardState::new(root.clone())),
             policy,
             options,
@@ -134,6 +139,7 @@ impl ShardDb {
     pub fn load(
         root: impl AsRef<Path>,
         db_root: impl AsRef<Path>,
+        shard_count: u16,
         policy: &IndexPolicy,
         options: &DatabaseOptions,
         stats: ShardStatsHandle,
@@ -168,6 +174,7 @@ impl ShardDb {
         let backup = BackupManager::new(&root, backup_dir, name.clone(), 0, 0);
         Ok(Self {
             shard_id: ShardId::from(shard_id),
+            shard_count,
             shared: Arc::new(SharedShardState::new(root.clone())),
             root,
             policy: policy.clone(),
@@ -296,8 +303,37 @@ impl ShardDb {
             .set_compaction_enabled(self.compaction_worker.is_some());
         self.publish_stats();
         self.last_write = Instant::now();
+        self.report_misplaced_documents();
         info!(self.log, "shard started"; "shard_id" => self.shard_id);
         Ok(())
+    }
+
+    /// Logs documents stored in this shard that `shard_for` routes to another shard.
+    /// Retrieve, lookup, upsert, replace and delete never look for them here, and inserting
+    /// the same id again creates a second copy elsewhere, so this must report nothing.
+    fn report_misplaced_documents(&self) {
+        const EXAMPLE_LIMIT: usize = 5;
+
+        let mut misplaced = 0usize;
+        let mut examples: Vec<String> = Vec::with_capacity(EXAMPLE_LIMIT);
+        for entry in self.shared.locations.iter() {
+            if crate::shard_for_untimed(entry.key(), self.shard_count) != self.shard_id.0 {
+                misplaced += 1;
+                if examples.len() < EXAMPLE_LIMIT {
+                    examples.push(entry.key().clone());
+                }
+            }
+        }
+
+        if misplaced > 0 {
+            error!(self.log, "documents are stored in the wrong shard and cannot be reached by id";
+                "shard_id" => self.shard_id,
+                "shard_count" => self.shard_count,
+                "misplaced" => misplaced,
+                "stored" => self.shared.locations.len(),
+                "examples" => format!("{examples:?}"),
+            );
+        }
     }
 
     #[timed(database_lifecycle)]

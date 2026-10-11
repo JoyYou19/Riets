@@ -238,6 +238,15 @@ impl IndexWorker {
 const PUBLISH_DOC_THRESHOLD: u64 = 100;
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(20);
 
+/// How long the worker may wait for its next command: until the pending documents are due to
+/// be published, or indefinitely (`None`) when nothing is waiting to be published.
+///
+/// Waiting with a zero timeout while idle would make `recv_timeout` return immediately on every
+/// iteration, so an idle worker would spin on a full CPU core.
+fn publish_wait(docs_since_publish: u64, since_last_publish: Duration) -> Option<Duration> {
+    (docs_since_publish > 0).then(|| PUBLISH_INTERVAL.saturating_sub(since_last_publish))
+}
+
 fn run_index_worker(
     mut index: LsmIndex,
     analyzer: Analyzer,
@@ -248,21 +257,26 @@ fn run_index_worker(
     let mut docs_since_publish: u64 = 0;
     let mut last_publish = Instant::now();
     loop {
-        let timeout = PUBLISH_INTERVAL.saturating_sub(last_publish.elapsed());
-
-        let command = match receiver.recv_timeout(timeout) {
-            Ok(command) => command,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if docs_since_publish > 0 {
+        let command = match publish_wait(docs_since_publish, last_publish.elapsed()) {
+            Some(timeout) => match receiver.recv_timeout(timeout) {
+                Ok(command) => command,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
                     last_publish = Instant::now();
+                    continue;
                 }
-                continue;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break;
-            }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+            },
+            // Nothing to publish: sleep until the next command arrives.
+            None => match receiver.recv() {
+                Ok(command) => command,
+                Err(mpsc::RecvError) => {
+                    break;
+                }
+            },
         };
 
         match command {
@@ -810,5 +824,26 @@ impl Drop for ReindexGuard {
         if !self.settled {
             self.progress.set_phase(Phase::Failed);
         }
+    }
+}
+
+#[cfg(test)]
+mod publish_wait_tests {
+    use super::*;
+
+    #[test]
+    fn an_idle_worker_blocks_instead_of_polling() {
+        assert_eq!(publish_wait(0, Duration::ZERO), None);
+        assert_eq!(publish_wait(0, Duration::from_secs(3600)), None);
+    }
+
+    #[test]
+    fn pending_documents_are_published_within_the_interval() {
+        assert_eq!(publish_wait(5, Duration::ZERO), Some(PUBLISH_INTERVAL));
+        assert_eq!(
+            publish_wait(5, Duration::from_millis(15)),
+            Some(PUBLISH_INTERVAL - Duration::from_millis(15))
+        );
+        assert_eq!(publish_wait(5, Duration::from_secs(1)), Some(Duration::ZERO));
     }
 }

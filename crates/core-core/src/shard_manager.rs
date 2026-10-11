@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
-use std::{fs, u8};
+use std::fs;
 use tokio::task::JoinSet;
 
 use crate::shard_manager_helpers::{
@@ -97,6 +97,7 @@ impl ShardManager {
                 shard_root,
                 &root,
                 ShardId::from(shard_id),
+                shard_count,
                 options.clone(),
                 policy.clone(),
                 db_stats.handle(shard_id as usize),
@@ -530,9 +531,33 @@ impl ShardManager {
             path.file_name()
                 .and_then(|name| name.to_str())
                 .and_then(|s| s.strip_prefix("shard-"))
-                .and_then(|s| s.parse::<u8>().ok())
-                .unwrap_or(u8::MAX)
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(u16::MAX)
         });
+
+        // Routing returns a position in `shards`, while document ids carry the shard id, so
+        // the shard at position i must be shard-i. Checked before any shard is started.
+        let shard_count_u16 = u16::try_from(shard_paths.len()).map_err(|_| {
+            CorelamoError::InvalidData(format!(
+                "{} shard directories exceed the supported maximum of {}",
+                shard_paths.len(),
+                u16::MAX
+            ))
+        })?;
+        for (position, path) in shard_paths.iter().enumerate() {
+            let parsed = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|s| s.strip_prefix("shard-"))
+                .and_then(|s| s.parse::<u16>().ok());
+            if parsed.map(usize::from) != Some(position) {
+                return Err(CorelamoError::InvalidData(format!(
+                    "shard directory {} is at position {position}; shard directories must be shard-0 to shard-{}",
+                    path.display(),
+                    shard_paths.len() - 1
+                )));
+            }
+        }
 
         let policy_path = root.join(IndexPolicy::POLICY_FILE_NAME);
 
@@ -562,7 +587,14 @@ impl ShardManager {
 
         //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
         for (i, shard_path) in shard_paths.iter().enumerate() {
-            let db = ShardDb::load(shard_path, &root, &policy, &options, db_stats.handle(i))?;
+            let db = ShardDb::load(
+                shard_path,
+                &root,
+                shard_count_u16,
+                &policy,
+                &options,
+                db_stats.handle(i),
+            )?;
             let (handle, join, boot_rx) = shard_worker::spawn(
                 db,
                 Self::DEFAULT_QUEUE_DEPTH,
