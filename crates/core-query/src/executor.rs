@@ -1,6 +1,8 @@
 use core_index::{
     analyzer::analyzer::Analyzer,
-    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
+    fuzzy::{
+        DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec,
+    },
     posting::{Posting, PostingList, ops::intersection},
     search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
     types::{DocId, XPathId},
@@ -650,6 +652,36 @@ where
         restrict
     }
 
+    //a term with zero docs anywhere is almost certainly a typo
+    fn term_is_unknown(&self, term: &str, ctxs: &[FieldCtx]) -> bool {
+        !ctxs.is_empty()
+            && ctxs
+                .iter()
+                .all(|ctx| self.index.doc_freq(term, ctx.xpath) == 0)
+    }
+
+    //rewrite unknown terms into fuzzy terms (1 edit max); query-only, filters stay exact
+    fn auto_fuzzy(&self, query: &Query, ctxs: &[FieldCtx]) -> Query {
+        match query {
+            Query::Term(v) if self.term_is_unknown(v, ctxs) => Query::Fuzzy(
+                v.clone(),
+                Fuzziness::One,
+                FuzzySpec {
+                    prefix_length: DEFAULT_PREFIX_LENGTH,
+                    max_expansions: DEFAULT_MAX_EXPANSIONS,
+                },
+            ),
+            Query::And(parts) => {
+                Query::And(parts.iter().map(|p| self.auto_fuzzy(p, ctxs)).collect())
+            }
+            Query::Or(parts) => Query::Or(parts.iter().map(|p| self.auto_fuzzy(p, ctxs)).collect()),
+            Query::Wand(parts) => {
+                Query::Wand(parts.iter().map(|p| self.auto_fuzzy(p, ctxs)).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
     //passing xpaths: rank the query against every search field, merge additively
     pub fn rank(
         &self,
@@ -713,6 +745,8 @@ where
             };
         };
 
+        //typo tolerance: unknown query terms become fuzzy (filters stay exact)
+        let query = &self.auto_fuzzy(query, ctxs);
         let mut by_doc: HashMap<DocId, SearchHit> = HashMap::new();
 
         //same-element relevance across array subfields

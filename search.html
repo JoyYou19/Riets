@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riets Search</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --muted: #9aa3af;
+    --accent: #4f8cff;
+    --mark: #ffd54a;
+    --mark-text: #1a1a1a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 48px 20px 80px; }
+  h1 { font-size: 24px; font-weight: 700; margin: 0 0 24px; letter-spacing: -0.02em; }
+  h1 .db { color: var(--muted); font-size: 13px; font-weight: 500; margin-left: 8px; }
+  .searchbar { display: flex; gap: 10px; }
+  #q {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 16px;
+    color: var(--text);
+    outline: none;
+  }
+  #q:focus { border-color: var(--accent); }
+  button { cursor: pointer; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; padding: 14px 20px; }
+  #go { background: var(--accent); color: #fff; }
+  #go:disabled { opacity: 0.5; cursor: default; }
+  .meta {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: var(--muted);
+    min-height: 18px;
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .badge {
+    display: inline-block;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .badge.wand { color: #ff9d5c; border-color: #ff9d5c55; }
+  .note { margin-top: 10px; font-size: 13px; color: var(--accent); }
+  .results { list-style: none; margin: 24px 0 0; padding: 0; }
+  .results li {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .r-row { display: flex; gap: 14px; align-items: flex-start; }
+  .r-thumb {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 8px;
+    background: var(--panel-2);
+    flex: 0 0 auto;
+  }
+  .r-body { flex: 1; min-width: 0; }
+  .r-head { display: flex; align-items: baseline; gap: 12px; }
+  .r-title { font-size: 16px; font-weight: 600; color: var(--accent); text-decoration: none; }
+  .r-title:hover { text-decoration: underline; }
+  .r-score { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .r-id { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .r-snippet { margin-top: 10px; font-size: 14px; line-height: 1.55; color: var(--text); }
+  .r-snippet mark { background: var(--mark); color: var(--mark-text); border-radius: 3px; padding: 0 2px; }
+  .error {
+    margin-top: 24px;
+    background: #2a1417;
+    border: 1px solid #5c2630;
+    color: #ff9aa5;
+    border-radius: 12px;
+    padding: 14px 18px;
+    font-size: 14px;
+  }
+  .empty { color: var(--muted); margin-top: 24px; font-size: 14px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Riets Search<span class="db" id="db-label"></span></h1>
+
+    <form class="searchbar" id="form" autocomplete="off">
+      <input id="q" type="text" placeholder="Search…" autofocus>
+      <button id="go" type="submit">Search</button>
+    </form>
+
+    <div class="meta" id="meta"></div>
+    <div class="note" id="note"></div>
+    <ul class="results" id="results"></ul>
+  </div>
+
+  <script>
+    // ---- config (edit these) --------------------------------------------
+    const BASE = "http://10.10.10.74:6006";
+    const DB = "wiki";
+    const SORT_RATIO = 80; // pagerank boost ratio
+    // ---------------------------------------------------------------------
+
+    const $ = (id) => document.getElementById(id);
+    const q = $("q"), form = $("form"), go = $("go"), meta = $("meta"),
+          note = $("note"), results = $("results");
+    $("db-label").textContent = `· ${BASE}/api/databases/${DB}`;
+
+    // >3 words -> WAND, otherwise AND
+    function wordCount(text) {
+      return text.trim().split(/\s+/).filter(Boolean).length;
+    }
+    function queryMode(text) {
+      return wordCount(text) > 3 ? "WAND" : "AND";
+    }
+
+    function searchBody(text) {
+      const query = {};
+      query[queryMode(text)] = text;
+      return {
+        query,
+        sort: { "rank/pagerank": { "ratio": SORT_RATIO, "order": "desc" } },
+        match_mode: "crossfields",
+        highlight: { fields: { lead: { sentence: true } } },
+        return_fields: { text: false }
+      };
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+    }
+    function truncate(s, n) {
+      s = String(s ?? "");
+      return s.length > n ? s.slice(0, n) + "…" : s;
+    }
+    // highlight fragments come back wrapped in "======...======"
+    function highlightToHtml(s) {
+      return String(s ?? "").split("======").map((part, i) =>
+        i % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)
+      ).join("");
+    }
+    // protocol-relative thumb URLs ("//thumb.wikimedia.org/...") need https://
+    function imgUrl(u) {
+      u = String(u || "").trim();
+      if (!u) return "";
+      return u.startsWith("//") ? "https:" + u : u;
+    }
+
+    async function post(path, body) {
+      const res = await fetch(`${BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const json = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, json };
+    }
+
+    function renderResults(json, noteText) {
+      results.innerHTML = "";
+      note.innerHTML = noteText ? escapeHtml(noteText) : "";
+      const th = json.total_hits || {};
+      const items = Array.isArray(json.data) ? json.data : [];
+      meta.innerHTML =
+        `<span class="badge ${queryMode(q.value) === "WAND" ? "wand" : ""}">${queryMode(q.value)}</span>` +
+        `<span>${items.length} shown</span>` +
+        `<span>${th.value ?? 0}${th.more ? "+" : ""} total hits</span>` +
+        (json.time_taken ? `<span>${json.time_taken}</span>` : "");
+
+      if (!items.length) {
+        results.innerHTML = `<div class="empty">No results.</div>`;
+        return;
+      }
+      for (const item of items) {
+        const d = item.data || {};
+        const title = d.title || item.id || "(untitled)";
+        const score = Number(item.score ?? 0).toFixed(1);
+        const snippets = item.highlights || [];
+        const lead = d.lead || "";
+        const img = imgUrl(d.image);
+        const wiki = `https://en.wikipedia.org/wiki/${encodeURIComponent(item.id || "")}`;
+        const thumb = img ? `<img class="r-thumb" src="${escapeHtml(img)}" alt="" loading="lazy">` : "";
+
+        const li = document.createElement("li");
+        li.innerHTML =
+          `<div class="r-row">${thumb}<div class="r-body">` +
+            `<div class="r-head">` +
+              `<a class="r-title" href="${escapeHtml(wiki)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>` +
+              `<span class="r-score">${score}</span>` +
+            `</div>` +
+            `<div class="r-id">${escapeHtml(item.id || "")}</div>` +
+            `<div class="r-snippet">${snippets.length ? highlightToHtml(snippets[0]) : escapeHtml(truncate(lead, 320))}</div>` +
+          `</div></div>`;
+        results.appendChild(li);
+      }
+    }
+
+    function renderError(msg) {
+      results.innerHTML = "";
+      note.innerHTML = "";
+      meta.innerHTML = "";
+      results.innerHTML = `<div class="error">${escapeHtml(msg)}</div>`;
+    }
+
+    function setLoading(on) {
+      go.disabled = on;
+      go.textContent = on ? "…" : "Search";
+    }
+
+    let reqSeq = 0; // ignore out-of-order responses from rapid typing
+
+    async function runSearch() {
+      const text = q.value.trim();
+      const seq = ++reqSeq;
+      if (!text) {
+        results.innerHTML = "";
+        note.innerHTML = "";
+        meta.innerHTML = "";
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      try {
+        const first = await post(`/api/databases/${DB}/search`, searchBody(text));
+        if (seq !== reqSeq) return;
+        if (!first.ok) { renderError(first.json.title || ("HTTP " + first.status)); return; }
+
+        const items = Array.isArray(first.json.data) ? first.json.data : [];
+        if (items.length === 0) {
+          // no exact matches -> fall back to fuzzy (did-you-mean)
+          const dym = await post(`/api/databases/${DB}/did-you-mean`,
+            { value: text, fuzziness: "auto" });
+          if (seq !== reqSeq) return;
+          const corrected = dym.ok ? String((dym.json.data || {}).corrected || "").trim() : "";
+          if (corrected && corrected.toLowerCase() !== text.toLowerCase()) {
+            const second = await post(`/api/databases/${DB}/search`, searchBody(corrected));
+            if (seq !== reqSeq) return;
+            if (second.ok && (second.json.data || []).length > 0) {
+              renderResults(second.json, `No exact matches — showing results for “${corrected}”.`);
+              return;
+            }
+          }
+          renderResults(first.json); // genuinely zero
+        } else {
+          renderResults(first.json);
+        }
+      } catch (e) {
+        if (seq === reqSeq) renderError("Network error: " + e.message);
+      } finally {
+        if (seq === reqSeq) setLoading(false);
+      }
+    }
+
+    q.addEventListener("input", runSearch);
+    form.addEventListener("submit", (e) => { e.preventDefault(); runSearch(); });
+  </script>
+</body>
+</html>
