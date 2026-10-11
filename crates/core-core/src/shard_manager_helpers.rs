@@ -144,6 +144,12 @@ fn cmp_asc(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
 /// direction      = desc ? field_norm : 1 - field_norm  → "how good is this doc's value"
 /// blend          = (rel_weight * relevance_norm + Σ ratio_i * direction_i) / denom
 //                                  hit          sort fields like year, imdb...
+/// multiplicative blend:
+///   final = relevance * (1 + Σ (ratio_i/100) * direction_i)
+/// direction_i ∈ [0,1] is the normalized sort value. A ratio of R lets that field boost
+/// relevance by at most (1 + R/100)×, so it reorders *within* a relevance band and can never
+/// promote an irrelevant doc above a clearly-relevant one. Raw relevance (no rel_best
+/// normalization, no 0.3 gate) -> no NaN.
 pub fn order_blended(
     items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
     specs: &[SortField],
@@ -153,30 +159,13 @@ pub fn order_blended(
         return;
     }
 
-    let rel_best = items
-        .iter()
-        .fold(0.0f32, |best, (hit, _)| best.max(hit.score));
-    let total_ratio: u32 = specs.iter().map(|s| s.ratio as u32).sum();
-    let rel_weight = 100u32.saturating_sub(total_ratio) as f32;
-    let denom = total_ratio.max(100) as f32;
-
     let blends: Vec<f32> = items
         .iter()
         .map(|(hit, keys)| {
-            //INFO: if the relevance of a document if FAR less than the besat one we dont let some numeric
-            //sort to somehow bring it up
-            let relevance = if rel_best > 0.0 && hit.score < rel_best * 0.3 {
-                0.0
-            } else {
-                (hit.score / rel_best).clamp(0.0, 1.0)
-            };
+            //filter-only / MatchAll (score 0): relevance is flat, so sort purely by the fields
+            let relevance = if hit.score > 0.0 { hit.score } else { 1.0 };
 
-            // let relevance = if rel_best > 0.0 {
-            //     (hit.score / rel_best).clamp(0.0, 1.0)
-            // } else {
-            //     0.0
-            // };
-            let mut field_sum = 0.0f32;
+            let mut boost = 1.0f32;
             for (index, spec) in specs.iter().enumerate() {
                 let component = match keys[index] {
                     None => 0.0,
@@ -191,13 +180,14 @@ pub fn order_blended(
                         _ => 1.0,
                     },
                 };
-                field_sum += spec.ratio as f32 * component;
+                boost += (spec.ratio as f32 / 100.0) * component;
             }
-            (rel_weight * relevance + field_sum) / denom
+
+            relevance * boost
         })
         .collect();
 
-    //sorting by computed vals
+    //sort by computed vals
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_unstable_by(|&a, &b| {
         blends[b]
@@ -211,8 +201,7 @@ pub fn order_blended(
         .into_iter()
         .map(|index| {
             let (mut hit, keys) = items[index].clone();
-            hit.score = blends[index]; //switching the relevance score with our calculated one for
-            //better output
+            hit.score = blends[index];
             (hit, keys)
         })
         .collect();
