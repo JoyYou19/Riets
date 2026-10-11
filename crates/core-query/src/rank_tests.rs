@@ -14,7 +14,8 @@ use core_index::{
     types::{DocId, ShardId, XPathId, make_doc_id},
 };
 
-use core_protocol::command_reponse_definitions::MatchMode;
+use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
+use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 
 use crate::{CorpusStats, Query, QueryExecutor, resolver::FieldCtx, scorer::bm25_score_scaled};
 
@@ -473,6 +474,14 @@ fn smaller_pages_are_prefixes_of_larger_pages() {
         Query::Or(vec![term("emperor"), term("penguin")]),
         Query::Or(vec![term("world"), term("war"), term("battle")]),
         Query::Prefix("pen".into()),
+        Query::Fuzzy(
+            "pengiun".into(),
+            Fuzziness::Auto,
+            FuzzySpec {
+                prefix_length: DEFAULT_PREFIX_LENGTH,
+                max_expansions: DEFAULT_MAX_EXPANSIONS,
+            },
+        ),
     ];
     for mode in MODES {
         for query in &queries {
@@ -524,6 +533,10 @@ fn a_document_scores_the_same_in_any_shard() {
     let analyzer = Analyzer::new();
     let docs = corpus(55, 700);
     let none = HashSet::new();
+    let spec = FuzzySpec {
+        prefix_length: DEFAULT_PREFIX_LENGTH,
+        max_expansions: 2,
+    };
     let queries = [
         term(&analyzer, "penguin"),
         term(&analyzer, "rocket"),
@@ -531,6 +544,7 @@ fn a_document_scores_the_same_in_any_shard() {
         Query::Or(vec![term(&analyzer, "winter"), term(&analyzer, "summer")]),
         Query::Prefix("ca".into()),
         Query::Wildcard("b?ttl*".into()),
+        Query::Fuzzy("bottle".into(), Fuzziness::Two, spec),
         Query::And(vec![
             term(&analyzer, "world"),
             Query::Or(vec![term(&analyzer, "war"), term(&analyzer, "battle")]),

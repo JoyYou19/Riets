@@ -22,12 +22,15 @@ use core_timing::timed;
 use crate::{
     ScoredPosting, SearchHit, TopHit,
     ast::Query,
-    corpus_stats::{CorpusStats, FieldTotals, LeafKey, ScoringStats},
+    corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
     prepared::PreparedQuery,
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
     scorer::{fuzzy_decay, score_term_hybrid, score_term_into},
     wand::{FieldTerms, TermRef, WandHit, conjunctive_top_k_multi_field, wand_top_k_multi_field},
 };
+
+// A fuzzy query with more words than this matches nothing (one bit per word is tracked).
+const MAX_FUZZY_WORDS: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct WordSuggestions {
@@ -151,6 +154,26 @@ where
         ScoringStats {
             index: self.index,
             corpus: self.corpus,
+        }
+    }
+
+    /// The words `word` can be changed into, with the number of documents each is in: from every
+    /// shard when the search has statistics, from this index otherwise.
+    fn fuzzy_candidates(
+        &self,
+        word: &str,
+        xpath: XPathId,
+        opts: FuzzyOptions,
+    ) -> Vec<FuzzyExpansion> {
+        self.corpus
+            .and_then(|corpus| corpus.fuzzy(xpath, &FuzzyKey::new(word, opts)))
+            .unwrap_or_else(|| self.index.fuzzy_expansions(word, xpath, opts))
+    }
+
+    fn field_totals(&self, xpath: XPathId) -> FieldTotals {
+        FieldTotals {
+            doc_count: self.index.doc_count(xpath),
+            total_doc_len: self.index.total_doc_len(xpath),
         }
     }
 
@@ -746,15 +769,24 @@ where
                     self.prepare_leaves(part, ctx, out);
                 }
             }
+            Query::Fuzzy(raw, fuzziness, spec) => {
+                let words = self.fuzzy_words(raw);
+                if words.len() >= MAX_FUZZY_WORDS {
+                    return;
+                }
+                out.insert_field(ctx.xpath, self.field_totals(ctx.xpath));
+                for word in &words {
+                    let opts = fuzzy_options(word, *fuzziness, *spec);
+                    out.insert_fuzzy(
+                        ctx.xpath,
+                        FuzzyKey::new(word, opts),
+                        self.index.fuzzy_expansions(word, ctx.xpath, opts),
+                    );
+                }
+            }
             _ => {
                 if let Some(leaf) = self.leaf(query, ctx) {
-                    out.insert_field(
-                        leaf.xpath,
-                        FieldTotals {
-                            doc_count: self.index.doc_count(leaf.xpath),
-                            total_doc_len: self.index.total_doc_len(leaf.xpath),
-                        },
-                    );
+                    out.insert_field(leaf.xpath, self.field_totals(leaf.xpath));
                     out.insert_leaf(leaf.xpath, leaf.key, leaf.postings.into_owned());
                 }
             }
@@ -1050,7 +1082,7 @@ where
 
         //blad ja kaads iedeva 64 vardu queriju mums overflow notiks fuck that shit fuzzy taapat
         //buutu par leenu
-        if words.len() >= 64 {
+        if words.len() >= MAX_FUZZY_WORDS {
             return Vec::new();
         }
 
@@ -1068,8 +1100,8 @@ where
             let opts = fuzzy_options(word, fuzziness, spec);
             let bit = 1u64 << word_index;
 
-            //guess words based on max edit count
-            let mut expansions = self.index.fuzzy_expansions(word, xpath, opts);
+            //guess words based on max edit count, from the words of every shard
+            let mut expansions = self.fuzzy_candidates(word, xpath, opts);
             //best guesses for the words
             rank_and_cap(&mut expansions, spec.max_expansions);
 
@@ -1079,7 +1111,7 @@ where
                 let postings = self.index.lookup(&expansion.term, xpath);
 
                 scored_buf.clear();
-                let true_df = self.index.doc_freq(&expansion.term, xpath) as f32;
+                let true_df = expansion.doc_freq as f32;
                 //BM25 scoring
                 score_term_into(
                     &self.stats(),

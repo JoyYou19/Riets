@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use core_index::{
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
     search::SearchStats,
     types::{DocId, XPathId},
 };
@@ -25,16 +26,38 @@ pub(crate) enum LeafKey {
     Exact(String),
 }
 
+/// What a fuzzy leaf expands: one word of the query and how far it may be changed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct FuzzyKey {
+    word: String,
+    max_edits: u8,
+    prefix_length: usize,
+}
+
+impl FuzzyKey {
+    pub(crate) fn new(word: &str, opts: FuzzyOptions) -> Self {
+        Self {
+            word: word.to_string(),
+            max_edits: opts.max_edits,
+            prefix_length: opts.prefix_length,
+        }
+    }
+}
+
 /// The BM25 statistics of one query: the totals of every field it scores and the document
 /// frequency of every leaf.
 ///
 /// Every shard reports its own values. A document lives in exactly one shard, so the sum over all
 /// shards (`merge`) is what one shard holding every document would report. Scoring with that sum
 /// gives a document the same score wherever it is stored.
+///
+/// For a fuzzy leaf the values are the words it can expand to, with the number of documents each
+/// is in: the expansions that get searched are picked from all shards' words together.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CorpusStats {
     fields: HashMap<XPathId, FieldTotals>,
     doc_freqs: HashMap<XPathId, HashMap<LeafKey, u64>>,
+    fuzzy: HashMap<XPathId, HashMap<FuzzyKey, BTreeMap<String, FuzzyExpansion>>>,
 }
 
 impl CorpusStats {
@@ -53,6 +76,18 @@ impl CorpusStats {
             .insert(key, doc_freq);
     }
 
+    pub(crate) fn insert_fuzzy(
+        &mut self,
+        xpath: XPathId,
+        key: FuzzyKey,
+        expansions: Vec<FuzzyExpansion>,
+    ) {
+        let words = self.fuzzy.entry(xpath).or_default().entry(key).or_default();
+        for expansion in expansions {
+            words.insert(expansion.term.clone(), expansion);
+        }
+    }
+
     /// Adds another shard's statistics to these.
     pub fn merge(&mut self, other: &CorpusStats) {
         for (&xpath, totals) in &other.fields {
@@ -67,6 +102,31 @@ impl CorpusStats {
                 *entry = entry.saturating_add(doc_freq);
             }
         }
+        for (&xpath, keys) in &other.fuzzy {
+            let field = self.fuzzy.entry(xpath).or_default();
+            for (key, expansions) in keys {
+                let words = field.entry(key.clone()).or_default();
+                for expansion in expansions.values() {
+                    match words.get_mut(&expansion.term) {
+                        Some(existing) => {
+                            existing.edits = existing.edits.min(expansion.edits);
+                            existing.doc_freq =
+                                existing.doc_freq.saturating_add(expansion.doc_freq);
+                        }
+                        None => {
+                            words.insert(expansion.term.clone(), expansion.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn fuzzy(&self, xpath: XPathId, key: &FuzzyKey) -> Option<Vec<FuzzyExpansion>> {
+        self.fuzzy
+            .get(&xpath)
+            .and_then(|keys| keys.get(key))
+            .map(|words| words.values().cloned().collect())
     }
 
     pub fn field(&self, xpath: XPathId) -> Option<FieldTotals> {
@@ -164,6 +224,42 @@ mod tests {
         );
         assert_eq!(corpus.doc_freq(1, &LeafKey::Term("emperor".into())), None);
         assert_eq!(corpus.doc_freq(2, &LeafKey::Term("penguin".into())), None);
+    }
+
+    #[test]
+    fn merge_adds_the_document_frequencies_of_fuzzy_words() {
+        let key = FuzzyKey::new(
+            "pengiun",
+            FuzzyOptions {
+                max_edits: 2,
+                prefix_length: 1,
+                max_expansions: 50,
+            },
+        );
+        let mut first = CorpusStats::new();
+        first.insert_fuzzy(
+            1,
+            key.clone(),
+            vec![
+                FuzzyExpansion::new("penguin", 2, 4),
+                FuzzyExpansion::new("pengui", 1, 1),
+            ],
+        );
+        let mut second = CorpusStats::new();
+        second.insert_fuzzy(1, key.clone(), vec![FuzzyExpansion::new("penguin", 2, 6)]);
+
+        let mut corpus = CorpusStats::new();
+        corpus.merge(&first);
+        corpus.merge(&second);
+
+        assert_eq!(
+            corpus.fuzzy(1, &key),
+            Some(vec![
+                FuzzyExpansion::new("pengui", 1, 1),
+                FuzzyExpansion::new("penguin", 2, 10),
+            ])
+        );
+        assert_eq!(corpus.fuzzy(2, &key), None);
     }
 
     #[test]
