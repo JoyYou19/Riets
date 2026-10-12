@@ -49,16 +49,22 @@ impl Analyzer {
     #[timed(indexing_documents)]
     pub fn with_literal_symbols(symbols: impl IntoIterator<Item = char>) -> Self {
         let literal_symbols: HashSet<char> = symbols.into_iter().collect();
+        //
         //TODO: configurable
-        let stopwords: HashSet<String> = [
-            "a", "an", "the", "and", "or", "of", "is", "it", "this", "that", "he", "she", "you",
-            "i", "am", "are", "was", "were", "be", "been", "being", "to", "in", "on", "for",
-            "with", "as", "by", "at", "from", "but", "not", "his", "her", "their", "they", "we",
-            "my", "your", "our", "who", "what", "when", "where", "why", "how",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+        // let stopwords: HashSet<String> = [
+        //     "a", "an", "the", "and", "or", "of", "is", "it", "this", "that", "he", "she", "you",
+        //     "i", "am", "are", "was", "were", "be", "been", "being", "to", "in", "on", "for",
+        //     "with", "as", "by", "at", "from", "but", "not", "his", "her", "their", "they", "we",
+        //     "my", "your", "our", "who", "what", "when", "where", "why", "how",
+        // ]
+        // .into_iter()
+        // .map(str::to_string)
+        // .collect();
+
+        //INFO: nevienam najhuj nav stopwordi, piem elastics palaujaas ka bm25 nahrenizees sito
+        //vardu + sis prieks relevances var stradat precizak un knapi leenaak uz moderniem dzelziem,
+        //still japataisa configurable tho
+        let stopwords: HashSet<String> = HashSet::new();
 
         let analyzer = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
             .filter(RemoveLongFilter::limit(40))
