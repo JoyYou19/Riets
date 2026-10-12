@@ -1042,19 +1042,15 @@ fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
 fn additive_terms(query: &Query) -> Option<Vec<&str>> {
     match query {
         Query::Term(term) => Some(vec![term.as_str()]),
-        Query::Wand(parts) | Query::Or(parts)
-            if parts.iter().all(|part| matches!(part, Query::Term(_))) =>
-        {
-            Some(
-                parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        Query::Term(term) => Some(term.as_str()),
-                        _ => None,
-                    })
-                    .collect(),
-            )
-        }
+        Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => Some(
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    Query::Term(term) => Some(term.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        ),
         _ => None,
     }
 }
