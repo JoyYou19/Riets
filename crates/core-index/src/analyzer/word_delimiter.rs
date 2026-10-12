@@ -22,9 +22,10 @@ pub fn expand_word_delimiters(word: &str, literal_symbols: &HashSet<char>) -> Ve
         .collect();
 
     let mut out = Vec::with_capacity(parts.len() + 2);
-    out.push(word.to_string()); // original
-    out.extend(parts.iter().cloned()); // split parts
-    out.push(parts.concat()); // catenated
+    out.push(word.to_string());
+    out.extend(parts.iter().cloned());
+    out.push(parts.concat());
+    out.retain(|s| !s.is_empty());
     out
 }
 

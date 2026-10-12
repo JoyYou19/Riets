@@ -128,7 +128,10 @@ impl Analyzer {
         let canonical: String = input
             .chars()
             .filter(|c| {
-                c.is_alphanumeric() || c.is_whitespace() || self.literal_symbols.contains(c)
+                c.is_alphanumeric()
+                    || c.is_whitespace()
+                    || self.literal_symbols.contains(c)
+                    || !c.is_ascii()
             })
             .collect();
         self.analyze(&canonical)
