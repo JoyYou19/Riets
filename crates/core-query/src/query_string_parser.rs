@@ -5,7 +5,7 @@ use simd_json::{
     base::{TypedValue, ValueAsScalar},
 };
 
-use crate::ast::Query;
+use crate::ast::{Query, SynonymAlternative};
 use core_index::{
     analyzer::Analyzer,
     fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec},
@@ -47,6 +47,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
 
         Query::Exact(term) => Some(Query::Exact(term)),
         Query::Fuzzy(term, fuzziness, spec) => Some(Query::Fuzzy(term, fuzziness, spec)),
+        Query::Synonym(forms) => analyze_synonym(forms, analyzer),
 
         Query::Range(range) => Some(Query::Range(range)),
         Query::Bool(b) => Some(Query::Bool(b)),
@@ -63,6 +64,34 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
         }
         Query::MatchAll => Some(Query::MatchAll),
     }
+}
+
+/// The typed form (the first) decides: when the analyzer drops it (a stopword), the whole group
+/// goes, as the word alone would. Forms that analyze to the same query are kept once, at the
+/// higher weight.
+fn analyze_synonym(forms: Vec<SynonymAlternative>, analyzer: &Analyzer) -> Option<Query> {
+    let mut forms = forms.into_iter();
+    let typed = forms.next()?;
+    let mut kept = vec![SynonymAlternative {
+        query: analyze_query(typed.query, analyzer)?,
+        weight: typed.weight,
+    }];
+    for form in forms {
+        let Some(query) = analyze_query(form.query, analyzer) else {
+            continue;
+        };
+        match kept.iter_mut().find(|known| known.query == query) {
+            Some(known) => known.weight = known.weight.max(form.weight),
+            None => kept.push(SynonymAlternative {
+                query,
+                weight: form.weight,
+            }),
+        }
+    }
+    if kept.len() == 1 {
+        return kept.pop().map(|form| form.query);
+    }
+    Some(Query::Synonym(kept))
 }
 
 #[timed(search)]

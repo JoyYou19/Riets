@@ -1,4 +1,6 @@
-use std::{collections::HashMap, io, path::PathBuf, process};
+use std::{collections::HashMap, io, path::PathBuf, process, sync::OnceLock};
+
+use core_query::dictionary::SynonymRegistry;
 
 use slog::{info, warn};
 //helper file to manage and easilly add corelamo settings
@@ -256,4 +258,25 @@ pub fn validate_settings(settings: &HashMap<String, String>) -> Result<(), Strin
     }
 
     Ok(())
+}
+
+static SYNONYM_REGISTRY: OnceLock<SynonymRegistry> = OnceLock::new();
+
+/// Opens CorelamoDictionary.toml next to CorelamoSettings.toml (written from the built-in copy on
+/// first start); every database copies it when it is created.
+pub fn init_synonyms(settings: &HashMap<String, String>) -> Result<(), String> {
+    let root_path = PathBuf::from(get(settings, "root-path"));
+    let registry = SynonymRegistry::open(&root_path)
+        .map_err(|e| format!("failed to load the synonym dictionary: {e}"))?;
+    let log = slog_scope::logger();
+    info!(log, "synonym dictionary loaded"; "template_path" => %registry.template_path().display());
+    SYNONYM_REGISTRY
+        .set(registry)
+        .map_err(|_| "synonym registry initialised twice".to_string())
+}
+
+pub fn synonym_registry() -> &'static SynonymRegistry {
+    SYNONYM_REGISTRY
+        .get()
+        .expect("synonym registry used before corelamo_settings::init_synonyms in main")
 }

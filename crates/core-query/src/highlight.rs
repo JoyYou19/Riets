@@ -56,6 +56,11 @@ fn collect(query: &Query, analyzer: &Analyzer, out: &mut Vec<HighlightMatcher>) 
                 collect(c, analyzer, out);
             }
         }
+        Query::Synonym(forms) => {
+            for form in forms {
+                collect(&form.query, analyzer, out);
+            }
+        }
         Query::Range(_) | Query::Bool(_) | Query::MatchAll => {}
     }
 }

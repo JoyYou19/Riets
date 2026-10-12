@@ -22,6 +22,7 @@
 /scripts/fever.zip
 /scripts/corpus.jsonl
 /scripts/eval
+/scripts/kilt_knowledgesource.json.gz.part
 # If all fixtures are generated and should never be committed:
 /crates/core-testkit/fixtures/*.jsonl
 !/crates/core-testkit/fixtures/small.jsonl

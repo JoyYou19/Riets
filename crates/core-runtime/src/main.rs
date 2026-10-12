@@ -159,6 +159,11 @@ async fn main() -> io::Result<()> {
     let databases_dir = root_path.join("databases");
     info!(log, "databases_dir:";"databases_dir" => %databases_dir.display());
 
+    if let Err(e) = corelamo_settings::init_synonyms(&settings) {
+        error!(log, "error loading the synonym dictionary"; "error" => %e);
+        process::exit(1);
+    }
+
     let databases = match database_helpers::load_saved_shard_managers(&databases_dir) {
         Ok(dbs) => dbs,
         Err(e) => {
@@ -313,6 +318,18 @@ async fn main() -> io::Result<()> {
         .route(
             "/api/databases/{db_name}/get-config",
             get(handlers::get_config_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/dictionary",
+            get(handlers::get_dictionary_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/dictionary/set",
+            post(handlers::set_dictionary_handler),
+        )
+        .route(
+            "/api/databases/{db_name}/dictionary/reload",
+            post(handlers::reload_dictionary_handler),
         )
         .route(
             "/api/databases/{db_name}/set-config",
