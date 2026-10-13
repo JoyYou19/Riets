@@ -16,9 +16,8 @@ use simd_json::{OwnedValue, StaticNode, base::ValueAsScalar};
 
 use crate::{
     Query,
-    expand::expand_synonyms,
-    query_string_parser::{analyze_query, parse_json_query},
-    syn::Synonyms,
+        query_string_parser::{analyze_query, parse_json_query},
+    synonyms::{Synonyms, expand_synonyms},
 };
 
 #[derive(Debug, Clone, Copy)]

@@ -17,7 +17,7 @@ use toml::Spanned;
 
 use core_index::analyzer::Analyzer;
 
-use crate::syn::{
+use crate::synonyms::{
     DictionaryBuilder, DictionaryError, RomanConfig, SynonymDictionary, SynonymStore, Synonyms,
     parse_variant,
 };
