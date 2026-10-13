@@ -216,7 +216,11 @@ where
             }
 
             if all_terms_in_doc && phrase_matches(&position_lists) {
-                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first_posting.positions.clone(),
+                    first_posting.weight,
+                ));
             }
         }
 
@@ -307,7 +311,11 @@ where
             }
 
             if all_terms_in_doc && phrase_matches(&position_lists) {
-                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first_posting.positions.clone(),
+                    first_posting.weight,
+                ));
             }
         }
 
