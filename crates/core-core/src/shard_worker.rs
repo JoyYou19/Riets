@@ -266,19 +266,9 @@ impl ShardHandle {
     /// Pins the snapshot the search reads and reads the query from it once: the posting lists
     /// ranking needs, and from them what this shard adds to the statistics of the search.
     #[timed(search)]
-    pub fn prepare_search(
-        &self,
-        query: Option<&Query>,
-        ctxs: &[FieldCtx],
-        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
-        include_array_groups: bool,
-    ) -> PreparedShardSearch {
+    pub fn prepare_search(&self, query: Option<&Query>, ctxs: &[FieldCtx]) -> PreparedShardSearch {
         let snapshot = self.shared.snapshot.get();
-        let prepared = QueryExecutor::new(&*snapshot, &self.analyzer, groups).prepare(
-            query,
-            ctxs,
-            include_array_groups,
-        );
+        let prepared = QueryExecutor::new(&*snapshot, &self.analyzer).prepare(query, ctxs);
         PreparedShardSearch { snapshot, prepared }
     }
 
@@ -292,15 +282,13 @@ impl ShardHandle {
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
         k: usize,
-        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
-        include_array_groups: bool,
         mactmode: MatchMode,
     ) -> (usize, Vec<SearchHit>) {
         if k == 0 {
             return (0, Vec::new());
         }
 
-        let executor = QueryExecutor::new(snapshot, &self.analyzer, groups)
+        let executor = QueryExecutor::new(snapshot, &self.analyzer)
             .with_corpus(corpus)
             .with_prepared(prepared);
 
@@ -330,8 +318,6 @@ impl ShardHandle {
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
         k: usize,
-        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
-        include_array_groups: bool,
         mactmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
         let snapshot = &prepared.snapshot;
@@ -343,8 +329,6 @@ impl ShardHandle {
             filters,
             ctxs,
             k,
-            groups,
-            include_array_groups,
             mactmode,
         );
         Ok(ShardRankedResult {
@@ -365,8 +349,6 @@ impl ShardHandle {
         ctxs: &[FieldCtx],
         sort_xpaths: &[XPathId],
         window: usize,
-        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
-        include_array_groups: bool,
         matchmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
         if window == 0 {
@@ -386,8 +368,6 @@ impl ShardHandle {
             filters,
             ctxs,
             window,
-            groups,
-            include_array_groups,
             matchmode,
         );
         if candidates.is_empty() {

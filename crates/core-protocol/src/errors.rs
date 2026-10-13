@@ -123,9 +123,15 @@ impl From<std::io::Error> for CorelamoError {
 }
 
 impl From<simd_json::Error> for CorelamoError {
-   fn from(e: simd_json::Error) -> Self {
+    fn from(e: simd_json::Error) -> Self {
         CorelamoError::InvalidData(e.to_string())
-    } 
+    }
+}
+
+impl From<serde_json::Error> for CorelamoError {
+    fn from(e: serde_json::Error) -> Self {
+        CorelamoError::InvalidData(e.to_string())
+    }
 }
 
 impl From<toml::de::Error> for CorelamoError {

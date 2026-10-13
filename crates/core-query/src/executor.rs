@@ -118,7 +118,6 @@ where
     // A query is analyzed also the same way as the index, so we could filter out words, stemming,
     // whaatever
     analyzer: &'a Analyzer,
-    array_groups: Vec<Vec<FieldCtx>>,
 
     // Statistics of the whole search. Without them every score uses this index's own, which is
     // right when it holds all the documents.
@@ -132,28 +131,10 @@ impl<'a, I> QueryExecutor<'a, I>
 where
     I: SearchIndex + SearchStats + SearchNumeric,
 {
-    pub fn new(
-        index: &'a I,
-        analyzer: &'a Analyzer,
-        array_groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
-    ) -> Self {
-        let array_groups = array_groups
-            .into_iter()
-            .map(|group| {
-                group
-                    .into_iter()
-                    .map(|(xpath, exact_xpath)| FieldCtx {
-                        xpath,
-                        exact_xpath,
-                        row_keyed: true,
-                    })
-                    .collect()
-            })
-            .collect();
+    pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self {
             index,
             analyzer,
-            array_groups,
             corpus: None,
             prepared: None,
         }
@@ -175,6 +156,15 @@ where
         ScoringStats {
             index: self.index,
             corpus: self.corpus,
+        }
+    }
+
+    //row-keyed postings are per element/row fold a hit onto its document
+    fn fold_to_doc(&self, ctx: FieldCtx, id: DocId) -> Option<DocId> {
+        if ctx.row_keyed {
+            self.index.doc_of_row(id)
+        } else {
+            Some(id)
         }
     }
 
@@ -577,23 +567,7 @@ where
                     EvalOutcome::Docs(out)
                 }
                 EvalMode::Rank => {
-                    let mut acc: HashMap<DocId, ScoredPosting> = HashMap::new();
-                    for &ctx in ctxs {
-                        for hit in self.execute_scored_fuzzy(v, ctx.xpath, *fz, *spec) {
-                            match acc.entry(hit.doc_id) {
-                                Entry::Vacant(e) => {
-                                    e.insert(hit);
-                                }
-                                Entry::Occupied(mut e) => {
-                                    let cur = e.get_mut();
-                                    cur.score = cur.score.saturating_add(hit.score);
-                                    cur.matched_terms =
-                                        cur.matched_terms.saturating_add(hit.matched_terms);
-                                }
-                            }
-                        }
-                    }
-                    EvalOutcome::Scored(acc.into_values().collect())
+                    EvalOutcome::Scored(self.execute_scored_fuzzy(v, ctxs, *fz, *spec))
                 }
             },
             Query::Range(r) => {
@@ -710,7 +684,13 @@ where
                 &mut scored,
             );
 
-            for hit in scored.drain(..) {
+            for mut hit in scored.drain(..) {
+                //match array row to document
+                let Some(doc) = self.fold_to_doc(ctx, hit.doc_id) else {
+                    continue;
+                };
+                hit.doc_id = doc;
+
                 match acc.entry(hit.doc_id) {
                     Entry::Vacant(e) => {
                         e.insert(hit);
@@ -757,8 +737,7 @@ where
                 .iter()
                 .map(|&ctx| {
                     let leaf = self.leaf(typed, ctx)?;
-                    let doc_freq =
-                        self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+                    let doc_freq = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
                     (doc_freq > 0).then_some(doc_freq)
                 })
                 .collect(),
@@ -831,28 +810,44 @@ where
         by_doc.into_values().collect()
     }
 
-    //AND logic: filter = intersection, rank = intersection + additive scores
+    //AND logic: filter = row-level intersection, rank = doc-level intersection + additive scores
     fn eval_and(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
-        let mut candidates: Option<HashSet<DocId>> = None;
-        for part in parts {
-            if let EvalOutcome::Docs(docs) = self.evaluate(part, ctxs, EvalMode::Filter) {
-                candidates = Some(match candidates {
-                    Some(cur) => cur.intersection(&docs).copied().collect(),
-                    None => docs,
-                });
-                if candidates.as_ref().is_some_and(|s| s.is_empty()) {
-                    return match mode {
-                        EvalMode::Filter => EvalOutcome::Docs(HashSet::new()),
-                        EvalMode::Rank => EvalOutcome::Scored(Vec::new()),
-                    };
-                }
-            }
-        }
-        let candidates = candidates.unwrap_or_default();
-
         match mode {
-            EvalMode::Filter => EvalOutcome::Docs(candidates),
+            EvalMode::Filter => {
+                let mut candidates: Option<HashSet<DocId>> = None;
+                for part in parts {
+                    if let EvalOutcome::Docs(docs) = self.evaluate(part, ctxs, EvalMode::Filter) {
+                        candidates = Some(match candidates {
+                            Some(cur) => cur.intersection(&docs).copied().collect(),
+                            None => docs,
+                        });
+                        if candidates.as_ref().is_some_and(|s| s.is_empty()) {
+                            return EvalOutcome::Docs(HashSet::new());
+                        }
+                    }
+                }
+                EvalOutcome::Docs(candidates.unwrap_or_default())
+            }
             EvalMode::Rank => {
+                //every part scores doc-keyed (row -> doc folded), intersect the doc ids, add scores
+                let mut candidates: Option<HashSet<DocId>> = None;
+                for part in parts {
+                    let docs: HashSet<DocId> = match self.evaluate(part, ctxs, EvalMode::Rank) {
+                        EvalOutcome::Scored(scored) => {
+                            scored.into_iter().map(|p| p.doc_id).collect()
+                        }
+                        EvalOutcome::Docs(_) => HashSet::new(),
+                    };
+                    candidates = Some(match candidates {
+                        Some(cur) => cur.intersection(&docs).copied().collect(),
+                        None => docs,
+                    });
+                    if candidates.as_ref().is_some_and(|s| s.is_empty()) {
+                        return EvalOutcome::Scored(Vec::new());
+                    }
+                }
+                let candidates = candidates.unwrap_or_default();
+
                 let mut by_doc: HashMap<DocId, ScoredPosting> = HashMap::new();
                 for part in parts {
                     if let EvalOutcome::Scored(scored) = self.evaluate(part, ctxs, EvalMode::Rank) {
@@ -908,61 +903,7 @@ where
         rows.unwrap_or_default()
     }
 
-    //same-element relevance: evaluate the full AST over each array group, resolve rows-> docs
-    fn score_array_groups(
-        &self,
-        query: &Query,
-        restrict: Option<&HashSet<DocId>>,
-    ) -> Vec<SearchHit> {
-        let mut out = Vec::new();
-        for group in &self.array_groups {
-            let EvalOutcome::Scored(scored) = self.evaluate(query, group, EvalMode::Rank) else {
-                continue;
-            };
-            out.extend(self.resolve_group_hits(scored, restrict));
-        }
-        out
-    }
-
-    //row ids -> doc ids, keep the best element per doc
-    fn resolve_group_hits(
-        &self,
-        scored: Vec<ScoredPosting>,
-        restrict: Option<&HashSet<DocId>>,
-    ) -> Vec<SearchHit> {
-        let mut best: HashMap<DocId, (u64, usize)> = HashMap::new();
-        for p in scored {
-            let Some(doc) = self.index.doc_of_row(p.doc_id) else {
-                continue;
-            };
-            let e = best.entry(doc).or_insert((0, 0));
-            e.0 = e.0.max(p.score);
-            e.1 = e.1.max(p.matched_terms);
-        }
-        best.into_iter()
-            .filter(|(doc, _)| restrict.is_none_or(|a| a.contains(doc)))
-            .map(|(doc, (score, matched))| SearchHit {
-                doc_id: doc,
-                matched_terms: matched,
-                weight_sum: (score / 1000).min(u32::MAX as u64) as u32,
-                distance_factor: 1.0,
-                score: score as f32 / 1000.0,
-            })
-            .collect()
-    }
-
-    /// Reads what the query needs from this index, once: the posting list of every leaf in every
-    /// field it is scored in, and from them this index's share of the statistics of the search
-    /// (the totals of those fields and the document frequency of every leaf).
-    ///
-    /// Adding the statistics of all shards up gives those of the whole database, which every
-    /// shard then scores with (`with_corpus`), reading the lists from here (`with_prepared`).
-    pub fn prepare(
-        &self,
-        query: Option<&Query>,
-        ctxs: &[FieldCtx],
-        include_array_groups: bool,
-    ) -> PreparedQuery {
+    pub fn prepare(&self, query: Option<&Query>, ctxs: &[FieldCtx]) -> PreparedQuery {
         let mut prepared = PreparedQuery::default();
         let Some(query) = query else {
             return prepared;
@@ -970,13 +911,6 @@ where
 
         for &ctx in ctxs {
             self.prepare_leaves(query, ctx, &mut prepared);
-        }
-        if include_array_groups {
-            for group in &self.array_groups {
-                for &ctx in group {
-                    self.prepare_leaves(query, ctx, &mut prepared);
-                }
-            }
         }
         prepared
     }
@@ -1066,7 +1000,6 @@ where
         ctxs: &[FieldCtx],
         k: usize,
         restrict: Option<&HashSet<DocId>>,
-        include_array_groups: bool,
         match_mode: MatchMode,
         // plan: RankPlan
     ) -> Vec<SearchHit> {
@@ -1125,21 +1058,6 @@ where
 
         let mut by_doc: HashMap<DocId, SearchHit> = HashMap::new();
 
-        //same-element relevance across array subfields
-        if include_array_groups {
-            for hit in self.score_array_groups(query, restrict) {
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|e| {
-                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                        e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
-                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                        e.score += hit.score;
-                    })
-                    .or_insert(hit);
-            }
-        }
-
         match match_mode {
             MatchMode::BestFields => {
                 //flat term queries rank all the plain fields together: cutting every field to
@@ -1181,40 +1099,26 @@ where
                 }
             }
             MatchMode::CrossFields => {
-                //row-keyed (array subfield) fields stay per-field: row -> doc resolve
-                for &ctx in ctxs {
-                    if ctx.row_keyed {
-                        self.rank_single_field(query, ctx, k, restrict, &mut by_doc);
-                    }
-                }
-
-                //non-row-keyed fields: ONE cross-field evaluation over all of them
-                let plain: Vec<FieldCtx> = ctxs.iter().copied().filter(|c| !c.row_keyed).collect();
-                if !plain.is_empty() {
-                    if let EvalOutcome::Scored(scored) =
-                        self.evaluate(query, &plain, EvalMode::Rank)
-                    {
-                        for p in scored {
-                            if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
-                                continue;
-                            }
-                            let hit = SearchHit {
-                                doc_id: p.doc_id,
-                                matched_terms: p.matched_terms,
-                                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
-                                distance_factor: p.density,
-                                score: ((p.score as f32) / 1000.0) * p.density,
-                            };
-                            by_doc
-                                .entry(p.doc_id)
-                                .and_modify(|e| {
-                                    e.score += hit.score;
-                                    e.matched_terms =
-                                        e.matched_terms.saturating_add(hit.matched_terms);
-                                    e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                                })
-                                .or_insert(hit);
+                if let EvalOutcome::Scored(scored) = self.evaluate(query, ctxs, EvalMode::Rank) {
+                    for p in scored {
+                        if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
+                            continue;
                         }
+                        let hit = SearchHit {
+                            doc_id: p.doc_id,
+                            matched_terms: p.matched_terms,
+                            weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                            distance_factor: p.density,
+                            score: ((p.score as f32) / 1000.0) * p.density,
+                        };
+                        by_doc
+                            .entry(p.doc_id)
+                            .and_modify(|e| {
+                                e.score += hit.score;
+                                e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                                e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                            })
+                            .or_insert(hit);
                     }
                 }
             }
@@ -1253,21 +1157,6 @@ where
             return;
         };
 
-        //row-keyed field: resolve row -> doc, keep the best element per doc
-        if ctx.row_keyed {
-            for hit in self.resolve_group_hits(scored, restrict) {
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|e| {
-                        e.score += hit.score;
-                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                    })
-                    .or_insert(hit);
-            }
-            return;
-        }
-
         for p in scored {
             if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
                 continue;
@@ -1299,7 +1188,7 @@ where
     fn execute_scored_fuzzy(
         &self,
         raw: &str,
-        xpath: XPathId,
+        ctxs: &[FieldCtx],
         fuzziness: Fuzziness,
         spec: FuzzySpec,
     ) -> Vec<ScoredPosting> {
@@ -1330,51 +1219,60 @@ where
             let opts = fuzzy_options(word, fuzziness, spec);
             let bit = 1u64 << word_index;
 
-            //guess words based on max edit count, from the words of every shard
-            let mut expansions = self.fuzzy_candidates(word, xpath, opts);
-            //best guesses for the words
-            rank_and_cap(&mut expansions, spec.max_expansions);
+            //word can land in ANY field, a doc passes when every word hit somewhere
+            for &ctx in ctxs {
+                //guess words based on max edit count, from the words of every shard
+                let mut expansions = self.fuzzy_candidates(word, ctx.xpath, opts);
+                //best guesses for the words
+                rank_and_cap(&mut expansions, spec.max_expansions);
 
-            //iterate all possible hits
-            for expansion in expansions {
-                //                      the long function needs wand kip
-                let postings = self.index.lookup(&expansion.term, xpath);
+                //iterate all possible hits
+                for expansion in expansions {
+                    //                      the long function needs wand kip
+                    let postings = self.index.lookup(&expansion.term, ctx.xpath);
 
-                scored_buf.clear();
-                let true_df = expansion.doc_freq as f32;
-                //BM25 scoring
-                score_term_into(
-                    &self.stats(),
-                    &postings,
-                    xpath,
-                    true_df,
-                    &mut doc_len,
-                    &mut scored_buf,
-                );
+                    scored_buf.clear();
+                    let true_df = expansion.doc_freq as f32;
+                    //BM25 scoring
+                    score_term_into(
+                        &self.stats(),
+                        &postings,
+                        ctx.xpath,
+                        true_df,
+                        &mut doc_len,
+                        &mut scored_buf,
+                    );
 
-                let decay = fuzzy_decay(expansion.edits);
+                    let decay = fuzzy_decay(expansion.edits);
 
-                for mut scored in scored_buf.drain(..) {
-                    //apply the edit decay to the score
-                    scored.score = ((scored.score as f32) * decay) as u64;
+                    for mut scored in scored_buf.drain(..) {
+                        //apply the edit decay to the score
+                        scored.score = ((scored.score as f32) * decay) as u64;
 
-                    match acc.entry(scored.doc_id) {
-                        Entry::Occupied(mut slot) => {
-                            let (hit, mask) = slot.get_mut();
+                        //row-keyed postings are per element: fold onto the document
+                        let Some(doc) = self.fold_to_doc(ctx, scored.doc_id) else {
+                            continue;
+                        };
+                        scored.doc_id = doc;
 
-                            if scored.score > hit.score {
-                                hit.positions = scored.positions.clone();
-                                hit.density = hit.density.max(scored.density);
+                        match acc.entry(scored.doc_id) {
+                            Entry::Occupied(mut slot) => {
+                                let (hit, mask) = slot.get_mut();
+
+                                if scored.score > hit.score {
+                                    hit.positions = scored.positions.clone();
+                                    hit.density = hit.density.max(scored.density);
+                                }
+
+                                hit.score = hit.score.saturating_add(scored.score);
+                                hit.matched_terms = hit.matched_terms.saturating_add(1);
+                                //the first word got a hit, so the next one just "adds" 1 or << 1
+                                //basically
+                                *mask |= bit;
                             }
-
-                            hit.score = hit.score.saturating_add(scored.score);
-                            hit.matched_terms = hit.matched_terms.saturating_add(1);
-                            //the first word got a hit, so the next one just "adds" 1 or << 1
-                            //basically
-                            *mask |= bit;
-                        }
-                        Entry::Vacant(slot) => {
-                            slot.insert((scored, bit));
+                            Entry::Vacant(slot) => {
+                                slot.insert((scored, bit));
+                            }
                         }
                     }
                 }
@@ -1389,7 +1287,6 @@ where
             .map(|(hit, _)| hit)
             .collect()
     }
-    
 }
 
 #[timed(search)]
@@ -1416,8 +1313,6 @@ fn phrase_matches(position_lists: &[&[u32]],offsets:&[u32]) -> bool {
 
     false
 }
-
-
 
 #[timed(search)]
 fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<SearchHit> {

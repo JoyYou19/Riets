@@ -15,7 +15,7 @@ pub struct AllFields {
 }
 
 impl AllFields {
-    pub const FILE_NAME: &'static str = "all_fields.toml";
+    pub const FILE_NAME: &'static str = "all_fields.json";
 
     fn path(root: &Path) -> PathBuf {
         root.join(Self::FILE_NAME)
@@ -33,13 +33,13 @@ impl AllFields {
         }
         let contents = fs::read_to_string(path)?;
 
-        toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        serde_json::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     #[timed(writing_files)]
     pub fn save(&self, root: impl AsRef<Path>) -> io::Result<()> {
         let path = Self::path(root.as_ref());
-        let contents = toml::to_string_pretty(self)
+        let contents = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let tmp_path = path.with_file_name(format!(

@@ -1,5 +1,7 @@
 use core_index::array_rows::ArrayRowAllocator;
+use core_index::document::FieldPolicy;
 use core_index::document::document::{ArrayRow, BoolPoint, NumericPoint};
+use core_index::document::policy::ARRAY_GAP;
 use core_index::document::{DocumentPart, IndexPolicy, IndexedDocument, policy::FieldKind};
 use core_index::numeric_values::{parse_float, parse_integer};
 use core_index::types::{ArrayRowId, DocId};
@@ -33,6 +35,7 @@ pub fn index_document(
         &parsed.arrays,
         doc_id,
         None,
+        &mut indexed.parts,
         &mut indexed.array_rows,
         &mut indexed.bool_points,
         policy,
@@ -45,15 +48,31 @@ fn index_arrays(
     arrays: &[ArrayField],
     doc_id: DocId,
     parent_row: Option<ArrayRowId>,
+    parts: &mut Vec<DocumentPart>, // NEW: where flattened parts go (doc or current row)
     rows: &mut Vec<ArrayRow>,
     bool_points: &mut Vec<BoolPoint>,
     policy: &IndexPolicy,
     allocator: &mut ArrayRowAllocator,
 ) {
     for array_field in arrays {
+        let Some(field) = policy.field_by_path(&array_field.path) else {
+            continue;
+        };
+
+        // flat repeated text-like array -> flatten into `parts`
+        if field.kind != FieldKind::Struct
+            && matches!(
+                field.kind,
+                FieldKind::Text | FieldKind::Id | FieldKind::IdAuto
+            )
+        {
+            flatten_scalar_array(array_field, field, parts, policy);
+            continue;
+        }
+
+        // struct (or repeated numeric/bool) -> row-keyed, unchanged
         for element in &array_field.elements {
             let row_id = allocator.alloc();
-
             let mut row = ArrayRow::new(row_id, parent_row);
             index_leaves(
                 &element.leaves,
@@ -62,18 +81,53 @@ fn index_arrays(
                 &mut row.bool_points,
                 policy,
             );
-
-            rows.push(row);
             index_arrays(
                 &element.arrays,
                 doc_id,
                 Some(row_id),
+                &mut row.parts,
                 rows,
                 bool_points,
                 policy,
                 allocator,
             );
+            rows.push(row);
         }
+    }
+}
+
+fn flatten_scalar_array(
+    array_field: &ArrayField,
+    field: &FieldPolicy,
+    parts: &mut Vec<DocumentPart>,
+    policy: &IndexPolicy,
+) {
+    let segments: Vec<String> = array_field
+        .elements
+        .iter()
+        .flat_map(|e| e.leaves.iter().map(|l| l.value.clone()))
+        .collect();
+    if segments.is_empty() {
+        return;
+    }
+
+    // stemmed copy
+    parts.push(DocumentPart::flattened(
+        field.xpath(policy),
+        segments.clone(),
+        field.weight,
+        false,
+        ARRAY_GAP,
+    ));
+    // exact copy, if the field has an exact index
+    if let Some(exact_xpath) = field.exact_xpath(policy) {
+        parts.push(DocumentPart::flattened(
+            exact_xpath,
+            segments,
+            field.weight,
+            true,
+            ARRAY_GAP,
+        ));
     }
 }
 
@@ -96,6 +150,8 @@ fn index_leaves(
                     text: raw.clone(),
                     weight: field.weight,
                     exact: false,
+                    gap: 0,
+                    segments: Vec::new(),
                 });
                 if let Some(exact_xpath) = field.exact_xpath(policy) {
                     parts.push(DocumentPart {
@@ -103,16 +159,34 @@ fn index_leaves(
                         text: raw.clone(),
                         weight: field.weight,
                         exact: true,
+                        gap: 0,
+                        segments: Vec::new(),
                     });
                 }
             }
-            FieldKind::Id => {
-                parts.push(DocumentPart {
-                    xpath: field.xpath(policy),
-                    text: raw.clone(),
-                    weight: field.weight,
-                    exact: true,
-                });
+            FieldKind::Id | FieldKind::IdAuto => {
+                if field.searchable() {
+                    // stemmed copy
+                    parts.push(DocumentPart {
+                        xpath: field.xpath(policy),
+                        text: raw.clone(),
+                        weight: field.weight,
+                        exact: false,
+                        gap: 0,
+                        segments: Vec::new(),
+                    });
+                    // exact copy
+                    if let Some(exact_xpath) = field.exact_xpath(policy) {
+                        parts.push(DocumentPart {
+                            xpath: exact_xpath,
+                            text: raw.clone(),
+                            weight: field.weight,
+                            exact: true,
+                            gap: 0,
+                            segments: Vec::new(),
+                        });
+                    }
+                }
             }
             FieldKind::Integer => {
                 if let Some(value) = parse_integer(raw) {
@@ -126,6 +200,8 @@ fn index_leaves(
                             text: raw.to_string(),
                             weight: field.weight,
                             exact: true,
+                            gap: 0,
+                            segments: Vec::new(),
                         });
                     }
                 }
@@ -142,6 +218,8 @@ fn index_leaves(
                             text: raw.to_string(),
                             weight: field.weight,
                             exact: true,
+                            gap: 0,
+                            segments: Vec::new(),
                         });
                     }
                 }

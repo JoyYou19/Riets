@@ -14,106 +14,77 @@ SHARD_COUNT = 4
 IN_FLIGHT = 1   # insert requests running at the same time
 
 POLICY = """\
-[[fields]]
-name = "id"
-kind = "IdAuto"
+{
+  "id": "id_auto",
 
-[[fields]]
-name = "title"
-kind = "Text"
-exact = true
-[fields.weight]
-min = 90
-max = 100
+  "title": {
+    "$type": "text",
+    "$exact": true,
+    "$weight": { "min": 90, "max": 100 }
+  },
 
-[[fields]]
-name = "year"
-kind = "Integer"
-searchable = true
-[fields.weight]
-min = 1
-max = 40
+  "year": {
+    "$type": "int",
+    "$searchable": true,
+    "$weight": { "min": 1, "max": 40 }
+  },
 
-[[fields]]
-name = "cast"
-kind = "Struct"
+  "cast": [
+    {
+      "name": {
+        "$type": "text",
+        "$exact": true,
+        "$weight": { "min": 20, "max": 60 }
+      },
+      "surname": {
+        "$type": "text",
+        "$exact": true,
+        "$weight": { "min": 20, "max": 60 }
+      }
+    }
+  ],
 
-[[fields.subfields]]
-name = "name"
-kind = "Text"
-exact = true
-[fields.subfields.weight]
-min = 20
-max = 60
+  "genres": [
+    {
+      "$type": "text",
+      "$exact": true,
+      "$weight": { "min": 1, "max": 40 }
+    }
+  ],
 
-[[fields.subfields]]
-name = "surname"
-kind = "Text"
-exact = true
-[fields.subfields.weight]
-min = 20
-max = 60
+  "extract": {
+    "$type": "none",
+    "$stemming": "english",
+    "$weight": { "min": 1, "max": 70 }
+  },
 
-[[fields]]
-name = "genres"
-kind = "Text"
-repeated = true
-exact = true
-[fields.weight]
-min = 1
-max = 40
+  "is_cool": "bool",
 
-[[fields]]
-name = "extract"
-kind = "Text"
-stemming = "english"
-[fields.weight]
-min = 1
-max = 70
+  "href": {
+    "$type": "text",
+    "$exact": true,
+    "$weight": { "min": 0, "max": 0 }
+  },
 
-[[fields]]
-name = "is_cool"
-kind = "Bool"
+  "thumbnail": "none",
 
-[[fields]]
-name = "href"
-kind = "Text"
-exact = true
-[fields.weight]
-min = 0
-max = 0
+  "thumbnail_width": {
+    "$type": "int",
+    "$weight": { "min": 0, "max": 0 }
+  },
 
-[[fields]]
-name = "thumbnail"
-kind = "None"
+  "thumbnail_height": {
+    "$type": "int",
+    "$weight": { "min": 0, "max": 0 }
+  },
 
-[[fields]]
-name = "thumbnail_width"
-kind = "Integer"
-[fields.weight]
-min = 0
-max = 0
-
-[[fields]]
-name = "thumbnail_height"
-kind = "Integer"
-[fields.weight]
-min = 0
-max = 0
-
-[[fields]]
-name = "random_nums"
-kind = "Struct"
-
-[[fields.subfields]]
-name = "num1"
-kind = "Integer"
-searchable = true
-
-[[fields.subfields]]
-name = "num2"
-kind = "Integer"
-searchable = true
+  "random_nums": [
+    {
+      "num1": { "$type": "int", "$searchable": true },
+      "num2": { "$type": "int", "$searchable": true }
+    }
+  ]
+}
 """
 
 
