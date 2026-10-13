@@ -296,53 +296,6 @@ impl MemIndex {
         }
     }
 
-    // For each document part we count how often each term appears.
-    // Every occurance of that term receives the same part-level weight
-    // wegith = min(part_min_weight + occurances_in_part, part_max_weight)
-    // this is exactly where the policy matters, it determines the minimum and maximum weight of
-    // the weighting this specific part or xml field in the document allows.
-    // The postinglist stores all positions for phrase/proximity search while
-    // the posting weight represents the terms importance in this document part.
-    #[timed(indexing_documents)]
-    pub fn add_document_weighted(
-        &mut self,
-        analyzer: &Analyzer,
-        doc_id: DocId,
-        xpath: XPathId,
-        text: &str,
-        min_weight: u16,
-        _max_weight: u16,
-    ) {
-        let mut grouped: AHashMap<String, Vec<u32>> = AHashMap::new();
-        let len = analyzer.for_each_token(text, |term, position| {
-            if let Some(positions) = grouped.get_mut(term) {
-                positions.push(position);
-            } else {
-                grouped.insert(term.to_owned(), vec![position]);
-            }
-        });
-
-        let old = self.doc_lengths.insert((doc_id, xpath), len);
-        let stats = self.field_stats.entry(xpath).or_default();
-        match old {
-            Some(old_len) => {
-                stats.total_doc_len =
-                    stats.total_doc_len.saturating_sub(old_len as u64) + (len as u64);
-            }
-            None => {
-                stats.doc_count += 1;
-                stats.total_doc_len += len as u64;
-            }
-        }
-
-        for (term, positions) in grouped {
-            // let occurrences = positions.len().min(u16::MAX as usize) as u16;
-            // let weight = min_weight.saturating_add(occurrences).min(max_weight);
-            let weight = min_weight;
-            self.add_posting_weighted(term, xpath, doc_id, positions, weight);
-        }
-    }
-
     #[timed(indexing_documents)]
     pub fn add_indexed_document(&mut self, analyzer: &Analyzer, document: &IndexedDocument) {
         //main document
@@ -370,6 +323,66 @@ impl MemIndex {
         }
     }
 
+    fn add_weighted(
+        &mut self,
+        analyzer: &Analyzer,
+        doc_id: DocId,
+        xpath: XPathId,
+        min_weight: u16,
+        segments: &[&str],
+        gap: u32,
+        exact: bool,
+    ) {
+        let mut token_positions: AHashMap<String, Vec<u32>> = AHashMap::new();
+        let mut total_words_len = 0u32;
+        let mut cur_position = 0u32;
+
+        //do this for every string in the array of strings
+        for seg in segments {
+            let seg_len = if exact {
+                let words: Vec<&str> = seg.split_whitespace().collect();
+                // write down each word, at position (offset + its index in this string)
+                for (i, word) in words.iter().enumerate() {
+                    token_positions
+                        .entry((*word).to_string())
+                        .or_default()
+                        .push(cur_position + i as u32);
+                }
+                words.len() as u32
+            } else {
+                analyzer.for_each_token(seg, |term, position| {
+                    token_positions
+                        .entry(term.to_owned()) //word (stemmed)
+                        .or_default()
+                        .push(cur_position + position); //global position = offset + local position
+                })
+            };
+            total_words_len += seg_len;
+
+            //move our "cursor" forward past this string, PLUS the gap
+            cur_position += seg_len + gap;
+        }
+
+        let old = self.doc_lengths.insert((doc_id, xpath), total_words_len);
+
+        //stats
+        let stats = self.field_stats.entry(xpath).or_default();
+        match old {
+            Some(old_len) => {
+                stats.total_doc_len = stats.total_doc_len - old_len as u64 + total_words_len as u64;
+            }
+            None => {
+                stats.doc_count += 1;
+                stats.total_doc_len += total_words_len as u64;
+            }
+        }
+
+        //write to seg
+        for (term, positions) in token_positions {
+            self.add_posting_weighted(term, xpath, doc_id, positions, min_weight);
+        }
+    }
+
     //helper
     fn add_parts_and_points(
         &mut self,
@@ -380,20 +393,27 @@ impl MemIndex {
         bool_points: &[BoolPoint],
     ) {
         for part in parts {
-            if part.exact {
-                self.add_exact_weighted(target_id, part.xpath, &part.text, part.weight.min);
+            //if this part has several strings (array of string), use them else one string
+            let segments: Vec<&str> = if part.is_flattened() {
+                part.segments.iter().map(|s| s.as_str()).collect()
             } else {
-                self.add_document_weighted(
-                    analyzer,
-                    target_id,
-                    part.xpath,
-                    &part.text,
-                    part.weight.min,
-                    part.weight.max,
-                );
-            }
-        }
+                vec![part.text.as_str()]
+            };
 
+            // flattened parts skip positions between strings; normal parts don't
+            let gap = if part.is_flattened() { part.gap } else { 0 };
+
+            //one call does all the work part.exact pirck stem or step+exact
+            self.add_weighted(
+                analyzer,
+                target_id,
+                part.xpath,
+                part.weight.min,
+                &segments,
+                gap,
+                part.exact,
+            );
+        }
         for point in numeric_points {
             self.numeric_points
                 .insert(point.xpath, point.value, target_id);
@@ -406,43 +426,6 @@ impl MemIndex {
             } else {
                 slot.false_ids.insert(target_id);
             }
-        }
-    }
-
-    //basically add_document without lowercasing stemming
-    #[timed(indexing_documents)]
-    pub fn add_exact_weighted(
-        &mut self,
-        doc_id: DocId,
-        xpath: XPathId,
-        text: &str,
-        min_weight: u16,
-    ) {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let len = words.len().min(u32::MAX as usize) as u32;
-
-        let old = self.doc_lengths.insert((doc_id, xpath), len);
-        let stats = self.field_stats.entry(xpath).or_default();
-        match old {
-            Some(old_len) => {
-                stats.total_doc_len =
-                    stats.total_doc_len.saturating_sub(old_len as u64) + (len as u64);
-            }
-            None => {
-                stats.doc_count += 1;
-                stats.total_doc_len += len as u64;
-            }
-        }
-        let mut grouped = ahash::HashMap::<&str, Vec<u32>>::default();
-        for (position, word) in words.iter().enumerate() {
-            grouped.entry(word).or_default().push(position as u32);
-        }
-
-        for (term, positions) in grouped {
-            // let occurrences = positions.len().min(u16::MAX as usize) as u16;
-            // let weight = min_weight.saturating_add(occurrences).min(max_weight);
-            let weight = min_weight;
-            self.add_posting_weighted(term, xpath, doc_id, positions, weight);
         }
     }
 

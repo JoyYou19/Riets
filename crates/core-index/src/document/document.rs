@@ -73,4 +73,40 @@ pub struct DocumentPart {
     pub text: String,
     pub weight: WeightInterval,
     pub exact: bool,
+    pub gap: u32,              // gap of joined arr elements
+    pub segments: Vec<String>, // element texts for flattened repeated fields
+}
+
+impl DocumentPart {
+    pub fn single(xpath: XPathId, text: String, weight: WeightInterval, exact: bool) -> Self {
+        Self {
+            xpath,
+            text,
+            weight,
+            exact,
+            segments: Vec::new(),
+            gap: 0,
+        }
+    }
+
+    pub fn flattened(
+        xpath: XPathId,
+        segments: Vec<String>,
+        weight: WeightInterval,
+        exact: bool,
+        gap: u32,
+    ) -> Self {
+        Self {
+            xpath,
+            text: String::new(),
+            weight,
+            exact,
+            segments,
+            gap,
+        }
+    }
+
+    pub fn is_flattened(&self) -> bool {
+        !self.segments.is_empty()
+    }
 }
