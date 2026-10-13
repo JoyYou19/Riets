@@ -573,7 +573,7 @@ where
         rows.unwrap_or_default()
     }
 
-    //same-element relevance: evaluate the full AST over each array group, resolve rows -> docs
+    //same-element relevance: evaluate the full AST over each array group, resolve rows-> docs
     fn score_array_groups(
         &self,
         query: &Query,
