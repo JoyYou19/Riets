@@ -6,6 +6,8 @@ use core_index::{
     types::{DocId, XPathId},
 };
 
+use crate::ast::PhraseTerm;
+
 /// Live document count and total token length of one field.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FieldTotals {
@@ -22,7 +24,7 @@ pub(crate) enum LeafKey {
     Term(String),
     Prefix(String),
     Wildcard(String),
-    Phrase(Vec<String>),
+    Phrase(Vec<PhraseTerm>),
     Exact(String),
 }
 

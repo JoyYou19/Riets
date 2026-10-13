@@ -12,6 +12,7 @@ use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
 use core_index::search::{SearchIndex, SearchNumeric};
 use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse, MatchMode};
+use core_query::planner::RankPlan;
 use core_query::resolver::{FieldCtx, FieldQuery};
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
 use core_storage::document_projections::{id_path_to_strip, project_document};
@@ -305,7 +306,7 @@ impl ShardHandle {
 
         //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
-
+        
         //main entry point for query yes
         let hits = executor.rank(
             query,
@@ -314,6 +315,7 @@ impl ShardHandle {
             restrict.as_ref(),
             include_array_groups,
             mactmode,
+            
         );
 
         (hits.len(), hits)

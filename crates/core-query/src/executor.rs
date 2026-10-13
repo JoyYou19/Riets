@@ -2,7 +2,7 @@ use core_index::{
     analyzer::analyzer::Analyzer,
     fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
     posting::{Posting, PostingList, ops::intersection},
-    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
+    search::{SearchIndex, SearchNumeric, SearchStats},
     types::{DocId, XPathId},
 };
 use std::{
@@ -18,7 +18,7 @@ use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit, ast::{Query, SynonymAlternative}, corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats}, prepared::PreparedQuery, resolver::{FieldCtx, FieldQuery, SameElementBinding}, scorer::{fuzzy_decay, score_term_into}, wand::{
+    ScoredPosting, SearchHit, TopHit, ast::{PhraseTerm, Query, SynonymAlternative}, corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats}, planner::RankPlan, prepared::PreparedQuery, resolver::{FieldCtx, FieldQuery, SameElementBinding}, scorer::{fuzzy_decay, score_term_into}, wand::{
         FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
         conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_multi_field,
     },
@@ -403,7 +403,7 @@ where
     // A document matches only if rust and database appear in it in order rust + database so
     // position and position + 1
     #[timed(search)]
-    fn execute_phrase(&self, terms: &[String], xpath: XPathId) -> PostingList {
+    fn execute_phrase(&self, terms: &[PhraseTerm], xpath: XPathId) -> PostingList {
         use core_index::posting::Posting;
 
         if terms.is_empty() {
@@ -412,16 +412,16 @@ where
 
         let lists: Vec<PostingList> = terms
             .iter()
-            .map(|term| self.index.lookup(term, xpath))
+            .map(|term| self.index.lookup(&term.text, xpath))
             .collect();
 
         if lists.iter().any(|list| list.is_empty()) {
             return PostingList::default();
         }
 
-        let mut result = Vec::new();
-        let first = lists[0].items();
-
+        let offsets: Vec<u32>=terms.iter().map(|term|term.offset).collect();
+        let mut result =Vec::new(); 
+        let first=lists[0].items();
         for first_posting in first {
             let doc_id = first_posting.doc_id;
             let mut position_lists: Vec<&[u32]> = vec![first_posting.positions.as_slice()];
@@ -440,7 +440,7 @@ where
                 }
             }
 
-            if all_terms_in_doc && phrase_matches(&position_lists) {
+            if all_terms_in_doc && phrase_matches(&position_lists, &offsets) {
                 result.push(Posting::with_weight(
                     doc_id,
                     first_posting.positions.clone(),
@@ -534,8 +534,8 @@ where
                     }
                 }
             }
-
-            if all_terms_in_doc && phrase_matches(&position_lists) {
+            let offsets:Vec<u32>=(0..words.len() as u32).collect();
+            if all_terms_in_doc && phrase_matches(&position_lists, &offsets) {
                 result.push(Posting::with_weight(
                     doc_id,
                     first_posting.positions.clone(),
@@ -1068,6 +1068,7 @@ where
         restrict: Option<&HashSet<DocId>>,
         include_array_groups: bool,
         match_mode: MatchMode,
+        // plan: RankPlan
     ) -> Vec<SearchHit> {
         if k == 0 || restrict.is_some_and(|d| d.is_empty()) || self.index.doc_range().is_none() {
             return Vec::new();
@@ -1392,15 +1393,15 @@ where
 }
 
 #[timed(search)]
-fn phrase_matches(position_lists: &[&[u32]]) -> bool {
+fn phrase_matches(position_lists: &[&[u32]],offsets:&[u32]) -> bool {
     if position_lists.is_empty() {
         return false;
     }
 
     for &start in position_lists[0] {
         let mut matched = true;
-        for (offset, positions) in position_lists.iter().enumerate().skip(1) {
-            let expected = start + (offset as u32);
+        for (i, positions) in position_lists.iter().enumerate().skip(1) {
+            let expected = start + offsets[i];
 
             if positions.binary_search(&expected).is_err() {
                 matched = false;
