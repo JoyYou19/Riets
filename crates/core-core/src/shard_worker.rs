@@ -32,7 +32,7 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_query::{Query, QueryExecutor, SearchHit, fuzzable_words};
+use core_query::{CorpusStats, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
@@ -42,6 +42,20 @@ pub struct ShardRankedResult {
     pub total: usize,
     pub items: Vec<(SearchHit, Vec<Option<f64>>)>,
     pub bounds: Vec<(Option<f64>, Option<f64>)>,
+}
+
+/// A shard's side of one search: the snapshot every step of the search reads, so the statistics
+/// and the ranking cannot see different writes, and what the shard read from it for the query.
+pub struct PreparedShardSearch {
+    snapshot: Arc<IndexSnapshot>,
+    prepared: PreparedQuery,
+}
+
+impl PreparedShardSearch {
+    /// What this shard adds to the statistics every shard scores the query with.
+    pub fn stats(&self) -> &CorpusStats {
+        self.prepared.stats()
+    }
 }
 
 //insane portno kur dazaam komandam ir crossbeam_channel dazam ir oneshot
@@ -248,10 +262,31 @@ impl ShardHandle {
             .collect())
     }
 
+    /// Pins the snapshot the search reads and reads the query from it once: the posting lists
+    /// ranking needs, and from them what this shard adds to the statistics of the search.
+    #[timed(search)]
+    pub fn prepare_search(
+        &self,
+        query: Option<&Query>,
+        ctxs: &[FieldCtx],
+        groups: Vec<Vec<(XPathId, Option<XPathId>)>>,
+        include_array_groups: bool,
+    ) -> PreparedShardSearch {
+        let snapshot = self.shared.snapshot.get();
+        let prepared = QueryExecutor::new(&*snapshot, &self.analyzer, groups).prepare(
+            query,
+            ctxs,
+            include_array_groups,
+        );
+        PreparedShardSearch { snapshot, prepared }
+    }
+
     //helper for the ranking
     fn rank_candidates(
         &self,
         snapshot: &IndexSnapshot,
+        prepared: &PreparedQuery,
+        corpus: &CorpusStats,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -264,7 +299,9 @@ impl ShardHandle {
             return (0, Vec::new());
         }
 
-        let executor = QueryExecutor::new(snapshot, &self.analyzer, groups);
+        let executor = QueryExecutor::new(snapshot, &self.analyzer, groups)
+            .with_corpus(corpus)
+            .with_prepared(prepared);
 
         //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
@@ -285,6 +322,8 @@ impl ShardHandle {
     #[timed(search)]
     pub fn rank_top_k(
         &self,
+        prepared: &PreparedShardSearch,
+        corpus: &CorpusStats,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -293,9 +332,11 @@ impl ShardHandle {
         include_array_groups: bool,
         mactmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
-        let snapshot = self.shared.snapshot.get();
+        let snapshot = &prepared.snapshot;
         let (total, hits) = self.rank_candidates(
-            &snapshot,
+            snapshot,
+            &prepared.prepared,
+            corpus,
             query,
             filters,
             ctxs,
@@ -315,6 +356,8 @@ impl ShardHandle {
     #[timed(search)]
     pub fn rank_sorted(
         &self,
+        prepared: &PreparedShardSearch,
+        corpus: &CorpusStats,
         query: Option<&Query>,
         filters: Option<&HashMap<String, FieldQuery>>,
         ctxs: &[FieldCtx],
@@ -332,9 +375,11 @@ impl ShardHandle {
             });
         }
 
-        let snapshot = self.shared.snapshot.get();
+        let snapshot = &prepared.snapshot;
         let (total, candidates) = self.rank_candidates(
-            &snapshot,
+            snapshot,
+            &prepared.prepared,
+            corpus,
             query,
             filters,
             ctxs,

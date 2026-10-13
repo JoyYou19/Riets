@@ -51,7 +51,7 @@ pub struct LsmIndex {
 
 //THIS DOESNT NEED TO BE CONFIGURABlE I THINK?
 /// Hard cap on in-memory generations so snapshot fan-out stays bounded.
-const MAX_GENERATIONS: usize = 16;
+const MAX_GENERATIONS: usize = 8;
 const STAGING_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 /// A compaction run only contains segments whose sizes are within this factor of each other.
 const COMPACTION_SIZE_RATIO: u64 = 4;

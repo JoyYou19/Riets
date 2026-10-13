@@ -3,7 +3,7 @@ use crate::ShardDb;
 use crate::metrics::DbStats;
 use crate::reindex::{PendingReindexJob, ReindexPool};
 use crate::shard_db::DatabaseStats;
-use crate::shard_worker::{self, ShardCmd, ShardHandle};
+use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use core_backup::backup::compress_file;
 use core_backup::backup::{BackupManifest, BackupType};
@@ -20,7 +20,6 @@ use core_protocol::command_reponse_definitions::{
     SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
-use core_query::SearchHit;
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
 use core_query::highlight::{
     HighlightMatcher, collect_highlight_matchers, field_texts, highlight_text,
@@ -28,6 +27,10 @@ use core_query::highlight::{
 use core_query::resolver::{
     compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
 };
+use core_query::dictionary::{
+    DATABASE_FILE_NAME, DictionaryDocument, SynonymManager, SynonymRegistry,
+};
+use core_query::{CorpusStats, SearchHit};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
@@ -59,6 +62,8 @@ pub struct ShardManager {
     db_stats: Arc<DbStats>,
     backup_dir: PathBuf,
     all_fields: RwLock<AllFields>,
+    // the database's synonym dictionary, dictionary.toml in its directory
+    synonyms: Arc<SynonymManager>,
 }
 
 impl ShardManager {
@@ -69,6 +74,7 @@ impl ShardManager {
         root: PathBuf,
         options: DatabaseOptions,
         shard_count: u16,
+        synonym_registry: &SynonymRegistry,
     ) -> Result<Self, CorelamoError> {
         if shard_count == 0 {
             return Err(CorelamoError::InvalidData(
@@ -90,6 +96,7 @@ impl ShardManager {
         let mut boot_rxs = Vec::new();
         let all_fields = AllFields::new();
         all_fields.save(&root)?;
+        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
 
         for shard_id in 0..shard_count {
             let shard_root = shards_dir.join(format!("shard-{}", shard_id));
@@ -124,6 +131,7 @@ impl ShardManager {
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
+            synonyms,
         })
     }
 
@@ -509,7 +517,11 @@ impl ShardManager {
     //INFO: manual load is basically only used for rename_database so that it doesnt start based on
     //boot : bool
     #[timed(database_lifecycle)]
-    pub fn load(root: PathBuf, manual_load: bool) -> Result<Self, CorelamoError> {
+    pub fn load(
+        root: PathBuf,
+        manual_load: bool,
+        synonym_registry: &SynonymRegistry,
+    ) -> Result<Self, CorelamoError> {
         let shards_dir = root.join("shards");
 
         if !shards_dir.exists() {
@@ -584,6 +596,7 @@ impl ShardManager {
         let mut joins = Vec::new();
         let mut boot_rxs = Vec::new();
         let all_fields = AllFields::load(&root)?;
+        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
 
         //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
         for (i, shard_path) in shard_paths.iter().enumerate() {
@@ -621,6 +634,7 @@ impl ShardManager {
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
+            synonyms,
         })
     }
 
@@ -668,6 +682,30 @@ impl ShardManager {
 
     pub fn options(&self) -> DatabaseOptions {
         self.options.read().clone()
+    }
+
+    /// This database's dictionary.toml as it is in use, comments included.
+    pub fn dictionary_text(&self) -> String {
+        self.synonyms.config_text()
+    }
+
+    /// Replaces the dictionary with an already parsed document. Compiling and saving take a few
+    /// hundred ms, so they run off the async threads; on any error the dictionary in use stays.
+    pub async fn set_dictionary(&self, document: DictionaryDocument) -> Result<(), CorelamoError> {
+        let synonyms = Arc::clone(&self.synonyms);
+        tokio::task::spawn_blocking(move || synonyms.replace_document(document))
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("dictionary update failed: {e}")))?
+            .map_err(CorelamoError::from)
+    }
+
+    /// Re-reads dictionary.toml after it was edited by hand.
+    pub async fn reload_dictionary(&self) -> Result<(), CorelamoError> {
+        let synonyms = Arc::clone(&self.synonyms);
+        tokio::task::spawn_blocking(move || synonyms.reload())
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("dictionary reload failed: {e}")))?
+            .map_err(CorelamoError::from)
     }
 
     #[timed(database_lifecycle)]
@@ -991,12 +1029,14 @@ impl ShardManager {
         //if no search_fields we should search in the arrays
         let include_array_groups = command.search_fields.is_none();
         let matchmode = command.match_mode;
+        let dictionary = self.synonyms.snapshot();
 
         let (query, ctxs) = compile_query(
             &command.query,
             command.search_fields.as_deref(),
             &self.analyzer,
             &policy,
+            Some(&dictionary),
         )?;
 
         let query = Arc::new(query);
@@ -1032,9 +1072,43 @@ impl ShardManager {
         //WARN: results may change based on the "docs": x lol
         let window = fetch.saturating_mul(50).clamp(1000, 5_000);
 
+        //Scores must not depend on which shard a document is in, so every shard scores with the
+        //statistics of all shards together: first every shard reads the query and reports its
+        //own statistics, then all of them rank
+        let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
         let mut set = JoinSet::new();
-        for handle in &self.shards {
+        for (index, handle) in self.shards.iter().enumerate() {
             let handle = handle.clone();
+            let query = Arc::clone(&query);
+            let ctxs = Arc::clone(&ctxs);
+            let groups = groups.clone();
+            set.spawn_blocking(move || {
+                let shard =
+                    handle.prepare_search((*query).as_ref(), &ctxs, groups, include_array_groups);
+                (index, shard)
+            });
+        }
+        let mut corpus = CorpusStats::new();
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((index, shard)) => {
+                    corpus.merge(shard.stats());
+                    prepared[index] = Some(Arc::new(shard));
+                }
+                Err(je) => {
+                    return Err(CorelamoError::Internal(format!(
+                        "shard prepare panicked: {je}"
+                    )));
+                }
+            }
+        }
+        let corpus = Arc::new(corpus);
+
+        let mut set = JoinSet::new();
+        for (handle, prepared) in self.shards.iter().zip(prepared) {
+            let handle = handle.clone();
+            let prepared = prepared.expect("every shard was prepared");
+            let corpus = corpus.clone();
             let query = Arc::clone(&query);
             let filters = filters.clone();
             let ctxs = Arc::clone(&ctxs);
@@ -1044,6 +1118,8 @@ impl ShardManager {
                 //any sort mentioned? - we do smart sort, else just relevance
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
                     handle.rank_sorted(
+                        &prepared,
+                        &corpus,
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,
@@ -1055,6 +1131,8 @@ impl ShardManager {
                     )
                 } else {
                     handle.rank_top_k(
+                        &prepared,
+                        &corpus,
                         (*query).as_ref(),
                         filters.as_deref(),
                         &ctxs,
@@ -1244,6 +1322,7 @@ impl ShardManager {
             (IndexPolicy::POLICY_FILE_NAME, "policy.toml.gz"),
             (IndexPolicy::REGISTRY_FILE_NAME, "xpath_registry.toml.gz"),
             (AllFields::FILE_NAME, "all_fields.toml.gz"),
+            (DATABASE_FILE_NAME, "dictionary.toml.gz"),
         ] {
             let src_path = self.root.join(src);
             if src_path.exists() {

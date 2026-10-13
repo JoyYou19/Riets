@@ -16,7 +16,8 @@ use simd_json::{OwnedValue, StaticNode, base::ValueAsScalar};
 
 use crate::{
     Query,
-    query_string_parser::{analyze_query, parse_json_query},
+        query_string_parser::{analyze_query, parse_json_query},
+    synonyms::{Synonyms, expand_synonyms},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +62,7 @@ pub fn compile_query(
     search_fields: Option<&[String]>,
     analyzer: &Analyzer,
     policy: &IndexPolicy,
+    synonyms: Option<&Synonyms>,
 ) -> Result<(Option<Query>, Arc<Vec<FieldCtx>>), CorelamoError> {
     if is_blank_query(raw) {
         return Ok((None, Arc::new(Vec::new())));
@@ -70,6 +72,10 @@ pub fn compile_query(
     reject_filter_only_operators(raw)?;
 
     let raw_query = parse_json_query(raw)?;
+    let raw_query = match synonyms {
+        Some(dictionary) => expand_synonyms(raw_query, dictionary, analyzer),
+        None => raw_query,
+    };
     let query = analyze_query(raw_query, analyzer);
 
     let ctxs: Vec<FieldCtx> = match search_fields {
@@ -159,6 +165,8 @@ fn tree_has_exact(q: &Query) -> bool {
         Query::Exact(_) => true,
         Query::And(ps) | Query::Or(ps) | Query::Wand(ps) => ps.iter().any(tree_has_exact),
         Query::SameElement(ps) => ps.iter().any(tree_has_exact),
+        //the dictionary's exact forms are optional: only what was typed counts
+        Query::Synonym(forms) => forms.first().is_some_and(|typed| tree_has_exact(&typed.query)),
         _ => false,
     }
 }

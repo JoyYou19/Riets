@@ -1,16 +1,24 @@
 mod ast;
+mod corpus_stats;
+pub mod dictionary;
 pub mod executor;
 pub use executor::{QueryExecutor, fuzzable_words, fuzzy_options, rank_and_cap};
 
 pub mod highlight;
+mod prepared;
 pub mod query_string_parser;
 pub mod resolver;
 mod scored_posting;
 mod scorer;
 mod search_hit;
+pub mod synonyms;
 pub mod wand;
 
-pub use ast::Query;
+pub use ast::{Query, SynonymAlternative};
+pub use corpus_stats::CorpusStats;
+pub use prepared::PreparedQuery;
 pub use scored_posting::ScoredPosting;
 pub use search_hit::SearchHit;
 pub use search_hit::TopHit;
+
+
