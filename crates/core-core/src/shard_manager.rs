@@ -20,15 +20,15 @@ use core_protocol::command_reponse_definitions::{
     SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
+use core_query::dictionary::{
+    DATABASE_FILE_NAME, DictionaryDocument, SynonymManager, SynonymRegistry,
+};
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
 use core_query::highlight::{
     HighlightMatcher, collect_highlight_matchers, field_texts, highlight_text,
 };
 use core_query::resolver::{
     compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
-};
-use core_query::dictionary::{
-    DATABASE_FILE_NAME, DictionaryDocument, SynonymManager, SynonymRegistry,
 };
 use core_query::{CorpusStats, SearchHit};
 use core_storage::document_projections::id_path_to_strip;
@@ -1025,9 +1025,7 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
-        let groups = policy.array_groups();
         //if no search_fields we should search in the arrays
-        let include_array_groups = command.search_fields.is_none();
         let matchmode = command.match_mode;
         let dictionary = self.synonyms.snapshot();
 
@@ -1040,7 +1038,6 @@ impl ShardManager {
         )?;
 
         let query = Arc::new(query);
-
         let filters = compile_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
 
@@ -1081,10 +1078,8 @@ impl ShardManager {
             let handle = handle.clone();
             let query = Arc::clone(&query);
             let ctxs = Arc::clone(&ctxs);
-            let groups = groups.clone();
             set.spawn_blocking(move || {
-                let shard =
-                    handle.prepare_search((*query).as_ref(), &ctxs, groups, include_array_groups);
+                let shard = handle.prepare_search((*query).as_ref(), &ctxs);
                 (index, shard)
             });
         }
@@ -1113,7 +1108,6 @@ impl ShardManager {
             let filters = filters.clone();
             let ctxs = Arc::clone(&ctxs);
             let sort_xpaths = sort_xpaths.clone();
-            let groups = groups.clone();
             set.spawn_blocking(move || {
                 //any sort mentioned? - we do smart sort, else just relevance
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
@@ -1125,8 +1119,6 @@ impl ShardManager {
                         &ctxs,
                         sort_xpaths,
                         window,
-                        groups,
-                        include_array_groups,
                         matchmode,
                     )
                 } else {
@@ -1137,8 +1129,6 @@ impl ShardManager {
                         filters.as_deref(),
                         &ctxs,
                         window,
-                        groups,
-                        include_array_groups,
                         matchmode,
                     )
                 }

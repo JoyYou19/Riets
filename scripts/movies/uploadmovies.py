@@ -53,7 +53,7 @@ POLICY = """\
   ],
 
   "extract": {
-    "$type": "text",
+    "$type": "none",
     "$stemming": "english",
     "$weight": { "min": 1, "max": 70 }
   },

@@ -30,6 +30,8 @@ impl WeightInterval {
     }
 }
 
+pub const ARRAY_GAP: u32 = 10;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldPolicy {
     pub name: String,
@@ -49,35 +51,45 @@ pub struct FieldPolicy {
 
 impl Serialize for FieldPolicy {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let defaults = self.kind.defaults();
-        let mut m = s.serialize_map(None)?;
-
-        if self.kind != FieldKind::Struct {
-            m.serialize_entry("$type", &self.kind)?;
-        }
-        if self.searchable != defaults.searchable {
-            m.serialize_entry("$searchable", &self.searchable)?;
-        }
-        if self.list != defaults.list {
-            m.serialize_entry("$list", &self.list)?;
-        }
-        if self.weight != defaults.weight {
-            m.serialize_entry("$weight", &self.weight)?;
-        }
-        if let Some(stem) = &self.stemming {
-            m.serialize_entry("$stemming", stem)?;
-        }
-        if self.exact != defaults.exact {
-            m.serialize_entry("$exact", &self.exact)?;
-        }
         if self.repeated {
-            m.serialize_entry("$repeated", &self.repeated)?;
+            use serde::ser::SerializeSeq;
+            let mut seq = s.serialize_seq(Some(1))?;
+            seq.serialize_element(&Self {
+                repeated: false,
+                ..self.clone()
+            })?;
+            seq.end()
+        } else {
+            use serde::ser::SerializeMap;
+            let defaults = self.kind.defaults();
+            let mut m = s.serialize_map(None)?;
+
+            if self.kind != FieldKind::Struct {
+                m.serialize_entry("$type", &self.kind)?;
+            }
+            if self.searchable != defaults.searchable {
+                m.serialize_entry("$searchable", &self.searchable)?;
+            }
+            if self.list != defaults.list {
+                m.serialize_entry("$list", &self.list)?;
+            }
+            if self.weight != defaults.weight {
+                m.serialize_entry("$weight", &self.weight)?;
+            }
+            if let Some(stem) = &self.stemming {
+                m.serialize_entry("$stemming", stem)?;
+            }
+            if self.exact != defaults.exact {
+                m.serialize_entry("$exact", &self.exact)?;
+            }
+            if self.repeated {
+                m.serialize_entry("$repeated", &self.repeated)?;
+            }
+            for sub in &self.subfields {
+                m.serialize_entry(&sub.name, sub)?;
+            }
+            m.end()
         }
-        for sub in &self.subfields {
-            m.serialize_entry(&sub.name, sub)?;
-        }
-        m.end()
     }
 }
 
@@ -206,6 +218,16 @@ impl FieldPolicy {
         if let Some(w) = obj.get("$weight") {
             f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
         }
+        if let Some(r) = obj.get("$repeated") {
+            f.repeated = r
+                .as_bool()
+                .ok_or_else(|| format!("field '{name}': $repeated must be a bool"))?;
+        }
+        if let Some(b) = obj.get("$searchable") {
+            f.searchable = b
+                .as_bool()
+                .ok_or_else(|| format!("field '{name}': $searchable must be a bool"))?;
+        }
         Ok(f)
     }
 
@@ -303,32 +325,6 @@ impl IndexPolicy {
         Self {
             fields,
             registry: FieldRegistry::new(),
-        }
-    }
-
-    pub fn array_groups(&self) -> Vec<Vec<(XPathId, Option<XPathId>)>> {
-        let mut groups = Vec::new();
-        for field in &self.fields {
-            if field.kind == FieldKind::Struct {
-                let mut subs = Vec::new();
-                Self::collect_subfield_contexts(field, &mut subs, self);
-                groups.push(subs);
-            }
-        }
-        groups
-    }
-
-    fn collect_subfield_contexts(
-        field: &FieldPolicy,
-        out: &mut Vec<(XPathId, Option<XPathId>)>,
-        policy: &IndexPolicy,
-    ) {
-        for sub in &field.subfields {
-            if sub.kind == FieldKind::Struct {
-                Self::collect_subfield_contexts(sub, out, policy);
-            } else {
-                out.push((sub.xpath(policy), sub.exact_xpath(policy)));
-            }
         }
     }
 
@@ -436,7 +432,7 @@ impl IndexPolicy {
     pub fn searchable_fields(&self) -> Vec<&FieldPolicy> {
         self.indexed_fields()
             .into_iter()
-            .filter(|field| field.searchable() && !field.row_keyed)
+            .filter(|field| field.searchable())
             .collect()
     }
 
@@ -745,7 +741,14 @@ fn stamp_field(
             stamp_field(sub, &full, d, registry);
         }
     } else {
-        field.row_keyed = field.repeated || array_depth > 0;
+        //INFO: flat repeated TEXT arrays get flattened docID + gap
+        //repeated numeric/bool arrays stay row-keyed for sort/filter
+        field.row_keyed = array_depth > 0
+            || (field.repeated
+                && !matches!(
+                    field.kind,
+                    FieldKind::Text | FieldKind::Id | FieldKind::IdAuto
+                ));
         field.depth = if field.repeated { 1 } else { array_depth };
         registry.resolve(&full);
         if field.has_exact_index() {
