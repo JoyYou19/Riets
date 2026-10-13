@@ -2,7 +2,7 @@ use core_index::{
     analyzer::analyzer::Analyzer,
     fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
     posting::{Posting, PostingList, ops::intersection},
-    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
+    search::{SearchIndex, SearchNumeric, SearchStats},
     types::{DocId, XPathId},
 };
 use std::{
@@ -18,7 +18,13 @@ use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit, ast::{Query, SynonymAlternative}, corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats}, prepared::PreparedQuery, resolver::{FieldCtx, FieldQuery, SameElementBinding}, scorer::{fuzzy_decay, score_term_into}, wand::{
+    ScoredPosting, SearchHit, TopHit,
+    ast::{Query, SynonymAlternative},
+    corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
+    prepared::PreparedQuery,
+    resolver::{FieldCtx, FieldQuery, SameElementBinding},
+    scorer::{fuzzy_decay, score_term_into},
+    wand::{
         FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
         conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_multi_field,
     },
@@ -757,8 +763,7 @@ where
                 .iter()
                 .map(|&ctx| {
                     let leaf = self.leaf(typed, ctx)?;
-                    let doc_freq =
-                        self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+                    let doc_freq = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
                     (doc_freq > 0).then_some(doc_freq)
                 })
                 .collect(),
@@ -1388,7 +1393,6 @@ where
             .map(|(hit, _)| hit)
             .collect()
     }
-    
 }
 
 #[timed(search)]
@@ -1415,8 +1419,6 @@ fn phrase_matches(position_lists: &[&[u32]]) -> bool {
 
     false
 }
-
-
 
 #[timed(search)]
 fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<SearchHit> {

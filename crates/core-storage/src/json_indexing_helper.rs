@@ -106,13 +106,25 @@ fn index_leaves(
                     });
                 }
             }
-            FieldKind::Id => {
-                parts.push(DocumentPart {
-                    xpath: field.xpath(policy),
-                    text: raw.clone(),
-                    weight: field.weight,
-                    exact: true,
-                });
+            FieldKind::Id | FieldKind::IdAuto => {
+                if field.searchable() {
+                    // stemmed copy
+                    parts.push(DocumentPart {
+                        xpath: field.xpath(policy),
+                        text: raw.clone(),
+                        weight: field.weight,
+                        exact: false,
+                    });
+                    // exact copy
+                    if let Some(exact_xpath) = field.exact_xpath(policy) {
+                        parts.push(DocumentPart {
+                            xpath: exact_xpath,
+                            text: raw.clone(),
+                            weight: field.weight,
+                            exact: true,
+                        });
+                    }
+                }
             }
             FieldKind::Integer => {
                 if let Some(value) = parse_integer(raw) {

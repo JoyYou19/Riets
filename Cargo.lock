@@ -633,6 +633,7 @@ dependencies = [
  "roaring",
  "rust-stemmers",
  "serde",
+ "serde_json",
  "slog",
  "smallvec",
  "tantivy",
@@ -662,6 +663,7 @@ dependencies = [
  "core-timing",
  "indexmap",
  "serde",
+ "serde_json",
  "simd-json",
  "strsim",
  "thiserror 2.0.21",
@@ -708,6 +710,7 @@ dependencies = [
  "rayon",
  "reqwest",
  "serde",
+ "serde_json",
  "simd-json",
  "slog",
  "slog-async",
@@ -2701,9 +2704,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.152"
+version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1741ab7a6cc54a03a89b5d563ed60075c277d9e3cfa73ad0c1f23f23974703c6"
+checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
  "itoa",
  "memchr",

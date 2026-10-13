@@ -273,11 +273,11 @@ pub fn parse_partial_replace_to_inputs(
     (inputs, failures)
 }
 
-//polocy is just toml so no worries
+//polocy is just json so no worries
 pub fn serialize_policy(policy: &IndexPolicy) -> Result<String, CorelamoError> {
-    toml::to_string_pretty(policy).map_err(CorelamoError::from)
+    serde_json::to_string_pretty(policy).map_err(CorelamoError::from)
 }
 
 pub fn parse_policy(body: &str) -> Result<IndexPolicy, CorelamoError> {
-    toml::from_str(body).map_err(CorelamoError::from)
+    serde_json::from_str(body).map_err(CorelamoError::from)
 }

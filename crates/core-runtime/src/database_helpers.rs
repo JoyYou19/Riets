@@ -4,7 +4,7 @@ use core_core::shard_manager::ShardManager;
 use core_protocol::errors::CorelamoError;
 use core_timing::timed;
 
-use simd_json::{OwnedValue, StaticNode, owned::Object, json};
+use simd_json::{OwnedValue, StaticNode, json, owned::Object};
 use slog::error;
 
 #[timed(database_lifecycle)]
@@ -76,7 +76,6 @@ fn file_size_opt(path: &std::path::Path) -> Result<Option<u64>, CorelamoError> {
     Ok(Some(meta.len()))
 }
 
-
 fn dir_total_size(path: &std::path::Path) -> Result<u64, CorelamoError> {
     let mut total = 0u64;
     let entries = std::fs::read_dir(path).map_err(|e| {
@@ -142,9 +141,9 @@ pub fn compute_disk_usage(
     // --- root-level config/toml files ---
     let config_files = [
         ("config.toml", "config_toml"),
-        ("policy.toml", "policy_toml"),
-        ("xpath_registry.toml", "xpath_registry_toml"),
-        ("all_fields.toml", "all_fields_toml"),
+        ("policy.json", "policy_json"),
+        ("xpath_registry.json", "xpath_registry_json"),
+        ("all_fields.json", "all_fields_json"),
     ];
     let mut config_total: u64 = 0;
     let mut config_json = Object::new();

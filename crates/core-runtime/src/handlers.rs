@@ -445,10 +445,7 @@ pub async fn get_all_fields_handler(
 
     let mut fields_json = Object::new();
     for (xpath, kind) in all_fields.get_fields().iter() {
-        fields_json.insert(
-            xpath.clone().into(),
-            simd_json::json!(format!("{:?}", kind)),
-        );
+        fields_json.insert(xpath.clone().into(), simd_json::json!(kind.label()));
     }
     let fields_json = OwnedValue::Object(fields_json.into());
 
@@ -1621,6 +1618,7 @@ pub async fn abort_reindex_handler(
     manager.abort_reindex();
     HttpOk::new(format!("reindex aborted for '{db_name}'"), &ctx).into_response()
 }
+
 pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
@@ -1640,7 +1638,7 @@ pub async fn get_policy_handler(
     let policy = handle.policy();
 
     match doc_parser::serialize_policy(&policy) {
-        Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
+        Ok(output) => HttpOk::raw(StatusCode::OK, "application/json", output, &ctx),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }

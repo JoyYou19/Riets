@@ -10,7 +10,8 @@ use crate::{
 };
 use ahash::HashSet;
 use core_timing::timed;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeightInterval {
@@ -38,7 +39,7 @@ pub struct FieldPolicy {
     pub weight: WeightInterval,
     pub stemming: Option<String>,
     pub exact: bool,
-    pub repeated: bool, // array of sttrings nums/bools
+    pub repeated: bool, // array of strings nums/bools
 
     pub subfields: Vec<FieldPolicy>,
     pub full_path: String,
@@ -47,54 +48,165 @@ pub struct FieldPolicy {
 }
 
 impl Serialize for FieldPolicy {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
         let defaults = self.kind.defaults();
-        let mut st = serializer.serialize_struct("FieldPolicy", 9)?;
+        let mut m = s.serialize_map(None)?;
 
-        st.serialize_field("name", &self.name)?;
-        st.serialize_field("kind", &self.kind)?;
-
+        if self.kind != FieldKind::Struct {
+            m.serialize_entry("$type", &self.kind)?;
+        }
         if self.searchable != defaults.searchable {
-            st.serialize_field("searchable", &self.searchable)?;
+            m.serialize_entry("$searchable", &self.searchable)?;
         }
         if self.list != defaults.list {
-            st.serialize_field("list", &self.list)?;
+            m.serialize_entry("$list", &self.list)?;
         }
         if self.weight != defaults.weight {
-            st.serialize_field("weight", &self.weight)?;
+            m.serialize_entry("$weight", &self.weight)?;
         }
         if let Some(stem) = &self.stemming {
-            st.serialize_field("stemming", stem)?;
+            m.serialize_entry("$stemming", stem)?;
         }
         if self.exact != defaults.exact {
-            st.serialize_field("exact", &self.exact)?;
+            m.serialize_entry("$exact", &self.exact)?;
         }
         if self.repeated {
-            st.serialize_field("repeated", &self.repeated)?;
+            m.serialize_entry("$repeated", &self.repeated)?;
         }
-        if !self.subfields.is_empty() {
-            st.serialize_field("subfields", &self.subfields)?;
+        for sub in &self.subfields {
+            m.serialize_entry(&sub.name, sub)?;
         }
-
-        st.end()
+        m.end()
     }
 }
 
 impl FieldPolicy {
     pub fn new(name: impl Into<String>, kind: FieldKind) -> Self {
-        Self::from_raw(RawFieldPolicy {
-            name: name.into(),
+        let name = name.into();
+        Self::leaf(&name, kind)
+    }
+
+    fn leaf(name: &str, kind: FieldKind) -> Self {
+        let defaults = kind.defaults();
+        Self {
+            name: name.to_string(),
             kind,
-            searchable: None,
-            list: None,
-            weight: None,
+            searchable: defaults.searchable,
+            list: defaults.list,
+            weight: defaults.weight,
             stemming: None,
-            exact: None,
-            repeated: None,
-            subfields: None,
-        })
+            exact: defaults.exact,
+            repeated: false,
+            subfields: Vec::new(),
+            full_path: name.to_string(),
+            row_keyed: false,
+            depth: 0,
+        }
+    }
+
+    fn struct_with(name: &str, subfields: Vec<FieldPolicy>) -> Self {
+        let defaults = FieldKind::Struct.defaults();
+        Self {
+            name: name.to_string(),
+            kind: FieldKind::Struct,
+            searchable: defaults.searchable,
+            list: defaults.list,
+            weight: defaults.weight,
+            stemming: None,
+            exact: defaults.exact,
+            repeated: false,
+            subfields,
+            full_path: name.to_string(),
+            row_keyed: false,
+            depth: 0,
+        }
+    }
+
+    fn from_json(name: &str, v: &Value) -> Result<Self, String> {
+        match v {
+            Value::String(s) => {
+                let kind = kind_from_str(s)
+                    .ok_or_else(|| format!("field '{name}': unknown type '{s}'"))?;
+                Ok(Self::leaf(name, kind))
+            }
+
+            Value::Object(obj) => match obj.get("$type").and_then(Value::as_str) {
+                Some("struct") => Self::struct_from_obj(name, obj),
+                Some(t) => Self::leaf_from_obj(name, t, obj),
+                None => Self::struct_from_obj(name, obj),
+            },
+
+            Value::Array(items) => {
+                let elem = items
+                    .first()
+                    .ok_or_else(|| format!("repeated field '{name}' needs exactly one element"))?;
+                let mut f = Self::from_json(name, elem)?;
+                f.repeated = true;
+                Ok(f)
+            }
+
+            other => Err(format!(
+                "field '{name}': expected a string, object or array, got {}",
+                json_kind_name(other)
+            )),
+        }
+    }
+
+    fn leaf_from_obj(
+        name: &str,
+        type_str: &str,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<Self, String> {
+        let kind = kind_from_str(type_str)
+            .ok_or_else(|| format!("field '{name}': unknown type '{type_str}'"))?;
+        let mut f = Self::leaf(name, kind);
+        if let Some(e) = obj.get("$exact") {
+            f.exact = e
+                .as_bool()
+                .ok_or_else(|| format!("field '{name}': $exact must be a bool"))?;
+        }
+        if let Some(b) = obj.get("$searchable") {
+            f.searchable = b
+                .as_bool()
+                .ok_or_else(|| format!("field '{name}': $searchable must be a bool"))?;
+        }
+        if let Some(b) = obj.get("$list") {
+            f.list = b
+                .as_bool()
+                .ok_or_else(|| format!("field '{name}': $list must be a bool"))?;
+        }
+        if let Some(b) = obj.get("$repeated") {
+            f.repeated = b
+                .as_bool()
+                .ok_or_else(|| format!("field '{name}': $repeated must be a bool"))?;
+        }
+        if let Some(stem) = obj.get("$stemming") {
+            f.stemming = Some(
+                stem.as_str()
+                    .ok_or_else(|| format!("field '{name}': $stemming must be a string"))?
+                    .to_string(),
+            );
+        }
+        if let Some(w) = obj.get("$weight") {
+            f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
+        }
+        Ok(f)
+    }
+
+    fn struct_from_obj(name: &str, obj: &serde_json::Map<String, Value>) -> Result<Self, String> {
+        let mut subfields = Vec::new();
+        for (k, val) in obj {
+            if k.starts_with('$') {
+                continue;
+            }
+            subfields.push(Self::from_json(k, val)?);
+        }
+        let mut f = Self::struct_with(name, subfields);
+        if let Some(w) = obj.get("$weight") {
+            f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
+        }
+        Ok(f)
     }
 
     pub fn xpath(&self, policy: &IndexPolicy) -> XPathId {
@@ -108,7 +220,9 @@ impl FieldPolicy {
     }
 
     pub fn has_exact_index(&self) -> bool {
-        self.kind == FieldKind::Text && self.exact
+        //either text+exact or Id IdAuto
+        (self.kind == FieldKind::Text && self.exact)
+            || matches!(self.kind, FieldKind::Id | FieldKind::IdAuto)
     }
 
     pub fn exact_xpath(&self, policy: &IndexPolicy) -> Option<XPathId> {
@@ -133,61 +247,45 @@ impl FieldPolicy {
             out.push(self);
         }
     }
-
-    fn from_raw(raw: RawFieldPolicy) -> Self {
-        let defaults = raw.kind.defaults();
-        Self {
-            name: raw.name.clone(),
-            kind: raw.kind,
-            searchable: raw.searchable.unwrap_or(defaults.searchable),
-            list: raw.list.unwrap_or(defaults.list),
-            weight: raw.weight.unwrap_or(defaults.weight),
-            stemming: raw.stemming,
-            exact: raw.exact.unwrap_or(defaults.exact),
-            repeated: raw.repeated.unwrap_or(false),
-            subfields: raw.subfields.unwrap_or_default(),
-            full_path: raw.name,
-            row_keyed: false,
-            depth: 0,
-        }
-    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawFieldPolicy {
-    name: String,
-    kind: FieldKind,
-    searchable: Option<bool>,
-    list: Option<bool>,
-    weight: Option<WeightInterval>,
-    stemming: Option<String>,
-    exact: Option<bool>,
-    repeated: Option<bool>,
-    subfields: Option<Vec<FieldPolicy>>,
-}
-
-impl<'de> Deserialize<'de> for FieldPolicy {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = RawFieldPolicy::deserialize(deserializer)?;
-        Ok(Self::from_raw(raw))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexPolicy {
     pub fields: Vec<FieldPolicy>,
-    #[serde(skip)]
     registry: FieldRegistry,
 }
 
+// Bare-object serialization: field names are the top-level keys.
+impl Serialize for IndexPolicy {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(self.fields.len()))?;
+        for f in &self.fields {
+            m.serialize_entry(&f.name, f)?;
+        }
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for IndexPolicy {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(d)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("policy must be a JSON object"))?;
+
+        let mut fields = Vec::with_capacity(obj.len());
+        for (name, v) in obj {
+            fields.push(FieldPolicy::from_json(name, v).map_err(serde::de::Error::custom)?);
+        }
+        Ok(IndexPolicy::new(fields))
+    }
+}
+
 impl IndexPolicy {
-    pub const POLICY_FILE_NAME: &'static str = "policy.toml";
-    pub const FULL_FILE_NAME: &'static str = "policy.full";
-    pub const REGISTRY_FILE_NAME: &'static str = "xpath_registry.toml";
+    pub const POLICY_FILE_NAME: &'static str = "policy.json";
+    pub const FULL_FILE_NAME: &'static str = "policy.json.full";
+    pub const REGISTRY_FILE_NAME: &'static str = "xpath_registry.json";
 
     fn policy_path(root: &Path) -> PathBuf {
         root.join(Self::POLICY_FILE_NAME)
@@ -234,10 +332,8 @@ impl IndexPolicy {
         }
     }
 
-    pub fn from_toml(contents: &str) -> io::Result<Self> {
-        let policy: Self =
-            toml::from_str(contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(policy)
+    pub fn from_json(contents: &str) -> io::Result<Self> {
+        serde_json::from_str(contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     pub fn leaf_by_path(&self, path: &str) -> Option<&FieldPolicy> {
@@ -256,7 +352,7 @@ impl IndexPolicy {
         find(&self.fields, path)
     }
 
-    //validates if everything is fine for policy
+    // validates if everything is fine for policy
     pub fn validate(&self) -> io::Result<()> {
         let mut names = HashSet::default();
 
@@ -268,7 +364,7 @@ impl IndexPolicy {
                 ));
             }
 
-            //TODO: id shouldnt neeed a weight right?
+            // TODO: id shouldnt need a weight right?
             if field.weight.min > field.weight.max {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -376,14 +472,21 @@ impl IndexPolicy {
         Ok(())
     }
 
+    fn write_full(&self, root: impl AsRef<Path>) -> io::Result<()> {
+        let full = serde_json::to_string_pretty(&Full(self))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(Self::full_path(root.as_ref()), full)
+    }
+
     #[timed(database_lifecycle)]
     pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
         let root = root.as_ref();
         let contents = fs::read_to_string(Self::policy_path(root))?;
-        let mut policy: Self =
-            toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut policy: Self = serde_json::from_str(&contents)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         policy.validate()?;
         policy.resolve(root)?;
+        policy.write_full(root)?; // keep policy.json.full in sync
         Ok(policy)
     }
 
@@ -410,13 +513,13 @@ impl IndexPolicy {
         self.validate()?;
         self.resolve(root)?;
 
-        // minimal (hide defaults) -> policy.toml
-        let minimal = toml::to_string_pretty(self)
+        // minimal (hide defaults) -> policy.json
+        let minimal = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         fs::write(Self::policy_path(root), minimal)?;
 
-        // full resolved (defaults + stamps) -> policy.full
-        let full = toml::to_string_pretty(&Full(self))
+        // full resolved (defaults + stamps) -> policy.json.full
+        let full = serde_json::to_string_pretty(&Full(self))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         fs::write(Self::full_path(root), full)
     }
@@ -427,7 +530,7 @@ impl IndexPolicy {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum FieldKind {
     None,
     Text,
@@ -436,8 +539,22 @@ pub enum FieldKind {
     Date,
     Id,
     IdAuto,
-    Struct, //list of objects
+    Struct, // list of objects
     Bool,
+}
+
+impl Serialize for FieldKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.label())
+    }
+}
+
+impl<'de> Deserialize<'de> for FieldKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        kind_from_str(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown field type '{s}'")))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -448,7 +565,7 @@ struct FieldDefaults {
     exact: bool,
 }
 
-//reasonable default for each type of field based on my intuition
+// reasonable default for each type of field based on my intuition
 impl FieldKind {
     fn defaults(self) -> FieldDefaults {
         match self {
@@ -509,11 +626,11 @@ impl FieldKind {
         match self {
             FieldKind::None => "none",
             FieldKind::Text => "text",
-            FieldKind::Integer => "integer",
+            FieldKind::Integer => "int",
             FieldKind::Float => "float",
             FieldKind::Date => "date",
             FieldKind::Id => "id",
-            FieldKind::IdAuto => "id",
+            FieldKind::IdAuto => "id_auto",
             FieldKind::Struct => "struct",
             FieldKind::Bool => "bool",
         }
@@ -534,16 +651,46 @@ impl FieldKind {
     }
 }
 
+fn kind_from_str(s: &str) -> Option<FieldKind> {
+    match s {
+        "none" => Some(FieldKind::None),
+        "text" => Some(FieldKind::Text),
+        "int" | "integer" => Some(FieldKind::Integer),
+        "float" => Some(FieldKind::Float),
+        "date" => Some(FieldKind::Date),
+        "id" => Some(FieldKind::Id),
+        "id_auto" => Some(FieldKind::IdAuto),
+        "struct" => Some(FieldKind::Struct),
+        "bool" => Some(FieldKind::Bool),
+        _ => None,
+    }
+}
+
+fn parse_weight(v: &Value) -> Result<WeightInterval, String> {
+    serde_json::from_value(v.clone()).map_err(|e| e.to_string())
+}
+
+fn json_kind_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 pub enum MatchMode {
     FullText,
     Exact,
     Both,
 }
 
-//Array inside Array inside Array... max
+// Array inside Array inside Array... max
 const MAX_ARRAY_DEPTH: u32 = 3;
 
-//arrays should have one subfield + max 3 + numbers cant be exact=false
+// arrays should have one subfield + max 3 + numbers cant be exact=false
 fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
     if field.kind == FieldKind::Struct {
         let depth = array_depth + 1;
@@ -630,10 +777,9 @@ impl FieldRegistry {
             return Ok(Self::new());
         }
         let contents = fs::read_to_string(path)?;
-        let mut registry: Self =
-            toml::from_str(&contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut registry: Self = serde_json::from_str(&contents)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        //porniks ar tiem exact logic
         let max_assigned = registry.ids.values().copied().max().unwrap_or(0);
         let max_exact = registry.exact_ids.values().copied().max().unwrap_or(0);
 
@@ -653,7 +799,7 @@ impl FieldRegistry {
 
     fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
         let path = path.as_ref();
-        let contents = toml::to_string_pretty(self)
+        let contents = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let tmp_path = path.with_file_name(format!(
             "{}.tmp",
@@ -693,50 +839,42 @@ impl Default for FieldRegistry {
     }
 }
 
-//helper to write the pretty + full policy
+// helper to write the pretty + full policy
 struct Full<'a>(&'a IndexPolicy);
 impl Serialize for Full<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut st = s.serialize_struct("IndexPolicy", 1)?;
-        st.serialize_field("fields", &FullFields(&self.0.fields))?;
-        st.end()
-    }
-}
-
-struct FullFields<'a>(&'a [FieldPolicy]);
-
-impl Serialize for FullFields<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq;
-        let mut seq = s.serialize_seq(Some(self.0.len()))?;
-        for f in self.0 {
-            seq.serialize_element(&FullField(f))?;
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(self.0.fields.len()))?;
+        for f in &self.0.fields {
+            m.serialize_entry(&f.name, &FullField(f))?;
         }
-        seq.end()
+        m.end()
     }
 }
 
 struct FullField<'a>(&'a FieldPolicy);
 impl Serialize for FullField<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
         let f = self.0;
-        let mut st = s.serialize_struct("FieldPolicy", 12)?;
-        st.serialize_field("name", &f.name)?;
-        st.serialize_field("kind", &f.kind)?;
-        st.serialize_field("searchable", &f.searchable)?;
-        st.serialize_field("list", &f.list)?;
-        st.serialize_field("weight", &f.weight)?;
-        if let Some(stem) = &f.stemming {
-            st.serialize_field("stemming", stem)?;
+        let mut m = s.serialize_map(None)?;
+        if f.kind != FieldKind::Struct {
+            m.serialize_entry("$type", &f.kind)?;
         }
-        st.serialize_field("exact", &f.exact)?;
-        st.serialize_field("array", &f.repeated)?;
-        st.serialize_field("subfields", &FullFields(&f.subfields))?;
-        st.serialize_field("full_path", &f.full_path)?;
-        st.serialize_field("row_keyed", &f.row_keyed)?;
-        st.serialize_field("depth", &f.depth)?;
-        st.end()
+        m.serialize_entry("$searchable", &f.searchable)?;
+        m.serialize_entry("$list", &f.list)?;
+        m.serialize_entry("$weight", &f.weight)?;
+        if let Some(stem) = &f.stemming {
+            m.serialize_entry("$stemming", stem)?;
+        }
+        m.serialize_entry("$exact", &f.exact)?;
+        m.serialize_entry("$repeated", &f.repeated)?;
+        m.serialize_entry("$full_path", &f.full_path)?;
+        m.serialize_entry("$row_keyed", &f.row_keyed)?;
+        m.serialize_entry("$depth", &f.depth)?;
+        for sub in &f.subfields {
+            m.serialize_entry(&sub.name, &FullField(sub))?;
+        }
+        m.end()
     }
 }
