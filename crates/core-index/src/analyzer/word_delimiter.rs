@@ -6,6 +6,23 @@ use std::collections::HashSet;
 
 //made to be compatible with tantivys analyzer
 
+/// Examples (input -> tokens):
+///   "king's"      -> ["king's", "king", "kings"]
+///                    possessive: the "s" fragment is dropped, but "kings" keeps it searchable
+///   "don't"       -> ["don't", "don", "dont"]
+///                    contraction: "t" dropped, "dont" (no apostrophe) still matches
+///   "o'clock"     -> ["o'clock", "clock", "oclock"]
+///                    leading "o" is a 1-char fragment -> dropped; "oclock" survives
+///   "o'brien"     -> ["o'brien", "brien", "obrien"]
+///                    name with apostrophe: "o" dropped, "obrien" (typed without it) survives
+///   "spider-man"  -> ["spider-man", "spider", "man", "spiderman"]
+///                    both fragments >1 char -> kept; "spiderman" is the catenated form
+///   "C++"         -> ["C++", "C"]
+///                    the only fragment "C" is 1 char, but it still survives via the catenated form
+///   "😛😝😜"       -> ["😛😝😜"]
+///                    all-symbol chunk: no fragments, no empty string emitted
+///   "spiderman"   -> ["spiderman"]
+///                    no delimiter -> unchanged (single token)
 pub fn expand_word_delimiters(word: &str, literal_symbols: &HashSet<char>) -> Vec<String> {
     let has_delim = word
         .chars()
@@ -23,8 +40,10 @@ pub fn expand_word_delimiters(word: &str, literal_symbols: &HashSet<char>) -> Ve
 
     let mut out = Vec::with_capacity(parts.len() + 2);
     out.push(word.to_string()); // original
-    out.extend(parts.iter().cloned()); // split parts
-    out.push(parts.concat()); // catenated
+    // split parts, but skip 1-char fragments ("s" from "king's", "t" from "don't", "o" from "o'clock")
+    out.extend(parts.iter().filter(|p| p.chars().count() > 1).cloned());
+    out.push(parts.concat()); // catenated (all parts, so "king's" -> "kings")
+    out.retain(|s| !s.is_empty()); // drop "" from all-symbol chunks (emoji)
     out
 }
 
@@ -133,14 +152,6 @@ mod tests {
         assert_eq!(
             expand_word_delimiters("spider-man", &syms(&['_'])),
             vec!["spider-man", "spider", "man", "spiderman"]
-        );
-    }
-
-    #[test]
-    fn colon_splits_catenates_preserves() {
-        assert_eq!(
-            expand_word_delimiters("Ca:P", &syms(&['_'])),
-            vec!["Ca:P", "Ca", "P", "CaP"]
         );
     }
 

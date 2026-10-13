@@ -49,16 +49,22 @@ impl Analyzer {
     #[timed(indexing_documents)]
     pub fn with_literal_symbols(symbols: impl IntoIterator<Item = char>) -> Self {
         let literal_symbols: HashSet<char> = symbols.into_iter().collect();
+        //
         //TODO: configurable
-        let stopwords: HashSet<String> = [
-            "a", "an", "the", "and", "or", "of", "is", "it", "this", "that", "he", "she", "you",
-            "i", "am", "are", "was", "were", "be", "been", "being", "to", "in", "on", "for",
-            "with", "as", "by", "at", "from", "but", "not", "his", "her", "their", "they", "we",
-            "my", "your", "our", "who", "what", "when", "where", "why", "how",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+        // let stopwords: HashSet<String> = [
+        //     "a", "an", "the", "and", "or", "of", "is", "it", "this", "that", "he", "she", "you",
+        //     "i", "am", "are", "was", "were", "be", "been", "being", "to", "in", "on", "for",
+        //     "with", "as", "by", "at", "from", "but", "not", "his", "her", "their", "they", "we",
+        //     "my", "your", "our", "who", "what", "when", "where", "why", "how",
+        // ]
+        // .into_iter()
+        // .map(str::to_string)
+        // .collect();
+
+        let stopwords: HashSet<String> = ["the", "a", "of", "in", "to", "and", "is"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
 
         let analyzer = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
             .filter(RemoveLongFilter::limit(40))
@@ -128,7 +134,10 @@ impl Analyzer {
         let canonical: String = input
             .chars()
             .filter(|c| {
-                c.is_alphanumeric() || c.is_whitespace() || self.literal_symbols.contains(c)
+                c.is_alphanumeric()
+                    || c.is_whitespace()
+                    || self.literal_symbols.contains(c)
+                    || !c.is_ascii()
             })
             .collect();
         self.analyze(&canonical)

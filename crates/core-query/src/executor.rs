@@ -1,7 +1,9 @@
 use core_index::{
-    analyzer::analyzer::Analyzer, fuzzy::{
-        FuzzyExpansion, FuzzyOptions, FuzzySpec,
-    }, posting::{Posting, PostingList, ops::intersection}, search::{SearchIndex, SearchNumeric, SearchStats}, types::{DocId, XPathId},
+    analyzer::analyzer::Analyzer,
+    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
+    posting::{Posting, PostingList, ops::intersection},
+    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
+    types::{DocId, XPathId},
 };
 use std::{
     borrow::Cow,
@@ -439,7 +441,11 @@ where
             }
 
             if all_terms_in_doc && phrase_matches(&position_lists) {
-                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first_posting.positions.clone(),
+                    first_posting.weight,
+                ));
             }
         }
 
@@ -530,7 +536,11 @@ where
             }
 
             if all_terms_in_doc && phrase_matches(&position_lists) {
-                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first_posting.positions.clone(),
+                    first_posting.weight,
+                ));
             }
         }
 
@@ -898,7 +908,7 @@ where
         rows.unwrap_or_default()
     }
 
-    //same-element relevance: evaluate the full AST over each array group, resolve rows -> docs
+    //same-element relevance: evaluate the full AST over each array group, resolve rows-> docs
     fn score_array_groups(
         &self,
         query: &Query,
@@ -1521,19 +1531,15 @@ fn grouped_parts(query: &Query) -> Option<(bool, Vec<&Query>)> {
 fn additive_terms(query: &Query) -> Option<Vec<&str>> {
     match query {
         Query::Term(term) => Some(vec![term.as_str()]),
-        Query::Wand(parts) | Query::Or(parts)
-            if parts.iter().all(|part| matches!(part, Query::Term(_))) =>
-        {
-            Some(
-                parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        Query::Term(term) => Some(term.as_str()),
-                        _ => None,
-                    })
-                    .collect(),
-            )
-        }
+        Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => Some(
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    Query::Term(term) => Some(term.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        ),
         _ => None,
     }
 }

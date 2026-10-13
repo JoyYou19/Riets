@@ -57,10 +57,19 @@ pub fn split_prefix(term: &str, prefix_chars: usize) -> (&str, &str) {
 //utman -> atman , utman, batman,
 pub fn candidates_within_one(term: &str) -> Vec<String> {
     let chars: Vec<char> = term.chars().collect();
-    //WARN: mos sito vajag vairak kaa a-z kip ieklaut kkadus - / . ?
-    let alphabet: Vec<char> = ('a'..='z').collect();
-    let mut out = Vec::new();
+    //a bit bigger alphabet
+    let mut alphabet: Vec<char> = ('a'..='z')
+        .chain('0'..='9')
+        .chain(['-', '.', '/', '_', '+'])
+        .collect();
 
+    //if a word had character like ummm café it would add the "é" to our alphabet
+    for &c in &chars {
+        if !alphabet.contains(&c) {
+            alphabet.push(c);
+        }
+    }
+    let mut out = Vec::new();
     for i in 0..chars.len() {
         let mut c = chars.clone();
         c.remove(i);

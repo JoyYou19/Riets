@@ -233,23 +233,37 @@ fn leaf(inner: &OwnedValue, kind: Leaf) -> Result<Query, CorelamoError> {
 }
 
 fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
-    let OwnedValue::Array(items) = inner else {
-        return Err(CorelamoError::InvalidData(
-            "'phrase' must be an array of words".into(),
-        ));
-    };
-    let mut words = Vec::with_capacity(items.len());
-    for w in items.iter() {
-        let s = w.as_str().ok_or_else(|| {
-            CorelamoError::InvalidData("'phrase' elements must be single words".into())
-        })?;
-        if s.split_whitespace().count() > 1 {
+    let words: Vec<String> = match inner {
+        OwnedValue::String(s) => {
+            let words: Vec<String> = s.split_whitespace().map(str::to_string).collect();
+            if words.is_empty() {
+                return Err(CorelamoError::InvalidData(
+                    "'phrase' must not be empty".into(),
+                ));
+            }
+            words
+        }
+        OwnedValue::Array(items) => {
+            let mut words = Vec::with_capacity(items.len());
+            for w in items.iter() {
+                let s = w.as_str().ok_or_else(|| {
+                    CorelamoError::InvalidData("'phrase' elements must be single words".into())
+                })?;
+                if s.split_whitespace().count() > 1 {
+                    return Err(CorelamoError::InvalidData(
+                        "'phrase' elements must be single words".into(),
+                    ));
+                }
+                words.push(s.to_string());
+            }
+            words
+        }
+        _ => {
             return Err(CorelamoError::InvalidData(
-                "'phrase' elements must be single words".into(),
+                "'phrase' must be a string or an array of words".into(),
             ));
         }
-        words.push(s.to_string());
-    }
+    };
     Ok(Query::Phrase(words))
 }
 

@@ -157,19 +157,19 @@ fn default_number_of_fragments() -> usize {
     3
 }
 
-// fn default_pre_tags() -> Vec<String> {
-//     vec!["<em>".to_string()]
-// }
-// fn default_post_tags() -> Vec<String> {
-//     vec!["</em>".to_string()]
-// }
-
 fn default_pre_tags() -> Vec<String> {
-    vec!["======".to_string()]
+    vec!["<em>".to_string()]
 }
 fn default_post_tags() -> Vec<String> {
-    vec!["======".to_string()]
+    vec!["</em>".to_string()]
 }
+
+// fn default_pre_tags() -> Vec<String> {
+//     vec!["======".to_string()]
+// }
+// fn default_post_tags() -> Vec<String> {
+//     vec!["======".to_string()]
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -277,12 +277,23 @@ pub enum SortOrderRequest {
     Desc,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortModifier {
+    #[default]
+    None, //linear — year, price
+    Log1p, //ln(1 + v) — power-law fields (pagerank, views)
+    Sqrt,  //sqrt(v) — milder compression
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SortSpec {
     #[serde(default)]
     pub order: SortOrderRequest,
     pub ratio: Option<u8>,
+    #[serde(default)]
+    pub modifier: SortModifier,
 }
 
 pub struct TotalHits {
@@ -333,28 +344,35 @@ impl ResponseData for SearchResponse {
     }
 
     fn to_raw_json(&self) -> Option<Vec<u8>> {
-        return None;
-        todo!();
-        // if self.strip_id.is_some() {
-        //     return None;
-        // }
-        // let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64));
-        // out.push(b'[');
-        // for (i, (id, score, doc)) in self.docs.iter().enumerate() {
-        //     let bytes = doc.raw_bytes()?;
-        //     if i > 0 {
-        //         out.push(b',');
-        //     }
-        //     out.extend_from_slice(b"{\"id\":\"");
-        //     out.extend_from_slice(escape_json_text(id).as_bytes());
-        //     out.extend_from_slice(b"\",\"score\":");
-        //     out.extend_from_slice(score.to_string().as_bytes());
-        //     out.extend_from_slice(b",\"data\":");
-        //     out.extend_from_slice(bytes);
-        //     out.push(b'}');
-        // }
-        // out.push(b']');
-        // Some(out)
+        if self.strip_id.is_some() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(self.docs.len().saturating_mul(64) + 32);
+        out.push(b'[');
+        for (i, (id, score, doc, highlights)) in self.docs.iter().enumerate() {
+            let bytes = doc.raw_bytes()?;
+            if i > 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(b"{\"id\":\"");
+            out.extend_from_slice(escape_json_text(id).as_bytes());
+            out.extend_from_slice(b"\",\"score\":");
+            out.extend_from_slice(score.to_string().as_bytes());
+            out.extend_from_slice(b",\"data\":");
+            out.extend_from_slice(bytes);
+            out.extend_from_slice(b",\"highlights\":[");
+            for (j, h) in highlights.iter().enumerate() {
+                if j > 0 {
+                    out.push(b',');
+                }
+                out.push(b'"');
+                out.extend_from_slice(escape_json_text(h).as_bytes());
+                out.push(b'"');
+            }
+            out.extend_from_slice(b"]}");
+        }
+        out.push(b']');
+        Some(out)
     }
 
     fn extra_fields(&self) -> Vec<(String, OwnedValue)> {
