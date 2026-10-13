@@ -61,10 +61,10 @@ impl Analyzer {
         // .map(str::to_string)
         // .collect();
 
-        //INFO: nevienam najhuj nav stopwordi, piem elastics palaujaas ka bm25 nahrenizees sito
-        //vardu + sis prieks relevances var stradat precizak un knapi leenaak uz moderniem dzelziem,
-        //still japataisa configurable tho
-        let stopwords: HashSet<String> = HashSet::new();
+        let stopwords: HashSet<String> = ["the", "a", "of", "in", "to", "and", "is"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
 
         let analyzer = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
             .filter(RemoveLongFilter::limit(40))

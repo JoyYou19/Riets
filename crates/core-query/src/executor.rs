@@ -216,7 +216,11 @@ where
             }
 
             if all_terms_in_doc && phrase_matches(&position_lists) {
-                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first_posting.positions.clone(),
+                    first_posting.weight,
+                ));
             }
         }
 
@@ -307,7 +311,11 @@ where
             }
 
             if all_terms_in_doc && phrase_matches(&position_lists) {
-                result.push(Posting::new(doc_id, first_posting.positions.clone()));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first_posting.positions.clone(),
+                    first_posting.weight,
+                ));
             }
         }
 
@@ -565,7 +573,7 @@ where
         rows.unwrap_or_default()
     }
 
-    //same-element relevance: evaluate the full AST over each array group, resolve rows -> docs
+    //same-element relevance: evaluate the full AST over each array group, resolve rows-> docs
     fn score_array_groups(
         &self,
         query: &Query,
