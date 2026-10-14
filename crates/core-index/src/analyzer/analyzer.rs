@@ -41,6 +41,16 @@ impl Default for Analyzer {
     }
 }
 
+//eliminates problem with - or other signs that are not from ASCII like AI -
+fn is_unicode_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00A1}'..='\u{00BF}'
+            | '\u{2010}'..='\u{2027}'
+            | '\u{2030}'..='\u{205E}'
+            | '\u{3000}'..='\u{303F}'
+    )
+}
 impl Analyzer {
     pub fn new() -> Self {
         //TODO: configurable
@@ -136,8 +146,8 @@ impl Analyzer {
             .filter(|c| {
                 c.is_alphanumeric()
                     || c.is_whitespace()
-                    || self.literal_symbols.contains(c)
-                    || !c.is_ascii()
+                    || self.literal_symbols.contains(&c)
+                    || !(c.is_ascii() || is_unicode_punctuation(*c))
             })
             .collect();
         self.analyze(&canonical)

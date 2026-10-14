@@ -1,26 +1,37 @@
 use core_index::{
     analyzer::analyzer::Analyzer,
-    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec},
-    posting::{Posting, PostingList, ops::intersection},
-    search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{DocId, XPathId},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec },
+    posting::{ Posting, PostingList, ops::intersection },
+    search::{ SearchIndex, SearchNumeric, SearchStats },
+    types::{ DocId, XPathId },
 };
-use std::{
-    borrow::Cow,
-    cmp::Ordering,
-    collections::{BinaryHeap, HashMap, hash_map::Entry},
-    u32,
-};
+use std::{ borrow::Cow, cmp::Ordering, collections::{ BinaryHeap, HashMap, hash_map::Entry }, u32 };
 
-use ahash::{HashSet, HashSetExt};
+use ahash::{ HashSet, HashSetExt };
 
-use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
+use core_protocol::command_reponse_definitions::{ Fuzziness, MatchMode };
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit, ast::{PhraseTerm, Query, SynonymAlternative}, corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats}, planner::RankPlan, prepared::PreparedQuery, resolver::{FieldCtx, FieldQuery, SameElementBinding}, scorer::{fuzzy_decay, score_term_into}, wand::{
-        FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
-        conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_multi_field,
+    ScoredPosting,
+    SearchHit,
+    TopHit,
+    ast::{ PhraseTerm, Query, SynonymAlternative },
+    corpus_stats::{ CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats },
+    planner::{ RankPlan, Tier },
+    prepared::PreparedQuery,
+    resolver::{ FieldCtx, FieldQuery, SameElementBinding },
+    scorer::{ fuzzy_decay, score_term_into },
+    wand::{
+        FieldClauses,
+        FieldTerms,
+        FormRef,
+        TermRef,
+        WandHit,
+        conjunctive_top_k_grouped,
+        conjunctive_top_k_multi_field,
+        wand_top_k_grouped,
+        wand_top_k_multi_field,
     },
 };
 
@@ -93,8 +104,7 @@ impl FormLists<'_> {
     fn as_ref(&self) -> FormRef<'_> {
         FormRef {
             xpath: self.xpath,
-            lists: self
-                .lists
+            lists: self.lists
                 .iter()
                 .map(|(postings, doc_freq)| TermRef {
                     postings,
@@ -108,10 +118,7 @@ impl FormLists<'_> {
 }
 
 // Turns the AST into a PostingList or SearchHit
-pub struct QueryExecutor<'a, I>
-where
-    I: SearchIndex + SearchStats,
-{
+pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
     // Which index are we searching?
     index: &'a I,
 
@@ -127,10 +134,7 @@ where
     prepared: Option<&'a PreparedQuery>,
 }
 
-impl<'a, I> QueryExecutor<'a, I>
-where
-    I: SearchIndex + SearchStats + SearchNumeric,
-{
+impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNumeric {
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self {
             index,
@@ -161,11 +165,7 @@ where
 
     //row-keyed postings are per element/row fold a hit onto its document
     fn fold_to_doc(&self, ctx: FieldCtx, id: DocId) -> Option<DocId> {
-        if ctx.row_keyed {
-            self.index.doc_of_row(id)
-        } else {
-            Some(id)
-        }
+        if ctx.row_keyed { self.index.doc_of_row(id) } else { Some(id) }
     }
 
     /// The words `word` can be changed into, with the number of documents each is in: from every
@@ -174,7 +174,7 @@ where
         &self,
         word: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         self.corpus
             .and_then(|corpus| corpus.fuzzy(xpath, &FuzzyKey::new(word, opts)))
@@ -189,9 +189,7 @@ where
     }
 
     fn leaf_doc_freq(&self, xpath: XPathId, key: &LeafKey, local: usize) -> u32 {
-        self.corpus
-            .and_then(|corpus| corpus.doc_freq(xpath, key))
-            .unwrap_or(local as u32)
+        self.corpus.and_then(|corpus| corpus.doc_freq(xpath, key)).unwrap_or(local as u32)
     }
 
     fn fetch_field_lists(&self, terms: &[&str], xpaths: &[XPathId]) -> Vec<FieldLists<'a>> {
@@ -220,24 +218,18 @@ where
         let doc_freq = self.leaf_doc_freq(xpath, &key, local_doc_freq as usize);
         (postings, doc_freq)
     }
-
     //WAND/conjunctive fast path for flat term lists (skips the general traversal)
     fn execute_top_k_retrieval(
         &self,
         query: &Query,
         xpaths: &[XPathId],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&HashSet<DocId>>
     ) -> Option<Vec<WandHit>> {
         //disjunctive flat-term cases (Term / Wand / Or) -> additive WAND
         if let Some(terms) = additive_terms(query) {
             let lists = self.fetch_field_lists(&terms, xpaths);
-            return Some(wand_top_k_multi_field(
-                &self.stats(),
-                &field_terms(&lists),
-                k,
-                restrict,
-            ));
+            return Some(wand_top_k_multi_field(&self.stats(), &field_terms(&lists), k, restrict));
         }
 
         //conjunctive flat-term case (And) -> conjunctive top-k
@@ -245,18 +237,17 @@ where
             if parts.iter().all(|p| matches!(p, Query::Term(_))) {
                 let terms: Vec<&str> = parts
                     .iter()
-                    .filter_map(|p| match p {
-                        Query::Term(t) => Some(t.as_str()),
-                        _ => None,
+                    .filter_map(|p| {
+                        match p {
+                            Query::Term(t) => Some(t.as_str()),
+                            _ => None,
+                        }
                     })
                     .collect();
                 let lists = self.fetch_field_lists(&terms, xpaths);
-                return Some(conjunctive_top_k_multi_field(
-                    &self.stats(),
-                    &field_terms(&lists),
-                    k,
-                    restrict,
-                ));
+                return Some(
+                    conjunctive_top_k_multi_field(&self.stats(), &field_terms(&lists), k, restrict)
+                );
             }
         }
 
@@ -264,14 +255,13 @@ where
     }
 
     /// The WAND fast path for flat queries with synonym groups: every part a word or a group of
-    /// words, phrases, exact matches and typed multi-word spans. It scores exactly what ranking
-    /// every field on its own with `evaluate` scores, without reading every match.
+    /// words, phrases, exact matches and typed multi-word spans.
     fn execute_grouped_retrieval(
         &self,
         query: &Query,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&HashSet<DocId>>
     ) -> Option<Vec<WandHit>> {
         let (conjunctive, parts) = grouped_parts(query)?;
         let lists: Vec<Vec<Vec<FormLists<'a>>>> = ctxs
@@ -293,11 +283,13 @@ where
             })
             .collect();
         let stats = self.stats();
-        Some(if conjunctive {
-            conjunctive_top_k_grouped(&stats, &fields, k, restrict)
-        } else {
-            wand_top_k_grouped(&stats, &fields, k, restrict)
-        })
+        Some(
+            if conjunctive {
+                conjunctive_top_k_grouped(&stats, &fields, k, restrict)
+            } else {
+                wand_top_k_grouped(&stats, &fields, k, restrict)
+            }
+        )
     }
 
     /// The forms of one part of a flat query in one field, read and weighted the way
@@ -320,8 +312,11 @@ where
                         .iter()
                         .map(|word| {
                             let leaf = self.leaf(word, ctx)?;
-                            let doc_freq =
-                                self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+                            let doc_freq = self.leaf_doc_freq(
+                                leaf.xpath,
+                                &leaf.key,
+                                leaf.postings.len()
+                            );
                             Some((leaf.postings, doc_freq))
                         })
                         .collect();
@@ -349,7 +344,7 @@ where
         query: &Query,
         ctx: FieldCtx,
         min_doc_freq: Option<u32>,
-        weight: u16,
+        weight: u16
     ) -> Option<FormLists<'a>> {
         let leaf = self.leaf(query, ctx)?;
         let own = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
@@ -409,9 +404,12 @@ where
             return PostingList::default();
         }
 
-        let offsets: Vec<u32>=terms.iter().map(|term|term.offset).collect();
-        let mut result =Vec::new(); 
-        let first=lists[0].items();
+        let offsets: Vec<u32> = terms
+            .iter()
+            .map(|term| term.offset)
+            .collect();
+        let mut result = Vec::new();
+        let first = lists[0].items();
         for first_posting in first {
             let doc_id = first_posting.doc_id;
             let mut position_lists: Vec<&[u32]> = vec![first_posting.positions.as_slice()];
@@ -431,11 +429,13 @@ where
             }
 
             if all_terms_in_doc && phrase_matches(&position_lists, &offsets) {
-                result.push(Posting::with_weight(
-                    doc_id,
-                    first_posting.positions.clone(),
-                    first_posting.weight,
-                ));
+                result.push(
+                    Posting::with_weight(
+                        doc_id,
+                        first_posting.positions.clone(),
+                        first_posting.weight
+                    )
+                );
             }
         }
 
@@ -449,7 +449,7 @@ where
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec,
+        spec: FuzzySpec
     ) -> PostingList {
         //"butman and robin" -> [butman, robin]
         let words = self.fuzzy_words(raw);
@@ -460,10 +460,7 @@ where
 
         let lists: Vec<PostingList> = words
             .iter()
-            .map(|w| {
-                self.index
-                    .lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec))
-            })
+            .map(|w| { self.index.lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec)) })
             .collect();
 
         let mut iter = lists.into_iter();
@@ -524,13 +521,15 @@ where
                     }
                 }
             }
-            let offsets:Vec<u32>=(0..words.len() as u32).collect();
+            let offsets: Vec<u32> = (0..words.len() as u32).collect();
             if all_terms_in_doc && phrase_matches(&position_lists, &offsets) {
-                result.push(Posting::with_weight(
-                    doc_id,
-                    first_posting.positions.clone(),
-                    first_posting.weight,
-                ));
+                result.push(
+                    Posting::with_weight(
+                        doc_id,
+                        first_posting.positions.clone(),
+                        first_posting.weight
+                    )
+                );
             }
         }
 
@@ -548,28 +547,29 @@ where
         rows
     }
 
-    // ===== single AST traversal: filter or filter+rank =====
-
     #[timed(search)]
     pub fn evaluate(&self, query: &Query, ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match query {
-            Query::Term(_)
+            | Query::Term(_)
             | Query::Prefix(_)
             | Query::Wildcard(_)
             | Query::Phrase(_)
             | Query::Exact(_) => self.eval_leaf(query, ctxs, mode),
-            Query::Fuzzy(v, fz, spec) => match mode {
-                EvalMode::Filter => {
-                    let mut out = HashSet::new();
-                    for &ctx in ctxs {
-                        out.extend(self.posting_ids(&self.execute_fuzzy(v, ctx.xpath, *fz, *spec)));
+            Query::Fuzzy(v, fz, spec) =>
+                match mode {
+                    EvalMode::Filter => {
+                        let mut out = HashSet::new();
+                        for &ctx in ctxs {
+                            out.extend(
+                                self.posting_ids(&self.execute_fuzzy(v, ctx.xpath, *fz, *spec))
+                            );
+                        }
+                        EvalOutcome::Docs(out)
                     }
-                    EvalOutcome::Docs(out)
+                    EvalMode::Rank => {
+                        EvalOutcome::Scored(self.execute_scored_fuzzy(v, ctxs, *fz, *spec))
+                    }
                 }
-                EvalMode::Rank => {
-                    EvalOutcome::Scored(self.execute_scored_fuzzy(v, ctxs, *fz, *spec))
-                }
-            },
             Query::Range(r) => {
                 let mut out = HashSet::new();
                 for &ctx in ctxs {
@@ -606,11 +606,10 @@ where
             Query::Prefix(v) => (LeafKey::Prefix(v.clone()), ctx.xpath),
             Query::Wildcard(p) => (LeafKey::Wildcard(p.clone()), ctx.xpath),
             Query::Phrase(phrase) => (LeafKey::Phrase(phrase.clone()), ctx.xpath),
-            Query::Exact(v) => (
-                LeafKey::Exact(v.clone()),
-                ctx.exact_xpath.unwrap_or(ctx.xpath),
-            ),
-            _ => return None,
+            Query::Exact(v) => (LeafKey::Exact(v.clone()), ctx.exact_xpath.unwrap_or(ctx.xpath)),
+            _ => {
+                return None;
+            }
         };
         let postings = match self.prepared.and_then(|p| p.list(xpath, &key)) {
             Some(list) => Cow::Borrowed(list),
@@ -655,7 +654,7 @@ where
         &self,
         query: &Query,
         ctxs: &[FieldCtx],
-        min_doc_freqs: &[Option<u32>],
+        min_doc_freqs: &[Option<u32>]
     ) -> Vec<ScoredPosting> {
         let stats = self.stats();
         let mut acc: HashMap<DocId, ScoredPosting> = HashMap::new();
@@ -681,7 +680,7 @@ where
                 leaf.xpath,
                 doc_freq as f32,
                 &mut doc_len,
-                &mut scored,
+                &mut scored
             );
 
             for mut hit in scored.drain(..) {
@@ -708,7 +707,7 @@ where
 
     /// A synonym group counts as one part of the query: a document scores by the best weighted
     /// form it contains.
-    ///
+   
     /// The typed form scores exactly as it would without the dictionary, so no document the
     /// typed words find loses score. Another single-word form is scored with the larger of its
     /// own document frequency and the typed word's (in each field, from all shards when the
@@ -719,13 +718,12 @@ where
         &self,
         forms: &[SynonymAlternative],
         ctxs: &[FieldCtx],
-        mode: EvalMode,
+        mode: EvalMode
     ) -> EvalOutcome {
         if mode == EvalMode::Filter {
             let mut out = HashSet::new();
             for form in forms {
-                if let EvalOutcome::Docs(docs) = self.evaluate(&form.query, ctxs, EvalMode::Filter)
-                {
+                if let EvalOutcome::Docs(docs) = self.evaluate(&form.query, ctxs, EvalMode::Filter) {
                     out.extend(docs);
                 }
             }
@@ -733,14 +731,19 @@ where
         }
 
         let typed_doc_freqs: Vec<Option<u32>> = match forms.first().map(|form| &form.query) {
-            Some(typed @ Query::Term(_)) => ctxs
-                .iter()
-                .map(|&ctx| {
-                    let leaf = self.leaf(typed, ctx)?;
-                    let doc_freq = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
-                    (doc_freq > 0).then_some(doc_freq)
-                })
-                .collect(),
+            Some(typed @ Query::Term(_)) =>
+                ctxs
+                    .iter()
+                    .map(|&ctx| {
+                        let leaf = self.leaf(typed, ctx)?;
+                        let doc_freq = self.leaf_doc_freq(
+                            leaf.xpath,
+                            &leaf.key,
+                            leaf.postings.len()
+                        );
+                        (doc_freq > 0).then_some(doc_freq)
+                    })
+                    .collect(),
             _ => Vec::new(),
         };
 
@@ -748,10 +751,13 @@ where
         for form in forms {
             let scored = match &form.query {
                 Query::Term(_) => self.score_leaf(&form.query, ctxs, &typed_doc_freqs),
-                other => match self.evaluate(other, ctxs, EvalMode::Rank) {
-                    EvalOutcome::Scored(scored) => scored,
-                    EvalOutcome::Docs(_) => continue,
-                },
+                other =>
+                    match self.evaluate(other, ctxs, EvalMode::Rank) {
+                        EvalOutcome::Scored(scored) => scored,
+                        EvalOutcome::Docs(_) => {
+                            continue;
+                        }
+                    }
             };
             for mut hit in scored {
                 hit.score = hit.score.saturating_mul(u64::from(form.weight)) / 1000;
@@ -771,7 +777,11 @@ where
     }
 
     fn posting_ids(&self, postings: &PostingList) -> HashSet<DocId> {
-        postings.items().iter().map(|p| p.doc_id).collect()
+        postings
+            .items()
+            .iter()
+            .map(|p| p.doc_id)
+            .collect()
     }
 
     fn eval_union(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
@@ -834,7 +844,10 @@ where
                 for part in parts {
                     let docs: HashSet<DocId> = match self.evaluate(part, ctxs, EvalMode::Rank) {
                         EvalOutcome::Scored(scored) => {
-                            scored.into_iter().map(|p| p.doc_id).collect()
+                            scored
+                                .into_iter()
+                                .map(|p| p.doc_id)
+                                .collect()
                         }
                         EvalOutcome::Docs(_) => HashSet::new(),
                     };
@@ -862,8 +875,9 @@ where
                                 Entry::Occupied(mut e) => {
                                     let cur = e.get_mut();
                                     cur.score = cur.score.saturating_add(hit.score);
-                                    cur.matched_terms =
-                                        cur.matched_terms.saturating_add(hit.matched_terms);
+                                    cur.matched_terms = cur.matched_terms.saturating_add(
+                                        hit.matched_terms
+                                    );
                                 }
                             }
                         }
@@ -878,7 +892,7 @@ where
     fn same_element_rows(
         &self,
         children: &[Query],
-        binding: &SameElementBinding,
+        binding: &SameElementBinding
     ) -> HashSet<DocId> {
         let mut rows: Option<HashSet<DocId>> = None;
         for (child, clause) in children.iter().zip(&binding.clauses) {
@@ -889,10 +903,11 @@ where
                     };
                     self.same_element_rows(inner_children, nested)
                 }
-                None => match self.evaluate(child, &[clause.ctx], EvalMode::Filter) {
-                    EvalOutcome::Docs(d) => d,
-                    _ => HashSet::new(),
-                },
+                None =>
+                    match self.evaluate(child, &[clause.ctx], EvalMode::Filter) {
+                        EvalOutcome::Docs(d) => d,
+                        _ => HashSet::new(),
+                    }
             };
             let r = self.ascend(r, clause.depth.saturating_sub(binding.depth));
             rows = Some(match rows {
@@ -903,14 +918,18 @@ where
         rows.unwrap_or_default()
     }
 
-    pub fn prepare(&self, query: Option<&Query>, ctxs: &[FieldCtx]) -> PreparedQuery {
+    /// Reads what every given query needs from this index, once per field, into one
+    /// `PreparedQuery`: posting lists, field totals and this index's share of the statistics.
+    pub fn prepare<'q>(
+        &self,
+        queries: impl IntoIterator<Item = &'q Query>,
+        ctxs: &[FieldCtx]
+    ) -> PreparedQuery {
         let mut prepared = PreparedQuery::default();
-        let Some(query) = query else {
-            return prepared;
-        };
-
-        for &ctx in ctxs {
-            self.prepare_leaves(query, ctx, &mut prepared);
+        for query in queries {
+            for &ctx in ctxs {
+                self.prepare_leaves(query, ctx, &mut prepared);
+            }
         }
         prepared
     }
@@ -938,7 +957,7 @@ where
                     out.insert_fuzzy(
                         ctx.xpath,
                         FuzzyKey::new(word, opts),
-                        self.index.fuzzy_expansions(word, ctx.xpath, opts),
+                        self.index.fuzzy_expansions(word, ctx.xpath, opts)
                     );
                 }
             }
@@ -961,17 +980,16 @@ where
         for fq in filters.values() {
             let matched: HashSet<DocId> = match &fq.query {
                 Query::SameElement(children) => {
-                    let binding = fq
-                        .same_element
-                        .as_ref()
-                        .expect("same_element binding missing");
+                    let binding = fq.same_element.as_ref().expect("same_element binding missing");
                     let rows = self.same_element_rows(children, binding);
                     self.index.resolve_array_rows(&rows)
                 }
                 _ => {
-                    let EvalOutcome::Docs(raw) =
-                        self.evaluate(&fq.query, &[fq.ctx], EvalMode::Filter)
-                    else {
+                    let EvalOutcome::Docs(raw) = self.evaluate(
+                        &fq.query,
+                        &[fq.ctx],
+                        EvalMode::Filter
+                    ) else {
                         continue;
                     };
                     if fq.row_keyed {
@@ -993,14 +1011,14 @@ where
         restrict
     }
 
-    //passing xpaths: rank the query against every search field, merge additively
-    pub fn rank(
+    //now rank has multiple methods basically it works the same 
+    pub fn rank_retrieve(
         &self,
         query: Option<&Query>,
         ctxs: &[FieldCtx],
         k: usize,
         restrict: Option<&HashSet<DocId>>,
-        match_mode: MatchMode,
+        match_mode: MatchMode
         // plan: RankPlan
     ) -> Vec<SearchHit> {
         if k == 0 || restrict.is_some_and(|d| d.is_empty()) || self.index.doc_range().is_none() {
@@ -1011,16 +1029,21 @@ where
         let Some(query) = query else {
             //filter-only search
             return match restrict {
-                Some(allowed) => top_k_from_hits(
-                    allowed.iter().copied().map(|doc_id| SearchHit {
-                        doc_id,
-                        matched_terms: 0,
-                        weight_sum: 0,
-                        distance_factor: 1.0,
-                        score: 0.0,
-                    }),
-                    k,
-                ),
+                Some(allowed) =>
+                    top_k_from_hits(
+                        allowed
+                            .iter()
+                            .copied()
+                            .map(|doc_id| SearchHit {
+                                doc_id,
+                                matched_terms: 0,
+                                weight_sum: 0,
+                                distance_factor: 1.0,
+                                score: 0.0,
+                                tier: 0,
+                            }),
+                        k
+                    ),
                 None => Vec::new(),
             };
         };
@@ -1028,33 +1051,41 @@ where
         //explicit match_all
         if let Query::MatchAll = query {
             return match restrict {
-                Some(allowed) => top_k_from_hits(
-                    allowed.iter().copied().map(|doc_id| SearchHit {
-                        doc_id,
-                        matched_terms: 0,
-                        weight_sum: 0,
-                        distance_factor: 1.0,
-                        score: 0.0,
-                    }),
-                    k,
-                ),
-                None => match self.index.doc_range() {
-                    Some((min, max)) => top_k_from_hits(
-                        (min..=max)
-                            .filter(|id| !self.index.is_deleted(*id))
+                Some(allowed) =>
+                    top_k_from_hits(
+                        allowed
+                            .iter()
+                            .copied()
                             .map(|doc_id| SearchHit {
                                 doc_id,
                                 matched_terms: 0,
                                 weight_sum: 0,
                                 distance_factor: 1.0,
                                 score: 0.0,
+                                tier: 0,
                             }),
-                        k,
+                        k
                     ),
-                    None => Vec::new(),
-                },
+                None =>
+                    match self.index.doc_range() {
+                        Some((min, max)) =>
+                            top_k_from_hits(
+                                (min..=max)
+                                    .filter(|id| !self.index.is_deleted(*id))
+                                    .map(|doc_id| SearchHit {
+                                        doc_id,
+                                        matched_terms: 0,
+                                        weight_sum: 0,
+                                        distance_factor: 1.0,
+                                        score: 0.0,
+                                        tier: 0,
+                                    }),
+                                k
+                            ),
+                        None => Vec::new(),
+                    }
             };
-        };
+        }
 
         let mut by_doc: HashMap<DocId, SearchHit> = HashMap::new();
 
@@ -1071,12 +1102,14 @@ where
                 let flat_hits = if plain_xpaths.is_empty() {
                     None
                 } else {
-                    self.execute_top_k_retrieval(query, &plain_xpaths, k, restrict)
-                        .or_else(|| {
-                            let plain: Vec<FieldCtx> =
-                                ctxs.iter().copied().filter(|ctx| !ctx.row_keyed).collect();
-                            self.execute_grouped_retrieval(query, &plain, k, restrict)
-                        })
+                    self.execute_top_k_retrieval(query, &plain_xpaths, k, restrict).or_else(|| {
+                        let plain: Vec<FieldCtx> = ctxs
+                            .iter()
+                            .copied()
+                            .filter(|ctx| !ctx.row_keyed)
+                            .collect();
+                        self.execute_grouped_retrieval(query, &plain, k, restrict)
+                    })
                 };
                 let ranked_flat = flat_hits.is_some();
                 for h in flat_hits.into_iter().flatten() {
@@ -1110,6 +1143,7 @@ where
                             weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
                             distance_factor: p.density,
                             score: ((p.score as f32) / 1000.0) * p.density,
+                            tier: 0,
                         };
                         by_doc
                             .entry(p.doc_id)
@@ -1127,6 +1161,96 @@ where
         top_k_from_hits(by_doc.into_values(), k)
     }
 
+    /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
+    /// appears once, at the best tier that found it; within a tier, hits order by score.
+    #[timed(search)]
+    pub fn rank_cascade(
+        &self,
+        plan: &RankPlan,
+        ctxs: &[FieldCtx],
+        k: usize,
+        restrict: Option<&HashSet<DocId>>,
+        match_mode: MatchMode
+    ) -> Vec<SearchHit> {
+        let mut out: Vec<SearchHit> = Vec::with_capacity(k);
+        let mut seen: HashSet<DocId> = HashSet::new();
+
+        for (index, tier) in plan.tiers.iter().enumerate() {
+            if out.len() >= k {
+                break;
+            }
+            if plan.stop_after > 0 && out.len() >= plan.stop_after {
+                break;
+            }
+            let tier_number = u8::try_from(index).unwrap_or(u8::MAX);
+            // every hit already taken may come back from this tier too
+            let fetch = (k - out.len()).saturating_add(seen.len());
+
+            let hits = match tier {
+                Tier::Phrase { terms, score_with } => {
+                    let matched = self.phrase_docs(terms, ctxs);
+                    let allowed: HashSet<DocId> = match restrict {
+                        Some(limit) => matched.intersection(limit).copied().collect(),
+                        None => matched,
+                    };
+                    if allowed.is_empty() {
+                        continue;
+                    }
+                    self.rank_retrieve(Some(score_with), ctxs, fetch, Some(&allowed), match_mode)
+                }
+                | Tier::Exact(query)
+                | Tier::All(query)
+                | Tier::AllButOne(query)
+                | Tier::Any(query)
+                | Tier::Fuzzy(query) => {
+                    self.rank_retrieve(Some(query), ctxs, fetch, restrict, match_mode)
+                }
+            };
+
+            for mut hit in hits {
+                if !seen.insert(hit.doc_id) {
+                    continue;
+                }
+                hit.tier = tier_number;
+                out.push(hit);
+                if out.len() == k {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Documents containing the phrase in at least one plain field.
+    fn phrase_docs(&self, terms: &[PhraseTerm], ctxs: &[FieldCtx]) -> HashSet<DocId> {
+        let mut docs = HashSet::new();
+        for ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed) {
+            docs.extend(
+                self
+                    .execute_phrase(terms, ctx.xpath)
+                    .items()
+                    .iter()
+                    .map(|p| p.doc_id)
+            );
+        }
+        docs
+    }
+    //density we all needed like betona koktelis 
+    
+    pub fn rank(
+        &self,
+        query: Option<&Query>,
+        ctxs: &[FieldCtx],
+        k: usize,
+        restrict: Option<&HashSet<DocId>>,
+        match_mode: MatchMode,
+        plan: &RankPlan
+    ) -> Vec<SearchHit> {
+        if plan.tiers.is_empty() {
+            return self.rank_retrieve(query, ctxs, k, restrict, match_mode);
+        }
+        self.rank_cascade(plan, ctxs, k, restrict, match_mode)
+    }
     //per-field ranking: one ctx at a time (best_fields arm + row-keyed cross_fields arm)
     fn rank_single_field(
         &self,
@@ -1134,7 +1258,7 @@ where
         ctx: FieldCtx,
         k: usize,
         restrict: Option<&HashSet<DocId>>,
-        by_doc: &mut HashMap<DocId, SearchHit>,
+        by_doc: &mut HashMap<DocId, SearchHit>
     ) {
         if !ctx.row_keyed {
             if let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
@@ -1167,6 +1291,7 @@ where
                 weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
                 distance_factor: p.density,
                 score: ((p.score as f32) / 1000.0) * p.density,
+                tier: 0,
             };
             by_doc
                 .entry(p.doc_id)
@@ -1179,18 +1304,13 @@ where
         }
     }
 
-    //INFO: Norca sito hujnu centaas izprast kkur 1h, seit visam ir jabut safe, ne passaprotami,
-    //bet safe robezaas
-    //optimizations:
-    //      Posting:
-    //    pub positions: SmallVec<[Position; INLINE_POSITIONS]>,
     #[timed(search)]
     fn execute_scored_fuzzy(
         &self,
         raw: &str,
         ctxs: &[FieldCtx],
         fuzziness: Fuzziness,
-        spec: FuzzySpec,
+        spec: FuzzySpec
     ) -> Vec<ScoredPosting> {
         //"butman and robin" -> "butman" "robin"
         let words = self.fuzzy_words(raw);
@@ -1225,7 +1345,9 @@ where
                 let mut expansions = self.fuzzy_candidates(word, ctx.xpath, opts);
                 //best guesses for the words
                 rank_and_cap(&mut expansions, spec.max_expansions);
-
+                
+                //one word counts onces per firled so "Spiderman" and "Spidermen" count as one match not two
+                let mut best_in_field:HashMap<DocId, ScoredPosting> = HashMap::new();
                 //iterate all possible hits
                 for expansion in expansions {
                     //                      the long function needs wand kip
@@ -1240,7 +1362,7 @@ where
                         ctx.xpath,
                         true_df,
                         &mut doc_len,
-                        &mut scored_buf,
+                        &mut scored_buf
                     );
 
                     let decay = fuzzy_decay(expansion.edits);
@@ -1255,32 +1377,43 @@ where
                         };
                         scored.doc_id = doc;
 
-                        match acc.entry(scored.doc_id) {
-                            Entry::Occupied(mut slot) => {
-                                let (hit, mask) = slot.get_mut();
-
-                                if scored.score > hit.score {
-                                    hit.positions = scored.positions.clone();
-                                    hit.density = hit.density.max(scored.density);
+                        match best_in_field.entry(doc){
+                            Entry::Occupied(mut slot) =>{
+                                if scored.score>slot.get().score{
+                                    slot.insert(scored);
                                 }
-
-                                hit.score = hit.score.saturating_add(scored.score);
-                                hit.matched_terms = hit.matched_terms.saturating_add(1);
-                                //the first word got a hit, so the next one just "adds" 1 or << 1
-                                //basically
-                                *mask |= bit;
                             }
-                            Entry::Vacant(slot) => {
-                                slot.insert((scored, bit));
+                            Entry::Vacant(slot)=> {
+                                slot.insert(scored);
                             }
                         }
                     }
                 }
+            
+               // add this word's best match in this field to each document's total
+            for (doc, scored) in best_in_field {
+                match acc.entry(doc) {
+                    Entry::Occupied(mut slot) => {
+                        let (hit, mask) = slot.get_mut();
+                        if scored.score > hit.score {
+                            hit.positions = scored.positions.clone();
+                            hit.density = hit.density.max(scored.density);
+                        }
+                        hit.score = hit.score.saturating_add(scored.score);
+                        // a word found in a second field is still one matched word
+                        if *mask & bit == 0 {
+                            hit.matched_terms = hit.matched_terms.saturating_add(1);
+                        }
+                        *mask |= bit;
+                    }
+                    Entry::Vacant(slot) => {
+                        slot.insert((scored, bit));
+                    }
+                }
             }
         }
-        //                          number of "1" is the query_word_count \/
-        //remember a few lines above? this shit is basically the 000000011111111
-        let all_words = (1u64 << words.len()) - 1;
+    }
+    let all_words = (1u64 << words.len()) - 1;
 
         acc.into_values()
             .filter(|(_, mask)| *mask == all_words)
@@ -1288,9 +1421,8 @@ where
             .collect()
     }
 }
-
 #[timed(search)]
-fn phrase_matches(position_lists: &[&[u32]],offsets:&[u32]) -> bool {
+fn phrase_matches(position_lists: &[&[u32]], offsets: &[u32]) -> bool {
     if position_lists.is_empty() {
         return false;
     }
@@ -1326,12 +1458,15 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
         }
     }
 
-    let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
+    let mut hits: Vec<SearchHit> = heap
+        .into_iter()
+        .map(|hit| hit.0)
+        .collect();
 
     hits.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(Ordering::Equal)
+        a.tier
+            .cmp(&b.tier)
+            .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
             .then_with(|| a.doc_id.cmp(&b.doc_id))
     });
 
@@ -1340,8 +1475,14 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
 
 //derives how much a word can be fuzzed basically
 pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {
+    // a number is never a typo: 2021 must not also match 2020 or 2022
+    let max_edits = if !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()) {
+        0
+    } else {
+        fuzziness.resolve(word)
+    };
     FuzzyOptions {
-        max_edits: fuzziness.resolve(word),
+        max_edits,
         prefix_length: spec.prefix_length,
         max_expansions: spec.max_expansions,
     }
@@ -1367,7 +1508,13 @@ pub fn rank_and_cap(expansions: &mut Vec<FuzzyExpansion>, max_expansions: usize)
 //fuzzable words for did_you_mean
 pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
     raw.split_whitespace()
-        .filter_map(|w| analyzer.analyze_query(w).into_iter().next().map(|t| t.text))
+        .filter_map(|w|
+            analyzer
+                .analyze_query(w)
+                .into_iter()
+                .next()
+                .map(|t| t.text)
+        )
         .collect()
 }
 
@@ -1378,6 +1525,7 @@ fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
         weight_sum: (hit.score / 1000).min(u32::MAX as u64) as u32,
         distance_factor: 1.0,
         score: (hit.score as f32) / 1000.0,
+        tier: 0,
     }
 }
 
@@ -1386,8 +1534,7 @@ fn field_terms<'l>(lists: &'l [FieldLists<'_>]) -> Vec<FieldTerms<'l>> {
         .iter()
         .map(|field| FieldTerms {
             xpath: field.xpath,
-            terms: field
-                .terms
+            terms: field.terms
                 .iter()
                 .map(|(postings, doc_freq)| TermRef {
                     postings,
@@ -1408,98 +1555,43 @@ fn grouped_parts(query: &Query) -> Option<(bool, Vec<&Query>)> {
         Query::Synonym(_) => (false, vec![query]),
         Query::Wand(parts) | Query::Or(parts) => (false, parts.iter().collect()),
         Query::And(parts) => (true, parts.iter().collect()),
-        _ => return None,
+        _ => {
+            return None;
+        }
     };
-    let form_fits = |form: &Query| match form {
-        Query::Term(_) | Query::Phrase(_) | Query::Exact(_) => true,
-        Query::And(words) => words.iter().all(|word| matches!(word, Query::Term(_))),
-        _ => false,
+    let form_fits = |form: &Query| {
+        match form {
+            Query::Term(_) | Query::Phrase(_) | Query::Exact(_) => true,
+            Query::And(words) => words.iter().all(|word| matches!(word, Query::Term(_))),
+            _ => false,
+        }
     };
-    let fits = parts.iter().all(|part| match part {
-        Query::Term(_) => true,
-        Query::Synonym(forms) => forms.iter().all(|form| form_fits(&form.query)),
-        _ => false,
+    let fits = parts.iter().all(|part| {
+        match part {
+            Query::Term(_) => true,
+            Query::Synonym(forms) => forms.iter().all(|form| form_fits(&form.query)),
+            _ => false,
+        }
     });
     let has_group = parts.iter().any(|part| matches!(part, Query::Synonym(_)));
     (fits && has_group).then_some((conjunctive, parts))
 }
 
-fn additive_terms(query: &Query) -> Option<Vec<&str>> {
-    match query {
-        Query::Term(term) => Some(vec![term.as_str()]),
-        Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => Some(
-            parts
-                .iter()
-                .filter_map(|part| match part {
-                    Query::Term(term) => Some(term.as_str()),
-                    _ => None,
-                })
-                .collect(),
-        ),
-        _ => None,
-    }
-}
-
-/*
-#[cfg(test)]
-fn exhaustive_conjunctive_top_k<S: SearchStats>(
-    stats: &S,
-    xpath: XPathId,
-    posting_lists: &[PostingList],
-    doc_frequencies: &[u32],
-    k: usize,
-) -> Vec<WandHit> {
-    use std::collections::HashMap;
-
-    if k == 0 || posting_lists.is_empty() {
-        return Vec::new();
-    }
-
-    let doc_count = stats.doc_count(xpath);
-    let avg_doc_len = stats.avg_doc_len(xpath);
-
-    let required_terms = posting_lists.len();
-
-    let mut scores = HashMap::<DocId, (u64, usize)>::new();
-
-    for (postings, &doc_frequency) in posting_lists.iter().zip(doc_frequencies) {
-        for posting in postings.items() {
-            use crate::scorer::bm25_score_scaled;
-
-            let doc_len = stats
-                .doc_len(posting.doc_id, xpath)
-                .unwrap_or(avg_doc_len as u32);
-
-            let contribution = bm25_score_scaled(
-                posting.positions.len() as u32,
-                posting.weight,
-                doc_len,
-                avg_doc_len,
-                doc_count,
-                doc_frequency,
-            );
-
-            let entry = scores.entry(posting.doc_id).or_insert((0, 0));
-
-            entry.0 = entry.0.saturating_add(contribution);
-
-            entry.1 += 1;
+    fn additive_terms(query: &Query) -> Option<Vec<&str>> {
+        match query {
+            Query::Term(term) => Some(vec![term.as_str()]),
+            Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) =>
+                Some(
+                    parts
+                        .iter()
+                        .filter_map(|part| {
+                            match part {
+                                Query::Term(term) => Some(term.as_str()),
+                                _ => None,
+                            }
+                        })
+                        .collect()
+                ),
+            _ => None,
         }
     }
-
-    let mut hits: Vec<WandHit> = scores
-        .into_iter()
-        .filter(|(_, (_, matched_terms))| *matched_terms == required_terms)
-        .map(|(doc_id, (score, matched_terms))| WandHit {
-            doc_id,
-            score,
-            matched_terms,
-        })
-        .collect();
-
-    hits.sort_unstable_by(|a, b| b.score.cmp(&a.score).then_with(|| a.doc_id.cmp(&b.doc_id)));
-
-    hits.truncate(k);
-
-    hits
-}*/

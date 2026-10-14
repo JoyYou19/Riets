@@ -1,89 +1,132 @@
-//! Ranking signals applied after retrieval. A plan never adds or removes documents: it only
-//! re-orders the candidates retrieval found, so recall is exactly what the query gives.
+//! The match cascade: a plain query runs as a series of tiers from most to least accurate.
+//! Every hit keeps the best tier that found it, and hits order by tier before score.
 
 use core_index::analyzer::Analyzer;
+use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
+use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
 
-use crate::ast::PhraseTerm;
+use crate::ast::{PhraseTerm, Query};
 
-/// Multiplier added for a document containing every typed word in order (the score doubles).
-pub const FULL_PHRASE_BOOST: f32 = 1.0;
-/// Multiplier added for each pair of neighbouring typed words found next to each other.
-pub const PAIR_BOOST: f32 = 0.25;
-/// Candidates re-ranked for every result asked for, and the bounds on that window.
-pub const RERANK_FACTOR: usize = 4;
-pub const MIN_RERANK_WINDOW: usize = 100;
-pub const MAX_RERANK_WINDOW: usize = 1000;
-
-/// Words that should appear at these relative positions.
+/// "All but one word" runs for this many words at most: it expands to one AND per word left out.
+pub const MAX_ALL_BUT_ONE_WORDS: usize = 6;
+/// Score multiplier added at full density (every word at its ideal distance): ×1.5.
+/// Twice as spread out gets half of it. basically makes words that are closer score higher 
+pub const DENSITY_BOOST: f32 = 0.5;
 #[derive(Debug, Clone, PartialEq)]
-pub struct ProximitySignal {
-    pub terms: Vec<PhraseTerm>,
-    pub boost: f32,
+pub enum Tier {
+    /// The exact (case-preserving) field, text as typed.
+    Exact(Query),
+    /// Every typed word in order. Matches are scored with `score_with`.
+    Phrase { terms: Vec<PhraseTerm>, score_with: Query },
+    /// The query as resolved: every word, or one of its synonyms.
+    All(Query),
+    /// Every word but one.
+    AllButOne(Query),
+    /// At least one word.
+    Any(Query),
+    /// Words within a few edits of the typed ones.
+    Fuzzy(Query),
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone,Default, PartialEq)]
 pub struct RankPlan {
-    pub proximity: Vec<ProximitySignal>,
+    pub tiers: Vec<Tier>,
+    pub stop_after:usize,
 }
 
 impl RankPlan {
-    pub fn is_empty(&self) -> bool {
-        self.proximity.is_empty()
+    /// A query written with explicit operators runs exactly as written.
+    pub fn single(query: Query) -> Self {
+        Self { tiers: vec![Tier::All(query)],stop_after:0 }
     }
-
-    /// How many candidates retrieval returns so `k` results can be re-ranked.
-    pub fn window(&self, k: usize) -> usize {
-        if self.is_empty() {
-            return k;
-        }
-        k.saturating_mul(RERANK_FACTOR)
-            .clamp(MIN_RERANK_WINDOW, MAX_RERANK_WINDOW)
-            .max(k)
+    pub fn stopping_after(mut self, results: usize) -> Self {
+        self.stop_after = results;
+        self
     }
+    /// Every query the plan runs, for preparing posting lists and statistics up front.
+    pub fn queries(&self) -> impl Iterator<Item = &Query> {
+        self.tiers.iter().map(|tier| match tier {
+            Tier::Exact(q) | Tier::All(q) | Tier::AllButOne(q) | Tier::Any(q) | Tier::Fuzzy(q) => q,
+            Tier::Phrase { score_with, .. } => score_with,
+        })
+    }
+    
 
-    /// Plans from the text as typed, before it becomes an `And` of words, so the stopword gaps
-    /// the index has are kept ("king of the hill" -> king@0, hill@3).
+    /// `raw` is the text as typed; `resolved` is it after synonym expansion and analysis.
     #[timed(search)]
-    pub fn for_text(text: &str, analyzer: &Analyzer) -> Self {
-        let tokens = analyzer.analyze_query(text);
-        let Some(base) = tokens.first().map(|token| token.position) else {
-            return Self::default();
-        };
-        let terms: Vec<PhraseTerm> = tokens
-            .into_iter()
-            .map(|token| PhraseTerm {
-                offset: token.position - base,
-                text: token.text,
-            })
-            .collect();
-        if terms.len() < 2 {
-            return Self::default();
+    pub fn cascade(raw: &str, resolved: Query, analyzer: &Analyzer, has_exact_field: bool) -> Self {
+        let mut tiers = Vec::with_capacity(6);
+
+        if has_exact_field && raw.chars().any(char::is_uppercase) {
+            tiers.push(Tier::Exact(Query::Exact(raw.trim().to_string())));
         }
 
-        let mut proximity = Vec::with_capacity(terms.len());
-        proximity.push(ProximitySignal {
-            terms: terms.clone(),
-            boost: FULL_PHRASE_BOOST,
-        });
-        // with two words the pair is the whole phrase: one signal is enough
-        if terms.len() > 2 {
-            for pair in terms.windows(2) {
-                proximity.push(ProximitySignal {
-                    terms: vec![
-                        PhraseTerm {
-                            text: pair[0].text.clone(),
-                            offset: 0,
-                        },
-                        PhraseTerm {
-                            text: pair[1].text.clone(),
-                            offset: pair[1].offset - pair[0].offset,
-                        },
-                    ],
-                    boost: PAIR_BOOST,
-                });
+        let parts: Vec<Query> = match &resolved {
+            Query::And(parts) => parts.clone(),
+            _ => Vec::new(),
+        };
+
+        if parts.len() >= 2 {
+            let terms = terms_from_text(raw, analyzer);
+            if terms.len() >= 2 {
+                tiers.push(Tier::Phrase { terms, score_with: resolved.clone() });
             }
         }
-        Self { proximity }
+
+        tiers.push(Tier::All(resolved.clone()));
+
+        tiers.push(Tier::Fuzzy(Query::Fuzzy(
+            raw.trim().to_string(),
+            Fuzziness::Auto,
+            FuzzySpec {
+                prefix_length: DEFAULT_PREFIX_LENGTH,
+                max_expansions: DEFAULT_MAX_EXPANSIONS,
+            },
+        )));
+
+        if (3..=MAX_ALL_BUT_ONE_WORDS).contains(&parts.len()) {
+            let alternatives: Vec<Query> = (0..parts.len())
+                .map(|left_out| {
+                    Query::And(
+                        parts
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| *index != left_out)
+                            .map(|(_, part)| part.clone())
+                            .collect(),
+                    )
+                })
+                .collect();
+            tiers.push(Tier::AllButOne(Query::Or(alternatives)));
+        }
+
+        if parts.len() >= 2 {
+            tiers.push(Tier::Any(Query::Wand(parts)));
+        }
+
+        
+
+        Self { tiers, stop_after:0}
     }
+    //this is same as the one below almost but this reads just back 
+    pub fn phrase_terms(&self) -> Option<&[PhraseTerm]> {
+        self.tiers.iter().find_map(|tier| match tier {
+            Tier::Phrase { terms, .. } => Some(terms.as_slice()),
+            _ => None,
+        })
+    }
+}
+
+
+/// Builds the terms from the typed text, once, when the plan is made
+fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
+    let tokens = analyzer.analyze_query(raw);
+    let Some(base) = tokens.first().map(|token| token.position) else {
+        return Vec::new();
+    };
+    tokens
+        .into_iter()
+        .map(|token| PhraseTerm { offset: token.position - base, text: token.text })
+        .collect()
 }
