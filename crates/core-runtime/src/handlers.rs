@@ -1378,10 +1378,29 @@ pub async fn delete_database_handler(
         }
     };
 
-    if let Err(e) = tokio::task::spawn_blocking(move || manager.shutdown()).await {
-        error!(log, "delete: shutdown task panicked"; "db" => %db_name, "error" => %e);
+    //this is either some flush error or like a JoinError, if anyone we DONT delete the directory
+    match tokio::task::spawn_blocking(move || manager.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            error!(log, "delete: shutdown failed, not deleting"; "db" => %db_name, "error" => %e);
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!(
+                    "failed to shut down '{db_name}' before deleting: {e}; \
+                     its data is still on disk and it will be loaded again after a restart"
+                )),
+                &ctx,
+            )
+            .into_response();
+        }
+        Err(e) => {
+            error!(log, "delete: shutdown task panicked"; "db" => %db_name, "error" => %e);
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("shutdown task panicked for '{db_name}': {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
     }
-
     let db_path = state.databases_dir.join(&db_name);
     let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
 
@@ -2193,7 +2212,9 @@ pub async fn rename_database_handler(
             ).into_response();
         }
 
-        dbs.insert(new_name.clone(), Arc::new(reopened));
+        let reopened = Arc::new(reopened);
+        reopened.start_backup_scheduler();
+        dbs.insert(new_name.clone(), reopened);
     }
 
     info!(log, "database renamed"; "old_name" => %db_name, "new_name" => %new_name);

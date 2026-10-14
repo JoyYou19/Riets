@@ -177,7 +177,9 @@ async fn main() -> io::Result<()> {
     let mut handles: HashMap<String, Arc<ShardManager>> = HashMap::new();
 
     for (db_name, manager) in databases {
-        handles.insert(db_name, Arc::new(manager));
+        let manager = Arc::new(manager);
+        manager.start_backup_scheduler();
+        handles.insert(db_name, manager);
     }
 
     let users_dir = root_path.join("users");
