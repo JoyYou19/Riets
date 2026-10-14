@@ -423,8 +423,12 @@ async fn main() -> io::Result<()> {
 
     //something or someone killed our beloved programm
     info!(log, "Server stopped, shutting down databases..");
+
     let handles = {
-        let mut guard = state_for_shutdown.databases.write().unwrap();
+        let mut guard = state_for_shutdown
+            .databases
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *guard)
     };
 

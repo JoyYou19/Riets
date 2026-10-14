@@ -1235,7 +1235,7 @@ pub async fn create_database_handler(
     let shard_count = (if body.is_empty() {
         None
     } else {
-        let mut buf = body.as_bytes().to_vec();
+        let mut buf = body.trim().as_bytes().to_vec();
         match simd_json::from_slice::<CreateDatabaseRequest>(&mut buf) {
             Ok(req) => req.shard_count,
             Err(e) => {
@@ -1249,6 +1249,16 @@ pub async fn create_database_handler(
     })
     //TODO: calculate in a smart way
     .unwrap_or(4);
+    //studip max shard_count
+    if shard_count > 128 {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData(format!(
+                "shard_count {shard_count} exceeds the maximum of 128"
+            )),
+            &ctx,
+        )
+        .into_response();
+    }
 
     if shard_count < 1 {
         return HttpError::from_corelamo(
