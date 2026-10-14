@@ -18,7 +18,7 @@ use crate::{
     TopHit,
     ast::{ PhraseTerm, Query, SynonymAlternative },
     corpus_stats::{ CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats },
-    planner::{ RankPlan, Tier },
+    planner::{ DENSITY_BOOST, RankPlan, Tier },
     prepared::PreparedQuery,
     resolver::{ FieldCtx, FieldQuery, SameElementBinding },
     scorer::{ fuzzy_decay, score_term_into },
@@ -394,12 +394,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         if terms.is_empty() {
             return PostingList::default();
         }
-
-        let lists: Vec<PostingList> = terms
+        //dont really understand fully the Cow
+        let lists: Vec<Cow<'a, PostingList>> = terms
             .iter()
-            .map(|term| self.index.lookup(&term.text, xpath))
+            .map(|term| self.fetch_term_list(&term.text, xpath).0)
             .collect();
-
         if lists.iter().any(|list| list.is_empty()) {
             return PostingList::default();
         }
@@ -408,34 +407,37 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             .iter()
             .map(|term| term.offset)
             .collect();
+        // walk the rarest word's documents: the cost is that of the rarest word, not the first
+        let rarest = (0..lists.len()).min_by_key(|&i| lists[i].len()).unwrap_or(0);
+
         let mut result = Vec::new();
-        let first = lists[0].items();
-        for first_posting in first {
-            let doc_id = first_posting.doc_id;
-            let mut position_lists: Vec<&[u32]> = vec![first_posting.positions.as_slice()];
 
-            let mut all_terms_in_doc = true;
+        'docs: for driver in lists[rarest].items() {
+            let doc_id = driver.doc_id;
+            // in the words' own order, so phrase_matches lines them up with their offsets
+            let mut position_lists: Vec<&[u32]> = Vec::with_capacity(lists.len());
+            let mut first = driver;
 
-            for list in lists.iter().skip(1) {
-                match list.items().binary_search_by_key(&doc_id, |p| p.doc_id) {
-                    Ok(index) => {
-                        position_lists.push(list.items()[index].positions.as_slice());
+            for (i, list) in lists.iter().enumerate() {
+                let posting = if i == rarest {
+                    driver
+                } else {
+                    match list.items().binary_search_by_key(&doc_id, |p| p.doc_id) {
+                        Ok(index) => &list.items()[index],
+                        Err(_) => {
+                            continue 'docs;
+                        }
                     }
-                    Err(_) => {
-                        all_terms_in_doc = false;
-                        break;
-                    }
+                };
+                if i == 0 {
+                    first = posting;
                 }
+                position_lists.push(posting.positions.as_slice());
             }
 
-            if all_terms_in_doc && phrase_matches(&position_lists, &offsets) {
-                result.push(
-                    Posting::with_weight(
-                        doc_id,
-                        first_posting.positions.clone(),
-                        first_posting.weight
-                    )
-                );
+            if phrase_matches(&position_lists, &offsets) {
+                // the first word's posting, as before, so phrase scoring is unchanged
+                result.push(Posting::with_weight(doc_id, first.positions.clone(), first.weight));
             }
         }
 
@@ -503,36 +505,39 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         if lists.iter().any(|list| list.is_empty()) {
             return PostingList::default();
         }
-
+        // the exact field keeps every word, stopwords too: the words are adjacent
+        let offsets: Vec<u32> = (0..words.len() as u32).collect();
+        let rarest = (0..lists.len()).min_by_key(|&i| lists[i].len()).unwrap_or(0);
         let mut result = Vec::new();
-        let first = lists[0].items();
+        //a bit smarter loop than before 
+        'docs: for driver in lists[rarest].items() {
+            let doc_id = driver.doc_id;
+            // in the words' own order, so phrase_matches lines them up with their offsets
+            let mut position_lists: Vec<&[u32]> = Vec::with_capacity(lists.len());
+            let mut first = driver;
 
-        for first_posting in first {
-            let doc_id = first_posting.doc_id;
-            let mut position_lists: Vec<&[u32]> = vec![first_posting.positions.as_slice()];
-
-            let mut all_terms_in_doc = true;
-            for list in lists.iter().skip(1) {
-                match list.items().binary_search_by_key(&doc_id, |p| p.doc_id) {
-                    Ok(index) => position_lists.push(list.items()[index].positions.as_slice()),
-                    Err(_) => {
-                        all_terms_in_doc = false;
-                        break;
+            for (i, list) in lists.iter().enumerate() {
+                let posting = if i == rarest {
+                    driver
+                } else {
+                    match list.items().binary_search_by_key(&doc_id, |p| p.doc_id) {
+                        Ok(index) => &list.items()[index],
+                        Err(_) => {
+                            continue 'docs;
+                        }
                     }
+                };
+                if i == 0 {
+                    first = posting;
                 }
+                position_lists.push(posting.positions.as_slice());
             }
-            let offsets: Vec<u32> = (0..words.len() as u32).collect();
-            if all_terms_in_doc && phrase_matches(&position_lists, &offsets) {
-                result.push(
-                    Posting::with_weight(
-                        doc_id,
-                        first_posting.positions.clone(),
-                        first_posting.weight
-                    )
-                );
+
+            if phrase_matches(&position_lists, &offsets) {
+                // the first word's posting, as before, so exact scoring is unchanged
+                result.push(Posting::with_weight(doc_id, first.positions.clone(), first.weight));
             }
         }
-
         PostingList::from_items(result)
     }
 
@@ -707,7 +712,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
     /// A synonym group counts as one part of the query: a document scores by the best weighted
     /// form it contains.
-   
+
     /// The typed form scores exactly as it would without the dictionary, so no document the
     /// typed words find loses score. Another single-word form is scored with the larger of its
     /// own document frequency and the typed word's (in each field, from all shards when the
@@ -1011,7 +1016,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         restrict
     }
 
-    //now rank has multiple methods basically it works the same 
+    //now rank has multiple methods basically it works the same
     pub fn rank_retrieve(
         &self,
         query: Option<&Query>,
@@ -1174,7 +1179,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     ) -> Vec<SearchHit> {
         let mut out: Vec<SearchHit> = Vec::with_capacity(k);
         let mut seen: HashSet<DocId> = HashSet::new();
-
+        let plain_xpaths: Vec<XPathId> = ctxs
+            .iter()
+            .filter(|ctx| !ctx.row_keyed)
+            .map(|ctx| ctx.xpath)
+            .collect();
         for (index, tier) in plan.tiers.iter().enumerate() {
             if out.len() >= k {
                 break;
@@ -1188,7 +1197,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
             let hits = match tier {
                 Tier::Phrase { terms, score_with } => {
-                    let matched = self.phrase_docs(terms, ctxs);
+                    let matched: std::collections::HashSet<
+                        u64,
+                        ahash::RandomState
+                    > = self.phrase_docs(terms, ctxs);
                     let allowed: HashSet<DocId> = match restrict {
                         Some(limit) => matched.intersection(limit).copied().collect(),
                         None => matched,
@@ -1206,6 +1218,18 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     self.rank_retrieve(Some(query), ctxs, fetch, restrict, match_mode)
                 }
             };
+            //This is the density part idk if we need it at all
+            let mut hits = hits;
+            // within "all words", hits whose words sit close together come first
+            if let (Tier::All(_), Some(terms)) = (tier, plan.phrase_terms()) {
+                self.apply_density(&mut hits, terms, &plain_xpaths);
+                hits.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(Ordering::Equal)
+                        .then_with(|| a.doc_id.cmp(&b.doc_id))
+                });
+            }
 
             for mut hit in hits {
                 if !seen.insert(hit.doc_id) {
@@ -1235,8 +1259,45 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
         docs
     }
-    //density we all needed like betona koktelis 
-    
+    //density we all needed like betona koktelis
+    /// Multiplies each hit's score by 1 + DENSITY_BOOST × how close together its words are, in
+    /// its best field. Hits with no field holding every word keep their score.
+    fn apply_density(&self, hits: &mut [SearchHit], terms: &[PhraseTerm], xpaths: &[XPathId]) {
+        if terms.len() < 2 || hits.is_empty() {
+            return;
+        }
+        // the span of the words as typed, stopword gaps included ("king of the hill" -> 4)
+        let ideal = terms
+            .last()
+            .map_or(0, |term| term.offset)
+            .saturating_add(1);
+
+        // every word's list in every field, read once for all candidates
+        let fields: Vec<Vec<Cow<'a, PostingList>>> = xpaths
+            .iter()
+            .map(|&xpath| {
+                terms
+                    .iter()
+                    .map(|term| self.fetch_term_list(&term.text, xpath).0)
+                    .collect()
+            })
+            .collect();
+
+        for hit in hits.iter_mut() {
+            let best = fields
+                .iter()
+                .filter_map(|lists| doc_span(lists, hit.doc_id))
+                .map(|span| ((ideal as f32) / (span.max(1) as f32)).min(1.0))
+                .fold(None, |best: Option<f32>, density| {
+                    Some(best.map_or(density, |known| known.max(density)))
+                });
+
+            if let Some(density) = best {
+                hit.score *= 1.0 + DENSITY_BOOST * density;
+                hit.distance_factor = density;
+            }
+        }
+    }
     pub fn rank(
         &self,
         query: Option<&Query>,
@@ -1345,9 +1406,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 let mut expansions = self.fuzzy_candidates(word, ctx.xpath, opts);
                 //best guesses for the words
                 rank_and_cap(&mut expansions, spec.max_expansions);
-                
+
                 //one word counts onces per firled so "Spiderman" and "Spidermen" count as one match not two
-                let mut best_in_field:HashMap<DocId, ScoredPosting> = HashMap::new();
+                let mut best_in_field: HashMap<DocId, ScoredPosting> = HashMap::new();
                 //iterate all possible hits
                 for expansion in expansions {
                     //                      the long function needs wand kip
@@ -1377,43 +1438,43 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         };
                         scored.doc_id = doc;
 
-                        match best_in_field.entry(doc){
-                            Entry::Occupied(mut slot) =>{
-                                if scored.score>slot.get().score{
+                        match best_in_field.entry(doc) {
+                            Entry::Occupied(mut slot) => {
+                                if scored.score > slot.get().score {
                                     slot.insert(scored);
                                 }
                             }
-                            Entry::Vacant(slot)=> {
+                            Entry::Vacant(slot) => {
                                 slot.insert(scored);
                             }
                         }
                     }
                 }
-            
-               // add this word's best match in this field to each document's total
-            for (doc, scored) in best_in_field {
-                match acc.entry(doc) {
-                    Entry::Occupied(mut slot) => {
-                        let (hit, mask) = slot.get_mut();
-                        if scored.score > hit.score {
-                            hit.positions = scored.positions.clone();
-                            hit.density = hit.density.max(scored.density);
+
+                // add this word's best match in this field to each document's total
+                for (doc, scored) in best_in_field {
+                    match acc.entry(doc) {
+                        Entry::Occupied(mut slot) => {
+                            let (hit, mask) = slot.get_mut();
+                            if scored.score > hit.score {
+                                hit.positions = scored.positions.clone();
+                                hit.density = hit.density.max(scored.density);
+                            }
+                            hit.score = hit.score.saturating_add(scored.score);
+                            // a word found in a second field is still one matched word
+                            if (*mask & bit) == 0 {
+                                hit.matched_terms = hit.matched_terms.saturating_add(1);
+                            }
+                            *mask |= bit;
                         }
-                        hit.score = hit.score.saturating_add(scored.score);
-                        // a word found in a second field is still one matched word
-                        if *mask & bit == 0 {
-                            hit.matched_terms = hit.matched_terms.saturating_add(1);
+                        Entry::Vacant(slot) => {
+                            slot.insert((scored, bit));
                         }
-                        *mask |= bit;
-                    }
-                    Entry::Vacant(slot) => {
-                        slot.insert((scored, bit));
                     }
                 }
             }
         }
-    }
-    let all_words = (1u64 << words.len()) - 1;
+        let all_words = (1u64 << words.len()) - 1;
 
         acc.into_values()
             .filter(|(_, mask)| *mask == all_words)
@@ -1426,26 +1487,76 @@ fn phrase_matches(position_lists: &[&[u32]], offsets: &[u32]) -> bool {
     if position_lists.is_empty() {
         return false;
     }
+    let anchor = (0..position_lists.len()).min_by_key(|&i| position_lists[i].len()).unwrap_or(0);
 
-    for &start in position_lists[0] {
-        let mut matched = true;
-        for (i, positions) in position_lists.iter().enumerate().skip(1) {
-            let expected = start + offsets[i];
-
-            if positions.binary_search(&expected).is_err() {
-                matched = false;
-                break;
-            }
-        }
-
-        if matched {
-            return true;
-        }
-    }
-
-    false
+    position_lists[anchor].iter().any(|&position| {
+        let Some(start) = position.checked_sub(offsets[anchor]) else {
+            return false;
+        };
+        position_lists
+            .iter()
+            .zip(offsets)
+            .enumerate()
+            .all(|(i, (positions, &offset))| {
+                i == anchor ||
+                    start
+                        .checked_add(offset)
+                        .is_some_and(|expected| positions.binary_search(&expected).is_ok())
+            })
+    })
 }
 
+/// Smallest span of the document's positions that holds every list's word, or `None` when
+/// the document lacks one of them.
+/// test part with the density
+fn doc_span(lists: &[Cow<'_, PostingList>], doc: DocId) -> Option<u32> {
+    let mut positions: Vec<&[u32]> = Vec::with_capacity(lists.len());
+    for list in lists {
+        let items = list.items();
+        let index = items.binary_search_by_key(&doc, |posting| posting.doc_id).ok()?;
+        positions.push(items[index].positions.as_slice());
+    }
+    min_cover_span(&positions)
+}
+/// Smallest span (last - first + 1) holding at least one position from every list. Each list
+/// must be sorted; `None` when a list is empty.
+fn min_cover_span(lists: &[&[u32]]) -> Option<u32> {
+    if lists.is_empty() || lists.iter().any(|list| list.is_empty()) {
+        return None;
+    }
+    let mut events: Vec<(u32, usize)> = lists
+        .iter()
+        .enumerate()
+        .flat_map(|(word, positions)| positions.iter().map(move |&position| (position, word)))
+        .collect();
+    events.sort_unstable();
+
+    let mut counts = vec![0u32; lists.len()];
+    let mut covered = 0usize;
+    let mut best: Option<u32> = None;
+    let mut left = 0usize;
+
+    for right in 0..events.len() {
+        let word = events[right].1;
+        if counts[word] == 0 {
+            covered += 1;
+        }
+        counts[word] += 1;
+
+        // shrink from the left while the window still holds every word
+        while covered == lists.len() {
+            let span = events[right].0 - events[left].0 + 1;
+            best = Some(best.map_or(span, |known| known.min(span)));
+            let leaving = events[left].1;
+            counts[leaving] -= 1;
+            if counts[leaving] == 0 {
+                covered -= 1;
+            }
+            left += 1;
+        }
+    }
+    best
+}
 #[timed(search)]
 fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<SearchHit> {
     let mut heap: BinaryHeap<TopHit> = BinaryHeap::with_capacity(k + 1);
@@ -1577,21 +1688,21 @@ fn grouped_parts(query: &Query) -> Option<(bool, Vec<&Query>)> {
     (fits && has_group).then_some((conjunctive, parts))
 }
 
-    fn additive_terms(query: &Query) -> Option<Vec<&str>> {
-        match query {
-            Query::Term(term) => Some(vec![term.as_str()]),
-            Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) =>
-                Some(
-                    parts
-                        .iter()
-                        .filter_map(|part| {
-                            match part {
-                                Query::Term(term) => Some(term.as_str()),
-                                _ => None,
-                            }
-                        })
-                        .collect()
-                ),
-            _ => None,
-        }
+fn additive_terms(query: &Query) -> Option<Vec<&str>> {
+    match query {
+        Query::Term(term) => Some(vec![term.as_str()]),
+        Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) =>
+            Some(
+                parts
+                    .iter()
+                    .filter_map(|part| {
+                        match part {
+                            Query::Term(term) => Some(term.as_str()),
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            ),
+        _ => None,
     }
+}
