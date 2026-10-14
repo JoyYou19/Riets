@@ -482,12 +482,23 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))
     }
 
+    fn ensure_running(&self) -> Result<(), CorelamoError> {
+        if self.db.is_none() {
+            return Err(CorelamoError::DatabaseNotRunning(format!(
+                "shard {} is not running",
+                self.shard_id
+            )));
+        }
+        Ok(())
+    }
+
     #[timed(inserting)]
     pub fn insert(
         &mut self,
         inputs: Vec<DocumentInput>,
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
+        self.ensure_running()?;
         let started = std::time::Instant::now();
         let count = inputs.len();
         let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
@@ -619,6 +630,7 @@ impl ShardDb {
         ids: Vec<String>,
         user: String,
     ) -> Result<DeleteReport, CorelamoError> {
+        self.ensure_running()?;
         let started = std::time::Instant::now();
         let count = ids.len();
 
@@ -827,6 +839,7 @@ impl ShardDb {
         inputs: Vec<DocumentInput>,
         user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
+        self.ensure_running()?;
         let started = std::time::Instant::now();
         let count = inputs.len();
 
@@ -917,6 +930,7 @@ impl ShardDb {
         inputs: Vec<DocumentInput>,
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
+        self.ensure_running()?;
         let started = std::time::Instant::now();
         let count = inputs.len();
 

@@ -1232,7 +1232,19 @@ pub async fn create_database_handler(
     }
     let db_path = state.databases_dir.join(&db_name);
 
-    let shard_count = (if body.is_empty() {
+    //check if theres a databse that got skipped during reload
+    if db_path.exists() {
+        return HttpError::from_corelamo(
+            CorelamoError::AlreadyExists(format!(
+                "database '{db_name}' already exists on disk at {}",
+                db_path.display()
+            )),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    let shard_count = (if body.trim().is_empty() {
         None
     } else {
         let mut buf = body.trim().as_bytes().to_vec();
