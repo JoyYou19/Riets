@@ -41,6 +41,7 @@ pub enum Permission {
     Backup,
     BackupFull,
     BackupIncremental,
+    DeleteBackup,
 }
 
 impl Permission {
@@ -77,6 +78,7 @@ impl Permission {
             "UpdatePwd" => Some(Permission::UpdatePwd),
             "Restore" => Some(Permission::Restore),
             "BackupFull" => Some(Permission::BackupFull),
+            "DeleteBackup" => Some(Permission::DeleteBackup),
             "ListBackups" => Some(Permission::ListBackups),
             "BackupIncremental" => Some(Permission::BackupIncremental),
             "ListUsers" => Some(Permission::ListUsers),

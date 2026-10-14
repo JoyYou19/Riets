@@ -1974,7 +1974,7 @@ pub async fn backup_delete_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    if let Err(e) = check_permission(&state, &principal, Permission::DeleteBackup) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
