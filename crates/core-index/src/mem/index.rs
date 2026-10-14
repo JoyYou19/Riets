@@ -8,7 +8,7 @@ use crate::document::{ DocumentPart, IndexedDocument };
 use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
 use crate::posting::{ Posting, PostingList };
 use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
-use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId };
+use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId, encode_position };
 use crate::wildcard::{ WildcardPattern, capped_union };
 use ahash::AHashMap;
 use ahash::HashSet;
@@ -330,7 +330,8 @@ impl MemIndex {
         min_weight: u16,
         segments: &[&str],
         gap: u32,
-        exact: bool
+        exact: bool,
+        names: bool
     ) {
         let mut token_positions: AHashMap<String, Vec<u32>> = AHashMap::new();
         let mut total_words_len = 0u32;
@@ -338,28 +339,40 @@ impl MemIndex {
 
         //do this for every string in the array of strings
         for seg in segments {
-            let seg_len = if exact {
+            // words: the document length this segment adds. span: the positions it uses, so the
+            // next array element starts after its last word (stopwords leave gaps in positions)
+            let (words, span) = if exact {
                 let words: Vec<&str> = seg.split_whitespace().collect();
                 // write down each word, at position (offset + its index in this string)
                 for (i, word) in words.iter().enumerate() {
                     token_positions
                         .entry((*word).to_string())
                         .or_default()
-                        .push(cur_position + (i as u32));
+                        .push(encode_position(cur_position + (i as u32), 1));
                 }
-                words.len() as u32
+                // the whole value as one term too, so a search can tell "this is the name" apart
+                // from "the name contains these words" (see Analyzer::name_terms)
+                for term in names.then(|| analyzer.name_terms(seg)).unwrap_or_default() {
+                    token_positions.entry(term).or_default().push(encode_position(cur_position, 1));
+                }
+                (words.len() as u32, words.len() as u32)
             } else {
-                analyzer.for_each_token(seg, |term, position| {
-                    token_positions
-                        .entry(term.to_owned()) //word (stemmed)
-                        .or_default()
-                        .push(cur_position + position); //global position = offset + local position
-                })
+                let mut span = 0u32;
+                let words = analyzer.for_each_token(seg, |term, position, length| {
+                    let encoded = encode_position(cur_position + position, length);
+                    let positions = token_positions.entry(term.to_owned()).or_default();
+                    // two forms of one word can analyze to the same term ("king's", "kings" -> king)
+                    if positions.last() != Some(&encoded) {
+                        positions.push(encoded);
+                    }
+                    span = span.max(position + length);
+                });
+                (words, span)
             };
-            total_words_len += seg_len;
+            total_words_len += words;
 
             //move our "cursor" forward past this string, PLUS the gap
-            cur_position += seg_len + gap;
+            cur_position += span + gap;
         }
 
         let old = self.doc_lengths.insert((doc_id, xpath), total_words_len);
@@ -414,7 +427,8 @@ impl MemIndex {
                 part.weight.min,
                 &segments,
                 gap,
-                part.exact
+                part.exact,
+                part.names
             );
         }
         for point in numeric_points {

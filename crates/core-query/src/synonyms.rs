@@ -792,7 +792,7 @@ fn expand_run(
                         weight: if typed_exact {
                             FULL_WEIGHT
                         } else {
-                            weight_of(&alternative, short_form)
+                            weight_of(&alternative, short_form, several_words)
                         },
                         query: to_query(alternative.node),
                     }
@@ -812,7 +812,7 @@ fn expand_run(
                 .into_iter()
                 .filter(|alternative| !is_typed_form(&alternative.node, &typed_words))
                 .map(|alternative| SynonymAlternative {
-                    weight: weight_of(&alternative, false),
+                    weight: weight_of(&alternative, false, false),
                     query: to_query(alternative.node),
                 })
                 .collect();
@@ -842,7 +842,10 @@ fn is_typed_form(node: &QueryNode, typed_words: &[String]) -> bool {
     }
 }
 
-fn weight_of(alternative: &Alternative, typed_short_form: bool) -> u16 {
+/// A spelled-out form counts fully when the typed words were a short form (`NaCl` names one
+/// meaning) or were themselves spelled out: "world war 2", "world war ii" and "second world war"
+/// are full names of the same thing. A short form found for typed words stays a loose match.
+fn weight_of(alternative: &Alternative, typed_short_form: bool, typed_several_words: bool) -> u16 {
     if alternative.numeral {
         return NUMERAL_WEIGHT;
     }
@@ -851,7 +854,7 @@ fn weight_of(alternative: &Alternative, typed_short_form: bool) -> u16 {
         QueryNode::Exact(text) => is_multi_word(text),
         QueryNode::Term(_) => false,
     };
-    if typed_short_form && spelled_out {
+    if spelled_out && (typed_short_form || typed_several_words) {
         FULL_WEIGHT
     } else {
         SYNONYM_WEIGHT

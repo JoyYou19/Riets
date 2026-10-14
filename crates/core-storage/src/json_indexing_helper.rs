@@ -121,13 +121,10 @@ fn flatten_scalar_array(
     ));
     // exact copy, if the field has an exact index
     if let Some(exact_xpath) = field.exact_xpath(policy) {
-        parts.push(DocumentPart::flattened(
-            exact_xpath,
-            segments,
-            field.weight,
-            true,
-            ARRAY_GAP,
-        ));
+        parts.push(
+            DocumentPart::flattened(exact_xpath, segments, field.weight, true, ARRAY_GAP)
+                .with_names(field.kind == FieldKind::Text),
+        );
     }
 }
 
@@ -150,6 +147,7 @@ fn index_leaves(
                     text: raw.clone(),
                     weight: field.weight,
                     exact: false,
+                    names: false,
                     gap: 0,
                     segments: Vec::new(),
                 });
@@ -159,6 +157,7 @@ fn index_leaves(
                         text: raw.clone(),
                         weight: field.weight,
                         exact: true,
+                        names: true,
                         gap: 0,
                         segments: Vec::new(),
                     });
@@ -172,6 +171,7 @@ fn index_leaves(
                         text: raw.clone(),
                         weight: field.weight,
                         exact: false,
+                        names: false,
                         gap: 0,
                         segments: Vec::new(),
                     });
@@ -182,6 +182,7 @@ fn index_leaves(
                             text: raw.clone(),
                             weight: field.weight,
                             exact: true,
+                            names: false,
                             gap: 0,
                             segments: Vec::new(),
                         });
@@ -200,6 +201,7 @@ fn index_leaves(
                             text: raw.to_string(),
                             weight: field.weight,
                             exact: true,
+                            names: false,
                             gap: 0,
                             segments: Vec::new(),
                         });
@@ -218,6 +220,7 @@ fn index_leaves(
                             text: raw.to_string(),
                             weight: field.weight,
                             exact: true,
+                            names: false,
                             gap: 0,
                             segments: Vec::new(),
                         });

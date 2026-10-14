@@ -26,7 +26,7 @@ impl PostingList {
         }
     }
 
-    #[timed(search)]
+   
     pub fn from_sorted(items: Vec<Posting>) -> Self {
         let has_duplicates = items.windows(2).any(|w| w[0].doc_id == w[1].doc_id);
 
@@ -75,7 +75,7 @@ impl PostingList {
         Self { items, max_weight }
     }
 
-    #[timed(search)]
+    
     pub fn from_items(mut items: Vec<Posting>) -> Self {
         if !items.is_sorted_by_key(|p| p.doc_id) {
             items.sort_by_key(|p| p.doc_id);

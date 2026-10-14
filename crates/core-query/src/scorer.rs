@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use core_index::{
     posting::PostingList,
@@ -112,7 +112,6 @@ pub fn score_term_into<S: SearchStats>(
 
         out.push(ScoredPosting {
             doc_id: posting.doc_id,
-            positions: Arc::from(posting.positions.as_slice()),
             score,
             matched_terms: 1,
             density: 1.0,

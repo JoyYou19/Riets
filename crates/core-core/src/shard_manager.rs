@@ -1061,7 +1061,7 @@ impl ShardManager {
         // Plain text runs as the match cascade, most accurate tier first. A query written with
         // explicit operators runs as written, and so does a sorted search, whose field order would
         // override the tiers. Built once here, shared by every shard.
-        let plan = Arc::new(match (&command.query, query.as_ref(), sorts.is_some()) {
+        let full_plan = match (&command.query, query.as_ref(), sorts.is_some()) {
             (OwnedValue::String(text), Some(resolved), false) => {
                 let has_exact_field = ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
                 RankPlan::cascade(
@@ -1072,7 +1072,17 @@ impl ShardManager {
                 ).stopping_after(fetch)
             }
             _ => RankPlan::default(),
-        });
+        };
+        // Fuzzy expansions are the costly part of preparing (every close spelling of every word,
+        // in every field, on every shard). Prepare without them first; only when a word turns out
+        // to be in no document of the whole database is it worth preparing them.
+        let mut plan = Arc::new(full_plan.without_fuzzy());
+        let typed_words: Vec<String> = match &command.query {
+            OwnedValue::String(text) if plan.tiers.len() != full_plan.tiers.len() => {
+                core_query::fuzzable_words(&self.analyzer, text)
+            }
+            _ => Vec::new(),
+        };
         let query = Arc::new(query);
 
         // resolve highlight fields once + collect query matchers once
@@ -1112,30 +1122,48 @@ impl ShardManager {
         //Scores must not depend on which shard a document is in, so every shard scores with the
         //statistics of all shards together: first every shard reads the query and reports its
         //own statistics, then all of them rank
-        let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
-        let mut set = JoinSet::new();
-        for (index, handle) in self.shards.iter().enumerate() {
-            let handle = handle.clone();
-            let query = Arc::clone(&query);
-            let plan =Arc::clone(&plan);
-            let ctxs = Arc::clone(&ctxs);
-            set.spawn_blocking(move || {
-                let shard = handle.prepare_search((*query).as_ref(),&plan, &ctxs);
-                (index, shard)
-            });
-        }
-        let mut corpus = CorpusStats::new();
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok((index, shard)) => {
-                    corpus.merge(shard.stats());
-                    prepared[index] = Some(Arc::new(shard));
-                }
-                Err(je) => {
-                    return Err(CorelamoError::Internal(format!("shard prepare panicked: {je}")));
+        let mut passes = 0;
+        let (prepared, corpus) = loop {
+            passes += 1;
+            let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
+            let mut set = JoinSet::new();
+            for (index, handle) in self.shards.iter().enumerate() {
+                let handle = handle.clone();
+                let query = Arc::clone(&query);
+                let plan =Arc::clone(&plan);
+                let ctxs = Arc::clone(&ctxs);
+                set.spawn_blocking(move || {
+                    let shard = handle.prepare_search((*query).as_ref(),&plan, &ctxs);
+                    (index, shard)
+                });
+            }
+            let mut corpus = CorpusStats::new();
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Ok((index, shard)) => {
+                        corpus.merge(shard.stats());
+                        prepared[index] = Some(Arc::new(shard));
+                    }
+                    Err(je) => {
+                        return Err(CorelamoError::Internal(format!("shard prepare panicked: {je}")));
+                    }
                 }
             }
-        }
+            // a word no document has: the typo tier is needed after all, prepare again with it
+            let plain_xpaths: Vec<XPathId> = ctxs
+                .iter()
+                .filter(|ctx| !ctx.row_keyed)
+                .map(|ctx| ctx.xpath)
+                .collect();
+            let unknown_word = typed_words.iter().any(|word| {
+                plain_xpaths.iter().all(|&xpath| corpus.term_doc_freq(xpath, word) == 0)
+            });
+            if passes == 1 && unknown_word {
+                plan = Arc::new(full_plan.clone());
+                continue;
+            }
+            break (prepared, corpus);
+        };
         let corpus = Arc::new(corpus);
 
         let mut set = JoinSet::new();
@@ -1170,7 +1198,8 @@ impl ShardManager {
                         &plan,
                         filters.as_deref(),
                         &ctxs,
-                        window,
+                        // hits merge by (tier, score): each shard's top `fetch` covers the merged top `fetch`
+                        fetch,
                         matchmode
                     )
                 }
