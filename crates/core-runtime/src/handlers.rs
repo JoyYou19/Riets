@@ -1,6 +1,7 @@
 use crate::{
     AppState,
-    database_helpers::{compute_disk_usage, validate_db_name},
+    database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name},
+    database_manager::SlotState,
     doc_parser,
     http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
@@ -290,11 +291,9 @@ pub async fn search_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Search) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.all_running() {
@@ -364,12 +363,12 @@ pub async fn did_you_mean_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(m) => m,
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    if !manager.all_running() {
+    if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
             &ctx,
@@ -394,7 +393,7 @@ pub async fn did_you_mean_handler(
         }
     };
 
-    let report = match manager.did_you_mean(&req).await {
+    let report = match handle.did_you_mean(&req).await {
         Ok(r) => r,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -434,14 +433,12 @@ pub async fn get_all_fields_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let all_fields = manager.all_fields();
+    let all_fields = handle.all_fields();
 
     let mut fields_json = Object::new();
     for (xpath, kind) in all_fields.get_fields().iter() {
@@ -469,13 +466,12 @@ pub async fn lookup_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(m) => m,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    if !manager.all_running() {
+
+    if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
             &ctx,
@@ -490,7 +486,7 @@ pub async fn lookup_handler(
         }
     };
 
-    let result = manager.lookup(&command).await;
+    let result = handle.lookup(&command).await;
 
     let resp = match result {
         Ok(r) => r,
@@ -521,11 +517,9 @@ pub async fn insert_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.all_running() {
@@ -612,11 +606,9 @@ pub async fn retrieve_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.all_running() {
@@ -674,14 +666,12 @@ pub async fn start_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    match manager.start().await {
+    match handle.start().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' started"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -698,14 +688,12 @@ pub async fn stop_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    match manager.stop().await {
+    match handle.stop().await {
         Ok(()) => HttpOk::new(format!("database '{db_name}' stopped"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -722,14 +710,12 @@ pub async fn restart_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    match manager.restart().await {
+    match handle.restart().await {
         Ok(()) => {
             HttpOk::new(format!("database '{db_name}' succesfuly restarted"), &ctx).into_response()
         }
@@ -748,14 +734,12 @@ pub async fn clear_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    match manager.clear_all().await {
+    match handle.clear_all().await {
         Ok(_) => HttpOk::new(
             format!("database: {db_name}, is cleared of data and index"),
             &ctx,
@@ -777,11 +761,9 @@ pub async fn get_logs_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let date = if body.trim().is_empty() {
@@ -817,11 +799,9 @@ pub async fn clear_logs_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match handle.clear_logs() {
@@ -855,11 +835,9 @@ pub async fn delete_document_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.all_running() {
@@ -925,11 +903,9 @@ pub async fn partial_replace_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.all_running() {
@@ -1038,11 +1014,9 @@ pub async fn replace_document_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.all_running() {
@@ -1126,11 +1100,9 @@ pub async fn upsert_document_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.all_running() {
@@ -1207,35 +1179,16 @@ pub async fn create_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
+    // the name is a registry key and a directory name, so it is folded once, here
+    let db_name = normalize_db_name(&db_name);
     if let Err(e) = validate_db_name(&db_name) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    {
-        let dbs = match state.databases.read() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-        if dbs.contains_key(&db_name) {
-            return HttpError::from_corelamo(
-                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
-        }
-    }
-    let db_path = state.databases_dir.join(&db_name);
-
-    let shard_count = (if body.is_empty() {
+    let shard_count = (if body.trim().is_empty() {
         None
     } else {
-        let mut buf = body.as_bytes().to_vec();
+        let mut buf = body.trim().as_bytes().to_vec();
         match simd_json::from_slice::<CreateDatabaseRequest>(&mut buf) {
             Ok(req) => req.shard_count,
             Err(e) => {
@@ -1249,7 +1202,16 @@ pub async fn create_database_handler(
     })
     //TODO: calculate in a smart way
     .unwrap_or(4);
-
+    //studip max shard_count
+    if shard_count > 128 {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData(format!(
+                "shard_count {shard_count} exceeds the maximum of 128"
+            )),
+            &ctx,
+        )
+        .into_response();
+    }
     if shard_count < 1 {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData("database must have atleast one shard".to_string()),
@@ -1258,6 +1220,14 @@ pub async fn create_database_handler(
         .into_response();
     }
 
+    //reserve name + already exists...
+    let slot = match state.databases.reserve(&db_name) {
+        Ok(slot) => slot,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+    let db_path = slot.dir.clone();
+
+    //build it on disk
     let created = tokio::task::spawn_blocking(move || {
         ShardManager::create(
             db_path,
@@ -1268,53 +1238,34 @@ pub async fn create_database_handler(
     })
     .await;
 
-    let manager = match created {
-        Ok(Ok(mgr)) => mgr,
+    //smart publish + cleanup oon errors
+    match created {
+        Ok(Ok(manager)) => {
+            let manager = Arc::new(manager);
+            manager.start_backup_scheduler();
+            slot.set_live(manager);
+            HttpOk::with_status(
+                StatusCode::CREATED,
+                format!("database '{db_name}' created"),
+                &ctx,
+            )
+            .into_response()
+        }
         Ok(Err(e)) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
+            let _ = std::fs::remove_dir_all(&slot.dir);
+            state.databases.remove(&db_name);
+            HttpError::from_corelamo(e, &ctx).into_response()
         }
         Err(e) => {
-            return HttpError::from_corelamo(
+            let _ = std::fs::remove_dir_all(&slot.dir);
+            state.databases.remove(&db_name);
+            HttpError::from_corelamo(
                 CorelamoError::Internal(format!("create task panicked: {e}")),
                 &ctx,
             )
-            .into_response();
+            .into_response()
         }
-    };
-    {
-        let mut dbs = match state.databases.write() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-
-        //safety check if someone somehow created a database between the two checks
-        if dbs.contains_key(&db_name) {
-            if let Err(e) = manager.shutdown() {
-                error!(slog_scope::logger(), "failed to shut down redundant manager"; "db" => %db_name, "error" => %e);
-            }
-            return HttpError::from_corelamo(
-                CorelamoError::AlreadyExists(format!("database '{db_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
-        }
-        let manager = Arc::new(manager);
-        manager.start_backup_scheduler();
-        dbs.insert(db_name.clone(), manager);
     }
-
-    HttpOk::with_status(
-        StatusCode::CREATED,
-        format!("database '{db_name}' created"),
-        &ctx,
-    )
-    .into_response()
 }
 
 #[timed(database_lifecycle)]
@@ -1330,67 +1281,93 @@ pub async fn delete_database_handler(
 
     let log = slog_scope::logger().new(o!("components" => "handlers"));
 
-    let manager = {
-        let mut dbs = match state.databases.write() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-        match dbs.remove(&db_name) {
-            Some(h) => h,
-            None => {
-                return HttpError::from_corelamo(
-                    CorelamoError::NotFound(format!("database '{db_name}' not found")),
-                    &ctx,
-                )
-                .into_response();
-            }
-        }
+    let slot = match state.databases.get(&db_name) {
+        Ok(slot) => slot,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let manager = match Arc::try_unwrap(manager) {
-        Ok(mgr) => mgr,
-        Err(still_shared) => {
-            // put it back so the database stays reachable/usable
-            if let Ok(mut dbs) = state.databases.write() {
-                dbs.insert(db_name.clone(), still_shared);
-            }
+    let _gate = slot.gate.write().await;
+
+    let manager = match slot.manager() {
+        Ok(manager) => manager,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    slot.set_state(SlotState::Deleting);
+
+    let db = Arc::clone(&manager);
+    match tokio::task::spawn_blocking(move || db.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            slot.set_state(SlotState::Live);
+            error!(log, "delete: shutdown failed, database kept"; "db" => %db_name, "error" => %e);
             return HttpError::from_corelamo(
-                CorelamoError::Conflict(format!("database '{db_name}' is in use, try again")),
+                CorelamoError::Internal(format!(
+                    "failed to shut down '{db_name}' before deleting: {e}; \
+                     it is stopped and was not removed"
+                )),
                 &ctx,
             )
             .into_response();
         }
-    };
-
-    if let Err(e) = tokio::task::spawn_blocking(move || manager.shutdown()).await {
-        error!(log, "delete: shutdown task panicked"; "db" => %db_name, "error" => %e);
+        Err(e) => {
+            slot.set_state(SlotState::Live);
+            error!(log, "delete: shutdown task panicked"; "db" => %db_name, "error" => %e);
+            return HttpError::from_corelamo(
+                CorelamoError::Internal(format!("shutdown task panicked for '{db_name}': {e}")),
+                &ctx,
+            )
+            .into_response();
+        }
     }
 
-    let db_path = state.databases_dir.join(&db_name);
-    let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&db_path)).await;
+    //we first move the "database" to deleting-database and then delete it for crash ssafety and
+    //preventing a partially deleted database
+    let dir = slot.dir.clone();
+    let trash = trash_dir_for(state.databases.dir(), &db_name);
+    let removed = tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
+        std::fs::rename(&dir, &trash)?;
+        std::fs::remove_dir_all(&trash)
+    })
+    .await;
 
     match removed {
         Ok(Ok(())) => {
+            state.databases.remove(&db_name);
             info!(log, "database deleted"; "name" => %db_name);
             HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response()
         }
-        Ok(Err(e)) => {
-            error!(log, "database delete failed"; "name" => %db_name, "error" => %e);
+        Ok(Err(e)) if slot.dir.exists() => {
+            // nothing moved, so the files are still ours: hand the database back stopped
+            slot.set_state(SlotState::Live);
+            error!(log, "database delete failed, database kept"; "name" => %db_name, "error" => %e);
             HttpError::from_corelamo(
                 CorelamoError::Internal(format!(
-                    "removed from memory but failed to delete '{db_name}' from disk: {e}"
+                    "failed to delete '{db_name}' from disk: {e}; it is stopped and was not removed"
+                )),
+                &ctx,
+            )
+            .into_response()
+        }
+        Ok(Err(e)) => {
+            // renamed into .deleting-, only the recursive removal failed
+            state.databases.remove(&db_name);
+            error!(log, "database delete incomplete"; "name" => %db_name, "error" => %e);
+            HttpError::from_corelamo(
+                CorelamoError::Internal(format!(
+                    "removed '{db_name}' from memory but failed to delete its files: {e}"
                 )),
                 &ctx,
             )
             .into_response()
         }
         Err(e) => {
+            // the task panicked, so whether the directory moved can only be read off the disk
+            if slot.dir.exists() {
+                slot.set_state(SlotState::Live);
+            } else {
+                state.databases.remove(&db_name);
+            }
             error!(log, "database delete panicked"; "name" => %db_name, "error" => %e);
             HttpError::from_corelamo(
                 CorelamoError::Internal(format!("delete task panicked: {e}")),
@@ -1411,14 +1388,12 @@ pub async fn stats_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(m) => m,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    if !manager.all_running() {
+    if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
             &ctx,
@@ -1427,7 +1402,7 @@ pub async fn stats_handler(
     }
 
     // atomics only: this never queues behind an fsync or a reindex commit
-    let stats = manager.stats();
+    let stats = handle.stats();
     let indexing = &stats.indexing;
     let reindexing = &stats.reindexing;
     let metrics = &stats.metrics;
@@ -1486,13 +1461,12 @@ pub async fn info_words_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Search) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let manager = match state.lookup(&db_name) {
-        Ok(m) => m,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    if !manager.all_running() {
+
+    if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
             &ctx,
@@ -1518,7 +1492,7 @@ pub async fn info_words_handler(
         }
     };
 
-    let stats = match manager.info_words(req.words).await {
+    let stats = match handle.info_words(req.words).await {
         Ok(stats) => stats,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1554,13 +1528,13 @@ pub async fn reindex_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    if !manager.all_running() {
+
+    if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
             &ctx,
@@ -1572,7 +1546,7 @@ pub async fn reindex_handler(
     let value = ctx.clone();
     let log = slog_scope::logger();
 
-    let result = match tokio::task::spawn_blocking(move || manager.reindex()).await {
+    let result = match tokio::task::spawn_blocking(move || handle.reindex()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
@@ -1605,17 +1579,16 @@ pub async fn abort_reindex_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    if manager.stats().reindexing.status == ReindexStatus::Cancelled {
+
+    if handle.stats().reindexing.status == ReindexStatus::Cancelled {
         return HttpOk::new(format!("reindex already aborted for '{db_name}'"), &ctx)
             .into_response();
     }
-    manager.abort_reindex();
+    handle.abort_reindex();
     HttpOk::new(format!("reindex aborted for '{db_name}'"), &ctx).into_response()
 }
 
@@ -1628,13 +1601,11 @@ pub async fn get_policy_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
-    };
 
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
     let policy = handle.policy();
 
     match doc_parser::serialize_policy(&policy) {
@@ -1667,11 +1638,9 @@ pub async fn set_policy_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match handle.set_policy_all(policy, principal.id.0.clone()).await {
@@ -1690,14 +1659,12 @@ pub async fn get_config_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let options = manager.options();
+    let options = handle.options();
 
     match toml::to_string_pretty(&options) {
         Ok(output) => HttpOk::raw(StatusCode::OK, "application/toml", output, &ctx),
@@ -1730,11 +1697,9 @@ pub async fn set_config_handler(
         }
     };
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     match handle
@@ -1759,30 +1724,17 @@ pub async fn list_databases_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let managers: Vec<(String, Arc<ShardManager>)> = {
-        let dbs = match state.databases.read() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-        dbs.iter()
-            .map(|(name, m)| (name.clone(), Arc::clone(m)))
-            .collect()
-    };
-
-    let count = managers.len();
+    let slots = state.databases.list();
 
     let entries = tokio::task::spawn_blocking(move || {
-        managers
+        slots
             .into_iter()
-            .map(|(name, manager)| {
-                let running = manager.all_running();
-                json!({ "name": name, "running": running })
+            .filter_map(|slot| {
+                if slot.state() != SlotState::Live {
+                    return None;
+                }
+                let manager = slot.manager().ok()?;
+                Some(json!({ "name": slot.name.clone(), "running": manager.all_running() }))
             })
             .collect::<Vec<_>>()
     })
@@ -1800,7 +1752,7 @@ pub async fn list_databases_handler(
     };
 
     HttpOk::with_data(
-        format!("{count} database(s)"),
+        format!("{} database(s)", entries.len()),
         json!({ "databases": entries }),
         &ctx,
     )
@@ -1818,11 +1770,9 @@ pub async fn backup_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if let Err(e) = handle.try_start_backup() {
@@ -1830,6 +1780,7 @@ pub async fn backup_handler(
     }
 
     tokio::spawn(async move {
+        let _gate = gate;
         let result = handle.backup_full(principal.id.0.clone()).await;
         handle.finish_backup(result.is_ok());
     });
@@ -1851,11 +1802,9 @@ pub async fn backup_restore_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.has_backup(&backup_id) {
@@ -1898,12 +1847,12 @@ pub async fn backup_incremental_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::BackupIncremental) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+
+    let (handle, gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+
     let backups = match handle.list_backups() {
         Ok(b) => b,
         Err(e) => {
@@ -1924,6 +1873,8 @@ pub async fn backup_incremental_handler(
     }
     let value = db_name.clone();
     tokio::spawn(async move {
+        // same as the full backup: the guard has to outlive this request
+        let _gate = gate;
         let result = handle.backup_incremental(principal.id.0.clone()).await;
         handle.finish_backup(result.is_ok());
         if let Err(e) = &result {
@@ -1944,11 +1895,9 @@ pub async fn list_backups_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let backups = match handle.list_backups() {
@@ -1974,15 +1923,13 @@ pub async fn backup_delete_handler(
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
+    if let Err(e) = check_permission(&state, &principal, Permission::DeleteBackup) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let handle = match state.lookup(&db_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     if !handle.has_backup(&backup_id) {
@@ -2036,15 +1983,19 @@ pub async fn rename_database_handler(
             .into_response();
         }
     };
-    let new_name = req.name;
+
+    // both names are registry keys and directory names, so both are folded
+    let db_name = normalize_db_name(&db_name);
+    let new_name = normalize_db_name(&req.name);
 
     if let Err(e) = validate_db_name(&new_name) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-
     if new_name == db_name {
         return HttpError::from_corelamo(
-            CorelamoError::InvalidData("new name is the same as the current name".to_string()),
+            CorelamoError::InvalidData(
+                "new name is the same as the current name (names are case-insensitive)".to_string(),
+            ),
             &ctx,
         )
         .into_response();
@@ -2052,146 +2003,135 @@ pub async fn rename_database_handler(
 
     let log = slog_scope::logger().new(o!("component" => "handlers"));
 
-    let manager = {
-        let mut dbs = match state.databases.write() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-
-        if !dbs.contains_key(&db_name) {
-            return HttpError::from_corelamo(
-                CorelamoError::NotFound(format!("database '{db_name}' not found")),
-                &ctx,
-            )
-            .into_response();
-        }
-        if dbs.contains_key(&new_name) {
-            return HttpError::from_corelamo(
-                CorelamoError::AlreadyExists(format!("database '{new_name}' already exists")),
-                &ctx,
-            )
-            .into_response();
-        }
-
-        let handle = dbs.get(&db_name).unwrap();
-        if handle.all_running() {
-            return HttpError::from_corelamo(
-                CorelamoError::Conflict(format!(
-                    "database '{db_name}' must be stopped before renaming; call stop-database first"
-                )),
-                &ctx,
-            )
-            .into_response();
-        }
-
-        dbs.remove(&db_name).unwrap()
+    let slot = match state.databases.get(&db_name) {
+        Ok(slot) => slot,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let manager = match Arc::try_unwrap(manager) {
-        Ok(mgr) => mgr,
-        Err(still_shared) => {
-            if let Ok(mut dbs) = state.databases.write() {
-                dbs.insert(db_name.clone(), still_shared);
-            }
-            return HttpError::from_corelamo(
-                CorelamoError::Conflict(format!("database '{db_name}' is in use, try again")),
-                &ctx,
-            )
-            .into_response();
-        }
+    // one lifecycle operation per database; released on every return path
+    let _gate = slot.gate.write().await;
+
+    let manager = match slot.manager() {
+        Ok(manager) => manager,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
-    let old_path = state.databases_dir.join(&db_name);
-    let new_path = state.databases_dir.join(&new_name);
-    let old_name_for_task = db_name.clone();
-    let new_name_for_task = new_name.clone();
+    if manager.all_running() {
+        return HttpError::from_corelamo(
+            CorelamoError::Conflict(format!(
+                "database '{db_name}' must be stopped before renaming; call stop-database first"
+            )),
+            &ctx,
+        )
+        .into_response();
+    }
+
+    // Claim the new name before anything is shut down: this refuses a name another slot
+    // holds and a directory that only exists on disk, and the claimed slot is what makes a
+    // concurrent create for the same name fail instead of racing this rename.
+    let new_slot = match state.databases.reserve(&new_name) {
+        Ok(slot) => slot,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
+
+    slot.set_state(SlotState::Renaming);
+
+    // flush + close; by &self, so on failure the old slot keeps its manager
+    let db = Arc::clone(&manager);
+    let shut = tokio::task::spawn_blocking(move || db.shutdown()).await;
+    let shut_err = match shut {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(CorelamoError::Internal(format!(
+            "failed to shut down '{db_name}' before renaming: {e}"
+        ))),
+        Err(e) => Some(CorelamoError::Internal(format!(
+            "shutdown task panicked: {e}"
+        ))),
+    };
+    if let Some(e) = shut_err {
+        state.databases.remove(&new_name);
+        slot.set_state(SlotState::Live);
+        error!(log, "rename-database failed"; "old_name" => %db_name, "new_name" => %new_name, "error" => %e);
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+
+    // Move the directory, then reopen it. `false` means "do not boot": the database has to
+    // still be stopped when it is handed back, and load() honours that.
+    let old_path = slot.dir.clone();
+    let new_path = new_slot.dir.clone();
+    let (old_task, new_task) = (old_path.clone(), new_path.clone());
+    let (old_label, new_label) = (db_name.clone(), new_name.clone());
 
     let result = tokio::task::spawn_blocking(move || -> Result<ShardManager, CorelamoError> {
-        if let Err(e) = manager.shutdown() {
-            return Err(CorelamoError::Internal(format!(
-                "failed to shut down '{old_name_for_task}' before rename: {e}"
-            )));
-        }
-        std::fs::rename(&old_path, &new_path).map_err(|e| {
+        std::fs::rename(&old_task, &new_task).map_err(|e| {
             CorelamoError::Internal(format!(
-                "failed to rename '{old_name_for_task}' to '{new_name_for_task}' on disk: {e}"
+                "failed to rename '{old_label}' to '{new_label}' on disk: {e}"
             ))
         })?;
         ShardManager::load(
-            new_path.clone(),
+            new_task.clone(),
             false,
             crate::corelamo_settings::synonym_registry(),
         )
         .map_err(|e| {
-            CorelamoError::Internal(format!(
-                "renamed on disk but failed to reopen as '{new_name_for_task}': {e}. \
-                 the data is safe at its new path and will be picked up on the next server restart"
-            ))
+            // it moved but does not open: move it back so the old name keeps working
+            let rolled_back = std::fs::rename(&new_task, &old_task).is_ok();
+            CorelamoError::Internal(if rolled_back {
+                format!(
+                    "renamed on disk but failed to reopen '{new_label}': {e}; the rename was rolled back"
+                )
+            } else {
+                format!(
+                    "renamed on disk but failed to reopen '{new_label}': {e}, and rolling back \
+                     failed; the data is at its new path and will be picked up on the next server restart"
+                )
+            })
         })
     })
     .await;
 
-    let reopened = match result {
-        Ok(Ok(mgr)) => mgr,
+    match result {
+        Ok(Ok(reopened)) => {
+            let reopened = Arc::new(reopened);
+            reopened.start_backup_scheduler();
+            // the new name is live before the old slot goes away, so the database is never
+            // absent from the registry
+            new_slot.set_live(Arc::clone(&reopened));
+            state.databases.remove(&db_name);
+            info!(log, "database renamed"; "old_name" => %db_name, "new_name" => %new_name);
+            HttpOk::new(
+                format!("database '{db_name}' renamed to '{new_name}'"),
+                &ctx,
+            )
+            .into_response()
+        }
         Ok(Err(e)) => {
+            state.databases.remove(&new_name);
+            if old_path.exists() && !new_path.exists() {
+                // the rename (or its rollback) left the directory at the old path, so the
+                // slot keeps its stopped manager
+                slot.set_state(SlotState::Live);
+            } else {
+                state.databases.remove(&db_name);
+            }
             error!(log, "rename-database failed"; "old_name" => %db_name, "new_name" => %new_name, "error" => %e);
-            return HttpError::from_corelamo(e, &ctx).into_response();
+            HttpError::from_corelamo(e, &ctx).into_response()
         }
         Err(e) => {
+            state.databases.remove(&new_name);
+            if old_path.exists() && !new_path.exists() {
+                slot.set_state(SlotState::Live);
+            } else {
+                state.databases.remove(&db_name);
+            }
             error!(log, "rename-database task panicked"; "old_name" => %db_name, "new_name" => %new_name, "error" => %e);
-            return HttpError::from_corelamo(
+            HttpError::from_corelamo(
                 CorelamoError::Internal(format!("rename task panicked: {e}")),
                 &ctx,
             )
-            .into_response();
+            .into_response()
         }
-    };
-
-    {
-        let mut dbs =
-            match state.databases.write() {
-                Ok(g) => g,
-                Err(_) => {
-                    return HttpError::from_corelamo(
-                    CorelamoError::Internal(
-                        "databases lock poisoned after rename; data is on disk at its new path \
-                         but not registered in memory, restart to recover".into()
-                    ),
-                    &ctx
-                ).into_response();
-                }
-            };
-
-        if dbs.contains_key(&new_name) {
-            if let Err(e) = reopened.shutdown() {
-                error!(log, "failed to shut down orphaned manager after name collision"; "name" => %new_name, "error" => %e);
-            }
-            return HttpError::from_corelamo(
-                CorelamoError::AlreadyExists(
-                    format!(
-                        "database '{new_name}' was created by another request during the rename; \
-                     your data is safe on disk and will reappear as '{new_name}' after a server restart"
-                    )
-                ),
-                &ctx
-            ).into_response();
-        }
-
-        dbs.insert(new_name.clone(), Arc::new(reopened));
     }
-
-    info!(log, "database renamed"; "old_name" => %db_name, "new_name" => %new_name);
-    HttpOk::new(
-        format!("database '{db_name}' renamed to '{new_name}'"),
-        &ctx,
-    )
-    .into_response()
 }
 
 pub async fn timings_handler(
@@ -2237,28 +2177,17 @@ pub async fn disk_usage_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    {
-        let dbs = match state.databases.read() {
-            Ok(g) => g,
-            Err(_) => {
-                return HttpError::from_corelamo(
-                    CorelamoError::Internal("databases lock poisoned".into()),
-                    &ctx,
-                )
-                .into_response();
-            }
-        };
-        if !dbs.contains_key(&db_name) {
-            return HttpError::from_corelamo(
-                CorelamoError::NotFound(format!("database '{db_name}' not found")),
-                &ctx,
-            )
-            .into_response();
-        }
-    }
+    let slot = match state.databases.get(&db_name) {
+        Ok(slot) => slot,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
 
-    let db_root = state.databases_dir.join(&db_name);
-    let name_for_task = db_name.clone();
+    // a delete or rename moves this directory out from under the walk
+    let _gate = slot.read().await;
+
+    // the slot knows the real directory, which keeps whatever case it was created with
+    let db_root = slot.dir.clone();
+    let name_for_task = slot.name.clone();
 
     let result =
         tokio::task::spawn_blocking(move || compute_disk_usage(&db_root, &name_for_task)).await;
@@ -2289,14 +2218,16 @@ pub async fn get_dictionary_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
+
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+
     HttpOk::raw(
         StatusCode::OK,
         "application/toml",
-        manager.dictionary_text(),
+        handle.dictionary_text(),
         &ctx,
     )
 }
@@ -2316,17 +2247,19 @@ pub async fn set_dictionary_handler(
         Ok(d) => d,
         Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
     };
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
+
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    match manager.set_dictionary(document).await {
+
+    match handle.set_dictionary(document).await {
         Ok(()) => HttpOk::new(format!("dictionary updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
-pub async fn reload_dictionary_handler(
+pub async fn reset_dictionary_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2335,11 +2268,12 @@ pub async fn reload_dictionary_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let manager = match state.lookup(&db_name) {
-        Ok(h) => h,
+    let (handle, _gate) = match state.db_write(&db_name).await {
+        Ok(x) => x,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    match manager.reload_dictionary().await {
+
+    match handle.reload_dictionary().await {
         Ok(()) => HttpOk::new(format!("dictionary reloaded for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }

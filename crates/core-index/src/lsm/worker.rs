@@ -64,8 +64,10 @@ impl CompactionWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
 
-        let handle = thread::spawn(move || -> io::Result<()> {
-            while !stop_thread.load(Ordering::Relaxed) {
+        let handle = thread::Builder::new()
+            .name("index-compaction".to_string())
+            .spawn(move || -> io::Result<()> {
+                while !stop_thread.load(Ordering::Relaxed) {
                 match run_cycle(&sender, config, &log) {
                     Ok(true) => {
                         continue;
@@ -82,7 +84,8 @@ impl CompactionWorker {
                 sleep_unless_stopped(&stop_thread, interval);
             }
             Ok(())
-        });
+        })
+        .expect("failed to spawn index compaction worker");
 
         Self {
             stop,

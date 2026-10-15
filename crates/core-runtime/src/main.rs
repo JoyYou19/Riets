@@ -5,11 +5,11 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
+use core_core::shard_manager::ShardManager;
 use tower_http::{cors::CorsLayer, decompression::RequestDecompressionLayer};
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use core_auth::{AuthService, UserDatabase};
-use core_core::shard_manager::ShardManager;
 use core_index::{
     analyzer::analyzer::Analyzer,
     lsm::{LsmIndex, config::IndexRuntimeConfig},
@@ -20,7 +20,6 @@ use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::binary_store::BinaryDocumentStore;
 use slog::{debug, error, info, warn};
 use std::{
-    collections::HashMap,
     io,
     path::PathBuf,
     process,
@@ -28,34 +27,54 @@ use std::{
     time::Duration,
 };
 
-use tokio::signal;
+use tokio::{
+    signal,
+    sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard},
+};
+
+use crate::{
+    database_helpers::{normalize_db_name, sweep_trash},
+    database_manager::{Databases, DbSlot},
+};
 
 mod corelamo_settings;
 mod database_helpers;
+mod database_manager;
 mod doc_parser;
 mod handlers;
 mod http_response;
 mod middleware;
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Clone)]
 pub struct AppState {
-    pub databases: Arc<RwLock<HashMap<String, Arc<ShardManager>>>>,
-    pub databases_dir: PathBuf,
+    pub databases: Arc<Databases>,
     pub default_format: Format,
     pub default_pretty: bool,
     pub auth: Arc<RwLock<AuthService>>,
 }
 
 impl AppState {
-    pub fn lookup(&self, db_name: &str) -> Result<Arc<ShardManager>, CorelamoError> {
-        let dbs = self
-            .databases
-            .read()
-            .map_err(|_| CorelamoError::Internal("databases lock poisoned".into()))?;
-        dbs.get(db_name)
-            .cloned()
-            .ok_or_else(|| CorelamoError::NotFound(format!("database '{db_name}' not found")))
+    //all others
+    pub async fn db_read(
+        &self,
+        db_name: &str,
+    ) -> Result<(Arc<ShardManager>, OwnedRwLockReadGuard<()>), CorelamoError> {
+        let slot = self.databases.get(db_name)?;
+        let gate = slot.read().await;
+        Ok((slot.manager()?, gate))
+    }
+
+    //for if/how documents are inserted start, stop, restart, clear, reindex, abort-reindex, set-policy, set-config, set-dictionary, reset-dictionary, restore
+    pub async fn db_write(
+        &self,
+        db_name: &str,
+    ) -> Result<(Arc<ShardManager>, OwnedRwLockWriteGuard<()>), CorelamoError> {
+        let slot = self.databases.get(db_name)?;
+        let gate = slot.write().await;
+        Ok((slot.manager()?, gate))
     }
 }
 
@@ -164,6 +183,9 @@ async fn main() -> io::Result<()> {
         process::exit(1);
     }
 
+    //clear all directories that somehow didnt get deleted before restart
+    sweep_trash(&databases_dir);
+
     let databases = match database_helpers::load_saved_shard_managers(&databases_dir) {
         Ok(dbs) => dbs,
         Err(e) => {
@@ -174,10 +196,16 @@ async fn main() -> io::Result<()> {
 
     info!(log,"found and loaded database(s) in total"; "databases"=>%databases.len());
 
-    let mut handles: HashMap<String, Arc<ShardManager>> = HashMap::new();
-
+    let databases_registry = Databases::new(databases_dir.clone());
     for (db_name, manager) in databases {
-        handles.insert(db_name, Arc::new(manager));
+        let db_name = normalize_db_name(&db_name);
+        let dir = manager.root().to_path_buf();
+        let manager = Arc::new(manager);
+        manager.start_backup_scheduler();
+        let slot = DbSlot::live(db_name.clone(), dir, manager);
+        if let Err(e) = databases_registry.insert(Arc::new(slot)) {
+            error!(log, "database not registered at boot"; "db" => %db_name, "error" => %e);
+        }
     }
 
     let users_dir = root_path.join("users");
@@ -192,8 +220,7 @@ async fn main() -> io::Result<()> {
     let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
 
     let state = AppState {
-        databases: Arc::new(RwLock::new(handles)),
-        databases_dir,
+        databases: Arc::new(databases_registry),
         default_pretty,
         default_format,
         auth,
@@ -329,7 +356,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/api/databases/{db_name}/dictionary/reload",
-            post(handlers::reload_dictionary_handler),
+            post(handlers::reset_dictionary_handler),
         )
         .route(
             "/api/databases/{db_name}/set-config",
@@ -423,29 +450,16 @@ async fn main() -> io::Result<()> {
 
     //something or someone killed our beloved programm
     info!(log, "Server stopped, shutting down databases..");
-    let handles = {
-        let mut guard = state_for_shutdown.databases.write().unwrap();
-        std::mem::take(&mut *guard)
-    };
 
-    for (db_name, manager) in handles {
-        info!(log, "shutting down database ..."; "database" => %db_name);
-        match Arc::try_unwrap(manager) {
-            Ok(mgr) => {
-                if let Err(e) = mgr.shutdown() {
-                    error!(log, "error shutting down database";
-                    "db" => %db_name, "error" => %e);
-                }
-            }
-            Err(still_shared) => {
-                error!(
-                    log,
-                    "could not get exclusive access to database during shutdown, \
-                     shard threads may not be joined cleanly";
-                    "db" => %db_name,
-                    "strong_count" => Arc::strong_count(&still_shared),
-                );
-            }
+    for slot in state_for_shutdown.databases.list() {
+        let Ok(manager) = slot.manager() else {
+            info!(log, "skipping transient database at shutdown"; "db" => %slot.name);
+            continue;
+        };
+        info!(log, "shutting down database ..."; "database" => %slot.name);
+        if let Err(e) = manager.shutdown() {
+            error!(log, "error shutting down database";
+            "db" => %slot.name, "error" => %e);
         }
     }
 

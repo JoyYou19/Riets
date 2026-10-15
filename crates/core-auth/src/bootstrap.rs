@@ -48,6 +48,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::BackupFull,
             Permission::Restore,
             Permission::BackupIncremental,
+            Permission::DeleteBackup,
             Permission::ListBackups,
             Permission::Backup,
         ],

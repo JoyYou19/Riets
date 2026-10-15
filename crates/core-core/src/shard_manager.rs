@@ -52,6 +52,7 @@ use core_storage::search_database::{ DeleteReport, InsertReport, ReplaceReport, 
 use core_storage::search_database::{ DocumentInput, SearchDocumentHit };
 use core_timing::timed;
 use crossbeam_channel::bounded;
+use parking_lot::{Mutex, RwLock};
 use parking_lot::RwLock;
 use simd_json::OwnedValue;
 use std::cmp::Ordering;
@@ -59,6 +60,7 @@ use std::collections::{ BTreeMap, HashMap };
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
 use std::time::{ Duration, SystemTime };
 use tokio::task::JoinSet;
@@ -73,7 +75,6 @@ use crate::shard_manager_helpers::{
 
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
-    joins: Vec<JoinHandle<()>>, //JoinHandle atgriez kad thread uztaisits
     root: PathBuf,
     policy: RwLock<IndexPolicy>,
     options: RwLock<DatabaseOptions>,
@@ -84,6 +85,11 @@ pub struct ShardManager {
     all_fields: RwLock<AllFields>,
     // the database's synonym dictionary, dictionary.toml in its directory
     synonyms: Arc<SynonymManager>,
+
+    // taken and joined in shutdown(); a Mutex because shutdown() only gets &self
+    joins: Mutex<Vec<JoinHandle<()>>>, //JoinHandle atgriez kad thread uztaisits
+    // main, delete and rename all reach shutdown(), so it has to be safe twice
+    shutdown_done: std::sync::atomic::AtomicBool,
 }
 
 impl ShardManager {
@@ -145,10 +151,11 @@ impl ShardManager {
         }
         Ok(Self {
             shards,
-            joins,
             root,
             policy: RwLock::new(policy),
             options: RwLock::new(options),
+            joins: Mutex::new(joins),
+            shutdown_done: AtomicBool::new(false),
             analyzer: Analyzer::new(),
             reindex_pool: ReindexPool::start(shard_count as usize),
             all_fields: RwLock::new(all_fields),
@@ -652,7 +659,8 @@ impl ShardManager {
 
         Ok(Self {
             shards,
-            joins,
+            joins: Mutex::new(joins),
+            shutdown_done: AtomicBool::new(false),
             root,
             policy: RwLock::new(policy),
             options: RwLock::new(options),
@@ -665,12 +673,25 @@ impl ShardManager {
         })
     }
 
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
 
     #[timed(database_lifecycle)]
-    pub fn shutdown(self) -> Result<(), CorelamoError> {
+    //karoc shard_manager vajadzeja ownership lai visi shutdowojas, tagad ir smuki ar extra
+    //shutdown.done
+    pub fn shutdown(&self) -> Result<(), CorelamoError> {
+        if self
+            .shutdown_done
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+
         for h in &self.shards {
             h.progress().cancel();
         }
@@ -693,9 +714,12 @@ impl ShardManager {
                 _ => {}
             }
         }
-        for j in self.joins {
+
+        let joins = std::mem::take(&mut *self.joins.lock());
+        for j in joins {
             let _ = j.join();
         }
+
         match first_err {
             Some(e) => Err(e),
             None => Ok(()),
@@ -828,17 +852,40 @@ impl ShardManager {
             return Err(CorelamoError::Busy("reindex already in progress".into()));
         }
 
-        //nodod reindex  pool
-        for h in &self.shards {
-            let (rtx, rrx) = bounded(1);
-            h.send_raw(ShardCmd::PrepareReindex { resp: rtx }).map_err(|(e, _)| e)?;
+        let mut submitted = 0usize;
+        let mut first_err = None;
 
-            self.reindex_pool.submit(PendingReindexJob {
+        for h in &self.shards {
+            //nodod reindex  pool
+            let (rtx, rrx) = bounded(1);
+            if let Err((e, _)) = h.send_raw(ShardCmd::PrepareReindex { resp: rtx }) {
+                first_err = Some(e);
+                break;
+            }
+
+            let job = PendingReindexJob {
                 rx: rrx,
                 shard_tx: h.command_sender(),
                 progress: Arc::clone(h.progress()),
                 stats: Arc::clone(&self.db_stats),
-            })?;
+            };
+            match self.reindex_pool.submit(job) {
+                Ok(()) => submitted += 1,
+                Err(e) => {
+                    first_err = Some(e);
+                    break;
+                }
+            }
+        }
+
+        if let Some(e) = first_err {
+            // the shards without a job never reach finish_shard_reindex; settle them as
+            // failed so the counter reaches zero and the phase ends at Failed, which lets
+            // the next reindex start
+            for _ in submitted..self.shards.len() {
+                self.db_stats.finish_shard_reindex(false, Duration::ZERO);
+            }
+            return Err(e);
         }
         Ok(())
     }
