@@ -53,7 +53,6 @@ use core_storage::search_database::{ DocumentInput, SearchDocumentHit };
 use core_timing::timed;
 use crossbeam_channel::bounded;
 use parking_lot::{Mutex, RwLock};
-use parking_lot::RwLock;
 use simd_json::OwnedValue;
 use std::cmp::Ordering;
 use std::collections::{ BTreeMap, HashMap };
