@@ -450,8 +450,10 @@ impl MemIndex {
 
         //write to seg
        for (term, positions) in token_positions {
-            let hits = positions.len();
-            let posting_weight = hits.max(usize::from(weight.min)).min(usize::from(weight.max)) as u16;
+            let extra_hits = positions.len().saturating_sub(1);
+            let posting_weight = usize::from(weight.min)
+                .saturating_add(extra_hits)
+                .min(usize::from(weight.max)) as u16;
             self.add_posting_weighted(term, xpath, doc_id, positions, posting_weight);
         }
     }
