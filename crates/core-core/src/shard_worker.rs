@@ -103,6 +103,9 @@ pub enum ShardCmd {
         done: CompletedShardReindex,
         resp: Sender<Result<(), CorelamoError>>,
     },
+    ReindexAbandoned {
+        generation: u64,
+    },
     Start {
         policy: IndexPolicy,
         options: DatabaseOptions,
@@ -857,6 +860,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             }
             ShardCmd::CommitReindex { done, resp } => {
                 let _ = resp.send(shard.commit_reindex(done));
+            }
+            ShardCmd::ReindexAbandoned { generation } => {
+                shard.abandoned_reindex(generation);
             }
             ShardCmd::Start {
                 policy,

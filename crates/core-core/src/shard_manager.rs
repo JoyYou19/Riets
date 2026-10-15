@@ -37,12 +37,13 @@ use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, W
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 use core_timing::timed;
 use crossbeam_channel::bounded;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 use tokio::task::JoinSet;
@@ -53,7 +54,6 @@ use crate::shard_manager_helpers::{
 
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
-    joins: Vec<JoinHandle<()>>, //JoinHandle atgriez kad thread uztaisits
     root: PathBuf,
     policy: RwLock<IndexPolicy>,
     options: RwLock<DatabaseOptions>,
@@ -64,6 +64,11 @@ pub struct ShardManager {
     all_fields: RwLock<AllFields>,
     // the database's synonym dictionary, dictionary.toml in its directory
     synonyms: Arc<SynonymManager>,
+
+    // taken and joined in shutdown(); a Mutex because shutdown() only gets &self
+    joins: Mutex<Vec<JoinHandle<()>>>, //JoinHandle atgriez kad thread uztaisits
+    // main, delete and rename all reach shutdown(), so it has to be safe twice
+    shutdown_done: std::sync::atomic::AtomicBool,
 }
 
 impl ShardManager {
@@ -122,10 +127,11 @@ impl ShardManager {
         }
         Ok(Self {
             shards,
-            joins,
             root,
             policy: RwLock::new(policy),
             options: RwLock::new(options),
+            joins: Mutex::new(joins),
+            shutdown_done: AtomicBool::new(false),
             analyzer: Analyzer::new(),
             reindex_pool: ReindexPool::start(shard_count as usize),
             all_fields: RwLock::new(all_fields),
@@ -625,7 +631,8 @@ impl ShardManager {
 
         Ok(Self {
             shards,
-            joins,
+            joins: Mutex::new(joins),
+            shutdown_done: AtomicBool::new(false),
             root,
             policy: RwLock::new(policy),
             options: RwLock::new(options),
@@ -638,12 +645,25 @@ impl ShardManager {
         })
     }
 
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
 
     #[timed(database_lifecycle)]
-    pub fn shutdown(self) -> Result<(), CorelamoError> {
+    //karoc shard_manager vajadzeja ownership lai visi shutdowojas, tagad ir smuki ar extra
+    //shutdown.done
+    pub fn shutdown(&self) -> Result<(), CorelamoError> {
+        if self
+            .shutdown_done
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+
         for h in &self.shards {
             h.progress().cancel();
         }
@@ -667,9 +687,12 @@ impl ShardManager {
                 _ => {}
             }
         }
-        for j in self.joins {
+
+        let joins = std::mem::take(&mut *self.joins.lock());
+        for j in joins {
             let _ = j.join();
         }
+
         match first_err {
             Some(e) => Err(e),
             None => Ok(()),

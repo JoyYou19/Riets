@@ -1,11 +1,15 @@
-use std::{collections::HashMap, io, path::Path};
+use std::{
+    collections::HashMap,
+    io,
+    path::{Path, PathBuf},
+};
 
 use core_core::shard_manager::ShardManager;
 use core_protocol::errors::CorelamoError;
 use core_timing::timed;
 
 use simd_json::{OwnedValue, StaticNode, json, owned::Object};
-use slog::error;
+use slog::{error, info};
 
 #[timed(database_lifecycle)]
 pub fn load_saved_shard_managers(
@@ -64,6 +68,57 @@ pub fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
         )));
     }
     Ok(())
+}
+
+pub const TRASH_PREFIX: &str = ".deleting-";
+pub fn normalize_db_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+pub fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> {
+    let entries = std::fs::read_dir(databases_dir).ok()?;
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(other) = file_name.to_str() else {
+            continue;
+        };
+        if other.eq_ignore_ascii_case(name) {
+            return Some(other.to_string());
+        }
+    }
+    None
+}
+
+pub fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    databases_dir.join(format!(
+        "{TRASH_PREFIX}{db_name}-{}-{nanos}",
+        std::process::id()
+    ))
+}
+
+pub fn sweep_trash(databases_dir: &Path) {
+    let log = slog_scope::logger();
+    let Ok(entries) = std::fs::read_dir(databases_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(TRASH_PREFIX) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => info!(log, "removed leftover delete directory"; "dir" => %name),
+            Err(e) => error!(log, "failed to remove leftover delete directory";
+                "dir" => %name, "error" => %e),
+        }
+    }
 }
 
 //bellow are functions for determining what takes up how much disk space for a database

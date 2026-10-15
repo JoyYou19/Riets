@@ -20,35 +20,38 @@ impl SegmentCompactionWorker {
     pub fn start(sender: Sender<ShardCmd>, dead_ratio_threshold: f64, interval: Duration) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
-        let handle = thread::spawn(move || {
-            while !stop_thread.load(Ordering::Relaxed) {
-                let (reply, rx) = std::sync::mpsc::channel();
-                sender
-                    .send(ShardCmd::PlanSegmentCompaction {
-                        dead_ratio_threshold,
-                        reply,
-                    })
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "shard worker stopped")
-                    })?;
-                if let Ok(Ok(Some(job))) = rx.recv() {
-                    if let Ok(completed) = run_segment_compaction(job) {
-                        let (ack, install_rx) = std::sync::mpsc::channel();
-                        if sender
-                            .send(ShardCmd::InstallSegmentCompaction {
-                                completed,
-                                ack: Some(ack),
-                            })
-                            .is_ok()
-                        {
-                            let _ = install_rx.recv();
+        let handle = thread::Builder::new()
+            .name("segment-compaction".to_string())
+            .spawn(move || {
+                while !stop_thread.load(Ordering::Relaxed) {
+                    let (reply, rx) = std::sync::mpsc::channel();
+                    sender
+                        .send(ShardCmd::PlanSegmentCompaction {
+                            dead_ratio_threshold,
+                            reply,
+                        })
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::BrokenPipe, "shard worker stopped")
+                        })?;
+                    if let Ok(Ok(Some(job))) = rx.recv() {
+                        if let Ok(completed) = run_segment_compaction(job) {
+                            let (ack, install_rx) = std::sync::mpsc::channel();
+                            if sender
+                                .send(ShardCmd::InstallSegmentCompaction {
+                                    completed,
+                                    ack: Some(ack),
+                                })
+                                .is_ok()
+                            {
+                                let _ = install_rx.recv();
+                            }
                         }
                     }
+                    thread::sleep(interval);
                 }
-                thread::sleep(interval);
-            }
-            Ok(())
-        });
+                Ok(())
+            })
+            .expect("failed to spawn segment compaction worker");
         Self {
             stop,
             handle: Some(handle),

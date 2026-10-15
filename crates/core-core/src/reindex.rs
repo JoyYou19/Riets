@@ -101,9 +101,14 @@ fn worker_loop(rx: Receiver<PendingReindexJob>) {
 
         job.stats.add_reindex_total(params.doc_count as u64);
 
+        let generation = params.generation;
+
         let done = match build_staging_index(&params, &job.progress, &job.stats) {
             Ok(done) => done,
             Err(_) => {
+                // The build failed or was cancelled. `prepare_reindex` took this shard's
+                // compaction worker for the duration of the attempt, so hand it back.
+                abandon(&job, generation);
                 job.stats.finish_shard_reindex(false, started.elapsed());
                 continue;
             }
@@ -115,12 +120,22 @@ fn worker_loop(rx: Receiver<PendingReindexJob>) {
             .send(ShardCmd::CommitReindex { done, resp: rtx })
             .is_err()
         {
+            // the shard thread is gone, and its worker went with it
             job.stats.finish_shard_reindex(false, started.elapsed());
             continue;
         }
         let ok = matches!(rrx.recv(), Ok(Ok(())));
+        if !ok {
+            // rejected (a newer attempt took over) or failed halfway; the shard ignores this
+            // when the generation has moved on
+            abandon(&job, generation);
+        }
         job.stats.finish_shard_reindex(ok, started.elapsed());
     }
+}
+
+fn abandon(job: &PendingReindexJob, generation: u64) {
+    let _ = job.shard_tx.send(ShardCmd::ReindexAbandoned { generation });
 }
 
 /// Builds a fresh index into index.new. Reads the shard's document store but
@@ -167,4 +182,3 @@ fn build_staging_index(
         generation: params.generation,
     })
 }
-

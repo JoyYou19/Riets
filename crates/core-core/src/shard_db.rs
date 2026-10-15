@@ -728,6 +728,7 @@ impl ShardDb {
         //let t1 = std::time::Instant::now();
         if let Some(worker) = self.compaction_worker.take() {
             let _ = worker.stop_async();
+            self.stats.set_compaction_enabled(false);
         }
         //eprintln!("compaction stop: {:?}", t1.elapsed());
 
@@ -1172,6 +1173,7 @@ impl ShardDb {
 
         result
     }
+
     fn run_full_backup(
         &mut self,
         shard_backup_path: &PathBuf,
@@ -1201,6 +1203,15 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
+    pub fn abandoned_reindex(&mut self, generation: u64) {
+        if generation != self.generation {
+            return;
+        }
+        info!(self.log, "reindex abandoned, restarting compaction";
+        "shard_id" => self.shard_id, "generation" => generation);
+        self.restart_compaction_worker();
+    }
+
     fn restart_compaction_worker(&mut self) {
         if !self.options.enable_background_compaction || self.compaction_worker.is_some() {
             return;
@@ -1214,9 +1225,10 @@ impl ShardDb {
                     self.options.compaction_interval,
                     self.log.new(slog::o!("component" => "index_compaction")),
                 ));
+                self.stats.set_compaction_enabled(true);
             }
             Err(err) => {
-                warn!(self.log, "compaction worker not restarted after backup"; "error" => ?err);
+                warn!(self.log, "compaction worker not restarted"; "error" => ?err);
             }
         }
     }
