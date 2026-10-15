@@ -351,11 +351,11 @@ async fn main() -> io::Result<()> {
             get(handlers::get_dictionary_handler),
         )
         .route(
-            "/api/databases/{db_name}/dictionary/set",
+            "/api/databases/{db_name}/set-dictionary",
             post(handlers::set_dictionary_handler),
         )
         .route(
-            "/api/databases/{db_name}/dictionary/reload",
+            "/api/databases/{db_name}/reload-dictionary",
             post(handlers::reset_dictionary_handler),
         )
         .route(

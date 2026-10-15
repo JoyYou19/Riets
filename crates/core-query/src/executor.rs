@@ -642,7 +642,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
             Query::SameElement(_) => EvalOutcome::Docs(HashSet::new()),
 
-            Query::MatchAll => EvalOutcome::Docs(HashSet::new()),
+            // every live document (inside an AND, a NOT or a filter it means "no restriction")
+            Query::MatchAll => EvalOutcome::Docs(match self.index.doc_range() {
+                Some((min, max)) => (min..=max).filter(|id| !self.index.is_deleted(*id)).collect(),
+                None => HashSet::new(),
+            }),
         }
     }
 
@@ -732,7 +736,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 &stats,
                 &leaf.postings,
                 leaf.xpath,
-                doc_freq as f32,
+                doc_freq,
                 &mut doc_len,
                 &mut scored
             );
@@ -1498,7 +1502,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 let (list, doc_freq) = self.fetch_term_list(&term.text, ctx.xpath);
                 let kept = postings_of(&list, &matched);
                 scored.clear();
-                score_term_into(&stats, &kept, ctx.xpath, doc_freq as f32, &mut doc_len, &mut scored);
+                score_term_into(&stats, &kept, ctx.xpath, doc_freq, &mut doc_len, &mut scored);
                 for hit in scored.drain(..) {
                     match acc.entry(hit.doc_id) {
                         Entry::Vacant(e) => {
@@ -1754,7 +1758,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     let postings = self.index.lookup(&expansion.term, ctx.xpath);
 
                     scored_buf.clear();
-                    let true_df = expansion.doc_freq as f32;
+                    let true_df = expansion.doc_freq;
                     //BM25 scoring
                     score_term_into(
                         &self.stats(),

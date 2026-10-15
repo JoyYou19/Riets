@@ -86,12 +86,12 @@ pub fn score_term_into<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
     xpath: XPathId,
-    true_df: f32,
+    true_df: u32,
     doc_len: &mut HashMap<DocId, f32>,
     out: &mut Vec<ScoredPosting>,
 ) {
     let doc_count = stats.doc_count(xpath);
-    let doc_frequency = true_df as u32;
+    let doc_frequency = true_df;
     let avg_doc_len = stats.avg_doc_len(xpath);
 
     for posting in postings.items().iter().filter(|p| !p.positions.is_empty()) {
@@ -126,7 +126,7 @@ pub fn score_term_hybrid<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
     xpath: XPathId,
-    true_df: f32,
+    true_df: u32,
 ) -> Vec<ScoredPosting> {
     let mut out = Vec::with_capacity(postings.len());
     let mut doc_len = HashMap::new();

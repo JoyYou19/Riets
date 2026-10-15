@@ -5,6 +5,7 @@ use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
 use crate::document::document::{ BoolField, BoolPoint, NumericPoint };
 use crate::document::{ DocumentPart, IndexedDocument, WeightInterval };
+use crate::fuzzy::{ FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix };
 use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
 use crate::posting::{ Posting, PostingList };
 use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
@@ -93,6 +94,63 @@ impl SearchIndex for MemIndex {
             .filter(|k| k.xpath == xpath)
             .map(|k| k.term.clone())
             .collect()
+    }
+
+    // The trait's version copies every term of the field into a Vec before running the automaton
+    // over them (2 edits). Here the keys are walked in place, and the automaton only runs on terms
+    // with the prefix and a length within `max_edits` of the typed word; a term is copied only
+    // when it matches.
+    fn fuzzy_expansions(
+        &self,
+        term: &str,
+        xpath: XPathId,
+        opts: FuzzyOptions,
+    ) -> Vec<FuzzyExpansion> {
+        let existing = |candidate: &str, edits: u8| -> Option<FuzzyExpansion> {
+            let doc_freq = self.doc_freq(candidate, xpath);
+            (doc_freq > 0).then(|| FuzzyExpansion::new(candidate, edits, doc_freq))
+        };
+
+        let mut out: Vec<FuzzyExpansion> = existing(term, 0).into_iter().collect();
+        if opts.max_edits == 0 {
+            return out;
+        }
+
+        let (prefix, suffix) = split_prefix(term, opts.prefix_length);
+        if suffix.is_empty() {
+            return out;
+        }
+
+        if opts.max_edits == 1 {
+            // every word one edit away, each a hash lookup
+            for candidate in candidates_within_one(suffix) {
+                out.extend(existing(&format!("{prefix}{candidate}"), 1));
+            }
+        } else {
+            let dfa = levenshtein_automata::LevenshteinAutomatonBuilder::new(opts.max_edits, true)
+                .build_dfa(suffix);
+            let suffix_chars = suffix.chars().count();
+            let max_edits = usize::from(opts.max_edits);
+            for (key, list) in &self.terms {
+                if key.xpath != xpath || list.is_empty() {
+                    continue;
+                }
+                let Some(rest) = key.term.strip_prefix(prefix) else {
+                    continue;
+                };
+                // a length difference above max_edits is more edits than allowed
+                if rest.chars().count().abs_diff(suffix_chars) > max_edits {
+                    continue;
+                }
+                if let levenshtein_automata::Distance::Exact(edits) = dfa.eval(rest) {
+                    out.push(FuzzyExpansion::new(key.term.as_str(), edits, list.len() as u32));
+                }
+            }
+        }
+
+        out.sort_by(|a, b| a.term.cmp(&b.term).then_with(|| a.edits.cmp(&b.edits)));
+        out.dedup_by(|a, b| a.term == b.term);
+        out
     }
     // No TermMeta here — MemIndex stores full PostingLists directly, so
     // doc_freq is just the stored list's length. Uses the private lookup()
