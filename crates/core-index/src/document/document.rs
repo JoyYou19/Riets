@@ -73,6 +73,9 @@ pub struct DocumentPart {
     pub text: String,
     pub weight: WeightInterval,
     pub exact: bool,
+    /// The values are names (a text field's exact copy): each one is also filed whole, see
+    /// `Analyzer::name_terms`.
+    pub names: bool,
     pub gap: u32,              // gap of joined arr elements
     pub segments: Vec<String>, // element texts for flattened repeated fields
 }
@@ -84,6 +87,7 @@ impl DocumentPart {
             text,
             weight,
             exact,
+            names: false,
             segments: Vec::new(),
             gap: 0,
         }
@@ -101,9 +105,16 @@ impl DocumentPart {
             text: String::new(),
             weight,
             exact,
+            names: false,
             segments,
             gap,
         }
+    }
+
+    /// Marks the values as names (see `names`).
+    pub fn with_names(mut self, names: bool) -> Self {
+        self.names = names;
+        self
     }
 
     pub fn is_flattened(&self) -> bool {

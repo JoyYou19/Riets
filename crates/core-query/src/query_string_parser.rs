@@ -1,14 +1,11 @@
-use core_protocol::{command_reponse_definitions::Fuzziness, errors::CorelamoError};
+use core_protocol::{ command_reponse_definitions::Fuzziness, errors::CorelamoError };
 use core_timing::timed;
-use simd_json::{
-    OwnedValue,
-    base::{TypedValue, ValueAsScalar},
-};
+use simd_json::{ OwnedValue, base::{ TypedValue, ValueAsScalar } };
 
-use crate::ast::{Query, SynonymAlternative};
+use crate::ast::{ PhraseTerm, Query, SynonymAlternative };
 use core_index::{
     analyzer::Analyzer,
-    fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec},
+    fuzzy::{ DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec },
     wildcard::WildcardPattern,
 };
 
@@ -35,7 +32,13 @@ fn has_wildcard(word: &str) -> bool {
 pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
     match query {
         Query::Term(word) => analyze_term(&word, analyzer),
-        Query::Phrase(words) => analyze_phrase(&words, analyzer),
+        Query::Phrase(terms) => {
+            let words: Vec<String> = terms
+                .into_iter()
+                .map(|term| term.text)
+                .collect();
+            analyze_phrase(&words, analyzer)
+        }
 
         //for these just lowercase cuz like "ca[tnb]" is not a real word for analasys
         Query::Prefix(p) => non_empty(p.to_lowercase()).map(Query::Prefix),
@@ -81,11 +84,14 @@ fn analyze_synonym(forms: Vec<SynonymAlternative>, analyzer: &Analyzer) -> Optio
             continue;
         };
         match kept.iter_mut().find(|known| known.query == query) {
-            Some(known) => known.weight = known.weight.max(form.weight),
-            None => kept.push(SynonymAlternative {
-                query,
-                weight: form.weight,
-            }),
+            Some(known) => {
+                known.weight = known.weight.max(form.weight);
+            }
+            None =>
+                kept.push(SynonymAlternative {
+                    query,
+                    weight: form.weight,
+                }),
         }
     }
     if kept.len() == 1 {
@@ -96,7 +102,10 @@ fn analyze_synonym(forms: Vec<SynonymAlternative>, analyzer: &Analyzer) -> Optio
 
 #[timed(search)]
 fn analyze_term(word: &str, analyzer: &Analyzer) -> Option<Query> {
-    let mut tokens = analyzer.analyze_query(word).into_iter().map(|t| t.text);
+    let mut tokens = analyzer
+        .analyze_query(word)
+        .into_iter()
+        .map(|t| t.text);
     //this is also the check for if returned nothing
     let first = tokens.next()?;
     match tokens.next() {
@@ -131,15 +140,22 @@ fn combine(subs: Vec<Query>, analyzer: &Analyzer, make: fn(Vec<Query>) -> Query)
 #[timed(search)]
 fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
     let text = words.join(" ");
-    let tokens: Vec<String> = analyzer
-        .analyze_query(&text)
+    let tokens = analyzer.analyze_query(&text);
+    let base = tokens.first()?.position;
+    let mut phrase_terms: Vec<PhraseTerm> = tokens
         .into_iter()
-        .map(|t| t.text)
+        .map(|token| PhraseTerm {
+            text: token.text,
+            offset: token.position - base,
+        })
         .collect();
-    match tokens.len() {
+    match phrase_terms.len() {
         0 => None,
-        1 => Some(Query::Term(tokens.into_iter().next().unwrap())),
-        _ => Some(Query::Phrase(tokens)),
+        1 => {
+            let term = phrase_terms.into_iter().next().unwrap();
+            Some(Query::Term(term.text))
+        }
+        _ => Some(Query::Phrase(phrase_terms)),
     }
 }
 
@@ -171,16 +187,25 @@ pub fn parse_json_query(v: &OwnedValue) -> Result<Query, CorelamoError> {
             if let Some(inner) = obj.get("fuzzy") {
                 return fuzzy(inner);
             }
-            let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-            Err(CorelamoError::InvalidData(format!(
-                "unknown query operator(s): {} — expected one of term/exact/fuzzy/phrase/range/same_element/AND/OR/WAND",
-                keys.join(", ")
-            )))
+            let keys: Vec<&str> = obj
+                .keys()
+                .map(|k| k.as_str())
+                .collect();
+            Err(
+                CorelamoError::InvalidData(
+                    format!(
+                        "unknown query operator(s): {} — expected one of term/exact/fuzzy/phrase/range/same_element/AND/OR/WAND",
+                        keys.join(", ")
+                    )
+                )
+            )
         }
-        other => Err(CorelamoError::InvalidData(format!(
-            "query node must be a string or object, found {}",
-            other.value_type()
-        ))),
+        other =>
+            Err(
+                CorelamoError::InvalidData(
+                    format!("query node must be a string or object, found {}", other.value_type())
+                )
+            ),
     }
 }
 
@@ -208,9 +233,7 @@ fn combinator(inner: &OwnedValue, make: fn(Vec<Query>) -> Query) -> Result<Query
             let items: Vec<Query> = s.split_whitespace().map(classify_word).collect();
             Ok(make(items))
         }
-        _ => Err(CorelamoError::InvalidData(
-            "AND/OR/WAND must be an array or a string".into(),
-        )),
+        _ => Err(CorelamoError::InvalidData("AND/OR/WAND must be an array or a string".into())),
     }
 }
 
@@ -223,9 +246,11 @@ fn leaf(inner: &OwnedValue, kind: Leaf) -> Result<Query, CorelamoError> {
         Leaf::Exact => Query::Exact(s.to_string()),
         Leaf::Term => {
             if s.split_whitespace().count() > 1 {
-                return Err(CorelamoError::InvalidData(
-                    "term takes one word — combine with AND/OR/WAND for multiple".into(),
-                ));
+                return Err(
+                    CorelamoError::InvalidData(
+                        "term takes one word — combine with AND/OR/WAND for multiple".into()
+                    )
+                );
             }
             classify_word(s)
         }
@@ -237,78 +262,88 @@ fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
         OwnedValue::String(s) => {
             let words: Vec<String> = s.split_whitespace().map(str::to_string).collect();
             if words.is_empty() {
-                return Err(CorelamoError::InvalidData(
-                    "'phrase' must not be empty".into(),
-                ));
+                return Err(CorelamoError::InvalidData("'phrase' must not be empty".into()));
             }
             words
         }
         OwnedValue::Array(items) => {
             let mut words = Vec::with_capacity(items.len());
             for w in items.iter() {
-                let s = w.as_str().ok_or_else(|| {
-                    CorelamoError::InvalidData("'phrase' elements must be single words".into())
-                })?;
+                let s = w
+                    .as_str()
+                    .ok_or_else(|| {
+                        CorelamoError::InvalidData("'phrase' elements must be single words".into())
+                    })?;
                 if s.split_whitespace().count() > 1 {
-                    return Err(CorelamoError::InvalidData(
-                        "'phrase' elements must be single words".into(),
-                    ));
+                    return Err(
+                        CorelamoError::InvalidData("'phrase' elements must be single words".into())
+                    );
                 }
                 words.push(s.to_string());
             }
             words
         }
         _ => {
-            return Err(CorelamoError::InvalidData(
-                "'phrase' must be a string or an array of words".into(),
-            ));
+            return Err(
+                CorelamoError::InvalidData("'phrase' must be a string or an array of words".into())
+            );
         }
     };
-    Ok(Query::Phrase(words))
+    //converts to PhraseTerm with sequential offsets for results
+    let phrase_terms: Vec<PhraseTerm> = words
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| PhraseTerm {
+            text,
+            offset: index as u32,
+        })
+        .collect();
+    Ok(Query::Phrase(phrase_terms))
 }
 
 //fuzzy helper 3000
 fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
     //fuzzy ALSO allows multiple words now
     if let Some(s) = inner.as_str() {
-        return Ok(Query::Fuzzy(
-            s.to_string(),
-            Fuzziness::Auto,
-            FuzzySpec {
+        return Ok(
+            Query::Fuzzy(s.to_string(), Fuzziness::Auto, FuzzySpec {
                 prefix_length: DEFAULT_PREFIX_LENGTH,
                 max_expansions: DEFAULT_MAX_EXPANSIONS,
-            },
-        ));
+            })
+        );
     }
 
     let OwnedValue::Object(obj) = inner else {
-        return Err(CorelamoError::InvalidData(
-            "'fuzzy' must be a string or an object with 'value'".into(),
-        ));
+        return Err(
+            CorelamoError::InvalidData("'fuzzy' must be a string or an object with 'value'".into())
+        );
     };
     let value = obj
         .get("value")
         .and_then(OwnedValue::as_str)
         .ok_or_else(|| CorelamoError::InvalidData("'fuzzy' requires a string 'value'".into()))?
         .to_string();
-    Ok(Query::Fuzzy(
-        value,
-        obj.get("fuzziness")
-            .map(Fuzziness::from_owned)
-            .transpose()
-            .map_err(CorelamoError::InvalidData)?
-            .unwrap_or(Fuzziness::Auto),
-        FuzzySpec {
-            prefix_length: obj
-                .get("prefix_length")
-                .and_then(OwnedValue::as_u64)
-                .map(|n| n as usize)
-                .unwrap_or(DEFAULT_PREFIX_LENGTH),
-            max_expansions: obj
-                .get("max_expansions")
-                .and_then(OwnedValue::as_u64)
-                .map(|n| n as usize)
-                .unwrap_or(DEFAULT_MAX_EXPANSIONS),
-        },
-    ))
+    Ok(
+        Query::Fuzzy(
+            value,
+            obj
+                .get("fuzziness")
+                .map(Fuzziness::from_owned)
+                .transpose()
+                .map_err(CorelamoError::InvalidData)?
+                .unwrap_or(Fuzziness::Auto),
+            FuzzySpec {
+                prefix_length: obj
+                    .get("prefix_length")
+                    .and_then(OwnedValue::as_u64)
+                    .map(|n| n as usize)
+                    .unwrap_or(DEFAULT_PREFIX_LENGTH),
+                max_expansions: obj
+                    .get("max_expansions")
+                    .and_then(OwnedValue::as_u64)
+                    .map(|n| n as usize)
+                    .unwrap_or(DEFAULT_MAX_EXPANSIONS),
+            }
+        )
+    )
 }

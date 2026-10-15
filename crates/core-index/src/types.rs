@@ -20,6 +20,25 @@ impl TermKey {
     }
 }
 
+/// Bits of a stored position that hold how many positions its token covers.
+pub const SPAN_BITS: u32 = 4;
+/// Most positions one token can cover ("spider-man" covers 2: spider, man).
+pub const MAX_SPAN: u32 = 1 << SPAN_BITS;
+
+/// A token's start and the positions it covers, packed so sorting stored positions still
+/// sorts by start. Starts past what fits are capped.
+pub fn encode_position(start: u32, span: u32) -> Position {
+    (start.min(u32::MAX >> SPAN_BITS) << SPAN_BITS) | (span.clamp(1, MAX_SPAN) - 1)
+}
+
+pub fn position_start(position: Position) -> u32 {
+    position >> SPAN_BITS
+}
+
+pub fn position_span(position: Position) -> u32 {
+    (position & (MAX_SPAN - 1)) + 1
+}
+
 // Cached entry of the field stats, once computed in the index, will store smaller information
 // TODO: Need to persist this on the disk probably, could be a good small size increase, but decent
 // performance benefit

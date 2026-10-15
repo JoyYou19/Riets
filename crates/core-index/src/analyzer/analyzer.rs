@@ -41,6 +41,26 @@ impl Default for Analyzer {
     }
 }
 
+/// Index term that marks a whole field value (a title, one redirect name): its analyzed words
+/// joined by spaces, behind this character. "The Penguins" is filed as `\u{1}penguin`.
+pub const NAME_KEY: char = '\u{1}';
+/// The same for a value without its qualifier: "Tom Holland (author)" and "Kansas City, Missouri"
+/// are also filed as `\u{2}tom holland` and `\u{2}kansa citi`.
+pub const QUALIFIED_NAME_KEY: char = '\u{2}';
+/// Only values this short are names; longer text (article bodies) gets no key.
+pub const MAX_NAME_WORDS: usize = 12;
+const MAX_NAME_BYTES: usize = 200;
+
+//eliminates problem with - or other signs that are not from ASCII like AI -
+fn is_unicode_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00A1}'..='\u{00BF}'
+            | '\u{2010}'..='\u{2027}'
+            | '\u{2030}'..='\u{205E}'
+            | '\u{3000}'..='\u{303F}'
+    )
+}
 impl Analyzer {
     pub fn new() -> Self {
         //TODO: configurable
@@ -95,13 +115,17 @@ impl Analyzer {
     /// Streams every token's text and position to `f` without allocating per token.
     /// Returns the number of tokens produced (the field's document length).
     #[timed(indexing_documents)]
-    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32)) -> u32 {
+    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32,u32)) -> u32 {
         self.with_text_analyzer(|analyzer| {
             let mut stream = analyzer.token_stream(input);
             let mut count: u32 = 0;
+            let mut next_unseen:usize=0;
             while let Some(token) = stream.next() {
-                f(&token.text, token.position as u32);
+                f(&token.text, token.position as u32, token.position_length.max(1) as u32,);
+                if token.position >= next_unseen {
                 count = count.saturating_add(1);
+                next_unseen = token.position + 1;
+            }
             }
             count
         })
@@ -128,6 +152,66 @@ impl Analyzer {
         c.is_alphanumeric() || self.literal_symbols.contains(&c)
     }
 
+    /// A short text's words, analyzed and joined by spaces: the same for the typed
+    /// query and the stored value, so "the penguins" and "Penguin" both give "penguin".
+    /// A dropped stopword inside the text stays as `_` ("king of the hill" -> "king _ hill"), and
+    /// so does one at the start unless it is an article: "In New York" is not "New York". Only a
+    /// word's parts are kept, not its joined form: "Spider-Man" gives "spider man".
+    pub fn name_key(&self, text: &str) -> Option<String> {
+        // read like an indexed value: "Spider-Man" gives its parts "spider", "man" (one position
+        // each) and the joined forms (two positions), which are left out
+        let mut words: Vec<(u32, String)> = Vec::new();
+        self.for_each_token(text, |term, position, length| {
+            if length == 1 && words.last().is_none_or(|(last, _)| *last < position) {
+                words.push((position, term.to_owned()));
+            }
+        });
+        if words.is_empty() || words.len() > MAX_NAME_WORDS {
+            return None;
+        }
+        let leading_article = text
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| matches!(first.to_lowercase().as_str(), "the" | "a" | "an"));
+        let mut key = String::with_capacity(text.len() + 4);
+        let mut next = match words[0].0 {
+            1 if leading_article => 1,
+            _ => 0,
+        };
+        for (position, word) in &words {
+            if *position > next {
+                key.push_str("_ ");
+            }
+            key.push_str(word);
+            key.push(' ');
+            next = position + 1;
+        }
+        key.pop();
+        Some(key)
+    }
+
+    /// The name terms a field value is filed under: the whole value, and the value without a
+    /// trailing "(qualifier)" or ", qualifier". Long values get none.
+    pub fn name_terms(&self, value: &str) -> Vec<String> {
+        let value = value.trim();
+        if value.len() > MAX_NAME_BYTES {
+            return Vec::new();
+        }
+        let Some(key) = self.name_key(value) else {
+            return Vec::new();
+        };
+        let mut terms = vec![format!("{NAME_KEY}{key}")];
+        for stripped in unqualified(value) {
+            if let Some(key) = self.name_key(stripped) {
+                let term = format!("{QUALIFIED_NAME_KEY}{key}");
+                if !terms.contains(&term) {
+                    terms.push(term);
+                }
+            }
+        }
+        terms
+    }
+
     //For search same thing like spider-man spiderman the same thing is in index so it would match
     #[timed(search)]
     pub fn analyze_query(&self, input: &str) -> Vec<Token> {
@@ -136,11 +220,53 @@ impl Analyzer {
             .filter(|c| {
                 c.is_alphanumeric()
                     || c.is_whitespace()
-                    || self.literal_symbols.contains(c)
-                    || !c.is_ascii()
+                    || self.literal_symbols.contains(&c)
+                    || !(c.is_ascii() || is_unicode_punctuation(*c))
             })
             .collect();
         self.analyze(&canonical)
+    }
+}
+
+/// `value` without a trailing "(...)" and without everything from its first ", ".
+fn unqualified(value: &str) -> Vec<&str> {
+    let mut out = Vec::with_capacity(2);
+    if value.ends_with(')') {
+        if let Some(open) = value.rfind(" (") {
+            let head = value[..open].trim_end();
+            if !head.is_empty() {
+                out.push(head);
+            }
+        }
+    }
+    if let Some(comma) = value.find(", ") {
+        let head = value[..comma].trim_end();
+        if !head.is_empty() && !out.contains(&head) {
+            out.push(head);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod name_keys {
+    use super::*;
+
+    #[test]
+    fn whole_value_and_unqualified_value() {
+        let analyzer = Analyzer::new();
+        assert_eq!(analyzer.name_terms("The Penguins"), vec![format!("{NAME_KEY}penguin")]);
+        assert_eq!(analyzer.name_key("penguins").as_deref(), Some("penguin"));
+        let terms = analyzer.name_terms("Tom Holland (author)");
+        assert_eq!(terms.len(), 2);
+        assert_eq!(terms[1], format!("{QUALIFIED_NAME_KEY}{}", analyzer.name_key("tom holland").unwrap()));
+        assert_eq!(analyzer.name_terms("Kansas City, Missouri").len(), 2);
+        assert_eq!(analyzer.name_terms("1965"), vec![format!("{NAME_KEY}1965")]);
+        assert!(analyzer.name_terms(&"word ".repeat(40)).is_empty());
+        assert_eq!(analyzer.name_key("Spider-Man"), analyzer.name_key("spider man"));
+        assert_eq!(analyzer.name_key("King of the Hill").as_deref(), Some("king _ hill"));
+        assert_ne!(analyzer.name_key("In New York"), analyzer.name_key("new york"));
+        assert_eq!(analyzer.name_key("The Beatles"), analyzer.name_key("beatles"));
     }
 }
 

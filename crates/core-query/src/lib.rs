@@ -3,7 +3,7 @@ mod corpus_stats;
 pub mod dictionary;
 pub mod executor;
 pub use executor::{QueryExecutor, fuzzable_words, fuzzy_options, rank_and_cap};
-
+pub mod planner;
 pub mod highlight;
 mod prepared;
 pub mod query_string_parser;

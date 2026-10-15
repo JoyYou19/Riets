@@ -5,14 +5,7 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    array_rows::ArrayRowIndex,
-    document::document::BoolField,
-    numeric_values::{NumericBound, NumericFields, NumericValue},
-    posting::{Posting, PostingList},
-    search::{SearchIndex, SearchNumeric, SearchStats},
-    segment::{build_field_stats, compute_doc_id_range},
-    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
-    wildcard::WildcardPattern,
+    array_rows::ArrayRowIndex, document::document::BoolField, numeric_values::{ NumericBound, NumericFields, NumericValue }, posting::{ Posting, PostingList }, search::{ SearchIndex, SearchNumeric, SearchStats }, segment::{ build_field_stats, compute_doc_id_range }, types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId }, wildcard::{WildcardPattern, capped_union},
 };
 
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
@@ -99,13 +92,14 @@ impl SearchNumeric for ImmutableSegment {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> PostingList {
         let docs = self.numeric_fields.range(xpath, lo, hi);
         PostingList::from_items(
-            docs.into_iter()
+            docs
+                .into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
+                .collect()
         )
     }
 
@@ -149,7 +143,7 @@ impl ImmutableSegment {
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
         bool_fields: BTreeMap<XPathId, BoolField>,
-        array_row_index: ArrayRowIndex,
+        array_row_index: ArrayRowIndex
     ) -> Self {
         debug_assert_eq!(
             field_stats,
@@ -201,17 +195,14 @@ impl ImmutableSegment {
 
     #[timed(search)]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
-        let mut items = Vec::new();
-
+        let mut matches: Vec<(&str, &PostingList)> = Vec::new();
         for (key, postings) in self.terms.range(TermKey::new(prefix, xpath)..) {
             if key.xpath != xpath || !key.term.starts_with(prefix) {
                 break;
             }
-
-            items.extend_from_slice(postings.items());
+            matches.push((key.term.as_str(), postings));
         }
-
-        PostingList::from_items(items)
+        capped_union(matches)
     }
 
     #[timed(search)]
@@ -219,26 +210,17 @@ impl ImmutableSegment {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);
         }
-
         let prefix = pattern.prefix();
-        let range_start = TermKey::new(prefix, xpath);
-        let mut items = Vec::new();
-
-        for (key, postings) in self.terms.range(range_start..) {
-            if key.xpath != xpath {
+        let mut matches: Vec<(&str, &PostingList)> = Vec::new();
+        for (key, postings) in self.terms.range(TermKey::new(prefix, xpath)..) {
+            if key.xpath != xpath || (!prefix.is_empty() && !key.term.starts_with(prefix)) {
                 break;
             }
-
-            if !prefix.is_empty() && !key.term.starts_with(prefix) {
-                break;
-            }
-
             if pattern.matches(&key.term) {
-                items.extend_from_slice(postings.items());
+                matches.push((key.term.as_str(), postings));
             }
         }
-
-        PostingList::from_items(items)
+        capped_union(matches)
     }
 
     pub fn term_count(&self) -> usize {
