@@ -142,7 +142,7 @@ fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
     let text = words.join(" ");
     let tokens = analyzer.analyze_query(&text);
     let base = tokens.first()?.position;
-    let mut phrase_terms: Vec<PhraseTerm> = tokens
+    let phrase_terms: Vec<PhraseTerm> = tokens
         .into_iter()
         .map(|token| PhraseTerm {
             text: token.text,

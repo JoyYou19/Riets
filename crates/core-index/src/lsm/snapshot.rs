@@ -304,12 +304,16 @@ impl IndexSnapshot {
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
 
-        let segment_lists: Vec<PostingList> = self
+        let mut segment_lists: Vec<PostingList> = self
             .segments
             .iter()
             .map(|segment| segment.lookup(term, xpath))
             .collect();
-
+         // the word is in one segment only (the usual case after compaction): that list was just
+        // decoded for this lookup, hand it over instead of copying every posting into a union
+        if mem_list.is_none() && segment_lists.len() <= 1 {
+            return self.apply_deletes(segment_lists.pop().unwrap_or_default());
+        }
         let mut lists: Vec<&PostingList> = Vec::with_capacity(1 + segment_lists.len());
         if let Some(list) = mem_list {
             lists.push(list);

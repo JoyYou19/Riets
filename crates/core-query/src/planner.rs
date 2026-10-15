@@ -110,19 +110,9 @@ impl RankPlan {
         )));
 
         if (3..=MAX_ALL_BUT_ONE_WORDS).contains(&parts.len()) {
-            let alternatives: Vec<Query> = (0..parts.len())
-                .map(|left_out| {
-                    Query::And(
-                        parts
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, _)| *index != left_out)
-                            .map(|(_, part)| part.clone())
-                            .collect(),
-                    )
-                })
-                .collect();
-            tiers.push(Tier::AllButOne(Query::Or(alternatives)));
+            // the words; the executor keeps documents with all of them but at most one, in one
+            // pass (see `QueryExecutor::rank_cascade`)
+            tiers.push(Tier::AllButOne(Query::Wand(parts.clone())));
         }
 
         if parts.len() >= 2 {

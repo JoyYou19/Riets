@@ -96,8 +96,17 @@ pub struct NumericPoints {
 }
 
 impl NumericPoints {
-    pub fn insert(&mut self, xpath: XPathId, value: NumericValue, doc_id: DocId) {
-        self.points.entry(xpath).or_default().push((doc_id, value));
+     pub fn insert(&mut self, xpath: XPathId, value: NumericValue, doc_id: DocId) {
+        let points = self.points.entry(xpath).or_default();
+        // kept in document order (documents arrive in it, so this is a push) so `get` can
+        // binary search
+        match points.last() {
+            Some(&(last, _)) if last > doc_id => {
+                let at = points.partition_point(|&(doc, _)| doc <= doc_id);
+                points.insert(at, (doc_id, value));
+            }
+            _ => points.push((doc_id, value)),
+        }
     }
 
     pub fn build(self) -> NumericFields {
@@ -105,11 +114,9 @@ impl NumericPoints {
     }
 
     pub fn get(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
-        self.points
-            .get(&xpath)?
-            .iter()
-            .find(|(d, _)| *d == doc_id)
-            .map(|(_, value)| *value)
+        let points = self.points.get(&xpath)?;
+        let at = points.partition_point(|&(doc, _)| doc < doc_id);
+        points.get(at).filter(|(doc, _)| *doc == doc_id).map(|(_, value)| *value)
     }
 
     pub fn range(
@@ -136,7 +143,12 @@ impl NumericPoints {
 
     pub fn merge(&mut self, other: NumericPoints) {
         for (xpath, mut points) in other.points {
-            self.points.entry(xpath).or_default().append(&mut points);
+            let mine = self.points.entry(xpath).or_default();
+            mine.append(&mut points);
+            // still in document order for `get`
+            if !mine.is_sorted_by_key(|&(doc, _)| doc) {
+                mine.sort_by_key(|&(doc, _)| doc);
+            }
         }
     }
 

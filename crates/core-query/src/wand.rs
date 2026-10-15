@@ -590,17 +590,23 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
 /// the sum of their scores.
 pub struct FormRef<'a> {
     pub xpath: XPathId,
+    /// Which searched field the form is read in. A clause scores its best form in each field and
+    /// adds the fields up, so a word counts in every field it is in.
+    pub field: usize,
     pub lists: Vec<TermRef<'a>>,
     /// Share of its score a match counts for, in thousandths.
     pub weight: u16,
 }
 
-/// The query clauses within one field: a word has one form, a synonym group several.
+/// The query clauses within one field: a word has one form, a synonym group several. A clause may
+/// also hold forms of several fields (a word that may match in any of them, cross_fields): the
+/// forms of one field are next to each other.
 pub struct FieldClauses<'a> {
     pub clauses: Vec<Vec<FormRef<'a>>>,
 }
 
 struct FormCursor<'a> {
+    field: usize,
     cursors: Vec<PostingCursor<'a>>,
     doc_freqs: Vec<u32>,
     xpath: XPathId,
@@ -624,6 +630,7 @@ impl<'a> FormCursor<'a> {
             .map(|list| bm25_upper_bound(list.max_weight, doc_count, list.doc_freq))
             .fold(0u64, u64::saturating_add);
         let mut cursor = Self {
+            field: form.field,
             cursors: form.lists
                 .iter()
                 .map(|list| PostingCursor::new(list.postings))
@@ -726,7 +733,7 @@ impl<'a> ClauseCursor<'a> {
         if forms.is_empty() {
             return None;
         }
-        let upper_bound = forms.iter().map(|form| form.upper_bound).max().unwrap_or(0);
+        let upper_bound = best_per_field(forms.iter().map(|form| (form.field, form.upper_bound)));
         Some(Self { forms, upper_bound })
     }
 
@@ -747,21 +754,42 @@ impl<'a> ClauseCursor<'a> {
     }
 
     fn score<S: SearchStats>(&self, stats: &S, doc: DocId) -> u64 {
-        self.forms
-            .iter()
-            .filter(|form| form.doc == Some(doc))
-            .map(|form| form.score(stats, doc))
-            .max()
-            .unwrap_or(0)
+        best_per_field(
+            self.forms
+                .iter()
+                .filter(|form| form.doc == Some(doc))
+                .map(|form| (form.field, form.score(stats, doc)))
+        )
     }
 }
-// `wand_top_k_multi_field` for clauses that may be synonym groups: exact top-k over the sum,
-/// over every field and clause, of the clause's best weighted form in that field.
+
+/// The best value of each field, added up over the fields; the values of one field come one after
+/// another (see `FieldClauses`).
+fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
+    let mut total = 0u64;
+    let mut current: Option<(usize, u64)> = None;
+    for (field, value) in values {
+        current = match current {
+            Some((at, best)) if at == field => Some((at, best.max(value))),
+            Some((_, best)) => {
+                total = total.saturating_add(best);
+                Some((field, value))
+            }
+            None => Some((field, value)),
+        };
+    }
+    total.saturating_add(current.map_or(0, |(_, best)| best))
+}
+/// `wand_top_k_multi_field` for clauses that may be synonym groups: exact top-k over the sum,
+/// over every field and clause, of the clause's best weighted form in that field. Only documents
+/// at least `min_match` clauses are on count ("all words but one" is the words' count - 1, with
+/// one clause per word: pass 1 for clauses of separate fields, which count a word once per field).
 #[timed(search)]
 pub fn wand_top_k_grouped<S: SearchStats>(
     stats: &S,
     fields: &[FieldClauses<'_>],
     k: usize,
+    min_match: usize,
     restrict: Option<&HashSet<DocId>>
 ) -> Vec<WandHit> {
     if k == 0 {
@@ -792,11 +820,17 @@ pub fn wand_top_k_grouped<S: SearchStats>(
                 .unwrap_or(0)
         };
 
+        // the first clause where the clauses up to it can both beat the threshold and be at least
+        // `min_match`: a document before its document is on fewer clauses than that
         let mut accumulated_upper_bound = 0u64;
         let mut pivot_index = None;
         for (index, clause) in clauses.iter().enumerate() {
             accumulated_upper_bound = accumulated_upper_bound.saturating_add(clause.upper_bound);
-            if accumulated_upper_bound >= threshold && accumulated_upper_bound > 0 {
+            if
+                accumulated_upper_bound >= threshold &&
+                accumulated_upper_bound > 0 &&
+                index + 1 >= min_match
+            {
                 pivot_index = Some(index);
                 break;
             }
@@ -818,7 +852,9 @@ pub fn wand_top_k_grouped<S: SearchStats>(
                         matched_terms += 1;
                     }
                 }
-                push_top_k(&mut heap, pivot_doc, score, matched_terms, k);
+                if matched_terms >= min_match {
+                    push_top_k(&mut heap, pivot_doc, score, matched_terms, k);
+                }
             }
 
             for clause in &mut clauses {

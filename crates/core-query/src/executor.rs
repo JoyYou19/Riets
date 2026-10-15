@@ -107,9 +107,11 @@ struct FormLists<'a> {
 }
 
 impl FormLists<'_> {
-    fn as_ref(&self) -> FormRef<'_> {
+    /// The form as WAND reads it, counting for searched field number `field`.
+    fn as_ref(&self, field: usize) -> FormRef<'_> {
         FormRef {
             xpath: self.xpath,
+            field,
             lists: self.lists
                 .iter()
                 .map(|(postings, doc_freq)| TermRef {
@@ -260,31 +262,64 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         None
     }
 
-    /// The WAND fast path for flat queries with synonym groups: every part a word or a group of
-    /// words, phrases, exact matches and typed multi-word spans.
+    /// The WAND fast path for flat queries: every part a word or a group of words, phrases, exact
+    /// matches and typed multi-word spans (best_fields: only queries with synonym groups, the
+    /// others take `execute_top_k_retrieval`).
+    ///
+    /// `cross_fields`: a part matches in any of the fields and adds up its best form in each, as
+    /// `cross_field_hits` scores it, one document at a time instead of scoring every match.
+    /// Otherwise each field ranks its clauses on its own. `min_match` keeps only documents with at
+    /// least that many parts (cross_fields; 1 = any).
     fn execute_grouped_retrieval(
         &self,
         query: &Query,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<&HashSet<DocId>>
+        restrict: Option<&HashSet<DocId>>,
+        cross_fields: bool,
+        min_match: usize
     ) -> Option<Vec<WandHit>> {
-        let (conjunctive, parts) = grouped_parts(query)?;
-        let lists: Vec<Vec<Vec<FormLists<'a>>>> = ctxs
-            .iter()
-            .map(|&ctx| {
+        let (conjunctive, parts) = grouped_parts(query, !cross_fields)?;
+        // the forms of every part, each with the field it counts for
+        let lists: Vec<Vec<Vec<(usize, FormLists<'a>)>>> = if cross_fields {
+            // one clause per part, its forms in every field (a field's forms next to each other)
+            vec![
                 parts
                     .iter()
-                    .map(|part| self.clause_forms(part, ctx))
+                    .map(|part| {
+                        ctxs.iter()
+                            .enumerate()
+                            .flat_map(|(field, &ctx)| {
+                                self.clause_forms(part, ctx)
+                                    .into_iter()
+                                    .map(move |form| (field, form))
+                            })
+                            .collect()
+                    })
                     .collect()
-            })
-            .collect();
+            ]
+        } else {
+            ctxs.iter()
+                .enumerate()
+                .map(|(field, &ctx)| {
+                    parts
+                        .iter()
+                        .map(|part| {
+                            self.clause_forms(part, ctx)
+                                .into_iter()
+                                .map(|form| (field, form))
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect()
+        };
         let fields: Vec<FieldClauses<'_>> = lists
             .iter()
             .map(|clauses| FieldClauses {
                 clauses: clauses
                     .iter()
-                    .map(|forms| forms.iter().map(FormLists::as_ref).collect())
+                    .map(|forms| forms.iter().map(|(field, form)| form.as_ref(*field)).collect())
                     .collect(),
             })
             .collect();
@@ -293,7 +328,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             if conjunctive {
                 conjunctive_top_k_grouped(&stats, &fields, k, restrict)
             } else {
-                wand_top_k_grouped(&stats, &fields, k, restrict)
+                wand_top_k_grouped(&stats, &fields, k, min_match.max(1), restrict)
             }
         )
     }
@@ -1151,7 +1186,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             .copied()
                             .filter(|ctx| !ctx.row_keyed)
                             .collect();
-                        self.execute_grouped_retrieval(query, &plain, k, restrict)
+                        self.execute_grouped_retrieval(query, &plain, k, restrict, false, 1)
                     })
                 };
                 let ranked_flat = flat_hits.is_some();
@@ -1179,6 +1214,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 // take WAND top-k instead of scoring every document that has one of the words
                 if matches!(query, Query::Wand(_) | Query::Term(_)) {
                     return self.rank_retrieve(Some(query), ctxs, k, restrict, MatchMode::BestFields);
+                }
+                // flat queries (words and synonym groups, all of them or any of them): one
+                // document at a time, instead of scoring every match and cutting to k after
+                if ctxs.iter().all(|ctx| !ctx.row_keyed) {
+                    if let Some(hits) = self.execute_grouped_retrieval(query, ctxs, k, restrict, true, 1) {
+                        return hits.into_iter().map(wand_hit_to_search_hit).collect();
+                    }
                 }
                 return top_k_from_hits(self.cross_field_hits(query, ctxs, restrict), k);
             }
@@ -1259,10 +1301,15 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             .map(|ctx| ctx.xpath)
             .collect();
         // the name, phrase and "all words" tiers score the same query: under CrossFields it is
-        // evaluated once (every match, scored) and each tier takes its own top hits from that
+        // evaluated once (every match, scored) and each tier takes its own top hits from that.
+        // Not for flat queries: `rank_retrieve` ranks those one document at a time, faster than
+        // scoring every match even once
+        let flat_fields = ctxs.iter().all(|ctx| !ctx.row_keyed);
         let shared_query: Option<&Query> = match match_mode {
             MatchMode::CrossFields => plan.tiers.iter().find_map(|tier| match tier {
-                Tier::All(query) if !matches!(query, Query::Wand(_) | Query::Term(_)) => {
+                Tier::All(query)
+                    if !matches!(query, Query::Wand(_) | Query::Term(_)) &&
+                        !(flat_fields && grouped_parts(query, false).is_some()) => {
                     Some(query)
                 }
                 _ => None,
@@ -1357,6 +1404,35 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 Tier::Any(query) => {
                     // a larger pool, so pages with more words survive until they are ordered by words
                     ranked(query, fetch.max(ANY_TIER_POOL), None)
+                }
+                Tier::AllButOne(query @ Query::Wand(parts)) => {
+                    // one pass over the words, keeping documents with all of them but at most one
+                    let min_match = parts.len().saturating_sub(1).max(1);
+                    let one_pass = match match_mode {
+                        MatchMode::CrossFields if flat_fields => self
+                            .execute_grouped_retrieval(query, ctxs, fetch, restrict, true, min_match)
+                            .map(|hits| hits.into_iter().map(wand_hit_to_search_hit).collect::<Vec<_>>()),
+                        _ => None,
+                    };
+                    match one_pass {
+                        Some(hits) => hits,
+                        // otherwise: an OR of the words' ANDs, each with one word left out
+                        None => {
+                            let alternatives: Vec<Query> = (0..parts.len())
+                                .map(|left_out| {
+                                    Query::And(
+                                        parts
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(index, _)| *index != left_out)
+                                            .map(|(_, part)| part.clone())
+                                            .collect()
+                                    )
+                                })
+                                .collect();
+                            ranked(&Query::Or(alternatives), fetch, None)
+                        }
+                    }
                 }
                 | Tier::Exact(query)
                 | Tier::All(query)
@@ -1940,11 +2016,11 @@ fn field_terms<'l>(lists: &'l [FieldLists<'_>]) -> Vec<FieldTerms<'l>> {
         .collect()
 }
 
-/// The parts of a flat query that has synonym groups, and whether all of them must match: every
-/// part a word or a group of words, phrases, exact matches and words that must all be present.
-/// `None` for any other shape, and for a query without synonym groups (`additive_terms` and the
-/// conjunctive path take those).
-fn grouped_parts(query: &Query) -> Option<(bool, Vec<&Query>)> {
+/// The parts of a flat query, and whether all of them must match: every part a word or a group
+/// of words, phrases, exact matches and words that must all be present. `None` for any other
+/// shape, and with `needs_group` for a query without synonym groups (`additive_terms` and the
+/// conjunctive path take those in best_fields).
+fn grouped_parts(query: &Query, needs_group: bool) -> Option<(bool, Vec<&Query>)> {
     let (conjunctive, parts): (bool, Vec<&Query>) = match query {
         Query::Synonym(_) => (false, vec![query]),
         Query::Wand(parts) | Query::Or(parts) => (false, parts.iter().collect()),
@@ -1968,7 +2044,7 @@ fn grouped_parts(query: &Query) -> Option<(bool, Vec<&Query>)> {
         }
     });
     let has_group = parts.iter().any(|part| matches!(part, Query::Synonym(_)));
-    (fits && has_group).then_some((conjunctive, parts))
+    (fits && (has_group || !needs_group)).then_some((conjunctive, parts))
 }
 
 fn additive_terms(query: &Query) -> Option<Vec<&str>> {
