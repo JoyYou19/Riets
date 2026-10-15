@@ -18,29 +18,23 @@ const BM25_B: f32 = 0.75;
 const SCORE_SCALE: f32 = 1000.0;
 
 pub fn bm25_score(
-    tf: u32,
+    _tf: u32,
     weight: u16,
-    doc_len: u32,
-    avg_doc_len: f32,
+    _doc_len: u32,
+    _avg_doc_len: f32,
     doc_count: u64,
     doc_frequency: u32,
 ) -> f32 {
-    if tf == 0 || doc_count == 0 || doc_frequency == 0 || avg_doc_len <= 0.0 {
+    if weight == 0 || doc_count == 0 || doc_frequency == 0 {
         return 0.0;
     }
 
     let n = doc_count as f32;
     let df = doc_frequency as f32;
-    let tf = tf as f32;
-    let dl = doc_len as f32;
 
     let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
 
-    let norm = 1.0 - BM25_B + BM25_B * (dl / avg_doc_len);
-
-    let tf_component = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);
-
-    weight as f32 * idf * (tf_component + 1.0)
+    weight as f32 * idf
 }
 
 // I just put this function here so we automatically multiply, I can already see ways of me messing
@@ -70,11 +64,7 @@ pub fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> 
 
     let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
 
-    let max_tf_component = BM25_K1 + 1.0;
-
-    let max_score = max_weight as f32 * idf * (max_tf_component + 1.0);
-
-    (max_score * SCORE_SCALE).ceil() as u64
+    (max_weight as f32 * idf * SCORE_SCALE).ceil() as u64
 }
 
 // fn trace_bm25() -> bool {

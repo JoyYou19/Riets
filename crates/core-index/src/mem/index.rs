@@ -4,7 +4,7 @@ use std::collections::hash_map::Entry;
 use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
 use crate::document::document::{ BoolField, BoolPoint, NumericPoint };
-use crate::document::{ DocumentPart, IndexedDocument };
+use crate::document::{ DocumentPart, IndexedDocument, WeightInterval };
 use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
 use crate::posting::{ Posting, PostingList };
 use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
@@ -327,7 +327,7 @@ impl MemIndex {
         analyzer: &Analyzer,
         doc_id: DocId,
         xpath: XPathId,
-        min_weight: u16,
+        weight: WeightInterval,
         segments: &[&str],
         gap: u32,
         exact: bool,
@@ -391,8 +391,10 @@ impl MemIndex {
         }
 
         //write to seg
-        for (term, positions) in token_positions {
-            self.add_posting_weighted(term, xpath, doc_id, positions, min_weight);
+       for (term, positions) in token_positions {
+            let hits = positions.len();
+            let posting_weight = hits.max(usize::from(weight.min)).min(usize::from(weight.max)) as u16;
+            self.add_posting_weighted(term, xpath, doc_id, positions, posting_weight);
         }
     }
 
@@ -424,7 +426,7 @@ impl MemIndex {
                 analyzer,
                 target_id,
                 part.xpath,
-                part.weight.min,
+                part.weight,
                 &segments,
                 gap,
                 part.exact,
