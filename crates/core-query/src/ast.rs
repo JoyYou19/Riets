@@ -11,7 +11,7 @@ pub enum Query {
 
     And(Vec<Query>),
     Or(Vec<Query>),
-    Phrase(Vec<String>),
+    Phrase(Vec<PhraseTerm>),
     Exact(String),
     Fuzzy(String, Fuzziness, FuzzySpec),
     // Forms from the synonym dictionary that stand for one part of the query. The first is what
@@ -32,4 +32,10 @@ pub enum Query {
 pub struct SynonymAlternative {
     pub query: Query,
     pub weight: u16,
+}
+//Lai King of the hill ir ar pareizam vietam
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PhraseTerm {
+    pub text: String,
+    pub offset: u32,  // position relative to first word
 }

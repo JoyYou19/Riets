@@ -1,4 +1,4 @@
-use core_index::{analyzer::Analyzer, fuzzy::FuzzyMatcher, wildcard::WildcardPattern};
+use core_index::{ analyzer::Analyzer, fuzzy::FuzzyMatcher, wildcard::WildcardPattern };
 use core_protocol::command_reponse_definitions::HighlightFieldOptions;
 use simd_json::OwnedValue;
 
@@ -27,28 +27,29 @@ fn collect(query: &Query, analyzer: &Analyzer, out: &mut Vec<HighlightMatcher>) 
             out.push(HighlightMatcher::Prefix(s.to_lowercase()));
         }
         Query::Wildcard(p) => {
-            out.push(HighlightMatcher::Wildcard(WildcardPattern::parse(
-                &p.to_lowercase(),
-            )));
+            out.push(HighlightMatcher::Wildcard(WildcardPattern::parse(&p.to_lowercase())));
         }
-        Query::Phrase(words) => {
-            out.push(HighlightMatcher::Phrase(
-                words.iter().map(|w| w.to_lowercase()).collect(),
-            ));
+        Query::Phrase(phrase_terms) => {
+            out.push(
+                HighlightMatcher::Phrase(
+                    phrase_terms
+                        .iter()
+                        .map(|pt| pt.text.to_lowercase())
+                        .collect()
+                )
+            );
         }
         Query::Exact(s) => out.push(HighlightMatcher::Exact(s.clone())),
         Query::Fuzzy(s, fuzziness, spec) => {
             // split multi-word fuzzy into words, fuzz each — mirrors the executor
             for word in fuzzable_words(analyzer, s) {
                 let max_edits = fuzziness.resolve(&word);
-                out.push(HighlightMatcher::Fuzzy(FuzzyMatcher::new(
-                    &word,
-                    max_edits,
-                    spec.prefix_length,
-                )));
+                out.push(
+                    HighlightMatcher::Fuzzy(FuzzyMatcher::new(&word, max_edits, spec.prefix_length))
+                );
             }
         }
-        Query::Wand(children)
+        | Query::Wand(children)
         | Query::And(children)
         | Query::Or(children)
         | Query::SameElement(children) => {
@@ -69,7 +70,7 @@ pub fn highlight_text(
     text: &str,
     analyzer: &Analyzer,
     matchers: &[HighlightMatcher],
-    opts: &HighlightFieldOptions,
+    opts: &HighlightFieldOptions
 ) -> Vec<String> {
     let ranges = merge_ranges(find_ranges(text, matchers, analyzer));
     if ranges.is_empty() {
@@ -105,7 +106,7 @@ fn words(text: &str, analyzer: &Analyzer) -> Vec<(String, usize, usize)> {
 fn find_ranges(
     text: &str,
     matchers: &[HighlightMatcher],
-    analyzer: &Analyzer,
+    analyzer: &Analyzer
 ) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let ws = words(text, analyzer);
@@ -161,7 +162,9 @@ fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for r in ranges {
         match merged.last_mut() {
-            Some(last) if r.0 <= last.1 => last.1 = last.1.max(r.1),
+            Some(last) if r.0 <= last.1 => {
+                last.1 = last.1.max(r.1);
+            }
             _ => merged.push(r),
         }
     }
@@ -179,7 +182,7 @@ fn build_snippet(
     ws: usize,
     we: usize,
     ranges: &[(usize, usize)],
-    opts: &HighlightFieldOptions,
+    opts: &HighlightFieldOptions
 ) -> String {
     let (pre, post) = tags(opts);
     let mut out = String::new();
@@ -203,7 +206,7 @@ fn build_snippet(
 fn fragments_by_chars(
     text: &str,
     ranges: &[(usize, usize)],
-    opts: &HighlightFieldOptions,
+    opts: &HighlightFieldOptions
 ) -> Vec<String> {
     if text.len() <= opts.fragment_size {
         return vec![build_snippet(text, 0, text.len(), ranges, opts)];
@@ -221,7 +224,7 @@ fn fragments_by_chars(
 fn fragments_by_sentence(
     text: &str,
     ranges: &[(usize, usize)],
-    opts: &HighlightFieldOptions,
+    opts: &HighlightFieldOptions
 ) -> Vec<String> {
     let mut out = Vec::new();
     for (start, end) in split_sentences(text) {
@@ -267,13 +270,16 @@ fn snap_up(text: &str, mut i: usize) -> usize {
 pub fn field_texts(value: &OwnedValue, path: &str) -> Vec<String> {
     match walk_path(value, path) {
         Some(OwnedValue::String(s)) => vec![s.clone()],
-        Some(OwnedValue::Array(items)) => items
-            .iter()
-            .filter_map(|v| match v {
-                OwnedValue::String(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect(),
+        Some(OwnedValue::Array(items)) =>
+            items
+                .iter()
+                .filter_map(|v| {
+                    match v {
+                        OwnedValue::String(s) => Some(s.clone()),
+                        _ => None,
+                    }
+                })
+                .collect(),
         _ => Vec::new(),
     }
 }

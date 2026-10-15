@@ -12,7 +12,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use core_index::analyzer::Analyzer;
 use core_timing::timed;
 
-use crate::ast::{Query, SynonymAlternative};
+use crate::ast::{PhraseTerm, Query, SynonymAlternative};
 
 /// Longest multi-word variant accepted (bounds the per-position trie walk).
 pub const MAX_PHRASE_TOKENS: usize = 8;
@@ -165,15 +165,25 @@ impl Variant {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QueryNode {
     Term(String),
-    Phrase(Vec<String>),
+    Phrase(Vec<PhraseTerm>),
     Exact(String),
 }
 
 impl QueryNode {
     fn from_terms(terms: Vec<String>) -> Self {
-        match <[String; 1]>::try_from(terms) {
+        match <[String; 1]>::try_from(terms.clone()) {
             Ok([term]) => QueryNode::Term(term),
-            Err(terms) => QueryNode::Phrase(terms),
+           Err(terms) => {
+            let phrase_terms = terms
+            .into_iter()
+            .enumerate()
+            .map(|(index,text)|PhraseTerm{
+                text,
+                offset: index as u32,
+            })
+            .collect();
+            QueryNode::Phrase(phrase_terms)
+           }
         }
     }
 }
@@ -782,7 +792,7 @@ fn expand_run(
                         weight: if typed_exact {
                             FULL_WEIGHT
                         } else {
-                            weight_of(&alternative, short_form)
+                            weight_of(&alternative, short_form, several_words)
                         },
                         query: to_query(alternative.node),
                     }
@@ -802,7 +812,7 @@ fn expand_run(
                 .into_iter()
                 .filter(|alternative| !is_typed_form(&alternative.node, &typed_words))
                 .map(|alternative| SynonymAlternative {
-                    weight: weight_of(&alternative, false),
+                    weight: weight_of(&alternative, false, false),
                     query: to_query(alternative.node),
                 })
                 .collect();
@@ -822,12 +832,20 @@ fn expand_run(
 fn is_typed_form(node: &QueryNode, typed_words: &[String]) -> bool {
     match node {
         QueryNode::Term(term) => typed_words.len() == 1 && *term == typed_words[0],
-        QueryNode::Phrase(words) => words.as_slice() == typed_words,
-        QueryNode::Exact(_) => false,
+        QueryNode::Phrase(phrase_terms) => {
+            phrase_terms.len() == typed_words.len() && phrase_terms
+            .iter()
+            .zip(typed_words)
+            .all(|(pt, word)| pt.text==*word)
+        }
+        QueryNode::Exact(_) => false
     }
 }
 
-fn weight_of(alternative: &Alternative, typed_short_form: bool) -> u16 {
+/// A spelled-out form counts fully when the typed words were a short form (`NaCl` names one
+/// meaning) or were themselves spelled out: "world war 2", "world war ii" and "second world war"
+/// are full names of the same thing. A short form found for typed words stays a loose match.
+fn weight_of(alternative: &Alternative, typed_short_form: bool, typed_several_words: bool) -> u16 {
     if alternative.numeral {
         return NUMERAL_WEIGHT;
     }
@@ -836,7 +854,7 @@ fn weight_of(alternative: &Alternative, typed_short_form: bool) -> u16 {
         QueryNode::Exact(text) => is_multi_word(text),
         QueryNode::Term(_) => false,
     };
-    if typed_short_form && spelled_out {
+    if spelled_out && (typed_short_form || typed_several_words) {
         FULL_WEIGHT
     } else {
         SYNONYM_WEIGHT

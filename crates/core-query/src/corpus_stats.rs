@@ -6,6 +6,8 @@ use core_index::{
     types::{DocId, XPathId},
 };
 
+use crate::ast::PhraseTerm;
+
 /// Live document count and total token length of one field.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FieldTotals {
@@ -22,7 +24,7 @@ pub(crate) enum LeafKey {
     Term(String),
     Prefix(String),
     Wildcard(String),
-    Phrase(Vec<String>),
+    Phrase(Vec<PhraseTerm>),
     Exact(String),
 }
 
@@ -127,6 +129,12 @@ impl CorpusStats {
             .get(&xpath)
             .and_then(|keys| keys.get(key))
             .map(|words| words.values().cloned().collect())
+    }
+
+    /// Documents containing `term` in `xpath`, summed over every shard. Every term of the query
+    /// is prepared, so a term with no entry is in no document.
+    pub fn term_doc_freq(&self, xpath: XPathId, term: &str) -> u32 {
+        self.doc_freq(xpath, &LeafKey::Term(term.to_string())).unwrap_or(0)
     }
 
     pub fn field(&self, xpath: XPathId) -> Option<FieldTotals> {

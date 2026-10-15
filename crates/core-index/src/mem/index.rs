@@ -3,13 +3,13 @@ use std::collections::hash_map::Entry;
 
 use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
-use crate::document::document::{BoolField, BoolPoint, NumericPoint};
-use crate::document::{DocumentPart, IndexedDocument};
-use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
-use crate::posting::{Posting, PostingList};
-use crate::search::{SearchIndex, SearchNumeric, SearchStats};
-use crate::types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId};
-use crate::wildcard::WildcardPattern;
+use crate::document::document::{ BoolField, BoolPoint, NumericPoint };
+use crate::document::{ DocumentPart, IndexedDocument };
+use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
+use crate::posting::{ Posting, PostingList };
+use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
+use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId, encode_position };
+use crate::wildcard::{ WildcardPattern, capped_union };
 use ahash::AHashMap;
 use ahash::HashSet;
 use core_timing::timed;
@@ -118,13 +118,14 @@ impl SearchNumeric for MemIndex {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> PostingList {
         let docs = self.numeric_points.range(xpath, lo, hi);
         PostingList::from_items(
-            docs.into_iter()
+            docs
+                .into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
+                .collect()
         )
     }
 
@@ -201,7 +202,7 @@ impl MemIndex {
             field_stats,
             self.numeric_points.build(),
             bool_fields,
-            self.array_row_index,
+            self.array_row_index
         )
     }
     //tracks min and max doc id in this segment
@@ -222,7 +223,7 @@ impl MemIndex {
         term: impl Into<String>,
         xpath: XPathId,
         doc_id: DocId,
-        position: u32,
+        position: u32
     ) {
         self.add_token_weighted(term, xpath, doc_id, position, 1);
     }
@@ -234,7 +235,7 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         position: u32,
-        weight: u16,
+        weight: u16
     ) {
         // one position added to a posting: doc_id + one u32 position, plus
         // per-entry posting overhead (weight, small header). Approximate —
@@ -248,8 +249,7 @@ impl MemIndex {
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
-                slot.insert(PostingList::new())
-                    .insert(doc_id, position, weight);
+                slot.insert(PostingList::new()).insert(doc_id, position, weight);
             }
         }
     }
@@ -260,11 +260,12 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         positions: Vec<u32>,
-        weight: u16,
+        weight: u16
     ) {
-        self.estimated_bytes += std::mem::size_of::<DocId>()
-            + std::mem::size_of::<u16>()
-            + positions.len() * std::mem::size_of::<u32>();
+        self.estimated_bytes +=
+            std::mem::size_of::<DocId>() +
+            std::mem::size_of::<u16>() +
+            positions.len() * std::mem::size_of::<u32>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             std::collections::hash_map::Entry::Occupied(mut slot) => {
@@ -272,8 +273,7 @@ impl MemIndex {
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
-                slot.insert(PostingList::new())
-                    .insert_posting(doc_id, positions, weight);
+                slot.insert(PostingList::new()).insert_posting(doc_id, positions, weight);
             }
         }
     }
@@ -305,20 +305,19 @@ impl MemIndex {
             document.doc_id,
             &document.parts,
             &document.numeric_points,
-            &document.bool_points,
+            &document.bool_points
         );
 
         //each array in documents
         for row in &document.array_rows {
-            self.array_row_index
-                .push_row(row.array_row_id, document.doc_id, row.parent);
+            self.array_row_index.push_row(row.array_row_id, document.doc_id, row.parent);
 
             self.add_parts_and_points(
                 analyzer,
                 row.array_row_id,
                 &row.parts,
                 &row.numeric_points,
-                &row.bool_points,
+                &row.bool_points
             );
         }
     }
@@ -332,6 +331,7 @@ impl MemIndex {
         segments: &[&str],
         gap: u32,
         exact: bool,
+        names: bool
     ) {
         let mut token_positions: AHashMap<String, Vec<u32>> = AHashMap::new();
         let mut total_words_len = 0u32;
@@ -339,28 +339,40 @@ impl MemIndex {
 
         //do this for every string in the array of strings
         for seg in segments {
-            let seg_len = if exact {
+            // words: the document length this segment adds. span: the positions it uses, so the
+            // next array element starts after its last word (stopwords leave gaps in positions)
+            let (words, span) = if exact {
                 let words: Vec<&str> = seg.split_whitespace().collect();
                 // write down each word, at position (offset + its index in this string)
                 for (i, word) in words.iter().enumerate() {
                     token_positions
                         .entry((*word).to_string())
                         .or_default()
-                        .push(cur_position + i as u32);
+                        .push(encode_position(cur_position + (i as u32), 1));
                 }
-                words.len() as u32
+                // the whole value as one term too, so a search can tell "this is the name" apart
+                // from "the name contains these words" (see Analyzer::name_terms)
+                for term in names.then(|| analyzer.name_terms(seg)).unwrap_or_default() {
+                    token_positions.entry(term).or_default().push(encode_position(cur_position, 1));
+                }
+                (words.len() as u32, words.len() as u32)
             } else {
-                analyzer.for_each_token(seg, |term, position| {
-                    token_positions
-                        .entry(term.to_owned()) //word (stemmed)
-                        .or_default()
-                        .push(cur_position + position); //global position = offset + local position
-                })
+                let mut span = 0u32;
+                let words = analyzer.for_each_token(seg, |term, position, length| {
+                    let encoded = encode_position(cur_position + position, length);
+                    let positions = token_positions.entry(term.to_owned()).or_default();
+                    // two forms of one word can analyze to the same term ("king's", "kings" -> king)
+                    if positions.last() != Some(&encoded) {
+                        positions.push(encoded);
+                    }
+                    span = span.max(position + length);
+                });
+                (words, span)
             };
-            total_words_len += seg_len;
+            total_words_len += words;
 
             //move our "cursor" forward past this string, PLUS the gap
-            cur_position += seg_len + gap;
+            cur_position += span + gap;
         }
 
         let old = self.doc_lengths.insert((doc_id, xpath), total_words_len);
@@ -369,7 +381,8 @@ impl MemIndex {
         let stats = self.field_stats.entry(xpath).or_default();
         match old {
             Some(old_len) => {
-                stats.total_doc_len = stats.total_doc_len - old_len as u64 + total_words_len as u64;
+                stats.total_doc_len =
+                    stats.total_doc_len - (old_len as u64) + (total_words_len as u64);
             }
             None => {
                 stats.doc_count += 1;
@@ -390,12 +403,15 @@ impl MemIndex {
         target_id: DocId, //array row id uses the same type for id
         parts: &[DocumentPart],
         numeric_points: &[NumericPoint],
-        bool_points: &[BoolPoint],
+        bool_points: &[BoolPoint]
     ) {
         for part in parts {
             //if this part has several strings (array of string), use them else one string
             let segments: Vec<&str> = if part.is_flattened() {
-                part.segments.iter().map(|s| s.as_str()).collect()
+                part.segments
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect()
             } else {
                 vec![part.text.as_str()]
             };
@@ -412,11 +428,11 @@ impl MemIndex {
                 &segments,
                 gap,
                 part.exact,
+                part.names
             );
         }
         for point in numeric_points {
-            self.numeric_points
-                .insert(point.xpath, point.value, target_id);
+            self.numeric_points.insert(point.xpath, point.value, target_id);
         }
 
         for point in bool_points {
@@ -435,15 +451,12 @@ impl MemIndex {
 
     #[timed(search)]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
-        let mut items = Vec::new();
-
-        for (key, postings) in &self.terms {
-            if key.xpath == xpath && key.term.starts_with(prefix) {
-                items.extend_from_slice(postings.items());
-            }
-        }
-
-        PostingList::from_items(items)
+        let matches: Vec<(&str, &PostingList)> = self.terms
+            .iter()
+            .filter(|(key, _)| key.xpath == xpath && key.term.starts_with(prefix))
+            .map(|(key, postings)| (key.term.as_str(), postings))
+            .collect();
+        capped_union(matches)
     }
 
     #[timed(search)]
@@ -451,16 +464,12 @@ impl MemIndex {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);
         }
-
-        let mut items = Vec::new();
-
-        for (key, postings) in &self.terms {
-            if key.xpath == xpath && pattern.matches(&key.term) {
-                items.extend_from_slice(postings.items());
-            }
-        }
-
-        PostingList::from_items(items)
+        let matches: Vec<(&str, &PostingList)> = self.terms
+            .iter()
+            .filter(|(key, _)| key.xpath == xpath && pattern.matches(&key.term))
+            .map(|(key, postings)| (key.term.as_str(), postings))
+            .collect();
+        capped_union(matches)
     }
 
     //TEST

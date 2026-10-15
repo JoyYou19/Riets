@@ -15,49 +15,37 @@ BATCH_SIZE = 50_000   # documents per insert request
 IN_FLIGHT = 12      # insert requests running at the same time
 
 POLICY = """\
-[[fields]]
-name = "_id"
-kind = "IdAuto"
-list = true
-[fields.weight]
-min = 90
-max = 95
-
-[[fields]]
-name = "title"
-kind = "Text"
-list = true
-exact = true
-stemming = "english"
-[fields.weight]
-min = 40
-max = 80
-
-[[fields]]
-name = "text"
-kind = "Text"
-list = true
-stemming = "english"
-[fields.weight]
-min = 1
-max = 100
-
-[[fields]]
-name = "random_year"
-kind = "Integer"
-searchable = true
-list = true
-[fields.weight]
-min = 1
-max = 50
-
-[[fields]]
-name = "random_float"
-kind = "Float"
-list = true
-[fields.weight]
-min = 1
-max = 50
+{
+  "_id": {
+    "$type": "id_auto",
+    "$list": true,
+    "$weight": { "min": 90, "max": 95 }
+  },
+  "title": {
+    "$type": "text",
+    "$list": true,
+    "$exact": true,
+    "$stemming": "english",
+    "$weight": { "min": 40, "max": 80 }
+  },
+  "text": {
+    "$type": "text",
+    "$list": true,
+    "$stemming": "english",
+    "$weight": { "min": 1, "max": 100 }
+  },
+  "random_year": {
+    "$type": "int",
+    "$searchable": true,
+    "$list": true,
+    "$weight": { "min": 1, "max": 50 }
+  },
+  "random_float": {
+    "$type": "float",
+    "$list": true,
+    "$weight": { "min": 1, "max": 50 }
+  }
+}
 """
 
 

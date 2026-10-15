@@ -5,6 +5,8 @@
 */
 use core_timing::timed;
 
+use crate::posting::PostingList;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WildcardToken {
     Literal(String),
@@ -17,7 +19,7 @@ pub enum WildcardToken {
 pub struct WildcardPattern {
     tokens: Vec<WildcardToken>,
 }
-
+pub const MAX_PATTERN_TERMS: usize = 128;
 impl WildcardPattern {
     #[timed(search)]
     pub fn parse(input: &str) -> Self {
@@ -133,4 +135,17 @@ impl WildcardPattern {
             }
         }
     }
+    
+}
+/// The postings of the `MAX_PATTERN_TERMS` terms in the most documents, as one list.
+/// Ties are broken by term so the result doesn't depend on map order.
+pub(crate) fn capped_union(mut matches: Vec<(&str, &PostingList)>) -> PostingList {
+    matches.sort_unstable_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+    matches.truncate(MAX_PATTERN_TERMS);
+
+    let mut items = Vec::new();
+    for (_, postings) in matches {
+        items.extend_from_slice(postings.items());
+    }
+    PostingList::from_items(items)
 }
