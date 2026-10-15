@@ -802,18 +802,40 @@ impl ShardManager {
             return Err(CorelamoError::Busy("reindex already in progress".into()));
         }
 
-        //nodod reindex  pool
-        for h in &self.shards {
-            let (rtx, rrx) = bounded(1);
-            h.send_raw(ShardCmd::PrepareReindex { resp: rtx })
-                .map_err(|(e, _)| e)?;
+        let mut submitted = 0usize;
+        let mut first_err = None;
 
-            self.reindex_pool.submit(PendingReindexJob {
+        for h in &self.shards {
+            //nodod reindex  pool
+            let (rtx, rrx) = bounded(1);
+            if let Err((e, _)) = h.send_raw(ShardCmd::PrepareReindex { resp: rtx }) {
+                first_err = Some(e);
+                break;
+            }
+
+            let job = PendingReindexJob {
                 rx: rrx,
                 shard_tx: h.command_sender(),
                 progress: Arc::clone(h.progress()),
                 stats: Arc::clone(&self.db_stats),
-            })?;
+            };
+            match self.reindex_pool.submit(job) {
+                Ok(()) => submitted += 1,
+                Err(e) => {
+                    first_err = Some(e);
+                    break;
+                }
+            }
+        }
+
+        if let Some(e) = first_err {
+            // the shards without a job never reach finish_shard_reindex; settle them as
+            // failed so the counter reaches zero and the phase ends at Failed, which lets
+            // the next reindex start
+            for _ in submitted..self.shards.len() {
+                self.db_stats.finish_shard_reindex(false, Duration::ZERO);
+            }
+            return Err(e);
         }
         Ok(())
     }
