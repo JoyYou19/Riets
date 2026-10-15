@@ -1433,6 +1433,21 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             cur.score = cur.score.saturating_add(hit.score);
                             cur.matched_terms = cur.matched_terms.saturating_add(hit.matched_terms);
                         }
+                        let hit = SearchHit {
+                            doc_id: p.doc_id,
+                            matched_terms: p.matched_terms,
+                            weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                            distance_factor: p.density,
+                            score: ((p.score as f32) / 1000.0) * p.density,
+                        };
+                        by_doc
+                            .entry(p.doc_id)
+                            .and_modify(|e| {
+                                e.score += hit.score;
+                                e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                                e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                            })
+                            .or_insert(hit);
                     }
                 }
             }
