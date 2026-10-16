@@ -28,14 +28,14 @@ impl PostingList {
 
     /// Appends extra positions and keeps the list ascending + unique.
     fn extend_positions_sorted(positions: &mut Vec<Position>, extra: &mut Vec<Position>) {
+        if positions
+            .last()
+            .is_none_or(|last| extra.first().is_some_and(|first| last <= first))
+        {
+            positions.append(extra);
+            return;
+        }
         positions.append(extra);
-        positions.sort_unstable();
-        positions.dedup();
-    }
-
-    /// Appends a single position and keeps the list ascending + unique.
-    fn push_position_sorted(positions: &mut Vec<Position>, position: Position) {
-        positions.push(position);
         positions.sort_unstable();
         positions.dedup();
     }

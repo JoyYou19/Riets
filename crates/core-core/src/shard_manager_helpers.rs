@@ -2,14 +2,11 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{
-    SearchCommand,
-    SortMode,
-    SortModifier,
-    SortOrderRequest,
+    SearchCommand, SortMode, SortModifier, SortOrderRequest,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
-use core_query::resolver::{ FieldQuery, compile_filters as resolve_filters };
+use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +14,7 @@ use std::sync::Arc;
 pub fn compile_filters(
     analyzer: &Analyzer,
     command: &SearchCommand,
-    policy: &IndexPolicy
+    policy: &IndexPolicy,
 ) -> Result<Option<Arc<HashMap<String, FieldQuery>>>, CorelamoError> {
     let Some(filters) = command.filters.as_ref() else {
         return Ok(None);
@@ -40,7 +37,7 @@ pub struct ResolvedSort {
 
 pub fn resolve_sorts(
     command: &SearchCommand,
-    policy: &IndexPolicy
+    policy: &IndexPolicy,
 ) -> Result<Option<ResolvedSort>, CorelamoError> {
     let Some(sort_cmd) = command.sort.as_ref() else {
         return Ok(None);
@@ -60,13 +57,9 @@ pub fn resolve_sorts(
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
 
         if !field_pol.kind.is_numeric() && !field_pol.kind.is_bool() {
-            return Err(
-                CorelamoError::InvalidData(
-                    format!(
-                        "sorting by '{name}' is not supported yet (only numeric or bool fields)"
-                    )
-                )
-            );
+            return Err(CorelamoError::InvalidData(format!(
+                "sorting by '{name}' is not supported yet (only numeric or bool fields)"
+            )));
         }
 
         // ratio is only meaningful in blend mode; strict ignores it
@@ -85,19 +78,16 @@ pub fn resolve_sorts(
                     )?
                 };
                 if r > 100 {
-                    return Err(
-                        CorelamoError::InvalidData(
-                            format!("sort ratio for '{name}' must be between 0 and 100")
-                        )
-                    );
+                    return Err(CorelamoError::InvalidData(format!(
+                        "sort ratio for '{name}' must be between 0 and 100"
+                    )));
                 }
                 total_ratio += r as u32;
                 if total_ratio > 100 {
-                    return Err(
-                        CorelamoError::InvalidData(
-                            "sort ratios must add up to at most 100 (the rest is relevance)".to_string()
-                        )
-                    );
+                    return Err(CorelamoError::InvalidData(
+                        "sort ratios must add up to at most 100 (the rest is relevance)"
+                            .to_string(),
+                    ));
                 }
                 r
             }
@@ -111,12 +101,10 @@ pub fn resolve_sorts(
             modifier: spec.modifier,
         });
     }
-    Ok(
-        Some(ResolvedSort {
-            mode: sort_cmd.mode,
-            fields: Arc::new(fields),
-        })
-    )
+    Ok(Some(ResolvedSort {
+        mode: sort_cmd.mode,
+        fields: Arc::new(fields),
+    }))
 }
 
 /// strict: apply fields in declaration order, relevance is the final tiebreak.
@@ -171,60 +159,89 @@ fn apply_modifier(v: f64, m: SortModifier) -> f64 {
     }
 }
 
+//chatin paldies par komentaru
+/// Blend sort: combine relevance and any number of sort fields into one
+/// 0..100 score, then rank by it.
+///
+/// Each sort field's value is min-max normalized to [0, 1] using the bounds
+/// gathered across all shards, then multiplied by that field's `ratio`.
+/// Relevance is normalized to [0, 1] (relative to the highest score on this
+/// page) and multiplied by whatever weight is left over:
+///
+///     score = relevance_norm * (100 - Σ ratios)  +  Σ (field_norm_i * ratio_i)
+///
+/// So `ratio` is literally "how many of the 100 points this field controls":
+///   ratio 0   → 100 points relevance, 0 points field  (pure relevance)
+///   ratio 100 →   0 points relevance, 100 points field (pure field sort)
+///   ratio 40  →  60 points relevance, 40 points field  (field "nudges" but
+///                 never overrides relevance)
+///
+/// The result stays in 0..100 as long as ratios sum to at most 100, which
+/// `resolve_sorts` enforces.
 pub fn order_blended(
     items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
     specs: &[SortField],
-    bounds: &[(Option<f64>, Option<f64>)] //min max per field
+    bounds: &[(Option<f64>, Option<f64>)],
 ) {
     if items.is_empty() {
         return;
     }
 
+    // See the comment above: relevance keeps the points the fields don't take.
+    let total_ratio: f32 = specs.iter().map(|s| s.ratio as f32).sum::<f32>().min(100.0);
+    let relevance_weight = 100.0 - total_ratio;
+
+    // Normalize relevance against the best score on this page so it's on the
+    // same 0..1 scale as the fields.
+    let max_score = items
+        .iter()
+        .map(|(h, _)| h.score)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+
     let blends: Vec<f32> = items
         .iter()
         .map(|(hit, keys)| {
-            let relevance = if hit.score > 0.0 { hit.score } else { 1.0 };
+            let relevance = (hit.score / max_score) * relevance_weight;
 
-            let mut boost = 1.0f32;
+            let mut field = 0.0f32;
             for (index, spec) in specs.iter().enumerate() {
-                let component = match keys[index] {
-                    None => 0.0,
-                    Some(v) =>
-                        match bounds[index] {
-                            (Some(min), Some(max)) => {
-                                let min = apply_modifier(min, spec.modifier);
-                                let max = apply_modifier(max, spec.modifier);
-                                let v = apply_modifier(v, spec.modifier);
-                                if max > min {
-                                    let norm = ((v - min) / (max - min)) as f32;
-                                    match spec.order {
-                                        SortOrderRequest::Asc => 1.0 - norm,
-                                        SortOrderRequest::Desc => norm,
-                                    }
-                                } else {
-                                    1.0
+                let component = match keys.get(index).copied().flatten() {
+                    None => 0.0, // doc has no value for this field: rank it last
+                    Some(v) => match bounds[index] {
+                        (Some(min), Some(max)) => {
+                            let min = apply_modifier(min, spec.modifier);
+                            let max = apply_modifier(max, spec.modifier);
+                            let v = apply_modifier(v, spec.modifier);
+                            if max > min {
+                                let norm = ((v - min) / (max - min)) as f32;
+                                match spec.order {
+                                    SortOrderRequest::Asc => 1.0 - norm,
+                                    SortOrderRequest::Desc => norm,
                                 }
+                            } else {
+                                1.0
                             }
-                            _ => 1.0,
                         }
+                        _ => 1.0, // field has no data anywhere: neutral, no effect
+                    },
                 };
-                boost += ((spec.ratio as f32) / 100.0) * component;
+                field += spec.ratio as f32 * component;
             }
 
-            relevance * boost
+            relevance + field
         })
         .collect();
 
-   //sort by tier (the ranking cascade), then by the blended value
+    // --- unchanged from here down ---
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_unstable_by(|&a, &b| {
-        items[a].0.tier
-            .cmp(&items[b].0.tier)
-            .then_with(|| blends[b].partial_cmp(&blends[a]).unwrap_or(std::cmp::Ordering::Equal))
+        blends[b]
+            .partial_cmp(&blends[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| items[a].0.doc_id.cmp(&items[b].0.doc_id))
     });
 
-    //send back to shard_manager
     let reordered: Vec<(SearchHit, Vec<Option<f64>>)> = order
         .into_iter()
         .map(|index| {
@@ -252,12 +269,16 @@ fn fold_max(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 
 pub fn fold_sort_bounds(
     fields: &[SortField],
-    per_shard: impl IntoIterator<Item = Vec<(Option<f64>, Option<f64>)>>
+    per_shard: impl IntoIterator<Item = Vec<(Option<f64>, Option<f64>)>>,
 ) -> Vec<(Option<f64>, Option<f64>)> {
     let mut bounds: Vec<(Option<f64>, Option<f64>)> = fields
         .iter()
         .map(|f| {
-            if f.is_bool { (Some(0.0), Some(1.0)) } else { (None, None) }
+            if f.is_bool {
+                (Some(0.0), Some(1.0))
+            } else {
+                (None, None)
+            }
         })
         .collect();
 
