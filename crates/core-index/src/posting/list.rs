@@ -26,7 +26,20 @@ impl PostingList {
         }
     }
 
-   
+    /// Appends extra positions and keeps the list ascending + unique.
+    fn extend_positions_sorted(positions: &mut Vec<Position>, extra: &mut Vec<Position>) {
+        positions.append(extra);
+        positions.sort_unstable();
+        positions.dedup();
+    }
+
+    /// Appends a single position and keeps the list ascending + unique.
+    fn push_position_sorted(positions: &mut Vec<Position>, position: Position) {
+        positions.push(position);
+        positions.sort_unstable();
+        positions.dedup();
+    }
+
     pub fn from_sorted(items: Vec<Posting>) -> Self {
         let has_duplicates = items.windows(2).any(|w| w[0].doc_id == w[1].doc_id);
 
@@ -75,7 +88,6 @@ impl PostingList {
         Self { items, max_weight }
     }
 
-    
     pub fn from_items(mut items: Vec<Posting>) -> Self {
         if !items.is_sorted_by_key(|p| p.doc_id) {
             items.sort_by_key(|p| p.doc_id);
@@ -118,16 +130,21 @@ impl PostingList {
         self.items.retain(|posting| keep(posting));
     }
 
-
     pub fn insert_posting(&mut self, doc_id: DocId, mut positions: Vec<Position>, weight: u16) {
         if positions.is_empty() {
             return;
         }
+
+        //these two lines save us from spider-man -> (spider-man + spiderman + spider + man
+        //situation)
+        positions.sort_unstable();
+        positions.dedup();
+
         // max_weight can only stay the same or increase on insertion
         self.max_weight = self.max_weight.max(weight);
         if let Some(last) = self.items.last_mut() {
             if last.doc_id == doc_id {
-                last.positions.append(&mut positions);
+                Self::extend_positions_sorted(&mut last.positions, &mut positions);
                 last.weight = last.weight.max(weight);
                 return;
             }
@@ -141,7 +158,7 @@ impl PostingList {
 
         match self.items.binary_search_by_key(&doc_id, |p| p.doc_id) {
             Ok(index) => {
-                self.items[index].positions.append(&mut positions);
+                Self::extend_positions_sorted(&mut self.items[index].positions, &mut positions);
                 self.items[index].weight = self.items[index].weight.max(weight);
             }
 

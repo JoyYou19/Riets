@@ -24,7 +24,9 @@ use std::collections::HashSet;
 ///   "spiderman"   -> ["spiderman"]
 ///                    no delimiter -> unchanged (single token)
 pub fn expand_word_delimiters(word: &str, literal_symbols: &HashSet<char>) -> Vec<String> {
-    let has_delim = word.chars().any(|c| !c.is_alphanumeric() && !literal_symbols.contains(&c));
+    let has_delim = word
+        .chars()
+        .any(|c| !c.is_alphanumeric() && !literal_symbols.contains(&c));
 
     if !has_delim {
         return vec![word.to_string()];
@@ -39,18 +41,13 @@ pub fn expand_word_delimiters(word: &str, literal_symbols: &HashSet<char>) -> Ve
     let mut out = Vec::with_capacity(parts.len() + 2);
     out.push(word.to_string()); // original
     // split parts, but skip 1-char fragments ("s" from "king's", "t" from "don't", "o" from "o'clock")
-    out.extend(
-        parts
-            .iter()
-            .filter(|p| p.chars().count() > 1)
-            .cloned()
-    );
+    out.extend(parts.iter().filter(|p| p.chars().count() > 1).cloned());
     out.push(parts.concat()); // catenated (all parts, so "king's" -> "kings")
     out.retain(|s| !s.is_empty()); // drop "" from all-symbol chunks (emoji)
     out
 }
 
-use tantivy::tokenizer::{ BoxTokenStream, Token, TokenStream, Tokenizer };
+use tantivy::tokenizer::{BoxTokenStream, Token, TokenStream, Tokenizer};
 
 #[derive(Clone)]
 pub struct WordDelimiterTokenizer {
@@ -70,12 +67,16 @@ impl WordDelimiterTokenizer {
         from: usize,
         to: usize,
         position: &mut usize,
-        tokens: &mut Vec<Token>
+        tokens: &mut Vec<Token>,
     ) {
         // [original, kept parts..., joined] for a split word ("spider-man" -> spider-man, spider,
         // man, spiderman), [word] otherwise; 1-char parts are already dropped
         let forms = expand_word_delimiters(chunk, &self.literal_symbols);
-        let parts: &[String] = if forms.len() > 2 { &forms[1..forms.len() - 1] } else { &[] };
+        let parts: &[String] = if forms.len() > 2 {
+            &forms[1..forms.len() - 1]
+        } else {
+            &[]
+        };
         let span = parts.len().max(1);
         let start = *position;
 

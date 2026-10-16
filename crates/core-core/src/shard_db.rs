@@ -79,7 +79,10 @@ pub struct ShardDb {
     pending: u32,
     last_write: Instant,
 }
-const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
+
+//has it been quiet long enough to flush
+pub const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
+
 impl ShardDb {
     pub fn shared_state(&self) -> Arc<SharedShardState> {
         self.shared.clone()
@@ -1335,22 +1338,42 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         Ok(())
     }
-    /// Flushes a shard that has unflushed data but no writes for a while,
-    /// so small loads reach disk and the WAL is emptied.
+
+    //full flush of everything + WAL reset
+    fn flush_and_reset_wal(&mut self) -> Result<(), CorelamoError> {
+        self.db_mut()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?
+            .flush()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+
+        self.wal
+            .reset()
+            .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+        self.wal
+            .write_checkpoint(0)
+            .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
+        self.pending = 0;
+
+        Ok(())
+    }
+
+    //flushes when there have been no writes for the given time (2s now)
     pub fn maybe_idle_flush(&mut self) -> Result<(), CorelamoError> {
+        //
         if self.last_write.elapsed() < IDLE_FLUSH_AFTER {
             return Ok(());
         }
+
         let db = self.db_ref()?;
         let stats = db
             .index_stats()
             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         if stats.memtable_term_count == 0 {
-            return Ok(()); // nothing in memory
+            return Ok(()); //nothing in memory
         }
 
-        self.flush()?; // ← your existing flush + WAL reset path
-        self.last_write = Instant::now(); // don't re-check until more writes
+        self.flush_and_reset_wal()?;
+        self.last_write = Instant::now();
         self.publish_stats();
         Ok(())
     }
