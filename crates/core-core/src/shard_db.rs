@@ -1301,7 +1301,7 @@ impl ShardDb {
         self.backup
             .restore_chain(&backup_id, &root)
             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        self.start()?;
+        //self.start()?;
 
         Ok(())
     }

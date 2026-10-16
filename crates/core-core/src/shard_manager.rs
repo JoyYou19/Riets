@@ -1740,7 +1740,8 @@ impl ShardManager {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }
-        self.db_stats.finish_restore(failures.is_empty());
+        //not needed cuz the handler calls this too
+        //self.db_stats.finish_restore(failures.is_empty());
 
         if failures.is_empty() {
             self.start().await?;

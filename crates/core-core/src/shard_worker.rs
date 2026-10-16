@@ -974,19 +974,26 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 }
                 let _ = resp.send(result);
             }
+
             ShardCmd::Restore {
                 user,
                 resp,
                 backup_id,
             } => {
+                //salabots porniks ar vienkaris running/stopped/restoring/backing up....
                 shared.is_restoring.store(true, Ordering::Release);
                 let result = shard.restore_backup(&backup_id, user);
+                shared
+                    .is_running
+                    .store(shard.is_running(), Ordering::Release);
                 shared.is_restoring.store(false, Ordering::Release);
                 let _ = resp.send(result);
             }
+
             ShardCmd::ListBackups { resp } => {
                 let _ = resp.send(shard.list_backups());
             }
+
             ShardCmd::DeleteBackup {
                 backup_id,
                 user,
@@ -994,9 +1001,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             } => {
                 let _ = resp.send(shard.delete_backup(&backup_id, user));
             }
+
             ShardCmd::DeleteBackupAuto { cutoff, resp } => {
                 let _ = resp.send(shard.delete_backups_old(cutoff));
             }
+
             ShardCmd::PlanSegmentCompaction {
                 dead_ratio_threshold,
                 reply,
@@ -1004,6 +1013,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let job = shard.plan_segment_compaction(dead_ratio_threshold);
                 let _ = reply.send(job);
             }
+
             ShardCmd::InstallSegmentCompaction { completed, ack } => {
                 let result = shard.install_segment_compaction_cmd(completed);
                 if let Some(ack) = ack {
