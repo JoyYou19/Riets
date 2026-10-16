@@ -6,5 +6,5 @@ pub mod ops;
 
 pub use cursor::PostingCursor;
 pub use deleted::DeleteSet;
-pub use item::{Posting, Positions};
+pub use item::Posting;
 pub use list::PostingList;

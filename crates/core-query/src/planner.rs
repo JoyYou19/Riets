@@ -1,10 +1,7 @@
 //! The match cascade: a plain query runs as a series of tiers from most to least accurate.
 //! Every hit keeps the best tier that found it, and hits order by tier before score.
 
-use std::collections::HashSet;
-
 use core_index::analyzer::Analyzer;
-use core_index::analyzer::analyzer::MAX_NAME_WORDS;
 use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
@@ -16,12 +13,6 @@ pub const MAX_ALL_BUT_ONE_WORDS: usize = 6;
 /// Score multiplier added at full density (every word at its ideal distance): ×1.5.
 /// Twice as spread out gets half of it. basically makes words that are closer score higher 
 pub const DENSITY_BOOST: f32 = 0.5;
-/// A document whose name is a run of the query's words has its score multiplied by
-/// 1 + NAME_BONUS × the share of the query's weight the run holds: ×2.5 for a run that holds the
-/// whole query, ×1.5 for one that holds a third of it.
-pub const NAME_BONUS: f32 = 1.5;
-/// Runs of named words are looked for in queries of at most this many words.
-const MAX_NAMED_QUERY_WORDS: usize = 32;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tier {
     /// A name field (a field with `$exact`) whose whole value is the query or one of its
@@ -46,16 +37,12 @@ pub enum Tier {
 pub struct RankPlan {
     pub tiers: Vec<Tier>,
     pub stop_after:usize,
-    /// The name key of every run of the query's words (see `named_runs`).
-    pub named_runs: Vec<String>,
-    /// The query's words, as name keys write them.
-    pub words: Vec<String>,
 }
 
 impl RankPlan {
     /// A query written with explicit operators runs exactly as written.
     pub fn single(query: Query) -> Self {
-        Self { tiers: vec![Tier::All(query)], stop_after: 0, named_runs: Vec::new(), words: Vec::new() }
+        Self { tiers: vec![Tier::All(query)],stop_after:0 }
     }
     /// The same plan without its fuzzy tier.
     pub fn without_fuzzy(&self) -> Self {
@@ -67,8 +54,6 @@ impl RankPlan {
                 .cloned()
                 .collect(),
             stop_after: self.stop_after,
-            named_runs: self.named_runs.clone(),
-            words: self.words.clone(),
         }
     }
 
@@ -136,12 +121,7 @@ impl RankPlan {
 
         
 
-        let (named_runs, words) = if has_exact_field {
-            named_runs(raw, analyzer)
-        } else {
-            (Vec::new(), Vec::new())
-        };
-        Self { tiers, stop_after: 0, named_runs, words }
+        Self { tiers, stop_after:0}
     }
     //this is same as the one below almost but this reads just back 
     pub fn phrase_terms(&self) -> Option<&[PhraseTerm]> {
@@ -236,35 +216,6 @@ fn written_forms(query: &Query) -> Vec<String> {
         }
         _ => Vec::new(),
     }
-}
-
-/// The name key of every run of the typed words, up to MAX_NAME_WORDS long: a document whose
-/// name is one of them is something the query is about ("Vera Wang" in "Vera Wang was born in
-/// March"). And the query's words as the keys write them, to weigh how much of the query a run is.
-fn named_runs(raw: &str, analyzer: &Analyzer) -> (Vec<String>, Vec<String>) {
-    let typed: Vec<&str> = raw.split_whitespace().collect();
-    if typed.len() > MAX_NAMED_QUERY_WORDS {
-        return (Vec::new(), Vec::new());
-    }
-    let mut keys: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for start in 0..typed.len() {
-        for end in start + 1..=typed.len().min(start + MAX_NAME_WORDS) {
-            if let Some(key) = analyzer.name_key(&typed[start..end].join(" ")) {
-                if seen.insert(key.clone()) {
-                    keys.push(key);
-                }
-            }
-        }
-    }
-    // the words name_key keeps: one per position, a hyphenated word's parts but not its joined form
-    let mut words: Vec<(u32, String)> = Vec::new();
-    analyzer.for_each_token(raw, |term, position, length| {
-        if length == 1 && words.last().is_none_or(|(last, _)| *last < position) {
-            words.push((position, term.to_owned()));
-        }
-    });
-    (keys, words.into_iter().map(|(_, word)| word).collect())
 }
 
 /// Builds the terms from the typed text, once, when the plan is made

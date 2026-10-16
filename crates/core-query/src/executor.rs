@@ -18,7 +18,7 @@ use crate::{
     TopHit,
     ast::{ PhraseTerm, Query, SynonymAlternative },
     corpus_stats::{ CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats },
-    planner::{ DENSITY_BOOST, NAME_BONUS, RankPlan, Tier },
+    planner::{ DENSITY_BOOST, RankPlan, Tier },
     prepared::PreparedQuery,
     resolver::{ FieldCtx, FieldQuery, SameElementBinding },
     scorer::{ fuzzy_decay, score_term_into },
@@ -40,12 +40,6 @@ const MAX_FUZZY_WORDS: usize = 64;
 
 // The "any word" tier looks at this many candidates before ordering them by words matched.
 const ANY_TIER_POOL: usize = 1000;
-
-// The ranked pool (see `rank_cascade`): the share of a query's weight (its words' idf) a page has
-// to cover to be in it, and how many candidates it ranks before ordering them by how close
-// together their words are.
-const MIN_COVERAGE: f32 = 0.5;
-const POOL_SIZE: usize = 200;
 
 // Ordering values per cascade tier (see `rank_cascade`).
 const TIER_STEP: usize = 16;
@@ -274,9 +268,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     ///
     /// `cross_fields`: a part matches in any of the fields and adds up its best form in each, as
     /// `cross_field_hits` scores it, one document at a time instead of scoring every match.
-    /// Otherwise each field ranks its clauses on its own. `coverage` (cross_fields, a disjunction):
-    /// keep only documents covering that share of the query's weight and scale their scores by it
-    /// (see `wand::wand_top_k_grouped`); `None` is any part.
+    /// Otherwise each field ranks its clauses on its own. `min_match` keeps only documents with at
+    /// least that many parts (cross_fields; 1 = any).
     fn execute_grouped_retrieval(
         &self,
         query: &Query,
@@ -284,7 +277,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         k: usize,
         restrict: Option<&HashSet<DocId>>,
         cross_fields: bool,
-        coverage: Option<f32>
+        min_match: usize
     ) -> Option<Vec<WandHit>> {
         let (conjunctive, parts) = grouped_parts(query, !cross_fields)?;
         // the forms of every part, each with the field it counts for
@@ -335,7 +328,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             if conjunctive {
                 conjunctive_top_k_grouped(&stats, &fields, k, restrict)
             } else {
-                wand_top_k_grouped(&stats, &fields, k, coverage, restrict)
+                wand_top_k_grouped(&stats, &fields, k, min_match.max(1), restrict)
             }
         )
     }
@@ -546,31 +539,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             return self.index.lookup(words[0], xpath);
         }
 
-        // every word has to be in the field: the dictionary says so before any list is read, and
-        // the lists are read from the rarest up, stopping as soon as no document has them all
-        // (a sentence typed as a query is rarely a title: its rarest words already disagree)
-        let doc_freqs: Vec<u32> = words
+        let lists: Vec<PostingList> = words
             .iter()
-            .map(|word| self.index.doc_freq(word, xpath))
+            .map(|word| self.index.lookup(word, xpath))
             .collect();
-        if doc_freqs.contains(&0) {
+
+        if lists.iter().any(|list| list.is_empty()) {
             return PostingList::default();
-        }
-        let mut order: Vec<usize> = (0..words.len()).collect();
-        order.sort_by_key(|&i| doc_freqs[i]);
-        let mut lists: Vec<PostingList> = vec![PostingList::default(); words.len()];
-        let mut candidates: Vec<DocId> = Vec::new();
-        for (step, &i) in order.iter().enumerate() {
-            lists[i] = self.index.lookup(words[i], xpath);
-            let postings = lists[i].items();
-            if step == 0 {
-                candidates = postings.iter().map(|posting| posting.doc_id).collect();
-            } else {
-                candidates.retain(|doc| postings.binary_search_by_key(doc, |p| p.doc_id).is_ok());
-            }
-            if candidates.is_empty() {
-                return PostingList::default();
-            }
         }
         // the exact field keeps every word, stopwords too: the words are adjacent
         let offsets: Vec<u32> = (0..words.len() as u32).collect();
@@ -1215,7 +1190,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             .copied()
                             .filter(|ctx| !ctx.row_keyed)
                             .collect();
-                        self.execute_grouped_retrieval(query, &plain, k, restrict, false, None)
+                        self.execute_grouped_retrieval(query, &plain, k, restrict, false, 1)
                     })
                 };
                 let ranked_flat = flat_hits.is_some();
@@ -1247,7 +1222,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 // flat queries (words and synonym groups, all of them or any of them): one
                 // document at a time, instead of scoring every match and cutting to k after
                 if ctxs.iter().all(|ctx| !ctx.row_keyed) {
-                    if let Some(hits) = self.execute_grouped_retrieval(query, ctxs, k, restrict, true, None) {
+                    if let Some(hits) = self.execute_grouped_retrieval(query, ctxs, k, restrict, true, 1) {
                         return hits.into_iter().map(wand_hit_to_search_hit).collect();
                     }
                 }
@@ -1345,23 +1320,6 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             }),
             MatchMode::BestFields => None,
         };
-        // The ranked pool. For a flat query of several words over plain fields (cross_fields),
-        // the "phrase", "all words" and "all words but one" tiers are one ranking instead of three
-        // walls: every page covering at least MIN_COVERAGE of the query's weight, its score scaled
-        // by how much it covers (a missing rare word costs more than a missing common one) and
-        // raised by how close together its words are (a phrase is as close as they get). The name
-        // and exact tiers stay above it; fuzzy and "any word" only fill in below.
-        let pool_parts: Option<&Vec<Query>> = match match_mode {
-            MatchMode::CrossFields if flat_fields => plan.tiers.iter().find_map(|tier| match tier {
-                Tier::All(Query::And(parts))
-                    if parts.len() >= 2 &&
-                        grouped_parts(&Query::Wand(parts.clone()), false).is_some() => {
-                    Some(parts)
-                }
-                _ => None,
-            }),
-            _ => None,
-        };
         let mut shared_hits: Option<Vec<SearchHit>> = None;
         let mut ranked = |query: &Query, fetch: usize, allowed: Option<&HashSet<DocId>>| -> Vec<SearchHit> {
             match shared_query {
@@ -1392,120 +1350,6 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             let fetch = (k - out.len()).saturating_add(seen.len());
 
             let hits = match tier {
-                // the pool ranks these (see `pool_parts`)
-                Tier::Phrase { .. } | Tier::AllButOne(_) if pool_parts.is_some() => {
-                    continue;
-                }
-                Tier::All(_) if pool_parts.is_some() => {
-                    let pool_query = Query::Wand(pool_parts.cloned().unwrap_or_default());
-                    let mut hits = self
-                        .execute_grouped_retrieval(
-                            &pool_query,
-                            ctxs,
-                            fetch.max(POOL_SIZE),
-                            restrict,
-                            true,
-                            Some(MIN_COVERAGE)
-                        )
-                        .map(|hits| hits.into_iter().map(wand_hit_to_search_hit).collect::<Vec<_>>())
-                        .unwrap_or_default();
-
-                    // A document whose name is a run of the query's words is what the query is
-                    // about: "Vera Wang was born in March" is about Vera Wang. Its score is
-                    // raised by NAME_BONUS times the share of the query the run holds, each word
-                    // weighed by its idf where it is most common (so "Vera Wang" outweighs
-                    // "March"). A name holding every query word counts as holding the whole query.
-                    if !plan.words.is_empty() {
-                        let stats = self.stats();
-                        let weight_of = |word: &str| -> f32 {
-                            ctxs.iter()
-                                .filter(|ctx| !ctx.row_keyed)
-                                .filter_map(|ctx| {
-                                    let doc_freq = self.fetch_term_list(word, ctx.xpath).1 as f32;
-                                    let docs = stats.doc_count(ctx.xpath) as f32;
-                                    (doc_freq > 0.0 && docs > 0.0).then(|| {
-                                        ((docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln()
-                                    })
-                                })
-                                .reduce(f32::min)
-                                .unwrap_or(0.0)
-                        };
-                        let weights: HashMap<&str, f32> = plan.words
-                            .iter()
-                            .map(|word| (word.as_str(), weight_of(word)))
-                            .collect();
-                        let total: f32 = plan.words.iter().map(|word| weights[word.as_str()]).sum();
-
-                        let mut shares: HashMap<DocId, f32> = HashMap::new();
-                        if total > 0.0 {
-                            for key in &plan.named_runs {
-                                let held: f32 = key
-                                    .split(' ')
-                                    .filter_map(|word| weights.get(word))
-                                    .sum();
-                                let share = (held / total).min(1.0);
-                                for qualified in [false, true] {
-                                    for doc in self.name_docs(std::slice::from_ref(key), ctxs, qualified) {
-                                        if restrict.is_none_or(|limit| limit.contains(&doc)) {
-                                            let best = shares.entry(doc).or_insert(0.0);
-                                            *best = best.max(share);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if plan.words.len() >= 2 {
-                            for ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed && ctx.exact_xpath.is_some()) {
-                                let lists: Vec<Cow<'a, PostingList>> = plan.words
-                                    .iter()
-                                    .map(|word| self.fetch_term_list(word, ctx.xpath).0)
-                                    .collect();
-                                for hit in &hits {
-                                    let named = lists.iter().all(|list| {
-                                        list.items().binary_search_by_key(&hit.doc_id, |p| p.doc_id).is_ok()
-                                    });
-                                    if named {
-                                        shares.insert(hit.doc_id, 1.0);
-                                    }
-                                }
-                            }
-                        }
-
-                        if !shares.is_empty() {
-                            // named documents the pool left out are scored the same way
-                            let pooled: HashSet<DocId> = hits.iter().map(|hit| hit.doc_id).collect();
-                            let missing: HashSet<DocId> = shares
-                                .keys()
-                                .copied()
-                                .filter(|doc| !pooled.contains(doc))
-                                .collect();
-                            if !missing.is_empty() {
-                                if let Some(extra) = self.execute_grouped_retrieval(
-                                    &pool_query,
-                                    ctxs,
-                                    missing.len(),
-                                    Some(&missing),
-                                    true,
-                                    Some(0.0)
-                                ) {
-                                    hits.extend(extra.into_iter().map(wand_hit_to_search_hit));
-                                }
-                            }
-                            for hit in &mut hits {
-                                if let Some(share) = shares.get(&hit.doc_id) {
-                                    hit.score *= 1.0 + NAME_BONUS * share;
-                                }
-                            }
-                            hits.sort_by(|a, b| {
-                                b.score
-                                    .partial_cmp(&a.score)
-                                    .unwrap_or(Ordering::Equal)
-                                    .then_with(|| a.doc_id.cmp(&b.doc_id))
-                            });
-                        }
-                    }
-                    hits
-                }
                 Tier::Name { keys, score_with } => {
                     let mut hits = Vec::new();
                     let mut named: HashSet<DocId> = HashSet::new();
@@ -1565,30 +1409,43 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     // a larger pool, so pages with more words survive until they are ordered by words
                     ranked(query, fetch.max(ANY_TIER_POOL), None)
                 }
-                Tier::AllButOne(Query::Wand(parts)) => {
-                    // queries the pool cannot take: an OR of the words' ANDs, each with one word
-                    // left out
-                    let alternatives: Vec<Query> = (0..parts.len())
-                        .map(|left_out| {
-                            Query::And(
-                                parts
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(index, _)| *index != left_out)
-                                    .map(|(_, part)| part.clone())
-                                    .collect()
-                            )
-                        })
-                        .collect();
-                    ranked(&Query::Or(alternatives), fetch, None)
+                Tier::AllButOne(query @ Query::Wand(parts)) => {
+                    // one pass over the words, keeping documents with all of them but at most one
+                    let min_match = parts.len().saturating_sub(1).max(1);
+                    let one_pass = match match_mode {
+                        MatchMode::CrossFields if flat_fields => self
+                            .execute_grouped_retrieval(query, ctxs, fetch, restrict, true, min_match)
+                            .map(|hits| hits.into_iter().map(wand_hit_to_search_hit).collect::<Vec<_>>()),
+                        _ => None,
+                    };
+                    match one_pass {
+                        Some(hits) => hits,
+                        // otherwise: an OR of the words' ANDs, each with one word left out
+                        None => {
+                            let alternatives: Vec<Query> = (0..parts.len())
+                                .map(|left_out| {
+                                    Query::And(
+                                        parts
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(index, _)| *index != left_out)
+                                            .map(|(_, part)| part.clone())
+                                            .collect()
+                                    )
+                                })
+                                .collect();
+                            ranked(&Query::Or(alternatives), fetch, None)
+                        }
+                    }
                 }
                 | Tier::Exact(query)
                 | Tier::All(query)
                 | Tier::AllButOne(query)
                 | Tier::Fuzzy(query) => ranked(query, fetch, None),
             };
+            //This is the density part idk if we need it at all
             let mut hits = hits;
-            // within "all words" (and the pool), hits whose words sit close together come first
+            // within "all words", hits whose words sit close together come first
             if let (Tier::All(_), Some(terms)) = (tier, plan.phrase_terms()) {
                 self.apply_density(&mut hits, terms, &plain_xpaths);
                 hits.sort_by(|a, b| {
@@ -1698,15 +1555,18 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
         docs
     }
+    //density we all needed like betona koktelis
     /// Multiplies each hit's score by 1 + DENSITY_BOOST × how close together its words are, in
-    /// its best field: the span of the words as typed against the span they take in the field
-    /// (1 when they form the phrase), times the share of the query's words the field holds, so
-    /// a page with two of four words side by side gets less than one with all four. A field
-    /// needs at least two of the words to count; hits without one keep their score.
+    /// its best field. Hits with no field holding every word keep their score.
     fn apply_density(&self, hits: &mut [SearchHit], terms: &[PhraseTerm], xpaths: &[XPathId]) {
         if terms.len() < 2 || hits.is_empty() {
             return;
         }
+        // the span of the words as typed, stopword gaps included ("king of the hill" -> 4)
+        let ideal = terms
+            .last()
+            .map_or(0, |term| term.offset)
+            .saturating_add(1);
 
         // every word's list in every field, read once for all candidates
         let fields: Vec<Vec<Cow<'a, PostingList>>> = xpaths
@@ -1719,33 +1579,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             })
             .collect();
 
-        let mut present: Vec<(u32, &[u32])> = Vec::with_capacity(terms.len());
         for hit in hits.iter_mut() {
-            let mut best: Option<f32> = None;
-            for lists in &fields {
-                // the words this field of the document holds, with where they were typed
-                present.clear();
-                for (term, list) in terms.iter().zip(lists) {
-                    let items = list.items();
-                    if let Ok(index) = items.binary_search_by_key(&hit.doc_id, |posting| posting.doc_id) {
-                        present.push((term.offset, items[index].positions.as_slice()));
-                    }
-                }
-                if present.len() < 2 {
-                    continue;
-                }
-                let positions: Vec<&[u32]> = present.iter().map(|&(_, positions)| positions).collect();
-                let Some(span) = min_cover_span(&positions) else {
-                    continue;
-                };
-                // the span of these words as typed, stopword gaps included ("king of the hill" -> 4)
-                let first = present.iter().map(|&(offset, _)| offset).min().unwrap_or(0);
-                let last = present.iter().map(|&(offset, _)| offset).max().unwrap_or(0);
-                let ideal = (last - first).saturating_add(1);
-                let closeness = ((ideal as f32) / (span.max(1) as f32)).min(1.0);
-                let density = closeness * (present.len() as f32) / (terms.len() as f32);
-                best = Some(best.map_or(density, |known| known.max(density)));
-            }
+            let best = fields
+                .iter()
+                .filter_map(|lists| doc_span(lists, hit.doc_id))
+                .map(|span| ((ideal as f32) / (span.max(1) as f32)).min(1.0))
+                .fold(None, |best: Option<f32>, density| {
+                    Some(best.map_or(density, |known| known.max(density)))
+                });
 
             if let Some(density) = best {
                 hit.score *= 1.0 + DENSITY_BOOST * density;
@@ -2026,6 +1867,18 @@ fn phrase_matches(position_lists: &[&[u32]], offsets: &[u32]) -> bool {
     false
 }
 
+/// Smallest span of the document's positions that holds every list's word, or `None` when
+/// the document lacks one of them.
+/// test part with the density
+fn doc_span(lists: &[Cow<'_, PostingList>], doc: DocId) -> Option<u32> {
+    let mut positions: Vec<&[u32]> = Vec::with_capacity(lists.len());
+    for list in lists {
+        let items = list.items();
+        let index = items.binary_search_by_key(&doc, |posting| posting.doc_id).ok()?;
+        positions.push(items[index].positions.as_slice());
+    }
+    min_cover_span(&positions)
+}
 /// Smallest span (last - first + 1) holding at least one position from every list. Each list
 /// must be sorted; `None` when a list is empty.
 fn min_cover_span(lists: &[&[u32]]) -> Option<u32> {

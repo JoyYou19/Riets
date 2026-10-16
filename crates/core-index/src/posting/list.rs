@@ -127,7 +127,7 @@ impl PostingList {
         self.max_weight = self.max_weight.max(weight);
         if let Some(last) = self.items.last_mut() {
             if last.doc_id == doc_id {
-                last.positions.extend(positions.drain(..));
+                last.positions.append(&mut positions);
                 last.weight = last.weight.max(weight);
                 return;
             }
@@ -141,7 +141,7 @@ impl PostingList {
 
         match self.items.binary_search_by_key(&doc_id, |p| p.doc_id) {
             Ok(index) => {
-                self.items[index].positions.extend(positions.drain(..));
+                self.items[index].positions.append(&mut positions);
                 self.items[index].weight = self.items[index].weight.max(weight);
             }
 
