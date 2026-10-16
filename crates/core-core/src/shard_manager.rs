@@ -994,6 +994,11 @@ impl ShardManager {
         )
         .map(String::from);
 
+        let mut position: HashMap<String, usize> = HashMap::new();
+        for (i, id) in command.ids.iter().enumerate() {
+            position.entry(id.clone()).or_insert(i);
+        }
+
         let mut handles = Vec::new();
         for (idx, shard_ids) in by_shard {
             let ids: Vec<String> = shard_ids.iter().map(|s| s.to_string()).collect();
@@ -1015,6 +1020,14 @@ impl ShardManager {
             all_docs.extend(response.docs);
             all_not_found.extend(response.not_found);
         }
+
+        //for users own happieness we return the found/not_found in the same oder  as
+        //he/she/they/them asked
+        all_docs.sort_by_key(|(external_id, _)| {
+            position.get(external_id).copied().unwrap_or(usize::MAX)
+        });
+        all_not_found.sort_by_key(|id| position.get(id).copied().unwrap_or(usize::MAX));
+
         Ok(LookupResponse::new(all_docs, all_not_found, strip_id))
     }
 
