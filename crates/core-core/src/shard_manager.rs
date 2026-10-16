@@ -1104,18 +1104,19 @@ impl ShardManager {
         let filters = compile_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
 
-        // Plain text runs as the match cascade, most accurate tier first. A query written with
-        // explicit operators runs as written, and so does a sorted search, whose field order would
-        // override the tiers. Built once here, shared by every shard.
-        let full_plan = match (&command.query, query.as_ref(), sorts.is_some()) {
-            (OwnedValue::String(text), Some(resolved), false) => {
+        //INFO:                page * multiplier    min    max
+        //WARN: results may change based on the "docs": x lol
+        let window = fetch.saturating_mul(50).clamp(1000, 5_000);
+
+        let full_plan = match (&command.query, query.as_ref()) {
+            (OwnedValue::String(text), Some(resolved)) => {
                 let has_exact_field = ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
                 RankPlan::cascade(
                     text,
                     resolved.clone(),
                     &self.analyzer,
                     has_exact_field
-                ).stopping_after(fetch)
+                ).stopping_after(if sorts.is_some() { window } else { fetch })
             }
             _ => RankPlan::default(),
         };
@@ -1160,10 +1161,6 @@ impl ShardManager {
                     .collect()
             )
         );
-
-        //INFO:                page * multiplier    min    max
-        //WARN: results may change based on the "docs": x lol
-        let window = fetch.saturating_mul(50).clamp(1000, 5_000);
 
         //Scores must not depend on which shard a document is in, so every shard scores with the
         //statistics of all shards together: first every shard reads the query and reports its
@@ -1230,6 +1227,7 @@ impl ShardManager {
                         &prepared,
                         &corpus,
                         (*query).as_ref(),
+                        &plan,
                         filters.as_deref(),
                         &ctxs,
                         sort_xpaths,
