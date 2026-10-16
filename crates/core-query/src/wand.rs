@@ -607,6 +607,9 @@ pub struct FieldClauses<'a> {
 
 struct FormCursor<'a> {
     field: usize,
+    // how rare the form's words are together (the sum of their idf in the form's field): what a
+    // match of this form is worth when a query's coverage is measured (see `wand_top_k_grouped`)
+    idf: f32,
     cursors: Vec<PostingCursor<'a>>,
     doc_freqs: Vec<u32>,
     xpath: XPathId,
@@ -629,8 +632,17 @@ impl<'a> FormCursor<'a> {
             .iter()
             .map(|list| bm25_upper_bound(list.max_weight, doc_count, list.doc_freq))
             .fold(0u64, u64::saturating_add);
+        let rarity = |doc_freq: u32| -> f32 {
+            let n = doc_count as f32;
+            let df = (doc_freq as f32).min(n);
+            if n <= 0.0 || df <= 0.0 {
+                return 0.0;
+            }
+            ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+        };
         let mut cursor = Self {
             field: form.field,
+            idf: form.lists.iter().map(|list| rarity(list.doc_freq)).sum(),
             cursors: form.lists
                 .iter()
                 .map(|list| PostingCursor::new(list.postings))
@@ -722,6 +734,10 @@ fn weighted(score: u64, weight: u16) -> u64 {
 struct ClauseCursor<'a> {
     forms: Vec<FormCursor<'a>>,
     upper_bound: u64,
+    // what matching the clause is worth for coverage: the idf of its form in the field where the
+    // word is most common, among the fields most documents have. A word is weighed by how rare
+    // it is in the text, not in short fields like a title where almost every word is rare
+    weight: f32,
 }
 impl<'a> ClauseCursor<'a> {
     /// `None` when no form of the clause can match in the field.
@@ -734,7 +750,14 @@ impl<'a> ClauseCursor<'a> {
             return None;
         }
         let upper_bound = best_per_field(forms.iter().map(|form| (form.field, form.upper_bound)));
-        Some(Self { forms, upper_bound })
+        let largest = forms.iter().map(|form| form.doc_count).max().unwrap_or(0);
+        let weight = forms
+            .iter()
+            .filter(|form| form.doc_count == largest)
+            .map(|form| form.idf)
+            .reduce(f32::min)
+            .unwrap_or(0.0);
+        Some(Self { forms, upper_bound, weight })
     }
 
     fn doc_id(&self) -> Option<DocId> {
@@ -780,16 +803,23 @@ fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
     }
     total.saturating_add(current.map_or(0, |(_, best)| best))
 }
+/// Up to this many allowed documents are visited one by one (see `wand_top_k_grouped`).
+const DIRECT_RESTRICT_MAX: usize = 4096;
+
 /// `wand_top_k_multi_field` for clauses that may be synonym groups: exact top-k over the sum,
-/// over every field and clause, of the clause's best weighted form in that field. Only documents
-/// at least `min_match` clauses are on count ("all words but one" is the words' count - 1, with
-/// one clause per word: pass 1 for clauses of separate fields, which count a word once per field).
+/// over every field and clause, of the clause's best weighted form in that field.
+///
+/// `coverage: Some(share)` ranks by how much of the query a document covers, with one clause per
+/// query word (cross_fields): a clause is worth its word's idf, a document must be on clauses
+/// worth at least `share` of all of them, and its score is multiplied by (covered / all)², so
+/// missing a rare word costs much more than missing a common one. `None` adds the clauses up as
+/// they are (any clause is enough).
 #[timed(search)]
 pub fn wand_top_k_grouped<S: SearchStats>(
     stats: &S,
     fields: &[FieldClauses<'_>],
     k: usize,
-    min_match: usize,
+    coverage: Option<f32>,
     restrict: Option<&HashSet<DocId>>
 ) -> Vec<WandHit> {
     if k == 0 {
@@ -804,6 +834,50 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         .collect();
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
+
+    // the whole query's weight (the words the index has), and the part a document has to cover
+    let total_weight: f32 = clauses.iter().map(|clause| clause.weight).sum();
+    let needed: f32 = coverage.map_or(0.0, |share| share.clamp(0.0, 1.0) * total_weight);
+    // float sums of the same weights in another order may differ in the last bits
+    let covers = |weight: f32| weight + 1e-4 >= needed;
+    // a document's score from the clauses on it, scaled by how much of the query it covers;
+    // `None` when it covers too little (or nothing)
+    let evaluate = |clauses: &[ClauseCursor<'_>], doc: DocId| -> Option<(u64, usize)> {
+        let mut score = 0u64;
+        let mut matched_terms = 0usize;
+        let mut matched_weight = 0.0f32;
+        for clause in clauses {
+            if clause.doc_id() == Some(doc) {
+                score = score.saturating_add(clause.score(stats, doc));
+                matched_terms += 1;
+                matched_weight += clause.weight;
+            }
+        }
+        if matched_terms == 0 || !covers(matched_weight) {
+            return None;
+        }
+        if coverage.is_some() && total_weight > 0.0 {
+            let covered = f64::from((matched_weight / total_weight).min(1.0));
+            score = (score as f64 * covered * covered) as u64;
+        }
+        Some((score, matched_terms))
+    };
+
+    // a few allowed documents: go to each of them (the cursors gallop) instead of walking every
+    // posting of every clause to find them
+    if let Some(docs) = restrict.filter(|docs| docs.len() <= DIRECT_RESTRICT_MAX) {
+        let mut targets: Vec<DocId> = docs.iter().copied().collect();
+        targets.sort_unstable();
+        for doc in targets {
+            for clause in &mut clauses {
+                clause.advance_to(doc);
+            }
+            if let Some((score, matched_terms)) = evaluate(&clauses, doc) {
+                push_top_k(&mut heap, doc, score, matched_terms, k);
+            }
+        }
+        return finish_heap(heap);
+    }
 
     loop {
         clauses.retain(|clause| clause.doc_id().is_some());
@@ -820,16 +894,19 @@ pub fn wand_top_k_grouped<S: SearchStats>(
                 .unwrap_or(0)
         };
 
-        // the first clause where the clauses up to it can both beat the threshold and be at least
-        // `min_match`: a document before its document is on fewer clauses than that
+        // the first clause where the clauses up to it can both beat the threshold and cover
+        // enough of the query: a document before its document is on fewer of them than that.
+        // (A covered score is never above the plain sum, so the plain bounds stay safe.)
         let mut accumulated_upper_bound = 0u64;
+        let mut accumulated_weight = 0.0f32;
         let mut pivot_index = None;
         for (index, clause) in clauses.iter().enumerate() {
             accumulated_upper_bound = accumulated_upper_bound.saturating_add(clause.upper_bound);
+            accumulated_weight += clause.weight;
             if
                 accumulated_upper_bound >= threshold &&
                 accumulated_upper_bound > 0 &&
-                index + 1 >= min_match
+                covers(accumulated_weight)
             {
                 pivot_index = Some(index);
                 break;
@@ -844,15 +921,7 @@ pub fn wand_top_k_grouped<S: SearchStats>(
 
         if smallest_doc == pivot_doc {
             if restrict.is_none_or(|docs| docs.contains(&pivot_doc)) {
-                let mut score = 0u64;
-                let mut matched_terms = 0usize;
-                for clause in &clauses {
-                    if clause.doc_id() == Some(pivot_doc) {
-                        score = score.saturating_add(clause.score(stats, pivot_doc));
-                        matched_terms += 1;
-                    }
-                }
-                if matched_terms >= min_match {
+                if let Some((score, matched_terms)) = evaluate(&clauses, pivot_doc) {
                     push_top_k(&mut heap, pivot_doc, score, matched_terms, k);
                 }
             }

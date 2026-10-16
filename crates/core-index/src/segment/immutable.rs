@@ -147,7 +147,7 @@ impl ImmutableSegment {
     ) -> Self {
         debug_assert_eq!(
             field_stats,
-            build_field_stats(&doc_lengths),
+            build_field_stats(doc_lengths.iter().map(|(&key, &len)| (key, len))),
             "field_stats must be derivable from doc_lengths"
         );
         let doc_id_range = compute_doc_id_range(&doc_lengths, &numeric_fields);
