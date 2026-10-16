@@ -41,14 +41,14 @@
 
  /// Derive per-field stats from doc_lengths. This is the single source of
  /// truth so that in-memory segments and reopened disk segments agree.
- pub fn build_field_stats(doc_lengths: &BTreeMap<(DocId, XPathId), u32>) ->
+ pub fn build_field_stats(doc_lengths: impl IntoIterator<Item = ((DocId, XPathId), u32)>) ->
  BTreeMap<XPathId, FieldStats> {
      let mut stats: BTreeMap<XPathId, FieldStats> = BTreeMap::new();
 
      for ((_, xpath), len) in doc_lengths {
-         let entry = stats.entry(*xpath).or_default();
+         let entry = stats.entry(xpath).or_default();
          entry.doc_count += 1;
-         entry.total_doc_len += *len as u64;
+         entry.total_doc_len += len as u64;
      }
 
      stats
