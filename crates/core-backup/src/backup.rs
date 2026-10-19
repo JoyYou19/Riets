@@ -6,12 +6,12 @@ use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
+use simd_json::prelude::*;
 use slog::{Logger, error, info};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use simd_json::prelude::*;
 const COPY_BUF_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,10 +165,10 @@ fn tar_dir(
     let enc = GzEncoder::new(file, Compression::fast());
     let buffered = BufWriter::with_capacity(COPY_BUF_SIZE, enc);
     let mut builder = match progress {
-        Some(p) =>
-            tar::Builder::new(
-                Box::new(ProgressWriter { inner: buffered, progress: p }) as Box<dyn Write>
-            ),
+        Some(p) => tar::Builder::new(Box::new(ProgressWriter {
+            inner: buffered,
+            progress: p,
+        }) as Box<dyn Write>),
         None => tar::Builder::new(Box::new(buffered) as Box<dyn Write>),
     };
     builder.append_dir_all(entry_name, src)?;
@@ -185,39 +185,6 @@ pub fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::R
     Ok(())
 }
 
-#[timed(restore)]
-fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
-    let mut records = Vec::new();
-    let mut cursor = 0usize;
-
-    while cursor < bytes.len() {
-        if cursor + 12 > bytes.len() {
-            return Err(BackupError::CorruptRecord(
-                "truncated record header".to_string(),
-            ));
-        }
-
-        let offset = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
-        cursor += 8;
-        let len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
-        cursor += 4;
-
-        if cursor + len > bytes.len() {
-            return Err(BackupError::CorruptRecord(format!(
-                "record at offset {} claims {} bytes but only {} remain",
-                offset,
-                len,
-                bytes.len() - cursor
-            )));
-        }
-
-        let payload = bytes[cursor..cursor + len].to_vec();
-        cursor += len;
-        records.push((offset, payload));
-    }
-
-    Ok(records)
-}
 #[timed(writing_files)]
 fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
     let tmp = backup_path.join("manifest.json.tmp");
@@ -244,41 +211,43 @@ impl BackupManager {
         let name = shard_name.clone();
         let log = logger::shard_logger(shard_root, &name);
 
-        let (last_segment_id, last_segment_offset, last_backup_id) = if
-            let Ok(state) = fs::read_to_string(&state_path)
-        {
-            let mut buf = state.into_bytes();
-            if let Ok(parsed) = simd_json::from_slice::<simd_json::OwnedValue>(&mut buf) {
-                let segment = parsed["last_segment_id"]
-                    .as_u64()
-                    .unwrap_or(last_segment_id as u64) as u32;
-                let offset = parsed["last_segment_offset"].as_u64().unwrap_or(0);
-                let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
-                (segment, offset, id)
+        let (last_segment_id, last_segment_offset, last_backup_id) =
+            if let Ok(state) = fs::read_to_string(&state_path) {
+                let mut buf = state.into_bytes();
+                if let Ok(parsed) = simd_json::from_slice::<simd_json::OwnedValue>(&mut buf) {
+                    let segment = parsed["last_segment_id"]
+                        .as_u64()
+                        .unwrap_or(last_segment_id as u64) as u32;
+                    let offset = parsed["last_segment_offset"].as_u64().unwrap_or(0);
+                    let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
+                    (segment, offset, id)
+                } else {
+                    (last_segment_id, last_segment_offset, None)
+                }
             } else {
-                (last_segment_id, last_segment_offset, None)
-            }
-        } else {
-            // State file doesn't exist; scan disk for latest backup
-            let best = fs
-                ::read_dir(&backup_dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let manifest_path = e.path().join(&shard_name).join("manifest.json");
-                    let text = fs::read_to_string(&manifest_path).ok()?;
-                    let mut buf = text.into_bytes();
-                    simd_json::from_slice::<BackupManifest>(&mut buf).ok()
-                })
-                .max_by_key(|m| m.created_at);
+                // State file doesn't exist; scan disk for latest backup
+                let best = fs::read_dir(&backup_dir)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let manifest_path = e.path().join(&shard_name).join("manifest.json");
+                        let text = fs::read_to_string(&manifest_path).ok()?;
+                        let mut buf = text.into_bytes();
+                        simd_json::from_slice::<BackupManifest>(&mut buf).ok()
+                    })
+                    .max_by_key(|m| m.created_at);
 
-            match best {
-                Some(m) => (m.last_backup_segment, m.last_backup_offset, Some(m.backup_id)),
-                None => (last_segment_id, last_segment_offset, None),
-            }
-        };
+                match best {
+                    Some(m) => (
+                        m.last_backup_segment,
+                        m.last_backup_offset,
+                        Some(m.backup_id),
+                    ),
+                    None => (last_segment_id, last_segment_offset, None),
+                }
+            };
 
         Self {
             backup_dir,
@@ -296,8 +265,7 @@ impl BackupManager {
             .backup_dir
             .join(format!("backup_state_{}.json", self.shard_name));
         let tmp = dst.with_extension("json.tmp");
-        let state =
-            simd_json::json!({
+        let state = simd_json::json!({
             "last_backup_id": self.last_backup_id,
             "last_segment_id": self.last_segment_id,
             "last_segment_offset": &self.last_segment_offset,
@@ -662,9 +630,7 @@ impl BackupManager {
         self.cleanup_after_restore(backup_id)?;
         Ok(())
     }
-    pub fn latest_backup_id(&self) -> Option<&str> {
-        self.last_backup_id.as_deref()
-    }
+
     #[timed(restore)]
     pub fn cleanup_after_restore(&mut self, restored_backup_id: &str) -> Result<(), BackupError> {
         let restored_manifest = self.load_manifest(restored_backup_id)?;
@@ -711,9 +677,9 @@ impl BackupManager {
         let mut all: Vec<BackupManifest> = fs::read_dir(&self.backup_dir)?
             .filter_map(|e| e.ok())
             .filter_map(|e| {
-                let text = fs
-                    ::read_to_string(e.path().join(&self.shard_name).join("manifest.json"))
-                    .ok()?;
+                let text =
+                    fs::read_to_string(e.path().join(&self.shard_name).join("manifest.json"))
+                        .ok()?;
                 let mut buf = text.into_bytes();
                 simd_json::from_slice(&mut buf).ok()
             })

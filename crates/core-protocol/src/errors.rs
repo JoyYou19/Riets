@@ -146,32 +146,6 @@ impl From<toml::ser::Error> for CorelamoError {
     }
 }
 
-//TODO: From<xml_parser::Error> once we have XML
-
-#[derive(Debug)]
-pub struct CorelamoOk<T: Serialize> {
-    pub title: String,
-    pub data: Option<T>,
-}
-
-impl CorelamoOk<()> {
-    pub fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            data: None,
-        }
-    }
-}
-
-impl<T: Serialize> CorelamoOk<T> {
-    pub fn with_data(title: impl Into<String>, data: T) -> Self {
-        Self {
-            title: title.into(),
-            data: Some(data),
-        }
-    }
-}
-
 //Meant for batch insert/retrieve/update so that we can like tell the user what happened to each document
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum FailReason {

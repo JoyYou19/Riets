@@ -12,12 +12,7 @@ impl PolicyStore {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn grant(&mut self, role: impl Into<String>, permission: Permission) {
-        self.role_permissions
-            .entry(role.into())
-            .or_default()
-            .insert(permission);
-    }
+
     pub fn grant_many(
         &mut self,
         role: impl Into<String>,

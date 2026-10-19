@@ -2,10 +2,7 @@ use core_index::fuzzy::default_max_edits;
 //from abstract http text to our commands, useful for complex commands like search, retrieve....
 use crate::command_response_helpers::escape_json_text;
 use crate::document_out::DocumentOut;
-use crate::{
-    errors::{CorelamoError, DocFailure},
-    format::Format,
-};
+use crate::{errors::CorelamoError, format::Format};
 use core_index::fuzzy::levenshtein;
 use core_timing::timed;
 use indexmap::IndexMap;
@@ -13,7 +10,6 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, json};
-use std::collections::BTreeMap;
 
 //helper
 pub fn parse_json_command<T: DeserializeOwned>(body: &str) -> Result<T, CorelamoError> {
@@ -250,23 +246,6 @@ impl<'de> Deserialize<'de> for Fuzziness {
 }
 
 impl Command for SearchCommand {}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum FilterSpec {
-    Plain(String),
-    Exact {
-        value: String,
-        exact: bool,
-    },
-    Fuzzy {
-        value: String,
-        fuzzy: bool,
-        fuzziness: Option<Fuzziness>,
-        prefix_length: Option<usize>,
-        max_expansions: Option<usize>,
-    },
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -550,11 +529,6 @@ pub struct PartialReplaceItem {
 #[serde(transparent)]
 pub struct PartialReplaceCommand {
     pub items: Vec<PartialReplaceItem>,
-}
-
-pub struct ParsedPartialReplace {
-    pub items: Vec<(String, BTreeMap<String, String>)>, // id  -> fields
-    pub failures: Vec<DocFailure>,
 }
 
 impl Command for PartialReplaceCommand {

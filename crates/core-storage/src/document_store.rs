@@ -1,7 +1,6 @@
 use core_index::types::DocId;
 use core_protocol::format::Format;
-use core_timing::timed;
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{io, sync::Arc};
 
 pub type ExternalDocId = String;
 pub type InternalDocId = DocId;
@@ -29,7 +28,6 @@ pub trait DocumentStore {
     fn get(&self, external_id: &str) -> std::io::Result<Option<StoredDocument>>;
     fn delete(&mut self, external_id: &str) -> std::io::Result<()>;
     fn max_internal_id(&self) -> DocId;
-    fn get_by_internal_id(&self, internal_id: DocId) -> std::io::Result<Option<StoredDocument>>;
 
     fn document_count(&self) -> usize;
     fn contains(&self, external_id: &str) -> io::Result<bool>;
@@ -41,106 +39,4 @@ pub trait DocumentStore {
         &self,
         f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
     ) -> io::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct MemoryDocumentStore {
-    docs: BTreeMap<String, StoredDocument>,
-    internal_to_external: BTreeMap<DocId, String>,
-}
-
-impl MemoryDocumentStore {
-    pub fn new(_name: &str) -> Self {
-        Self {
-            docs: BTreeMap::default(),
-            internal_to_external: BTreeMap::default(),
-        }
-    }
-}
-
-impl DocumentStore for MemoryDocumentStore {
-    #[timed(inserting)]
-    fn put(&mut self, doc: StoredDocument) -> std::io::Result<()> {
-        self.internal_to_external
-            .insert(doc.internal_id, doc.external_id.clone());
-
-        self.docs.insert(doc.external_id.clone(), doc);
-
-        Ok(())
-    }
-
-    #[timed(inserting)]
-    fn put_batch(&mut self, docs: Vec<StoredDocument>) -> std::io::Result<()> {
-        for doc in docs {
-            self.internal_to_external
-                .insert(doc.internal_id, doc.external_id.clone());
-
-            self.docs.insert(doc.external_id.clone(), doc);
-        }
-
-        Ok(())
-    }
-
-    #[timed(retrieve_opps)]
-    fn get(&self, external_id: &str) -> std::io::Result<Option<StoredDocument>> {
-        Ok(self.docs.get(external_id).cloned())
-    }
-
-    fn contains(&self, external_id: &str) -> io::Result<bool> {
-        Ok(self.docs.contains_key(external_id))
-    }
-
-    #[timed(modifying_documents)]
-    fn delete(&mut self, external_id: &str) -> std::io::Result<()> {
-        if let Some(doc) = self.docs.remove(external_id) {
-            self.internal_to_external.remove(&doc.internal_id);
-        }
-
-        Ok(())
-    }
-
-    fn max_internal_id(&self) -> DocId {
-        self.docs
-            .values()
-            .map(|doc| doc.internal_id)
-            .max()
-            .unwrap_or(0)
-    }
-
-    #[timed(retrieve_opps)]
-    fn get_by_internal_id(&self, internal_id: DocId) -> std::io::Result<Option<StoredDocument>> {
-        let Some(external_id) = self.internal_to_external.get(&internal_id) else {
-            return Ok(None);
-        };
-
-        Ok(self.docs.get(external_id).cloned())
-    }
-
-    fn document_count(&self) -> usize {
-        self.docs.len()
-    }
-
-    #[timed(reindex)]
-    fn all_documents(&self) -> io::Result<Vec<StoredDocument>> {
-        let mut docs = Vec::new();
-
-        self.for_each_document(&mut |doc| {
-            docs.push(doc.clone());
-            Ok(())
-        })?;
-
-        Ok(docs)
-    }
-
-    #[timed(reindex)]
-    fn for_each_document(
-        &self,
-        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
-    ) -> io::Result<()> {
-        for doc in self.docs.values() {
-            f(doc)?;
-        }
-
-        Ok(())
-    }
 }

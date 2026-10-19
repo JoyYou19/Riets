@@ -119,22 +119,6 @@ pub fn score_term_into<S: SearchStats>(
     }
 }
 
-#[must_use]
-#[timed(search)]
-pub fn score_term_hybrid<S: SearchStats>(
-    stats: &S,
-    postings: &PostingList,
-    xpath: XPathId,
-    true_df: u32,
-) -> Vec<ScoredPosting> {
-    let mut out = Vec::with_capacity(postings.len());
-    let mut doc_len = HashMap::new();
-
-    score_term_into(stats, postings, xpath, true_df, &mut doc_len, &mut out);
-
-    out
-}
-
 pub fn fuzzy_decay(edits: u8) -> f32 {
     1.0 / (1.0 + edits as f32)
 }

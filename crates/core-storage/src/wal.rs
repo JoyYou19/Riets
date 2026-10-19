@@ -20,9 +20,9 @@ fn record_crc(offset: u64, len: u32, payload: &[u8]) -> u32 {
 }
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
 pub enum SyncMode {
-    SyncEach, 
-    #[default]// fsync before every acknowledgment (default, safe)
-    Manual,   // caller must invoke flush(); appends are not durable until then
+    SyncEach,
+    #[default] // fsync before every acknowledgment (default, safe)
+    Manual, // caller must invoke flush(); appends are not durable until then
 }
 struct Inner {
     file: File,
@@ -36,7 +36,7 @@ pub enum WalRecord {
     Create(Vec<DocumentInput>),
     Upsert(Vec<DocumentInput>),
     Replace(Vec<DocumentInput>),
-    Delete (Vec<String>),
+    Delete(Vec<String>),
     Clear,
 }
 
@@ -126,36 +126,6 @@ impl Wal {
         }
         g.durable_offset = g.written_offset;
         Ok(())
-    }
-
-    /// Readers can never observe a record that was not confirmed durable.
-    #[timed(wal)]
-    pub fn read_at(&self, offset: u64) -> io::Result<Vec<u8>> {
-        let mut g = self.inner.lock().unwrap();
-        if offset >= g.durable_offset {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "offset beyond durable data",
-            ));
-        }
-        g.file.seek(SeekFrom::Start(offset))?;
-        let mut header = [0u8; 8];
-        g.file.read_exact(&mut header)?;
-        let len = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let stored_crc = u32::from_le_bytes(header[4..8].try_into().unwrap());
-        if len == 0 || len > MAX_ENTRY_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "impossible length",
-            ));
-        }
-
-        let mut payload = vec![0u8; len as usize];
-        g.file.read_exact(&mut payload)?;
-        if record_crc(offset, len, &payload) != stored_crc {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "crc mismatch"));
-        }
-        Ok(payload)
     }
 
     pub fn durable_offset(&self) -> u64 {

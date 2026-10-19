@@ -282,23 +282,6 @@ impl LsmIndex {
     }
 
     #[timed(indexing_documents)]
-    pub fn add_document(
-        &mut self,
-        analyzer: &Analyzer,
-        doc_id: DocId,
-        xpath: XPathId,
-        text: &str,
-    ) -> io::Result<()> {
-        self.mem.add_document(analyzer, doc_id, xpath, text);
-
-        if self.should_flush() {
-            self.flush()?;
-        }
-
-        Ok(())
-    }
-
-    #[timed(indexing_documents)]
     pub fn add_indexed_document(
         &mut self,
         analyzer: &Analyzer,

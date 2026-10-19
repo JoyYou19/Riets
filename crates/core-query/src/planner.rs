@@ -1,17 +1,15 @@
-
-use std::collections::HashSet;
+use crate::ast::{PhraseTerm, Query};
 use core_index::analyzer::Analyzer;
 use core_index::analyzer::analyzer::MAX_NAME_WORDS;
 use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;
-use crate::ast::{PhraseTerm, Query};
-
+use std::collections::HashSet;
 
 /// "All but one word" runs for this many words at most: it expands to one AND per word left out.
 pub const MAX_ALL_BUT_ONE_WORDS: usize = 7;
 /// Score multiplier added at full density (every word at its ideal distance): ×1.5.
-/// Twice as spread out gets half of it. basically makes words that are closer score higher 
+/// Twice as spread out gets half of it. basically makes words that are closer score higher
 pub const DENSITY_BOOST: f32 = 0.5;
 /// A document whose name is a run of the query's words has its score multiplied by
 /// 1 + NAME_BONUS × the share of the query's weight the run holds: ×2.5 for a run that holds the
@@ -25,12 +23,18 @@ const MAX_NAME_KEYS: usize = 32;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tier {
     /// A name field (a field with `$exact`) whose whole value is the query or one of its
-    /// dictionary forms: the article itself, before the ones that only mention it. exact sentance basically 
-    Name { keys: Vec<String>, score_with: Query },
+    /// dictionary forms: the article itself, before the ones that only mention it. exact sentance basically
+    Name {
+        keys: Vec<String>,
+        score_with: Query,
+    },
     /// The exact (case-preserving) field, text as typed.
     Exact(Query),
     /// Every typed word in order. Matches are scored with `score_with`.
-    Phrase { terms: Vec<PhraseTerm>, score_with: Query },
+    Phrase {
+        terms: Vec<PhraseTerm>,
+        score_with: Query,
+    },
     /// The query as resolved: every word, or one of its synonyms.
     All(Query),
     /// Every word but one.
@@ -41,10 +45,10 @@ pub enum Tier {
     Fuzzy(Query),
 }
 
-#[derive(Debug, Clone,Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RankPlan {
     pub tiers: Vec<Tier>,
-    pub stop_after:usize,
+    pub stop_after: usize,
     /// The name key of every run of the query's words (see `named_runs`).
     pub named_runs: Vec<String>,
     /// The query's words, as name keys write them.
@@ -52,10 +56,6 @@ pub struct RankPlan {
 }
 
 impl RankPlan {
-    /// A query written with explicit operators runs exactly as written.
-    pub fn single(query: Query) -> Self {
-        Self { tiers: vec![Tier::All(query)], stop_after: 0, named_runs: Vec::new(), words: Vec::new() }
-    }
     /// The same plan without its fuzzy tier.
     pub fn without_fuzzy(&self) -> Self {
         Self {
@@ -82,7 +82,6 @@ impl RankPlan {
             Tier::Phrase { score_with, .. } | Tier::Name { score_with, .. } => score_with,
         })
     }
-    
 
     /// `raw` is the text as typed; `resolved` is it after synonym expansion and analysis.
     #[timed(search)]
@@ -92,7 +91,10 @@ impl RankPlan {
         if has_exact_field {
             let keys = name_keys(raw, &resolved, analyzer);
             if !keys.is_empty() {
-                tiers.push(Tier::Name { keys, score_with: resolved.clone() });
+                tiers.push(Tier::Name {
+                    keys,
+                    score_with: resolved.clone(),
+                });
             }
         }
 
@@ -108,7 +110,10 @@ impl RankPlan {
         if parts.len() >= 2 {
             let terms = terms_from_text(raw, analyzer);
             if terms.len() >= 2 {
-                tiers.push(Tier::Phrase { terms, score_with: resolved.clone() });
+                tiers.push(Tier::Phrase {
+                    terms,
+                    score_with: resolved.clone(),
+                });
             }
         }
 
@@ -133,16 +138,19 @@ impl RankPlan {
             tiers.push(Tier::Any(Query::Wand(parts)));
         }
 
-        
-
         let (named_runs, words) = if has_exact_field {
             named_runs(raw, analyzer)
         } else {
             (Vec::new(), Vec::new())
         };
-        Self { tiers, stop_after: 0, named_runs, words }
+        Self {
+            tiers,
+            stop_after: 0,
+            named_runs,
+            words,
+        }
     }
-    //this is same as the one below almost but this reads just back 
+    //this is same as the one below almost but this reads just back
     pub fn phrase_terms(&self) -> Option<&[PhraseTerm]> {
         self.tiers.iter().find_map(|tier| match tier {
             Tier::Phrase { terms, .. } => Some(terms.as_slice()),
@@ -150,9 +158,6 @@ impl RankPlan {
         })
     }
 }
-
-
-
 
 /// The name keys a whole-value match is looked up by: the typed text, then every way of writing
 /// it with the dictionary's forms ("world war 2" -> "world war ii", "second world war", "wwii").
@@ -225,7 +230,11 @@ fn written_forms(query: &Query) -> Vec<String> {
                         if next.len() >= MAX_NAME_KEYS {
                             break;
                         }
-                        next.push(if head.is_empty() { form.clone() } else { format!("{head} {form}") });
+                        next.push(if head.is_empty() {
+                            form.clone()
+                        } else {
+                            format!("{head} {form}")
+                        });
                     }
                 }
                 out = next;
@@ -273,6 +282,10 @@ fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
     };
     tokens
         .into_iter()
-        .map(|token| PhraseTerm { offset: token.position - base, text: token.text })
+        .map(|token| PhraseTerm {
+            offset: token.position - base,
+            text: token.text,
+        })
         .collect()
 }
+

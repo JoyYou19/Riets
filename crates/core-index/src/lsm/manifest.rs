@@ -29,7 +29,6 @@ pub fn read_manifest(root: &Path) -> io::Result<Vec<PathBuf>> {
         }
     }
 
-
     Ok(live.into_iter().map(|name| root.join(name)).collect())
 }
 pub fn compact_manifest(root: &Path, live: &[PathBuf]) -> io::Result<()> {
@@ -54,19 +53,6 @@ pub fn append_segment(root: &Path, segment: &Path) -> io::Result<()> {
         .open(manifest_path(root))?;
 
     writeln!(file, "{}", file_name.to_string_lossy())
-}
-#[timed(writing_files)]
-pub fn append_removal(root: &Path, segment: &Path) -> io::Result<()> {
-    let file_name = segment.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "segment path has no file name")
-    })?;
-
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(manifest_path(root))?;
-
-    writeln!(file, "{}.del", file_name.to_string_lossy())
 }
 
 // #[timed(writing_files)]

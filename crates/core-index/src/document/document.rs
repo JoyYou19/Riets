@@ -81,18 +81,6 @@ pub struct DocumentPart {
 }
 
 impl DocumentPart {
-    pub fn single(xpath: XPathId, text: String, weight: WeightInterval, exact: bool) -> Self {
-        Self {
-            xpath,
-            text,
-            weight,
-            exact,
-            names: false,
-            segments: Vec::new(),
-            gap: 0,
-        }
-    }
-
     pub fn flattened(
         xpath: XPathId,
         segments: Vec<String>,

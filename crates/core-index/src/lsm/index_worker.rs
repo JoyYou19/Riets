@@ -61,7 +61,6 @@ pub enum IndexCommand {
     GetStats {
         reply: Sender<io::Result<IndexingStats>>,
     },
-    Abort,
     Shutdown,
 }
 
@@ -123,14 +122,6 @@ impl IndexWorker {
 
     pub fn delete_document(&self, doc_id: DocId) -> io::Result<()> {
         self.send(IndexCommand::DeleteDocument { doc_id, ack: None })
-    }
-
-    pub fn add_segment(&self, segments: Vec<ImmutableSegment>, doc_count: u64) -> io::Result<()> {
-        self.send(IndexCommand::AddSegment {
-            segments,
-            doc_count,
-            ack: None,
-        })
     }
 
     pub fn flush(&self) -> io::Result<()> {
@@ -204,10 +195,6 @@ impl IndexWorker {
         })?;
 
         wait_for_acknowledgement(rx)
-    }
-
-    pub fn abort(&self) -> io::Result<()> {
-        self.send(IndexCommand::Abort)
     }
 
     pub fn install_compaction(&self, completed: CompletedCompaction) -> io::Result<()> {
@@ -406,9 +393,6 @@ fn run_index_worker(
                 shared.publish(index.publish_snapshot());
                 return Ok(index);
             }
-            IndexCommand::Abort => {
-                return Ok(index);
-            }
             IndexCommand::GetStats { reply } => {
                 stats.segment_count = index.segment_count();
                 stats.memtable_term_count = index.memtable_term_count();
@@ -481,45 +465,6 @@ pub fn build_segment_batch(
     }
 
     mem.freeze()
-}
-
-#[timed(indexing_documents)]
-pub fn index_batches_parallel(
-    worker: &IndexWorker,
-    analyzer: Analyzer,
-    batches: Vec<Vec<IndexedDocument>>,
-) -> io::Result<()> {
-    let total_docs: u64 = batches.iter().map(|batch| batch.len() as u64).sum();
-    let segments: Vec<ImmutableSegment> = batches
-        .into_par_iter()
-        .map(|batch| build_segment_batch(&analyzer, batch))
-        .collect();
-
-    worker.add_segment_wait(segments, total_docs)?;
-
-    Ok(())
-}
-
-#[timed(indexing_documents)]
-pub fn make_batches<T>(items: Vec<T>, batch_size: usize) -> Vec<Vec<T>> {
-    assert!(batch_size > 0, "batch_size must be greater than 0");
-    let mut batches = Vec::new();
-    let mut current = Vec::with_capacity(batch_size);
-
-    for item in items {
-        current.push(item);
-
-        if current.len() == batch_size {
-            batches.push(current);
-            current = Vec::with_capacity(batch_size);
-        }
-    }
-
-    if !current.is_empty() {
-        batches.push(current);
-    }
-
-    batches
 }
 
 #[timed(indexing_documents)]
@@ -794,40 +739,6 @@ fn round_eta(secs: f64) -> u64 {
         0..=30 => s,
         31..=300 => s.div_ceil(5) * 5,
         _ => s.div_ceil(30) * 30,
-    }
-}
-
-/// Panic-safe terminal state: if the reindex thread unwinds, the drop marks the
-/// run failed instead of leaving the phase stuck at `Reindexing`.
-pub struct ReindexGuard {
-    progress: Arc<ReindexProgress>,
-    settled: bool,
-}
-
-impl ReindexGuard {
-    pub fn new(progress: Arc<ReindexProgress>) -> Self {
-        Self {
-            progress,
-            settled: false,
-        }
-    }
-
-    pub fn succeed(mut self) {
-        self.progress.set_phase(Phase::Complete);
-        self.settled = true;
-    }
-
-    pub fn fail(mut self) {
-        self.progress.set_phase(Phase::Failed);
-        self.settled = true;
-    }
-}
-
-impl Drop for ReindexGuard {
-    fn drop(&mut self) {
-        if !self.settled {
-            self.progress.set_phase(Phase::Failed);
-        }
     }
 }
 

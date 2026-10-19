@@ -1,36 +1,6 @@
 use core_timing::timed;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, StaticNode, owned::Object};
-use std::collections::BTreeMap;
-
-#[timed(json_parsing)]
-pub fn traverse_json(value: &OwnedValue, path: &mut String, fields: &mut BTreeMap<String, String>) {
-    match value {
-        OwnedValue::Object(map) => {
-            let base_len = path.len();
-            for (key, val) in map.iter() {
-                if !path.is_empty() {
-                    path.push('/');
-                }
-                path.push_str(key);
-                traverse_json(val, path, fields);
-                path.truncate(base_len);
-            }
-        }
-        OwnedValue::Array(arr) => {
-            // TODO: figure out best way to handle arrays, for now separate with " "
-            let joined = arr
-                .iter()
-                .map(value_to_string)
-                .collect::<Vec<_>>()
-                .join(" ");
-            fields.insert(path.to_string(), joined);
-        }
-        other => {
-            fields.insert(path.to_string(), value_to_string(other));
-        }
-    }
-}
 
 pub fn escape_json_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -46,14 +16,6 @@ pub fn escape_json_text(s: &str) -> String {
         }
     }
     out
-}
-
-fn value_to_string(value: &OwnedValue) -> String {
-    match value {
-        OwnedValue::String(s) => s.clone(),
-        OwnedValue::Static(simd_json::StaticNode::Null) => String::new(),
-        other => other.to_string(),
-    }
 }
 
 #[timed(json_parsing)]

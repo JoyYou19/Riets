@@ -1,58 +1,9 @@
+use crate::{
+    posting::{Posting, PostingList},
+    types::DocId,
+};
 use core_timing::timed;
 use std::{cmp::Reverse, collections::BinaryHeap};
-use crate::{posting::{Posting, PostingList}, types::DocId};
-
-
-#[timed(search)]
-pub fn union(left: &PostingList, right: &PostingList) -> PostingList {
-    let mut result = Vec::new();
-    let mut i = 0;
-    let mut j = 0;
-
-    let a = left.items();
-    let b = right.items();
-
-    while i < a.len() && j < b.len() {
-        match a[i].doc_id.cmp(&b[j].doc_id) {
-            std::cmp::Ordering::Less => {
-                result.push(a[i].clone());
-                i += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                result.push(b[j].clone());
-                j += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                let mut positions = Vec::with_capacity(a[i].positions.len() + b[j].positions.len());
-                let (pa, pb) = (&a[i].positions, &b[j].positions);
-                let (mut x, mut y) = (0, 0);
-                while x < pa.len() && y < pb.len() {
-                    match pa[x].cmp(&pb[y]) {
-                        std::cmp::Ordering::Less => { positions.push(pa[x]); x += 1; }
-                        std::cmp::Ordering::Greater => { positions.push(pb[y]); y += 1; }
-                        std::cmp::Ordering::Equal => { positions.push(pa[x]); x += 1; y += 1; }
-                    }
-                }
-                positions.extend_from_slice(&pa[x..]);
-                positions.extend_from_slice(&pb[y..]);
-
-                result.push(Posting::with_weight(
-                    a[i].doc_id,
-                    positions,
-                    a[i].weight.max(b[j].weight),
-                ));
-
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-
-    result.extend_from_slice(&a[i..]);
-    result.extend_from_slice(&b[j..]);
-
-    PostingList::from_sorted(result)
-}
 
 #[timed(search)]
 pub fn linear_search(left: &PostingList, right: &PostingList) -> PostingList {
@@ -85,9 +36,8 @@ pub fn intersection(left: &PostingList, right: &PostingList) -> PostingList {
     let (short_len, long_len) = (a.len().min(b.len()), a.len().max(b.len()));
 
     // cost of galloping: short * log2(long/short + 1)
-    let gallop_cost = short_len.saturating_mul(
-        (long_len / short_len.max(1)).max(1).ilog2() as usize + 1
-    );
+    let gallop_cost =
+        short_len.saturating_mul((long_len / short_len.max(1)).max(1).ilog2() as usize + 1);
     let merge_cost = a.len() + b.len();
 
     if gallop_cost < merge_cost {
@@ -96,7 +46,7 @@ pub fn intersection(left: &PostingList, right: &PostingList) -> PostingList {
         linear_search(left, right) // your existing loop
     }
 }
-pub fn exponential_search(left: &PostingList, right: &PostingList) -> PostingList{
+pub fn exponential_search(left: &PostingList, right: &PostingList) -> PostingList {
     let a = left.items();
     let b = right.items();
 
@@ -188,49 +138,4 @@ pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> Posti
     // segments, so duplicates are real here — from_sorted merges them.
     PostingList::from_sorted(out)
 }
-/// Restricts `postings` to the doc_ids in `candidates`, keeping
-/// `postings`' own positions and weights. Driven from `candidates`
-/// (expected to be the smaller side) galloping into `postings`.
-///
-/// Distinct from `intersection`: the output always carries the
-/// left/`postings` side's payload, never the candidate side's.
-#[timed(search)]
-pub fn restrict_to(postings: &PostingList, candidates: &[DocId]) -> PostingList {
-    let p = postings.items();
-    let mut result = Vec::with_capacity(candidates.len().min(p.len()));
-    let mut cursor = 0usize;
 
-    for &doc_id in candidates {
-        if cursor >= p.len() {
-            break;
-        }
-        cursor = exponent_search_to(p, cursor, doc_id);
-        if cursor < p.len() && p[cursor].doc_id == doc_id {
-            result.push(p[cursor].clone());
-            cursor += 1;
-        }
-    }
-
-    PostingList::from_sorted(result)
-}
-/// Doc-id-only intersection for candidate generation. Carries no
-/// positions or weights, so no per-match position cloning.
-#[timed(search)]
-pub fn intersect_ids(ids: &[DocId], postings: &PostingList) -> Vec<DocId> {
-    let p = postings.items();
-    let mut result = Vec::with_capacity(ids.len().min(p.len()));
-    let mut cursor = 0usize;
-
-    for &doc_id in ids {
-        if cursor >= p.len() {
-            break;
-        }
-        cursor = exponent_search_to(p, cursor, doc_id);
-        if cursor < p.len() && p[cursor].doc_id == doc_id {
-            result.push(doc_id);
-            cursor += 1;
-        }
-    }
-
-    result
-}

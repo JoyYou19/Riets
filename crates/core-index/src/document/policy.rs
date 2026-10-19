@@ -443,14 +443,6 @@ impl IndexPolicy {
             .collect()
     }
 
-    pub fn exact_xpaths(&self) -> Vec<XPathId> {
-        self.indexed_fields()
-            .into_iter()
-            .filter(|field| field.has_exact_index())
-            .map(|field| field.exact_xpath(self).unwrap())
-            .collect()
-    }
-
     pub fn resolve(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
         let root = root.as_ref();
         let registry_path = Self::registry_path(root);
@@ -518,11 +510,6 @@ impl IndexPolicy {
         let full = serde_json::to_string_pretty(&Full(self))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         fs::write(Self::full_path(root), full)
-    }
-
-    pub fn write_default(root: impl AsRef<Path>) -> io::Result<()> {
-        let mut policy = Self::default_document();
-        policy.save(root)
     }
 }
 
