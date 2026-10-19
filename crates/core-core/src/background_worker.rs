@@ -163,13 +163,17 @@ impl BackgroundLoop {
         }
         let Some(embedder) = self.embedder() else {
             return Ok(false);
-        };
+        }; 
+        let spec = embedder.spec();
+        // Counting needs no model, so a shard waiting for the lease still reports progress.
+        if self.last_measure.is_none_or(|at| at.elapsed() >= MEASURE_EVERY) {
+            self.measure(spec);
+        }
         // Never wait for the model: another shard is embedding, and waiting here would stall
         // this shard's compaction.
         let Some(mut lease) = embedder.try_lease()? else {
             return Ok(false);
         };
-        let spec = lease.spec();
 
         let round_started = Instant::now();
         self.stats.set_activity(BackgroundActivity::Embedding);
@@ -191,11 +195,7 @@ impl BackgroundLoop {
                 true
             }
         };
-
-        let measure_due = self
-            .last_measure
-            .is_none_or(|at| at.elapsed() >= MEASURE_EVERY);
-        if did_work || measure_due {
+        if did_work {
             self.measure(spec);
         }
         Ok(did_work)

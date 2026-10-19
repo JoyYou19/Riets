@@ -32,7 +32,8 @@ POLICY = """\
     "$type": "text",
     "$list": true,
     "$stemming": "english",
-    "$weight": { "min": 1, "max": 100 }
+    "$weight": { "min": 1, "max": 100 },
+    "$vector":true
   },
   "random_year": {
     "$type": "int",

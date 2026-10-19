@@ -385,7 +385,7 @@ pub fn merge_vector_files(
 /// Merges vector files into one, dropping deleted documents. Used by compaction.
 /// If the same document appears in several inputs, the row from the last input wins.
 /// Returns the number of records written.
-pub fn merge_into(
+fn merge_into(
     inputs: &[&VectorFile],
     deleted: &DeleteSet,
     output: impl AsRef<Path>,

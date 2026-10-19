@@ -11,6 +11,7 @@ use core_index::analyzer::Analyzer;
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
 use core_index::search::{SearchIndex, SearchNumeric};
+use core_index::vector::VectorHit;
 use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse, MatchMode};
 use core_query::planner::RankPlan;
 use core_query::resolver::{FieldCtx, FieldQuery};
@@ -347,6 +348,21 @@ impl ShardHandle {
         })
     }
 
+    //VECTOR SEACH
+    /// Exact vector search over this shard's published segments. `query` must be L2-normalized.
+    pub fn vector_search(
+        &self,
+        xpath: XPathId,
+        query: &[f32],
+        k: usize,
+    ) -> Result<Vec<VectorHit>, CorelamoError> {
+        self.ensure_readable()?;
+        self.shared
+            .snapshot
+            .get()
+            .vector_search(xpath, query, k)
+            .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))
+    }
     #[timed(search)]
     pub fn rank_sorted(
         &self,

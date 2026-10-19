@@ -94,6 +94,7 @@ pub struct DbStats {
     /// When the first embedding round that embedded anything started; the database-wide rate
     /// is measured from here because all shards share one model.
     embedding_started: OnceLock<Instant>,
+
 }
 
 /// Counters written by shard threads and the manager. Relaxed throughout:
@@ -128,6 +129,7 @@ struct ShardGauges {
     last_compaction_ms: AtomicU64,
     embedding_enabled: AtomicBool,
     vectors_total: AtomicU64,
+    vectors_measured:AtomicBool,
     vectors_done: AtomicU64,
     embedded: AtomicU64,
 }
@@ -327,16 +329,18 @@ impl DbStats {
         let mut vectors_total = 0u64;
         let mut vectors_done = 0u64;
         let mut embedded = 0u64;
-
+        let mut all_measured=true;
         for g in &self.shards {
             let doc_gauge = g.documents.load(Relaxed) as u64;
             let doc_indexed = g.documents_indexed.load(Relaxed);
+            if g.embedding_enabled.load(Relaxed) && !g.vectors_measured.load(Relaxed) {
+                all_measured = false;
+            }
             // documents gauge is only refreshed by publish() (start/clear/reindex);
             // documents_indexed is a live running counter updated on every insert.
             // Use whichever is larger so status reflects live inserts without
             // needing a reindex/restart to refresh the gauge.
-            documents += doc_gauge.max(doc_indexed) as usize;
-
+            documents += doc_gauge.max(doc_indexed) as usize; 
             segments += g.segments.load(Relaxed);
             terms += g.memtable_terms.load(Relaxed);
             compaction |= g.compaction_enabled.load(Relaxed);
@@ -344,7 +348,7 @@ impl DbStats {
             deleted += g.documents_deleted.load(Relaxed);
             written += g.segments_written.load(Relaxed);
             compactions += g.compactions_completed.load(Relaxed);
-
+            
             match BackgroundActivity::from_u8(g.activity.load(Relaxed)) {
                 BackgroundActivity::Compacting => {
                     compacting += 1;
@@ -359,7 +363,7 @@ impl DbStats {
             embedding_enabled |= g.embedding_enabled.load(Relaxed);
             vectors_total += g.vectors_total.load(Relaxed);
             vectors_done += g.vectors_done.load(Relaxed);
-            embedded += g.embedded.load(Relaxed);
+           
         }
 
         DatabaseStats {
@@ -389,17 +393,18 @@ impl DbStats {
                     embedding_enabled,
                     vectors_total,
                     vectors_done,
-                    embedded
+                    embedded,
+                    all_measured
                 ),
             },
         }
     }
 
-    fn embedding_stats(&self, enabled: bool, total: u64, done: u64, embedded: u64) -> EmbeddingStats {
+    fn embedding_stats(&self, enabled: bool, total: u64, done: u64, embedded: u64, measured:bool) -> EmbeddingStats {
         let done = done.min(total);
         let status = if !enabled {
             EmbeddingStatus::Disabled
-        } else if done >= total {
+        } else if measured && done >= total {
             EmbeddingStatus::Complete
         } else {
             EmbeddingStatus::Embedding
@@ -429,6 +434,7 @@ impl DbStats {
             eta_seconds,
         }
     }
+    
 }
 
 impl ShardStatsHandle {
@@ -476,14 +482,18 @@ impl ShardStatsHandle {
         }
     }
 
-    pub fn set_embedding_enabled(&self, on: bool) {
-        self.stats.shards[self.index].embedding_enabled.store(on, Relaxed);
+     pub fn set_embedding_enabled(&self, on: bool) {
+        let g = &self.stats.shards[self.index];
+        g.embedding_enabled.store(on, Relaxed);
+        // a (re)started worker must measure again before its figures count
+        g.vectors_measured.store(false, Relaxed);
     }
 
     pub fn set_vector_progress(&self, total: u64, done: u64) {
         let g = &self.stats.shards[self.index];
         g.vectors_total.store(total, Relaxed);
         g.vectors_done.store(done, Relaxed);
+        g.vectors_measured.store(true, Relaxed);
     }
 
     /// `round_started` anchors the database-wide rate at the first round that embedded anything.
@@ -491,6 +501,7 @@ impl ShardStatsHandle {
         self.stats.embedding_started.get_or_init(|| round_started);
         self.stats.shards[self.index].embedded.fetch_add(count, Relaxed);
     }
+    
 }
 
 #[cfg(test)]

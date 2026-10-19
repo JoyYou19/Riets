@@ -1,7 +1,7 @@
 use std::{
     io,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
@@ -48,68 +48,7 @@ impl Drop for CompactionPermit {
     }
 }
 
-pub struct CompactionWorker {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<io::Result<()>>>,
-}
 
-impl CompactionWorker {
-    pub fn start(
-        sender: Sender<IndexCommand>,
-        config: CompactionConfig,
-        interval: Duration,
-        log: slog::Logger,
-    ) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = stop.clone();
-
-        let handle = thread::Builder::new()
-            .name("index-compaction".to_string())
-            .spawn(move || -> io::Result<()> {
-                while !stop_thread.load(Ordering::Relaxed) {
-                match run_compaction_cycle(&sender, config, &log) {
-                    Ok(true) => {
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
-                        return Ok(());
-                    }
-                    Err(err) => {
-                        slog::error!(log, "index compaction cycle failed; retrying after interval";
-                        "error" => %err);
-                    }
-                }
-                sleep_unless_stopped(&stop_thread, interval);
-            }
-            Ok(())
-        })
-        .expect("failed to spawn index compaction worker");
-
-        Self {
-            stop,
-            handle: Some(handle),
-        }
-    }
-
-    pub fn stop(mut self) -> io::Result<()> {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            handle
-                .join()
-                .map_err(|_| io::Error::other("compaction worker panicked"))??;
-        }
-        Ok(())
-    }
-
-    // Stops the worker without waiting; the thread exits once it notices the flag.
-    pub fn stop_async(mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            drop(handle);
-        }
-    }
-}
 
 /// Plans, runs and installs at most one compaction.
 /// Returns Ok(true) if a job was installed, Ok(false) if there was nothing to do.

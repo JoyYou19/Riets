@@ -1176,7 +1176,8 @@ impl ShardDb {
             }
         }
 
-        self.db = Some(db);
+         self.db = Some(db);
+        self.start_background();
         self.publish_stats();
         self.last_write = Instant::now();
         info!(self.log, "shard cleared"; "shard_id" => self.shard_id);
