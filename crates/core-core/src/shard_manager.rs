@@ -1021,7 +1021,7 @@ impl ShardManager {
             all_not_found.extend(response.not_found);
         }
 
-        //for users own happieness we return the found/not_found in the same oder  as
+        //for users own happieness we return the found/not_found in the same oder as
         //he/she/they/them asked
         all_docs.sort_by_key(|(external_id, _)| {
             position.get(external_id).copied().unwrap_or(usize::MAX)
