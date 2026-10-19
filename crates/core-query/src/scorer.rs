@@ -115,7 +115,6 @@ pub fn score_term_into<S: SearchStats>(
             score,
             matched_terms: 1,
             density: 1.0,
-            distance_factor:()
         });
     }
 }

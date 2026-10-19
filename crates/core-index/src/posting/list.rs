@@ -1,7 +1,7 @@
 use core_timing::timed;
 
 use crate::{
-    posting::Posting,
+    posting::{Positions, Posting},
     types::{DocId, Position},
 };
 
@@ -27,15 +27,15 @@ impl PostingList {
     }
 
     /// Appends extra positions and keeps the list ascending + unique.
-    fn extend_positions_sorted(positions: &mut Vec<Position>, extra: &mut Vec<Position>) {
+    fn extend_positions_sorted(positions: &mut Positions, extra: &[Position]) {
         if positions
             .last()
             .is_none_or(|last| extra.first().is_some_and(|first| last <= first))
         {
-            positions.append(extra);
+            positions.extend_from_slice(extra);
             return;
         }
-        positions.append(extra);
+        positions.extend_from_slice(extra);
         positions.sort_unstable();
         positions.dedup();
     }

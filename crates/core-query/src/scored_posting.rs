@@ -8,5 +8,4 @@ pub struct ScoredPosting {
     pub score: u64,
     pub matched_terms: usize,
     pub density: f32,
-    pub(crate) distance_factor: (),
 }
