@@ -53,6 +53,7 @@ use tokio::task::JoinSet;
 use crate::shard_manager_helpers::{
     compile_filters, fold_sort_bounds, order_blended, order_strict, resolve_sorts,
 };
+use core_embed::{Embedder, ModelRegistry};
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
     root: PathBuf,
@@ -65,7 +66,7 @@ pub struct ShardManager {
     all_fields: RwLock<AllFields>,
     // the database's synonym dictionary, dictionary.toml in its directory
     synonyms: Arc<SynonymManager>,
-
+    models: Arc<ModelRegistry>,
     // taken and joined in shutdown(); a Mutex because shutdown() only gets &self
     joins: Mutex<Vec<JoinHandle<()>>>, //JoinHandle atgriez kad thread uztaisits
     // main, delete and rename all reach shutdown(), so it has to be safe twice
@@ -81,6 +82,7 @@ impl ShardManager {
         options: DatabaseOptions,
         shard_count: u16,
         synonym_registry: &SynonymRegistry,
+        models:Arc<ModelRegistry>
     ) -> Result<Self, CorelamoError> {
         if shard_count == 0 {
             return Err(CorelamoError::InvalidData(
@@ -114,6 +116,7 @@ impl ShardManager {
                 options.clone(),
                 policy.clone(),
                 db_stats.handle(shard_id as usize),
+                Arc::clone(&models),
             )?;
             let (handle, join, boot_rx) =
                 shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
@@ -139,9 +142,137 @@ impl ShardManager {
             db_stats,
             backup_dir,
             synonyms,
+            models
         })
     }
 
+     //INFO: manual load is basically only used for rename_database so that it doesnt start based on
+    //boot : bool
+    #[timed(database_lifecycle)]
+    pub fn load(
+        root: PathBuf,
+        manual_load: bool,
+        synonym_registry: &SynonymRegistry,
+        models:Arc<ModelRegistry>
+    ) -> Result<Self, CorelamoError> {
+        let shards_dir = root.join("shards");
+
+        if !shards_dir.exists() {
+            return Err(CorelamoError::NotFound(format!(
+                "shards directory not found at {}",
+                shards_dir.display()
+            )));
+        }
+
+        let mut shard_paths = Vec::new();
+        for entry in std::fs::read_dir(&shards_dir)? {
+            let entry = entry?;
+            if entry.path().is_dir() {
+                shard_paths.push(entry.path());
+            }
+        }
+
+        shard_paths.sort_by_key(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|s| s.strip_prefix("shard-"))
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(u16::MAX)
+        });
+
+        // Routing returns a position in `shards`, while document ids carry the shard id, so
+        // the shard at position i must be shard-i. Checked before any shard is started.
+        let shard_count_u16 = u16::try_from(shard_paths.len()).map_err(|_| {
+            CorelamoError::InvalidData(format!(
+                "{} shard directories exceed the supported maximum of {}",
+                shard_paths.len(),
+                u16::MAX
+            ))
+        })?;
+        for (position, path) in shard_paths.iter().enumerate() {
+            let parsed = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|s| s.strip_prefix("shard-"))
+                .and_then(|s| s.parse::<u16>().ok());
+            if parsed.map(usize::from) != Some(position) {
+                return Err(CorelamoError::InvalidData(format!(
+                    "shard directory {} is at position {position}; shard directories must be shard-0 to shard-{}",
+                    path.display(),
+                    shard_paths.len() - 1
+                )));
+            }
+        }
+
+        let policy_path = root.join(IndexPolicy::POLICY_FILE_NAME);
+
+        if !policy_path.exists() {
+            return Err(CorelamoError::NotFound(format!(
+                "policy not found at {}",
+                policy_path.display()
+            )));
+        }
+
+        let policy = IndexPolicy::load(&root)?;
+
+        let options = match DatabaseOptions::load_from_file(&root) {
+            Ok(o) => o,
+            Err(e) => {
+                return Err(CorelamoError::from(e));
+            }
+        };
+
+        let backup_dir = root.join("backups");
+        let shard_count = shard_paths.len();
+        let db_stats = DbStats::new(shard_count);
+        let mut shards = Vec::new();
+        let mut joins = Vec::new();
+        let mut boot_rxs = Vec::new();
+        let all_fields = AllFields::load(&root)?;
+        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
+        // let models =Arc::new();
+        //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
+        for (i, shard_path) in shard_paths.iter().enumerate() {
+            let db = ShardDb::load(
+                shard_path,
+                &root,
+                shard_count_u16,
+                &policy,
+                &options,
+                db_stats.handle(i),
+                Arc::clone(&models),
+            )?;
+            let (handle, join, boot_rx) = shard_worker::spawn(
+                db,
+                Self::DEFAULT_QUEUE_DEPTH,
+                options.bootable && manual_load,
+            )?;
+            shards.push(handle);
+            joins.push(join);
+            boot_rxs.push((i, boot_rx));
+        }
+        for (i, boot_rx) in boot_rxs {
+            boot_rx.recv().map_err(|_| {
+                CorelamoError::Internal(format!("shard {i} thread died during start"))
+            })??;
+        }
+
+        Ok(Self {
+            shards,
+            joins: Mutex::new(joins),
+            shutdown_done: AtomicBool::new(false),
+            root,
+            policy: RwLock::new(policy),
+            options: RwLock::new(options),
+            analyzer: Analyzer::new(),
+            reindex_pool: ReindexPool::start(shard_count as usize),
+            all_fields: RwLock::new(all_fields),
+            db_stats,
+            backup_dir,
+            synonyms,
+            models
+        })
+    }
     pub fn all_fields(&self) -> AllFields {
         self.all_fields.read().clone()
     }
@@ -521,131 +652,12 @@ impl ShardManager {
         }
     }
 
-    //INFO: manual load is basically only used for rename_database so that it doesnt start based on
-    //boot : bool
-    #[timed(database_lifecycle)]
-    pub fn load(
-        root: PathBuf,
-        manual_load: bool,
-        synonym_registry: &SynonymRegistry,
-    ) -> Result<Self, CorelamoError> {
-        let shards_dir = root.join("shards");
-
-        if !shards_dir.exists() {
-            return Err(CorelamoError::NotFound(format!(
-                "shards directory not found at {}",
-                shards_dir.display()
-            )));
-        }
-
-        let mut shard_paths = Vec::new();
-        for entry in std::fs::read_dir(&shards_dir)? {
-            let entry = entry?;
-            if entry.path().is_dir() {
-                shard_paths.push(entry.path());
-            }
-        }
-
-        shard_paths.sort_by_key(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|s| s.strip_prefix("shard-"))
-                .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(u16::MAX)
-        });
-
-        // Routing returns a position in `shards`, while document ids carry the shard id, so
-        // the shard at position i must be shard-i. Checked before any shard is started.
-        let shard_count_u16 = u16::try_from(shard_paths.len()).map_err(|_| {
-            CorelamoError::InvalidData(format!(
-                "{} shard directories exceed the supported maximum of {}",
-                shard_paths.len(),
-                u16::MAX
-            ))
-        })?;
-        for (position, path) in shard_paths.iter().enumerate() {
-            let parsed = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|s| s.strip_prefix("shard-"))
-                .and_then(|s| s.parse::<u16>().ok());
-            if parsed.map(usize::from) != Some(position) {
-                return Err(CorelamoError::InvalidData(format!(
-                    "shard directory {} is at position {position}; shard directories must be shard-0 to shard-{}",
-                    path.display(),
-                    shard_paths.len() - 1
-                )));
-            }
-        }
-
-        let policy_path = root.join(IndexPolicy::POLICY_FILE_NAME);
-
-        if !policy_path.exists() {
-            return Err(CorelamoError::NotFound(format!(
-                "policy not found at {}",
-                policy_path.display()
-            )));
-        }
-
-        let policy = IndexPolicy::load(&root)?;
-
-        let options = match DatabaseOptions::load_from_file(&root) {
-            Ok(o) => o,
-            Err(e) => {
-                return Err(CorelamoError::from(e));
-            }
-        };
-
-        let backup_dir = root.join("backups");
-        let shard_count = shard_paths.len();
-        let db_stats = DbStats::new(shard_count);
-        let mut shards = Vec::new();
-        let mut joins = Vec::new();
-        let mut boot_rxs = Vec::new();
-        let all_fields = AllFields::load(&root)?;
-        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
-
-        //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
-        for (i, shard_path) in shard_paths.iter().enumerate() {
-            let db = ShardDb::load(
-                shard_path,
-                &root,
-                shard_count_u16,
-                &policy,
-                &options,
-                db_stats.handle(i),
-            )?;
-            let (handle, join, boot_rx) = shard_worker::spawn(
-                db,
-                Self::DEFAULT_QUEUE_DEPTH,
-                options.bootable && manual_load,
-            )?;
-            shards.push(handle);
-            joins.push(join);
-            boot_rxs.push((i, boot_rx));
-        }
-        for (i, boot_rx) in boot_rxs {
-            boot_rx.recv().map_err(|_| {
-                CorelamoError::Internal(format!("shard {i} thread died during start"))
-            })??;
-        }
-
-        Ok(Self {
-            shards,
-            joins: Mutex::new(joins),
-            shutdown_done: AtomicBool::new(false),
-            root,
-            policy: RwLock::new(policy),
-            options: RwLock::new(options),
-            analyzer: Analyzer::new(),
-            reindex_pool: ReindexPool::start(shard_count as usize),
-            all_fields: RwLock::new(all_fields),
-            db_stats,
-            backup_dir,
-            synonyms,
-        })
+   /// The configured embedding model, loaded on first use and shared by all databases.
+    pub fn embedder(&self) -> Result<Arc<Embedder>, CorelamoError> {
+        self.models
+            .default_embedder()
+            .map_err(|e| CorelamoError::Internal(format!("embedding model: {e}")))
     }
-
     pub fn root(&self) -> &std::path::Path {
         &self.root
     }

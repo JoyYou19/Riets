@@ -762,6 +762,7 @@ dependencies = [
  "bincode",
  "chrono",
  "core-backup",
+ "core-embed",
  "core-index",
  "core-logs",
  "core-protocol",
@@ -782,6 +783,13 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "core-embed"
+version = "0.1.0"
+dependencies = [
+ "fastembed",
 ]
 
 [[package]]
@@ -892,6 +900,7 @@ dependencies = [
  "core-auth",
  "core-backup",
  "core-core",
+ "core-embed",
  "core-index",
  "core-logs",
  "core-protocol",

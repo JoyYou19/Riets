@@ -14,7 +14,7 @@ use core_index::{
     lsm::{
         LsmIndex,
         index_worker::{IndexingStats, ReindexProgress, ReindexingStats},
-        worker::CompactionWorker,
+        
     },
     types::ShardId,
 };
@@ -25,11 +25,7 @@ use core_protocol::{
 use core_timing::timed;
 
 use crate::{
-    metrics::DatabaseMetrics,
-    metrics::ShardStatsHandle,
-    options::DatabaseOptions,
-    reindex::{CompletedShardReindex, ReindexParams},
-    shared_state::SharedShardState,
+    background_worker::BackgroundWorker, metrics::{BackgroundStats, DatabaseMetrics, ShardStatsHandle}, options::DatabaseOptions, reindex::{CompletedShardReindex, ReindexParams}, shared_state::SharedShardState,
 };
 use core_logs::logger;
 use core_storage::{
@@ -43,6 +39,9 @@ use core_storage::{
     },
     wal::{Wal, WalRecord},
 };
+use core_embed::ModelRegistry;
+
+use crate::{ embed::EmbeddingJob};
 use slog::{Logger, error, info, warn};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +53,7 @@ pub struct DatabaseStats {
     pub indexing: IndexingStats,
     pub reindexing: ReindexingStats,
     pub backup: BackupStats,
+    pub background: BackgroundStats,
     pub shard_count: usize,
     pub restoring: bool,
 }
@@ -69,7 +69,9 @@ pub struct ShardDb {
     options: DatabaseOptions,
     //each shard kip holds this yeye
     db: Option<SearchDatabase<BinaryDocumentStore>>,
-    compaction_worker: Option<CompactionWorker>,
+    //embedding/reindex/compaction
+    background_worker:Option<BackgroundWorker>,  
+    models:Arc<ModelRegistry>,
     stats: ShardStatsHandle,
     log: Logger,
     wal: Wal,
@@ -94,6 +96,7 @@ impl ShardDb {
         options: DatabaseOptions,
         policy: IndexPolicy,
         stats: ShardStatsHandle,
+        models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = format!("shard-{}", shard_id);
@@ -123,7 +126,8 @@ impl ShardDb {
             policy,
             options,
             db: None,
-            compaction_worker: None,
+            background_worker:None,
+            models,
             log,
             wal,
             generation: 0,
@@ -143,6 +147,7 @@ impl ShardDb {
         policy: &IndexPolicy,
         options: &DatabaseOptions,
         stats: ShardStatsHandle,
+        models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = root
@@ -180,7 +185,8 @@ impl ShardDb {
             policy: policy.clone(),
             options: options.clone(),
             db: None,
-            compaction_worker: None,
+            background_worker: None,
+            models,
             stats,
             log,
             wal,
@@ -200,7 +206,7 @@ impl ShardDb {
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents");
         let analyzer = self.analyzer();
-        let shard_log = self.log.clone();
+       
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let store = BinaryDocumentStore::open_with_maps(
             &store_path,
@@ -321,20 +327,10 @@ impl ShardDb {
             }
         }
 
-        self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-                shard_log.new(slog::o!("component" => "index_compaction")),
-            ))
-        } else {
-            None
-        };
+       
 
         self.db = Some(db);
-        self.stats
-            .set_compaction_enabled(self.compaction_worker.is_some());
+        self.start_background();
         self.publish_stats();
         self.last_write = Instant::now();
         self.report_misplaced_documents();
@@ -376,9 +372,9 @@ impl ShardDb {
             return Ok(());
         }
 
-        if let Some(worker) = self.compaction_worker.take() {
+         if let Some(worker) = self.background_worker.take() {
             worker.stop()?;
-            info!(self.log, "compaction worker stopped"; "shard_id" => self.shard_id);
+            info!(self.log, "background worker stopped"; "shard_id" => self.shard_id);
         }
 
         if let Some(db) = self.db.take() {
@@ -447,12 +443,15 @@ impl ShardDb {
     }
 
     #[timed(database_lifecycle)]
-    pub fn set_policy(&mut self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
+   pub fn set_policy(&mut self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
         policy.validate()?;
         if let Some(db) = &mut self.db {
             db.set_policy(policy.clone())?;
         }
         self.policy = policy;
+        if self.db.is_some() {
+            self.start_background();
+        }
         info!(self.log, "policy set"; "shard_id" => self.shard_id, "user" => user);
         Ok(())
     }
@@ -475,6 +474,9 @@ impl ShardDb {
     pub fn apply_config(&mut self, policy: IndexPolicy, options: DatabaseOptions) {
         self.policy = policy;
         self.options = options;
+        if self.db.is_some() {
+            self.start_background();
+        }
     }
 
     // ====== Read Operations ======
@@ -760,8 +762,8 @@ impl ShardDb {
         //eprintln!("flush: {:?}", t0.elapsed());
 
         //let t1 = std::time::Instant::now();
-        if let Some(worker) = self.compaction_worker.take() {
-            let _ = worker.stop_async();
+        if let Some(worker) = self.background_worker.take() {
+            worker.stop_async();
             self.stats.set_compaction_enabled(false);
         }
         //eprintln!("compaction stop: {:?}", t1.elapsed());
@@ -1098,13 +1100,13 @@ impl ShardDb {
         self.wal_append_record(&WalRecord::Clear)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
-        let shard_log = self.log.clone();
-        if let Some(worker) = self.compaction_worker.take() {
+        
+        if let Some(worker) = self.background_worker.take() {
             match worker.stop() {
                 Ok(()) => {
-                    info!(self.log, "compaction worker stopped for clear"; "shard_id" => self.shard_id);
+                    info!(self.log, "background worker stopped for clear"; "shard_id" => self.shard_id);
                 }
-                Err(e) => warn!(self.log, "compaction worker exited with error before clear";
+                Err(e) => warn!(self.log, "background worker exited with error before clear";
                 "shard_id" => self.shard_id, "error" => %e),
             }
         }
@@ -1164,16 +1166,15 @@ impl ShardDb {
             self.shared.snapshot.clone(),
         )?;
 
-        self.compaction_worker = if self.options.enable_background_compaction {
-            Some(CompactionWorker::start(
-                db.index_sender(),
-                self.options.runtime.compaction,
-                self.options.compaction_interval,
-                shard_log.new(slog::o!("component" => "index_compaction")),
-            ))
-        } else {
-            None
-        };
+         if let Some(worker) = self.background_worker.take() {
+            match worker.stop() {
+                Ok(()) => {
+                    info!(self.log, "background worker stopped for clear"; "shard_id" => self.shard_id);
+                }
+                Err(e) => warn!(self.log, "background worker exited with error before clear";
+                "shard_id" => self.shard_id, "error" => %e),
+            }
+        }
 
         self.db = Some(db);
         self.publish_stats();
@@ -1191,14 +1192,14 @@ impl ShardDb {
     ) -> Result<BackupManifest, CorelamoError> {
         self.flush()?;
 
-        if let Some(worker) = self.compaction_worker.take() {
+        if let Some(worker) = self.background_worker.take() {
             if let Err(err) = worker.stop() {
-                warn!(self.log, "compaction worker exited with error before backup"; "error" => %err);
+                warn!(self.log, "background worker exited with error before backup"; "error" => %err);
             }
         }
 
         let result = self.run_full_backup(&shard_backup_path, &backup_id);
-        self.restart_compaction_worker();
+        self.restart_background();
 
         match &result {
             Ok(_) => info!(self.log, "Full backup made";
@@ -1239,34 +1240,26 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    pub fn abandoned_reindex(&mut self, generation: u64) {
+    pub fn abondoned_reindex(&mut self, generation: u64) {
         if generation != self.generation {
             return;
         }
-        info!(self.log, "reindex abandoned, restarting compaction";
+        info!(self.log, "reindex abandoned, restarting background work";
         "shard_id" => self.shard_id, "generation" => generation);
-        self.restart_compaction_worker();
+        self.restart_background();
     }
 
-    fn restart_compaction_worker(&mut self) {
-        if !self.options.enable_background_compaction || self.compaction_worker.is_some() {
+    /// Starts the background worker again after a reindex or backup paused it.
+    fn restart_background(&mut self) {
+        if self.background_worker.is_some() {
             return;
         }
-        match self.db_ref() {
-            Ok(db) => {
-                let sender = db.index_sender();
-                self.compaction_worker = Some(CompactionWorker::start(
-                    sender,
-                    self.options.runtime.compaction,
-                    self.options.compaction_interval,
-                    self.log.new(slog::o!("component" => "index_compaction")),
-                ));
-                self.stats.set_compaction_enabled(true);
-            }
-            Err(err) => {
-                warn!(self.log, "compaction worker not restarted"; "error" => ?err);
-            }
+        if self.db.is_none() {
+            warn!(self.log, "background worker not restarted: shard is not running";
+                "shard_id" => self.shard_id);
+            return;
         }
+        self.start_background();
     }
 
     #[timed(backup)]
@@ -1373,5 +1366,35 @@ impl ShardDb {
         self.last_write = Instant::now();
         self.publish_stats();
         Ok(())
+    }
+        /// Starts compaction and embedding for the live index, replacing any running worker.
+    fn start_background(&mut self) {
+        if let Some(worker) = self.background_worker.take() {
+            worker.stop_async();
+        }
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let compaction = self
+            .options
+            .enable_background_compaction
+            .then_some(self.options.runtime.compaction);
+         let embedding = EmbeddingJob::new(
+            db.index_sender(),
+            self.shared_state(),
+            self.policy.clone(),
+            self.log.new(slog::o!("component" => "embedding")),
+        );
+        self.stats.set_embedding_enabled(embedding.is_some());
+        self.background_worker = BackgroundWorker::start(
+            db.index_sender(),
+            compaction,
+            self.options.compaction_interval,
+            embedding,
+            Arc::clone(&self.models),
+            self.stats.clone(),
+            self.log.new(slog::o!("component" => "background")),
+        );
+        self.stats.set_compaction_enabled(compaction.is_some() && self.background_worker.is_some());
     }
 }

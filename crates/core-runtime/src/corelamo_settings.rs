@@ -1,6 +1,7 @@
-use std::{collections::HashMap, io, path::PathBuf, process, sync::OnceLock};
 
+use std::{collections::HashMap, io, path::PathBuf, process, sync::{Arc, OnceLock}};
 use core_query::dictionary::SynonymRegistry;
+use core_embed::ModelRegistry;
 
 use slog::{info, warn};
 //helper file to manage and easilly add corelamo settings
@@ -15,6 +16,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("auth", "true"),
     ("max_payload_size", "1024"),
     ("max_request_timeout", "240"),
+    ("embedding-model", "bge-small-en-v1.5")
 ];
 
 pub const HELP: &str = "\
@@ -54,6 +56,10 @@ OPTIONS:
                           If false, config file values override CLI args.
                           [default: false]
                           [CLI only - not persisted to config file]
+    --embedding-model <id>
+                          Embedding model for vector fields, shared by all databases
+                          (bge-small-en-v1.5, multilingual-e5-small)
+                          [default: bge-small-en-v1.5]
 
     NOTE: config file takes priority over CLI args if it exists (unless --overwrite_config true)
 
@@ -279,4 +285,30 @@ pub fn synonym_registry() -> &'static SynonymRegistry {
     SYNONYM_REGISTRY
         .get()
         .expect("synonym registry used before corelamo_settings::init_synonyms in main")
+}
+
+static MODEL_REGISTRY: OnceLock<Arc<ModelRegistry>> = OnceLock::new();
+
+/// Sets up the server-wide model registry. Models live in `<root>/models` and are loaded on
+/// first use, so a server whose databases have no vector fields never loads one.
+pub fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
+    let root_path = PathBuf::from(get(settings, "root-path"));
+    let model_id = get(settings, "embedding-model");
+    let registry = ModelRegistry::new(root_path.join("models"), &model_id)
+        .map_err(|e| format!("failed to set up embedding models: {e}"))?;
+    let log = slog_scope::logger();
+    info!(log, "embedding models configured";
+        "default_model" => %registry.default_model().id,
+        "cache_dir" => %registry.cache_dir().display());
+    MODEL_REGISTRY
+        .set(Arc::new(registry))
+        .map_err(|_| "model registry initialised twice".to_string())
+}
+
+pub(crate) fn model_registry() -> Arc<ModelRegistry> {
+    Arc::clone(
+        MODEL_REGISTRY
+            .get()
+            .expect("model registry used before corelamo_settings::init_models in main"),
+    )
 }

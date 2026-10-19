@@ -30,6 +30,7 @@ core-auth = {path = "../core-auth"}
 core-logs ={path ="../core-logs"}
 core-timing={path ="../core-timing"}
 core-backup ={path="../core-backup"}
+core-embed = { path = "../core-embed" }
 uuid = { version = "1.23.4", features = ["v4"] }
 serde = { workspace = true,}
 tokio = { workspace = true }

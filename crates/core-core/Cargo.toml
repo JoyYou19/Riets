@@ -11,6 +11,7 @@ core-protocol = {path = "../core-protocol" }
 core-logs={path="../core-logs"}
 core-backup ={path ="../core-backup"}
 core-timing = { path = "../core-timing" }
+core-embed = { path = "../core-embed" }
 slog="2"
 slog-async="2"
 bincode="2.0"

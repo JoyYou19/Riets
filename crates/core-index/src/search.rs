@@ -16,6 +16,54 @@ pub struct TermPostings {
     pub doc_freq: u32,
     pub max_weight: u16,
 }
+//vec Search
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VectorHit {
+    pub doc_id: DocId,
+    /// Cosine similarity in [-1, 1]; higher is closer.
+    pub score: f32,
+}
+/// Keeps the `k` highest-scoring hits, sorted best first.
+pub(crate) struct TopK {
+    k: usize,
+    hits: Vec<VectorHit>,
+}
+
+impl TopK {
+    pub(crate) fn new(k: usize) -> Self {
+        Self {
+            k,
+            hits: Vec::with_capacity(k.saturating_add(1)),
+        }
+    }
+
+    pub(crate) fn offer(&mut self, doc_id: DocId, score: f32) {
+        if self.k == 0 || score.is_nan() {
+            return;
+        }
+        if self.hits.len() == self.k && score <= self.hits[self.k - 1].score {
+            return;
+        }
+        let pos = self.hits.partition_point(|hit| hit.score >= score);
+        self.hits.insert(pos, VectorHit { doc_id, score });
+        self.hits.truncate(self.k);
+    }
+
+    pub(crate) fn into_sorted(self) -> Vec<VectorHit> {
+        self.hits
+    }
+}
+
+/// Combines per-segment (or per-shard) result lists into one top-k list.
+/// If a document appears more than once, its best score is kept.
+pub fn merge_hits(lists: Vec<Vec<VectorHit>>, k: usize) -> Vec<VectorHit> {
+    let mut all: Vec<VectorHit> = lists.into_iter().flatten().collect();
+    all.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.doc_id.cmp(&b.doc_id)));
+    let mut seen = ahash::HashSet::default();
+    all.retain(|hit| seen.insert(hit.doc_id));
+    all.truncate(k);
+    all
+}
 
 // Every searchable segment should implement this, simply functions that we are going to need for
 // every type of segment either it is Immutable, Snapshot or in Memory
@@ -168,3 +216,35 @@ pub trait SearchNumeric {
 pub trait SearchReader: SearchIndex + SearchStats + SearchNumeric {}
 
 impl<T> SearchReader for T where T: SearchIndex + SearchStats + SearchNumeric {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_k_keeps_best_in_order() {
+        let mut top = TopK::new(2);
+        for (doc, score) in [(1, 0.1), (2, 0.9), (3, 0.5), (4, f32::NAN), (5, 0.7)] {
+            top.offer(doc, score);
+        }
+        let docs: Vec<DocId> = top.into_sorted().iter().map(|h| h.doc_id).collect();
+        assert_eq!(docs, vec![2, 5]);
+    }
+
+    #[test]
+    fn top_k_zero_returns_nothing() {
+        let mut top = TopK::new(0);
+        top.offer(1, 1.0);
+        assert!(top.into_sorted().is_empty());
+    }
+
+    #[test]
+    fn merge_hits_dedups_and_limits() {
+        let a = vec![VectorHit { doc_id: 1, score: 0.9 }, VectorHit { doc_id: 2, score: 0.4 }];
+        let b = vec![VectorHit { doc_id: 1, score: 0.8 }, VectorHit { doc_id: 3, score: 0.6 }];
+        let merged = merge_hits(vec![a, b], 2);
+        assert_eq!(merged, vec![
+            VectorHit { doc_id: 1, score: 0.9 },
+            VectorHit { doc_id: 3, score: 0.6 },
+        ]);
+    }
+}

@@ -1,6 +1,6 @@
 use std::{
     io,
-    path::PathBuf,
+    path::{PathBuf,Path},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -25,6 +25,7 @@ use crate::{
     segment::{ImmutableSegment, SegmentHandle},
     types::{ArrayRowId, DocId, XPathId},
     wildcard::WildcardPattern,
+    vector::{SegmentVectors, VectorFile, find_vector_files, vector_file_path}
 };
 
 // Live index of data, this will be flushed in other words put into a persistent
@@ -45,6 +46,7 @@ pub struct LsmIndex {
     next_compaction_job_id: u64,
     max_array_row: ArrayRowId,
     last_ingest: Instant,
+    vectors:Arc<Vec<SegmentVectors>>
 }
 
 //INFO: WATAFAK - normunds
@@ -186,6 +188,7 @@ impl LsmIndex {
             next_compaction_job_id: 0,
             max_array_row: 0,
             last_ingest: Instant::now(),
+            vectors:Arc::new(Vec::new())
         }
     }
 
@@ -202,6 +205,7 @@ impl LsmIndex {
         let mut max_array_row = 0;
         let deleted = crate::lsm::deletes::read_deletes(&root)?;
         // let mut deleted_generation=
+        let mut vectors: Vec<SegmentVectors> = Vec::new();
         for path in segment_paths {
             let disk = DiskSegment::open(&path)?;
             if let Some((_, max)) = disk.doc_range() {
@@ -216,6 +220,20 @@ impl LsmIndex {
                     .and_then(|value| value.parse::<u64>().ok())
             {
                 next_segment_id = next_segment_id.max(id + 1);
+            }
+            for (xpath, vector_path) in find_vector_files(&path)? {
+                match VectorFile::open(&vector_path) {
+                    Ok(file) => vectors.push(SegmentVectors {
+                        segment: path.clone(),
+                        xpath,
+                        file: Arc::new(file),
+                    }),
+                    // Derived data: drop it and let the embedding worker rebuild it.
+                    Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                        let _ = std::fs::remove_file(&vector_path);
+                    }
+                    Err(e) => return Err(e),
+                }
             }
 
             segment_handles.push(SegmentHandle::Disk(path.into()));
@@ -238,6 +256,7 @@ impl LsmIndex {
             next_compaction_job_id: 0,
             max_array_row,
             last_ingest: Instant::now(),
+            vectors:Arc::new(vectors)
         })
     }
 
@@ -279,6 +298,7 @@ impl LsmIndex {
         );
         segments.extend(self.query_segments.iter().cloned());
         IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
+        .with_vectors(Arc::clone(&self.vectors))
     }
 
     #[timed(indexing_documents)]
@@ -542,6 +562,16 @@ impl LsmIndex {
         };
 
         let selected: Vec<SegmentHandle> = self.segment_handles[start..end].to_vec();
+        let vectors: Vec<SegmentVectors> = self
+            .vectors
+            .iter()
+            .filter(|entry| {
+                selected
+                    .iter()
+                    .any(|handle| matches!(handle, SegmentHandle::Disk(p) if *p == entry.segment))
+            })
+            .cloned()
+            .collect();
         let output_path = root.join(format!("segment-{}.idx", self.next_segment_id));
         self.next_segment_id += 1;
         let job_id = self.next_compaction_job_id;
@@ -553,6 +583,7 @@ impl LsmIndex {
             deleted: self.deleted.clone(),
             delete_generation: self.delete_generation,
             output_path,
+            vectors
         }))
     }
 
@@ -615,7 +646,7 @@ impl LsmIndex {
     }
     #[timed(compaction)]
     pub fn install_compaction(&mut self, completed: CompletedCompaction) -> io::Result<bool> {
-        let Some(root) = &self.root else {
+        let Some(root) = self.root.clone() else {
             return Ok(false);
         };
 
@@ -629,6 +660,9 @@ impl LsmIndex {
         if positions.len() != completed.selected.len() {
             // Stale job — some input was already merged away. Drop the output.
             std::fs::remove_file(&completed.output_path).ok();
+            for xpath in &completed.vector_xpaths {
+                std::fs::remove_file(vector_file_path(&completed.output_path, *xpath)).ok();
+            }
             return Ok(false);
         }
 
@@ -652,27 +686,25 @@ impl LsmIndex {
         );
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
         segs.insert(insert_pos, disk);
-
-        let disk_paths: Vec<PathBuf> = self
-            .segment_handles
-            .iter()
-            .filter_map(|handle| match handle {
-                SegmentHandle::Disk(path) => Some(path.clone()),
-                SegmentHandle::Memory(_) => None,
-            })
-            .collect();
-
-        manifest::compact_manifest(root, &disk_paths)?;
+        manifest::compact_manifest(&root, &self.disk_segment_paths())?;
 
         for handle in completed.selected {
             if let SegmentHandle::Disk(path) = handle {
+                self.drop_vectors_for(&path);
                 std::fs::remove_file(path).ok();
+            }
+        }
+
+        for xpath in completed.vector_xpaths {
+            if self.attach_vectors(&completed.output_path, xpath).is_err() {
+                // Unreadable output only loses vectors; the embedding worker rebuilds them.
+                std::fs::remove_file(vector_file_path(&completed.output_path, xpath)).ok();
             }
         }
 
         if merged_all && completed.delete_generation == self.delete_generation {
             self.deleted = DeleteSet::new();
-            crate::lsm::deletes::clear_deletes(root)?;
+            crate::lsm::deletes::clear_deletes(&root)?;
         }
 
         Ok(true)
@@ -691,6 +723,63 @@ impl LsmIndex {
     }
     pub fn memtable_term_count(&self) -> usize {
         self.mem.term_count()
+    }
+    //VECTORS
+        /// Paths of the live on-disk segments, oldest first. Empty for in-memory indexes.
+    pub fn disk_segment_paths(&self) -> Vec<PathBuf> {
+        self.segment_handles
+            .iter()
+            .filter_map(|handle| match handle {
+                SegmentHandle::Disk(path) => Some(path.clone()),
+                SegmentHandle::Memory(_) => None,
+            })
+            .collect()
+    }
+        /// Attaches `<segment>.<xpath>.vec`, replacing any earlier version.
+    /// Returns false (and removes the file) when the segment is no longer live.
+    /// Attaches `<segment>.<xpath>.vec`, replacing any earlier version.
+    /// Returns false (and removes the file) when the segment is no longer live.
+    pub fn install_vectors(&mut self, segment: &Path, xpath: XPathId) -> io::Result<bool> {
+        let live = self
+            .segment_handles
+            .iter()
+            .any(|handle| matches!(handle, SegmentHandle::Disk(p) if p == segment));
+        if !live {
+            let _ = std::fs::remove_file(vector_file_path(segment, xpath));
+            return Ok(false);
+        }
+        self.attach_vectors(segment, xpath)?;
+        Ok(true)
+    }
+
+    fn attach_vectors(&mut self, segment: &Path, xpath: XPathId) -> io::Result<()> {
+        let file = Arc::new(VectorFile::open(vector_file_path(segment, xpath))?);
+        let vectors = Arc::make_mut(&mut self.vectors);
+        match vectors
+            .iter_mut()
+            .find(|entry| entry.segment == segment && entry.xpath == xpath)
+        {
+            Some(existing) => existing.file = file,
+            None => vectors.push(SegmentVectors {
+                segment: segment.to_path_buf(),
+                xpath,
+                file,
+            }),
+        }
+        Ok(())
+    }
+
+    /// Forgets and deletes the vector files of a segment that is being removed.
+    fn drop_vectors_for(&mut self, segment: &Path) {
+        let vectors = Arc::make_mut(&mut self.vectors);
+        vectors.retain(|entry| {
+            if entry.segment == segment {
+                let _ = std::fs::remove_file(entry.file.path());
+                false
+            } else {
+                true
+            }
+        });
     }
 }
 

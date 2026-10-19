@@ -81,4 +81,29 @@ impl SharedShardState {
         self.docs.insert(external_id.to_string(), doc.clone());
         Ok(Some(doc))
     }
+    ///VECTOR THINGS
+        /// Synchronous read by internal id for background work. Unlike `get_document` it does not
+    /// fill the document cache, so bulk reads do not evict documents that searches use.
+    /// Ok(None) means the document is gone (deleted, or moved by store compaction).
+    pub fn read_document_by_doc_id(&self, doc_id: DocId) -> io::Result<Option<StoredDocument>> {
+        let Some(external_id) = self
+            .internal_to_external
+            .get(&doc_id)
+            .map(|entry| entry.value().clone())
+        else {
+            return Ok(None);
+        };
+        if let Some(doc) = self.docs.get(&external_id) {
+            return Ok(Some(doc));
+        }
+        let Some(loc) = self.locations.get(&external_id).map(|entry| *entry.value()) else {
+            return Ok(None);
+        };
+        match read_document_at_path(&self.root.join("documents"), loc.segment, loc.offset) {
+            Ok(doc) => Ok(Some(doc)),
+            // The store may have compacted that file away since the location was read.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 }

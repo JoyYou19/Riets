@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
+    path::PathBuf,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -21,12 +22,13 @@ use crate::{
     },
     mem::MemIndex,
     segment::ImmutableSegment,
-    types::DocId,
+    types::{DocId, XPathId},
 };
 type Acknowledgement = Sender<io::Result<()>>;
 type CompactionPlanReply = Sender<io::Result<Option<CompactionJob>>>;
 type SegmentCountReply = Sender<io::Result<usize>>;
-
+type DiskSegmentReply = Sender<io::Result<Vec<PathBuf>>>;
+type InstallVectorsReply = Sender<io::Result<bool>>;
 // Operate through commands
 pub enum IndexCommand {
     AddIndexedDocuments {
@@ -59,6 +61,15 @@ pub enum IndexCommand {
     },
     GetStats {
         reply: Sender<io::Result<IndexingStats>>,
+    },
+    //vector things 
+    DiskSegments {
+        reply: DiskSegmentReply,
+    },
+     InstallVectors {
+        segment: PathBuf,
+        xpath: XPathId,
+        reply: InstallVectorsReply,
     },
     Shutdown,
 }
@@ -211,6 +222,33 @@ impl IndexWorker {
             io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "index worker dropped segment count reply",
+            )
+        })?
+    }
+    /// Live on-disk segment paths, oldest first.
+    /// VECTOR THINGS
+    pub fn disk_segment_paths(&self) -> io::Result<Vec<PathBuf>> {
+        let (reply, rx) = mpsc::channel();
+        self.send(IndexCommand::DiskSegments { reply })?;
+        rx.recv().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "index worker dropped disk segment reply",
+            )
+        })?
+    }
+        /// Attaches a finished vector file. Ok(false) means the segment was merged away meanwhile.
+    pub fn install_vectors(&self, segment: PathBuf, xpath: XPathId) -> io::Result<bool> {
+        let (reply, rx) = mpsc::channel();
+        self.send(IndexCommand::InstallVectors {
+            segment,
+            xpath,
+            reply,
+        })?;
+        rx.recv().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "index worker dropped install vectors reply",
             )
         })?
     }
@@ -373,9 +411,7 @@ fn run_index_worker(
                 }
             }
             IndexCommand::SegmentCount { reply } => {
-                reply.send(Ok(index.segment_count())).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "segment count receiver dropped")
-                })?;
+                let _ = reply.send(Ok(index.segment_count()));
             }
             IndexCommand::Flush { ack } => {
                 let outcome = index.flush();
@@ -398,6 +434,25 @@ fn run_index_worker(
                 reply.send(Ok(stats.clone())).map_err(|_| {
                     io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
                 })?;
+            }
+            IndexCommand::DiskSegments { reply } => {
+                // A requester that stopped waiting must not stop the index worker.
+                let _ = reply.send(Ok(index.disk_segment_paths()));
+            }
+            //publishes like new snapshot so search can see
+            IndexCommand::InstallVectors {
+                segment,
+                xpath,
+                reply,
+            } => {
+                let outcome = index.install_vectors(&segment, xpath);
+                let installed = matches!(&outcome, Ok(true));
+                let _ = reply.send(outcome);
+                if installed {
+                    shared.publish(index.publish_snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
             }
         }
 

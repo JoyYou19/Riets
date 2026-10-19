@@ -893,7 +893,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let _ = resp.send(shard.commit_reindex(done));
             }
             ShardCmd::ReindexAbandoned { generation } => {
-                shard.abandoned_reindex(generation);
+                shard.abondoned_reindex(generation);
             }
             ShardCmd::Start {
                 policy,
