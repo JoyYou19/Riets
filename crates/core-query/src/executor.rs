@@ -47,6 +47,10 @@ const ANY_TIER_POOL: usize = 1000;
 const MIN_COVERAGE: f32 = 0.5;
 const POOL_SIZE: usize = 200;
 
+// Closeness of words found in another order than typed (or not next to each other), see
+// `apply_density`.
+const OUT_OF_ORDER: f32 = 0.8;
+
 // Ordering values per cascade tier (see `rank_cascade`).
 const TIER_STEP: usize = 16;
 
@@ -1738,7 +1742,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 let first = present.iter().map(|&(offset, _)| offset).min().unwrap_or(0);
                 let last = present.iter().map(|&(offset, _)| offset).max().unwrap_or(0);
                 let ideal = (last - first).saturating_add(1);
-                let closeness = ((ideal as f32) / (span.max(1) as f32)).min(1.0);
+                let mut closeness = ((ideal as f32) / (span.max(1) as f32)).min(1.0);
+                // full credit only for the words in the order they were typed: "red balloon"
+                // before "balloon red"
+                let offsets: Vec<u32> = present.iter().map(|&(offset, _)| offset).collect();
+                if !phrase_matches(&positions, &offsets) {
+                    closeness *= OUT_OF_ORDER;
+                }
                 let density = closeness * (present.len() as f32) / (terms.len() as f32);
                 best = Some(best.map_or(density, |known| known.max(density)));
             }

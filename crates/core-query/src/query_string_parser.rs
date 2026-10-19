@@ -22,9 +22,11 @@ fn classify_word(word: &str) -> Query {
     }
 }
 
-// has wildcard?
+// laikam pareizi pedejais simbols var but ? jo "a nu ko tu man izdarisi?"
 fn has_wildcard(word: &str) -> bool {
-    word.chars().any(|c| matches!(c, '*' | '?' | '['))
+    let mut chars = word.chars();
+    chars.next_back(); // the last character never makes a word a wildcard
+    chars.any(|c| matches!(c, '*' | '?' | '['))
 }
 
 //INFO: after string->ast we still need to analyze each word
