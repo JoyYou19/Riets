@@ -32,9 +32,7 @@ use crate::{
 pub struct DiskSegment {
     mmap: Mmap,
     dictionary: TermDictionary,
-    //TODO: we should look into this, if doc_lengths takes up too much RAM wikipedia-scale then we
-    //could cache this
-    doc_lengths: std::collections::BTreeMap<(DocId, XPathId), u32>,
+    doc_lengths: DocLengths,
     field_stats: BTreeMap<XPathId, FieldStats>,
     numeric_fields: NumericFields,
     bool_fields: BTreeMap<XPathId, BoolField>,
@@ -58,7 +56,7 @@ impl SearchStats for DiskSegment {
     }
 
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
-        self.doc_lengths.get(&(doc_id, xpath)).copied()
+        self.doc_lengths.get(doc_id, xpath)
     }
 
     fn doc_range(&self) -> Option<(DocId, DocId)> {
@@ -107,7 +105,7 @@ impl DiskSegment {
         validate_footer(&mmap, &footer)?;
 
         let doc_lengths = read_doc_lengths(&mmap, &footer)?;
-        let field_stats = build_field_stats(&doc_lengths);
+        let field_stats = build_field_stats(doc_lengths.iter());
 
         let dictionary = read_term_dictionary(&mmap, &footer)?;
         let numeric_fields = read_numeric_fields(&mmap, &footer)?;
@@ -132,7 +130,7 @@ impl DiskSegment {
         })
     }
 
-    pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
+    pub fn doc_lengths(&self) -> &DocLengths {
         &self.doc_lengths
     }
     pub fn doc_range(&self) -> Option<(DocId, DocId)> {
@@ -214,7 +212,7 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
         let weight = read_var_u16(bytes, &mut offset)?;
         let position_count = read_var_u32(bytes, &mut offset)? as usize;
 
-        let mut positions = Vec::with_capacity(position_count);
+        let mut positions = crate::posting::Positions::with_capacity(position_count);
         let mut last_position = 0u32;
 
         for _ in 0..position_count {
@@ -504,10 +502,77 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
     })
 }
 
-fn read_doc_lengths(
-    bytes: &[u8],
-    footer: &SegmentFooter
-) -> io::Result<std::collections::BTreeMap<(DocId, XPathId), u32>> {
+/// The field lengths of a segment's documents. Scoring asks for one per scored posting, so a field
+/// most of the segment's documents have is a dense array over the segment's doc ids (a lookup is
+/// an index instead of a tree walk, and 4 bytes per document instead of a tree entry); a field
+/// few documents have keeps a map.
+pub struct DocLengths {
+    fields: Vec<(XPathId, FieldLengths)>,
+}
+
+enum FieldLengths {
+    // `u32::MAX`: the document has no such field
+    Dense { first: DocId, lens: Vec<u32> },
+    Sparse(BTreeMap<DocId, u32>),
+}
+
+impl DocLengths {
+    fn from_entries(entries: Vec<(DocId, XPathId, u32)>) -> Self {
+        let mut by_field: BTreeMap<XPathId, Vec<(DocId, u32)>> = BTreeMap::new();
+        for (doc_id, xpath, len) in entries {
+            by_field.entry(xpath).or_default().push((doc_id, len));
+        }
+        let fields = by_field
+            .into_iter()
+            .map(|(xpath, docs)| {
+                let first = docs.iter().map(|&(doc, _)| doc).min().unwrap_or(0);
+                let last = docs.iter().map(|&(doc, _)| doc).max().unwrap_or(0);
+                let span = last.saturating_sub(first).saturating_add(1);
+                // dense when at least a quarter of the span has the field
+                let lengths = if span <= (docs.len() as u64).saturating_mul(4) {
+                    let mut lens = vec![u32::MAX; span as usize];
+                    for (doc, len) in docs {
+                        lens[(doc - first) as usize] = len;
+                    }
+                    FieldLengths::Dense { first, lens }
+                } else {
+                    FieldLengths::Sparse(docs.into_iter().collect())
+                };
+                (xpath, lengths)
+            })
+            .collect();
+        Self { fields }
+    }
+
+    pub fn get(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        let (_, lengths) = self.fields.iter().find(|(field, _)| *field == xpath)?;
+        match lengths {
+            FieldLengths::Dense { first, lens } => {
+                let index = usize::try_from(doc_id.checked_sub(*first)?).ok()?;
+                lens.get(index).copied().filter(|&len| len != u32::MAX)
+            }
+            FieldLengths::Sparse(map) => map.get(&doc_id).copied(),
+        }
+    }
+
+    /// Every (document, field) length, field by field.
+    pub fn iter(&self) -> impl Iterator<Item = ((DocId, XPathId), u32)> + '_ {
+        self.fields.iter().flat_map(|(xpath, lengths)| -> Box<dyn Iterator<Item = ((DocId, XPathId), u32)> + '_> {
+            let xpath = *xpath;
+            match lengths {
+                FieldLengths::Dense { first, lens } => Box::new(
+                    lens.iter()
+                        .enumerate()
+                        .filter(|&(_, &len)| len != u32::MAX)
+                        .map(move |(index, &len)| ((*first + index as DocId, xpath), len))
+                ),
+                FieldLengths::Sparse(map) => Box::new(map.iter().map(move |(&doc, &len)| ((doc, xpath), len))),
+            }
+        })
+    }
+}
+
+fn read_doc_lengths(bytes: &[u8], footer: &SegmentFooter) -> io::Result<DocLengths> {
     let start = footer.doc_lengths_offset as usize;
     let len = footer.doc_lengths_len as usize;
     let end = start
@@ -522,16 +587,17 @@ fn read_doc_lengths(
 
     let mut cursor = Cursor::new(&bytes[start..end]);
     let count = cursor.read_u32()? as usize;
-    let mut doc_lengths = std::collections::BTreeMap::new();
+    // each entry is 16 bytes: a bogus count in a corrupt file must not allocate gigabytes
+    let mut entries = Vec::with_capacity(count.min(len / 16));
 
     for _ in 0..count {
         let doc_id = cursor.read_u64()?; // read doc_id
         let xpath = cursor.read_u32()?;
         let len = cursor.read_u32()?;
-        doc_lengths.insert((doc_id, xpath), len);
+        entries.push((doc_id, xpath, len));
     }
 
-    Ok(doc_lengths)
+    Ok(DocLengths::from_entries(entries))
 }
 
 fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<ArrayRowIndex> {
