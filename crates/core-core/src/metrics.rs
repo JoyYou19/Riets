@@ -4,7 +4,7 @@ use core_index::lsm::index_worker::{ IndexingStats, Phase, ReindexProgress };
 use std::sync::Arc;
 use std::sync::atomic::{ AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed };
 use std::time::Duration;
-/// Read-only snapshot. Built fresh on every read, never stored.
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DatabaseMetrics {
     pub search_requests: u64,
@@ -47,8 +47,6 @@ struct Counters {
     reindex_nanos: AtomicU64,
 }
 
-/// One slot per shard. Levels, not counters: the owning shard overwrites its
-/// own slot and no other thread ever writes it.
 #[derive(Debug, Default)]
 struct ShardGauges {
     documents: AtomicUsize,
@@ -61,8 +59,7 @@ struct ShardGauges {
     segments_written: AtomicU64,
     compactions_completed: AtomicU64,
 }
-/// What one shard holds. Writes go to that shard's own gauge slot or to a
-/// shared counter, so nothing here can block the shard thread.
+
 #[derive(Debug, Clone)]
 pub struct ShardStatsHandle {
     stats: Arc<DbStats>,

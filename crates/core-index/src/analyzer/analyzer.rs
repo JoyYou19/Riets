@@ -1,12 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
+    cell::RefCell,
 };
-
 use core_timing::timed;
 use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, StopWordFilter, TextAnalyzer, TokenStream};
-
 use crate::analyzer::{token::Token, word_delimiter::WordDelimiterTokenizer};
+use crate::analyzer::cached_stemmer::CachedStemmer;
 
 #[derive(Clone)]
 pub struct Analyzer {
@@ -14,15 +14,20 @@ pub struct Analyzer {
     analyzer: TextAnalyzer,
     literal_symbols: HashSet<char>,
 }
-use std::cell::RefCell;
-
-use crate::analyzer::cached_stemmer::CachedStemmer;
-
 /// Per-thread stem cache size; cleared when full.
 const STEM_CACHE_CAPACITY: usize = 100_000;
 //back to local analyzers
 const MAX_CACHED_ANALYZERS_PER_THREAD: usize = 64;
 static NEXT_ANALYZER_ID: AtomicU64 = AtomicU64::new(0);
+/// Index term that marks a whole field value (a title, one redirect name): its analyzed words
+/// joined by spaces, behind this character. "The Penguins" is filed as `\u{1}penguin`.
+pub const NAME_KEY: char = '\u{1}';
+/// The same for a value without its qualifier: "Tom Holland (author)" and "Kansas City, Missouri"
+/// are also filed as `\u{2}tom holland` and `\u{2}kansa citi`.
+pub const QUALIFIED_NAME_KEY: char = '\u{2}';
+/// Only values this short are names; longer text (article bodies) gets no key.
+pub const MAX_NAME_WORDS: usize = 12;
+const MAX_NAME_BYTES: usize = 200;
 thread_local! {
     // tantivy's token_stream needs &mut TextAnalyzer, so each thread keeps its own
     // instance per analyzer configuration (keyed by Analyzer::id).
@@ -40,17 +45,6 @@ impl Default for Analyzer {
         Self::new()
     }
 }
-
-/// Index term that marks a whole field value (a title, one redirect name): its analyzed words
-/// joined by spaces, behind this character. "The Penguins" is filed as `\u{1}penguin`.
-pub const NAME_KEY: char = '\u{1}';
-/// The same for a value without its qualifier: "Tom Holland (author)" and "Kansas City, Missouri"
-/// are also filed as `\u{2}tom holland` and `\u{2}kansa citi`.
-pub const QUALIFIED_NAME_KEY: char = '\u{2}';
-/// Only values this short are names; longer text (article bodies) gets no key.
-pub const MAX_NAME_WORDS: usize = 12;
-const MAX_NAME_BYTES: usize = 200;
-
 //eliminates problem with - or other signs that are not from ASCII like AI -
 fn is_unicode_punctuation(c: char) -> bool {
     matches!(

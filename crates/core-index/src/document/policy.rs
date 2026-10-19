@@ -42,11 +42,11 @@ pub struct FieldPolicy {
     pub stemming: Option<String>,
     pub exact: bool,
     pub repeated: bool, // array of strings nums/bools
-
     pub subfields: Vec<FieldPolicy>,
     pub full_path: String,
     pub row_keyed: bool,
     pub depth: u32,
+    pub vector: bool
 }
 
 impl Serialize for FieldPolicy {
@@ -85,6 +85,9 @@ impl Serialize for FieldPolicy {
             if self.repeated {
                 m.serialize_entry("$repeated", &self.repeated)?;
             }
+            if self.vector {
+                m.serialize_entry("$vector", &self.vector)?;
+            }
             for sub in &self.subfields {
                 m.serialize_entry(&sub.name, sub)?;
             }
@@ -114,6 +117,7 @@ impl FieldPolicy {
             full_path: name.to_string(),
             row_keyed: false,
             depth: 0,
+            vector:false
         }
     }
 
@@ -132,6 +136,7 @@ impl FieldPolicy {
             full_path: name.to_string(),
             row_keyed: false,
             depth: 0,
+            vector:false
         }
     }
 
@@ -202,6 +207,9 @@ impl FieldPolicy {
         }
         if let Some(w) = obj.get("$weight") {
             f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
+        }
+        if let Some(v) =obj.get("$vector"){
+            f.vector = v.as_bool().ok_or_else(|| format!("field '{name}': $vector must be a bool"))?;
         }
         Ok(f)
     }
@@ -524,6 +532,7 @@ pub enum FieldKind {
     IdAuto,
     Struct, // list of objects
     Bool,
+
 }
 
 impl Serialize for FieldKind {
@@ -594,6 +603,7 @@ impl FieldKind {
                 weight: WeightInterval::DEFAULT,
                 exact: false,
             },
+            
         }
     }
 

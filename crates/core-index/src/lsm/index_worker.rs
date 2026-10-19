@@ -23,7 +23,6 @@ use crate::{
     segment::ImmutableSegment,
     types::DocId,
 };
-
 type Acknowledgement = Sender<io::Result<()>>;
 type CompactionPlanReply = Sender<io::Result<Option<CompactionJob>>>;
 type SegmentCountReply = Sender<io::Result<usize>>;

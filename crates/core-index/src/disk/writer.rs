@@ -63,6 +63,77 @@ impl<W: Write> Seek for PositionWriter<W> {
         Ok(self.pos)
     }
 }
+// Streams postings out while grouping terms into one FST per field.
+// Terms MUST arrive in ascending (xpath, term)
+struct FieldWriter<K> {
+    fields: Vec<(XPathId, TermDict)>,
+    current: Option<XPathId>,
+    entries: Vec<(K, TermMeta)>,
+    postings_buf: Vec<u8>,
+    term_count: u32,
+}
+
+impl<K: AsRef<[u8]>> FieldWriter<K> {
+    fn new() -> Self {
+        Self {
+            fields: Vec::new(),
+            current: None,
+            entries: Vec::new(),
+            postings_buf: Vec::with_capacity(64 * 1024),
+            term_count: 0,
+        }
+    }
+
+    // Encodes one term's postings at the current position and records where they
+    // landed, closing the previous field's FST when the xpath changes.
+    fn push<W: Write + Seek>(
+        &mut self,
+        out: &mut W,
+        xpath: XPathId,
+        term: K,
+        postings: &PostingList,
+    ) -> io::Result<()> {
+        if self.current != Some(xpath) {
+            self.close_field()?;
+            self.current = Some(xpath);
+        }
+
+        self.postings_buf.clear();
+
+        let postings_offset = out.stream_position()?;
+        encode_posting_list(&mut self.postings_buf, postings);
+        out.write_all(&self.postings_buf)?;
+
+        self.entries.push((
+            term,
+            TermMeta {
+                postings_offset,
+                postings_len: self.postings_buf.len() as u32,
+                doc_freq: postings.len() as u32,
+                max_weight: postings.max_weight(),
+            },
+        ));
+
+        self.term_count += 1;
+
+        Ok(())
+    }
+
+    // Builds the FST for the field we were accumulating, if any.
+    fn close_field(&mut self) -> io::Result<()> {
+        if let Some(xpath) = self.current.take() {
+            self.fields
+                .push((xpath, TermDict::build(self.entries.drain(..))?));
+        }
+
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<(Vec<(XPathId, TermDict)>, u32)> {
+        self.close_field()?;
+        Ok((self.fields, self.term_count))
+    }
+}
 
 fn write_u8(out: &mut impl Write, value: u8) -> io::Result<()> {
     out.write_all(&[value])
@@ -375,74 +446,3 @@ fn finish_file(out: PositionWriter<BufWriter<File>>) -> io::Result<()> {
     file.sync_all()
 }
 
-// Streams postings out while grouping terms into one FST per field.
-// Terms MUST arrive in ascending (xpath, term)
-struct FieldWriter<K> {
-    fields: Vec<(XPathId, TermDict)>,
-    current: Option<XPathId>,
-    entries: Vec<(K, TermMeta)>,
-    postings_buf: Vec<u8>,
-    term_count: u32,
-}
-
-impl<K: AsRef<[u8]>> FieldWriter<K> {
-    fn new() -> Self {
-        Self {
-            fields: Vec::new(),
-            current: None,
-            entries: Vec::new(),
-            postings_buf: Vec::with_capacity(64 * 1024),
-            term_count: 0,
-        }
-    }
-
-    // Encodes one term's postings at the current position and records where they
-    // landed, closing the previous field's FST when the xpath changes.
-    fn push<W: Write + Seek>(
-        &mut self,
-        out: &mut W,
-        xpath: XPathId,
-        term: K,
-        postings: &PostingList,
-    ) -> io::Result<()> {
-        if self.current != Some(xpath) {
-            self.close_field()?;
-            self.current = Some(xpath);
-        }
-
-        self.postings_buf.clear();
-
-        let postings_offset = out.stream_position()?;
-        encode_posting_list(&mut self.postings_buf, postings);
-        out.write_all(&self.postings_buf)?;
-
-        self.entries.push((
-            term,
-            TermMeta {
-                postings_offset,
-                postings_len: self.postings_buf.len() as u32,
-                doc_freq: postings.len() as u32,
-                max_weight: postings.max_weight(),
-            },
-        ));
-
-        self.term_count += 1;
-
-        Ok(())
-    }
-
-    // Builds the FST for the field we were accumulating, if any.
-    fn close_field(&mut self) -> io::Result<()> {
-        if let Some(xpath) = self.current.take() {
-            self.fields
-                .push((xpath, TermDict::build(self.entries.drain(..))?));
-        }
-
-        Ok(())
-    }
-
-    fn finish(mut self) -> io::Result<(Vec<(XPathId, TermDict)>, u32)> {
-        self.close_field()?;
-        Ok((self.fields, self.term_count))
-    }
-}

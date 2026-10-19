@@ -11,17 +11,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub fn compile_filters(
-    analyzer: &Analyzer,
-    command: &SearchCommand,
-    policy: &IndexPolicy,
-) -> Result<Option<Arc<HashMap<String, FieldQuery>>>, CorelamoError> {
-    let Some(filters) = command.filters.as_ref() else {
-        return Ok(None);
-    };
-    Ok(Some(Arc::new(resolve_filters(filters, analyzer, policy)?)))
-}
-
 pub struct SortField {
     pub xpath: XPathId,
     pub order: SortOrderRequest,
@@ -33,104 +22,6 @@ pub struct SortField {
 pub struct ResolvedSort {
     pub mode: SortMode,
     pub fields: Arc<Vec<SortField>>,
-}
-
-pub fn resolve_sorts(
-    command: &SearchCommand,
-    policy: &IndexPolicy,
-) -> Result<Option<ResolvedSort>, CorelamoError> {
-    let Some(sort_cmd) = command.sort.as_ref() else {
-        return Ok(None);
-    };
-    let fields_map = sort_cmd.sort_fields();
-    if fields_map.is_empty() {
-        return Ok(None);
-    }
-
-    let field_count = fields_map.len();
-    let mut fields = Vec::with_capacity(field_count);
-    let mut total_ratio: u32 = 0;
-
-    for (name, spec) in fields_map {
-        let field_pol = policy
-            .field_by_path(name)
-            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
-
-        if !field_pol.kind.is_numeric() && !field_pol.kind.is_bool() {
-            return Err(CorelamoError::InvalidData(format!(
-                "sorting by '{name}' is not supported yet (only numeric or bool fields)"
-            )));
-        }
-
-        // ratio is only meaningful in blend mode; strict ignores it
-        let ratio = match sort_cmd.mode {
-            SortMode::Strict => 0,
-            SortMode::Blend => {
-                let r = if field_count == 1 && spec.ratio.is_none() {
-                    100
-                } else {
-                    spec.ratio.ok_or_else(||
-                        CorelamoError::InvalidData(
-                            format!(
-                                "'ratio' is required for sort field '{name}' when sorting by more than one field"
-                            )
-                        )
-                    )?
-                };
-                if r > 100 {
-                    return Err(CorelamoError::InvalidData(format!(
-                        "sort ratio for '{name}' must be between 0 and 100"
-                    )));
-                }
-                total_ratio += r as u32;
-                if total_ratio > 100 {
-                    return Err(CorelamoError::InvalidData(
-                        "sort ratios must add up to at most 100 (the rest is relevance)"
-                            .to_string(),
-                    ));
-                }
-                r
-            }
-        };
-
-        fields.push(SortField {
-            xpath: field_pol.xpath(&policy),
-            order: spec.order,
-            ratio,
-            is_bool: field_pol.kind.is_bool(),
-            modifier: spec.modifier,
-        });
-    }
-    Ok(Some(ResolvedSort {
-        mode: sort_cmd.mode,
-        fields: Arc::new(fields),
-    }))
-}
-
-/// strict: apply fields in declaration order, relevance is the final tiebreak.
-pub fn order_strict(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[SortField]) {
-    items.sort_unstable_by(|(a, a_keys), (b, b_keys)| {
-        // the ranking cascade comes first: a better tier always ranks above a worse one
-        if a.tier != b.tier {
-            return a.tier.cmp(&b.tier);
-        }
-        for (i, spec) in specs.iter().enumerate() {
-            let av = a_keys.get(i).copied().flatten();
-            let bv = b_keys.get(i).copied().flatten();
-            let cmp = match spec.order {
-                SortOrderRequest::Desc => cmp_desc(av, bv),
-                SortOrderRequest::Asc => cmp_asc(av, bv),
-            };
-            if cmp != std::cmp::Ordering::Equal {
-                return cmp;
-            }
-        }
-        // relevance tiebreak
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.doc_id.cmp(&b.doc_id))
-    });
 }
 
 fn cmp_desc(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
@@ -178,6 +69,58 @@ fn apply_modifier(v: f64, m: SortModifier) -> f64 {
 ///
 /// The result stays in 0..100 as long as ratios sum to at most 100, which
 /// `resolve_sorts` enforces.
+fn fold_min(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        _ => a.or(b),
+    }
+}
+
+fn fold_max(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        _ => a.or(b),
+    }
+}
+
+pub fn fold_sort_bounds(
+    fields: &[SortField],
+    per_shard: impl IntoIterator<Item = Vec<(Option<f64>, Option<f64>)>>,
+) -> Vec<(Option<f64>, Option<f64>)> {
+    let mut bounds: Vec<(Option<f64>, Option<f64>)> = fields
+        .iter()
+        .map(|f| {
+            if f.is_bool {
+                (Some(0.0), Some(1.0))
+            } else {
+                (None, None)
+            }
+        })
+        .collect();
+
+    for shard_bounds in per_shard {
+        for (i, (min, max)) in shard_bounds.into_iter().enumerate() {
+            if fields[i].is_bool {
+                continue;
+            }
+            bounds[i].0 = fold_min(bounds[i].0, min);
+            bounds[i].1 = fold_max(bounds[i].1, max);
+        }
+    }
+
+    bounds
+}
+
+pub fn compile_filters(
+    analyzer: &Analyzer,
+    command: &SearchCommand,
+    policy: &IndexPolicy,
+) -> Result<Option<Arc<HashMap<String, FieldQuery>>>, CorelamoError> {
+    let Some(filters) = command.filters.as_ref() else {
+        return Ok(None);
+    };
+    Ok(Some(Arc::new(resolve_filters(filters, analyzer, policy)?)))
+}
 pub fn order_blended(
     items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
     specs: &[SortField],
@@ -252,45 +195,99 @@ pub fn order_blended(
         .collect();
     *items = reordered;
 }
-
-fn fold_min(a: Option<f64>, b: Option<f64>) -> Option<f64> {
-    match (a, b) {
-        (Some(x), Some(y)) => Some(x.min(y)),
-        _ => a.or(b),
+pub fn resolve_sorts(
+    command: &SearchCommand,
+    policy: &IndexPolicy,
+) -> Result<Option<ResolvedSort>, CorelamoError> {
+    let Some(sort_cmd) = command.sort.as_ref() else {
+        return Ok(None);
+    };
+    let fields_map = sort_cmd.sort_fields();
+    if fields_map.is_empty() {
+        return Ok(None);
     }
-}
 
-fn fold_max(a: Option<f64>, b: Option<f64>) -> Option<f64> {
-    match (a, b) {
-        (Some(x), Some(y)) => Some(x.max(y)),
-        _ => a.or(b),
-    }
-}
+    let field_count = fields_map.len();
+    let mut fields = Vec::with_capacity(field_count);
+    let mut total_ratio: u32 = 0;
 
-pub fn fold_sort_bounds(
-    fields: &[SortField],
-    per_shard: impl IntoIterator<Item = Vec<(Option<f64>, Option<f64>)>>,
-) -> Vec<(Option<f64>, Option<f64>)> {
-    let mut bounds: Vec<(Option<f64>, Option<f64>)> = fields
-        .iter()
-        .map(|f| {
-            if f.is_bool {
-                (Some(0.0), Some(1.0))
-            } else {
-                (None, None)
-            }
-        })
-        .collect();
+    for (name, spec) in fields_map {
+        let field_pol = policy
+            .field_by_path(name)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
 
-    for shard_bounds in per_shard {
-        for (i, (min, max)) in shard_bounds.into_iter().enumerate() {
-            if fields[i].is_bool {
-                continue;
-            }
-            bounds[i].0 = fold_min(bounds[i].0, min);
-            bounds[i].1 = fold_max(bounds[i].1, max);
+        if !field_pol.kind.is_numeric() && !field_pol.kind.is_bool() {
+            return Err(CorelamoError::InvalidData(format!(
+                "sorting by '{name}' is not supported yet (only numeric or bool fields)"
+            )));
         }
-    }
 
-    bounds
+        // ratio is only meaningful in blend mode; strict ignores it
+        let ratio = match sort_cmd.mode {
+            SortMode::Strict => 0,
+            SortMode::Blend => {
+                let r = if field_count == 1 && spec.ratio.is_none() {
+                    100
+                } else {
+                    spec.ratio.ok_or_else(||
+                        CorelamoError::InvalidData(
+                            format!(
+                                "'ratio' is required for sort field '{name}' when sorting by more than one field"
+                            )
+                        )
+                    )?
+                };
+                if r > 100 {
+                    return Err(CorelamoError::InvalidData(format!(
+                        "sort ratio for '{name}' must be between 0 and 100"
+                    )));
+                }
+                total_ratio += r as u32;
+                if total_ratio > 100 {
+                    return Err(CorelamoError::InvalidData(
+                        "sort ratios must add up to at most 100 (the rest is relevance)"
+                            .to_string(),
+                    ));
+                }
+                r
+            }
+        };
+
+        fields.push(SortField {
+            xpath: field_pol.xpath(&policy),
+            order: spec.order,
+            ratio,
+            is_bool: field_pol.kind.is_bool(),
+            modifier: spec.modifier,
+        });
+    }
+    Ok(Some(ResolvedSort {
+        mode: sort_cmd.mode,
+        fields: Arc::new(fields),
+    }))
+}
+/// strict: apply fields in declaration order, relevance is the final tiebreak.
+pub fn order_strict(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[SortField]) {
+    items.sort_unstable_by(|(a, a_keys), (b, b_keys)| {
+        // the ranking cascade comes first: a better tier always ranks above a worse one
+        if a.tier != b.tier {
+            return a.tier.cmp(&b.tier);
+        }
+        for (i, spec) in specs.iter().enumerate() {
+            let av = a_keys.get(i).copied().flatten();
+            let bv = b_keys.get(i).copied().flatten();
+            let cmp = match spec.order {
+                SortOrderRequest::Desc => cmp_desc(av, bv),
+                SortOrderRequest::Asc => cmp_asc(av, bv),
+            };
+            if cmp != std::cmp::Ordering::Equal {
+                return cmp;
+            }
+        }
+        // relevance tiebreak
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
+    });
 }

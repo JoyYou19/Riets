@@ -55,7 +55,6 @@ pub enum BackupError {
         child_start: u64,
     },
 }
-
 struct SegmentDiff {
     id: u32,
     start: u64,
@@ -708,3 +707,119 @@ impl BackupManager {
         Ok(())
     }
 }
+
+#[timed(writing_files)]
+fn copy_with_progress<R: io::Read, W: io::Write>(
+    mut reader: R,
+    mut writer: W,
+    progress: &BackupProgress,
+) -> io::Result<()> {
+    let mut buf = vec![0u8; COPY_BUF_SIZE];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+        progress.add(n as u64);
+    }
+    Ok(())
+}
+
+#[timed(backup)]
+fn dir_size(path: &Path) -> io::Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
+//directory zipping
+#[timed(writing_files)]
+fn tar_dir(
+    src: &Path,
+    dst: &Path,
+    entry_name: &str,
+    progress: Option<&BackupProgress>,
+) -> io::Result<()> {
+    // let enc = GzEncoder::new(File::create(dst)?, Compression::default());
+    // let mut builder = tar::Builder::new(enc);
+    // builder.append_dir_all(entry_name, src)?;
+    // builder.into_inner()?.finish()?;
+    // if let Some(p) = progress {
+    //     p.add(dir_size(src)?);
+    // }
+    // Ok(())
+    let file = File::create(dst)?;
+    let enc = GzEncoder::new(file, Compression::fast());
+    let buffered = BufWriter::with_capacity(COPY_BUF_SIZE, enc);
+    let mut builder = match progress {
+        Some(p) =>
+            tar::Builder::new(
+                Box::new(ProgressWriter { inner: buffered, progress: p }) as Box<dyn Write>
+            ),
+        None => tar::Builder::new(Box::new(buffered) as Box<dyn Write>),
+    };
+    builder.append_dir_all(entry_name, src)?;
+    builder.into_inner()?.flush()?;
+    Ok(())
+}
+
+#[timed(writing_files)]
+pub fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::Result<()> {
+    let reader = BufReader::new(File::open(src)?);
+    let mut encoder = GzEncoder::new(File::create(dst)?, Compression::fast());
+    copy_with_progress(reader, &mut encoder, progress)?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[timed(restore)]
+fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
+    let mut records = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor < bytes.len() {
+        if cursor + 12 > bytes.len() {
+            return Err(BackupError::CorruptRecord(
+                "truncated record header".to_string(),
+            ));
+        }
+
+        let offset = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+        cursor += 8;
+        let len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+        cursor += 4;
+
+        if cursor + len > bytes.len() {
+            return Err(BackupError::CorruptRecord(format!(
+                "record at offset {} claims {} bytes but only {} remain",
+                offset,
+                len,
+                bytes.len() - cursor
+            )));
+        }
+
+        let payload = bytes[cursor..cursor + len].to_vec();
+        cursor += len;
+        records.push((offset, payload));
+    }
+
+    Ok(records)
+}
+#[timed(writing_files)]
+fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
+    let tmp = backup_path.join("manifest.json.tmp");
+    let dst = backup_path.join("manifest.json");
+    fs::write(&tmp, simd_json::to_string(manifest)?)?;
+    File::open(&tmp)?.sync_all()?;
+    fs::rename(&tmp, &dst)?;
+    Ok(())
+}
+

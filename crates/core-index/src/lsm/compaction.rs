@@ -5,11 +5,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-
 use serde::{Deserialize, Serialize};
-
 use core_timing::timed;
-
 use crate::{
     array_rows::ArrayRowIndex,
     disk::{reader::DiskSegment, writer::write_merged_segment},
@@ -127,7 +124,34 @@ impl<'a> Iterator for MergedTerms<'a> {
         }
     }
 }
-
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    pub max_segments_per_compaction: usize,
+    pub compact_when_segments_at_least: usize,
+}
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            max_segments_per_compaction: 16,
+            compact_when_segments_at_least: 2,
+        }
+    }
+}
+#[derive(Debug, Clone)]
+pub struct CompactionJob {
+    pub job_id: u64,
+    pub selected: Vec<SegmentHandle>,
+    pub deleted: DeleteSet,
+    pub delete_generation: u64,
+    pub output_path: PathBuf,
+}
+#[derive(Debug)]
+pub struct CompletedCompaction {
+    pub job_id: u64,
+    pub selected: Vec<SegmentHandle>,
+    pub output_path: PathBuf,
+    pub delete_generation: u64,
+}
 #[timed(compaction)]
 pub fn compact_segments_streaming(
     handles: &[SegmentHandle],
@@ -204,34 +228,6 @@ pub fn compact_segments_streaming(
     )
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct CompactionConfig {
-    pub max_segments_per_compaction: usize,
-    pub compact_when_segments_at_least: usize,
-}
 
-impl Default for CompactionConfig {
-    fn default() -> Self {
-        Self {
-            max_segments_per_compaction: 16,
-            compact_when_segments_at_least: 2,
-        }
-    }
-}
 
-#[derive(Debug, Clone)]
-pub struct CompactionJob {
-    pub job_id: u64,
-    pub selected: Vec<SegmentHandle>,
-    pub deleted: DeleteSet,
-    pub delete_generation: u64,
-    pub output_path: PathBuf,
-}
 
-#[derive(Debug)]
-pub struct CompletedCompaction {
-    pub job_id: u64,
-    pub selected: Vec<SegmentHandle>,
-    pub output_path: PathBuf,
-    pub delete_generation: u64,
-}

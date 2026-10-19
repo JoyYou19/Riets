@@ -53,7 +53,6 @@ use tokio::task::JoinSet;
 use crate::shard_manager_helpers::{
     compile_filters, fold_sort_bounds, order_blended, order_strict, resolve_sorts,
 };
-
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
     root: PathBuf,

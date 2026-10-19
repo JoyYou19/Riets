@@ -4,20 +4,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DatabaseStats {
-    pub document_count: usize,
-    pub segment_count: usize,
-    pub background_compaction_enabled: bool,
-    pub metrics: DatabaseMetrics,
-    pub indexing: IndexingStats,
-    pub reindexing: ReindexingStats,
-    pub backup: BackupStats,
-    pub shard_count: usize,
-    pub restoring: bool,
-}
-
 use core_backup::{
     backup::{BackupManager, BackupManifest},
     progress::BackupStats,
@@ -59,6 +45,20 @@ use core_storage::{
 };
 use slog::{Logger, error, info, warn};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseStats {
+    pub document_count: usize,
+    pub segment_count: usize,
+    pub background_compaction_enabled: bool,
+    pub metrics: DatabaseMetrics,
+    pub indexing: IndexingStats,
+    pub reindexing: ReindexingStats,
+    pub backup: BackupStats,
+    pub shard_count: usize,
+    pub restoring: bool,
+}
+//has it been quiet long enough to flush
+pub const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
 pub struct ShardDb {
     shard_id: ShardId,
     // Number of shards in the database; `shard_for(id, shard_count)` must return `shard_id`
@@ -79,9 +79,6 @@ pub struct ShardDb {
     pending: u32,
     last_write: Instant,
 }
-
-//has it been quiet long enough to flush
-pub const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
 
 impl ShardDb {
     pub fn shared_state(&self) -> Arc<SharedShardState> {
