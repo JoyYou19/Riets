@@ -103,18 +103,6 @@ pub struct DeleteReport {
     pub failures: Vec<DocFailure>,
 }
 
-//Norcha check
-pub enum PendingOp {
-    Index { doc: IndexedDocument },
-    Tombstone { internal_id: DocId },
-}
-
-//start stop database (already stopped/started)
-pub enum DatabasePowerButtonOutcome {
-    Changed,
-    Nochange,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Encode, Decode)]
 pub struct DocumentInput {
     pub external_id: String,
@@ -132,11 +120,6 @@ pub struct SearchDocumentHit {
     pub highlights: Vec<String>,
 }
 
-pub struct SearchDocumentResults {
-    pub total_hits: usize,
-    pub hits: Vec<SearchDocumentHit>,
-}
-
 impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(database_lifecycle)]
     pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> io::Result<Self> {
@@ -151,10 +134,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
     pub fn index_worker(&self) -> &IndexWorker {
         &self.index_worker
-    }
-
-    pub fn get_analyzer(&self) -> &Analyzer {
-        &self.analyzer
     }
 
     pub fn shard_id(&self) -> ShardId {

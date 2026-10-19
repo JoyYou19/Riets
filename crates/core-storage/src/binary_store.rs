@@ -552,18 +552,6 @@ impl DocumentStore for BinaryDocumentStore {
             .unwrap_or(0)
     }
 
-    #[timed(retrieve_opps)]
-    fn get_by_internal_id(&self, internal_id: DocId) -> io::Result<Option<StoredDocument>> {
-        let Some(external_id) = self
-            .internal_to_external
-            .get(&internal_id)
-            .map(|r| r.value().clone())
-        else {
-            return Ok(None);
-        };
-        self.get(&external_id)
-    }
-
     fn document_count(&self) -> usize {
         self.locations.len()
     }

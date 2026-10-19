@@ -18,17 +18,6 @@ impl DocumentOut {
         }
     }
 
-    pub fn into_value(self, strip_id: Option<&str>) -> Result<OwnedValue, CorelamoError> {
-        let mut value = match self {
-            DocumentOut::Raw(bytes) => parse_source(&bytes)?,
-            DocumentOut::Json(value) => value,
-        };
-        if let Some(path) = strip_id {
-            strip_field_path(&mut value, path);
-        }
-        Ok(value)
-    }
-
     pub fn to_value(&self, strip_id: Option<&str>) -> Result<OwnedValue, CorelamoError> {
         let mut value = match self {
             DocumentOut::Raw(bytes) => parse_source(bytes)?,

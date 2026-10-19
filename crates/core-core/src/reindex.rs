@@ -35,12 +35,6 @@ pub struct CompletedShardReindex {
     pub generation: u64,
 }
 
-pub struct ReindexJob {
-    pub params: ReindexParams,
-    pub shard_tx: Sender<ShardCmd>,
-    pub progress: Arc<ReindexProgress>,
-    pub stats: Arc<DbStats>,
-}
 pub struct PendingReindexJob {
     pub rx: Receiver<Result<ReindexParams, CorelamoError>>,
     pub shard_tx: Sender<ShardCmd>,

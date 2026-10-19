@@ -115,17 +115,21 @@ impl Analyzer {
     /// Streams every token's text and position to `f` without allocating per token.
     /// Returns the number of tokens produced (the field's document length).
     #[timed(indexing_documents)]
-    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32,u32)) -> u32 {
+    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
         self.with_text_analyzer(|analyzer| {
             let mut stream = analyzer.token_stream(input);
             let mut count: u32 = 0;
-            let mut next_unseen:usize=0;
+            let mut next_unseen: usize = 0;
             while let Some(token) = stream.next() {
-                f(&token.text, token.position as u32, token.position_length.max(1) as u32,);
+                f(
+                    &token.text,
+                    token.position as u32,
+                    token.position_length.max(1) as u32,
+                );
                 if token.position >= next_unseen {
-                count = count.saturating_add(1);
-                next_unseen = token.position + 1;
-            }
+                    count = count.saturating_add(1);
+                    next_unseen = token.position + 1;
+                }
             }
             count
         })
@@ -255,18 +259,39 @@ mod name_keys {
     #[test]
     fn whole_value_and_unqualified_value() {
         let analyzer = Analyzer::new();
-        assert_eq!(analyzer.name_terms("The Penguins"), vec![format!("{NAME_KEY}penguin")]);
+        assert_eq!(
+            analyzer.name_terms("The Penguins"),
+            vec![format!("{NAME_KEY}penguin")]
+        );
         assert_eq!(analyzer.name_key("penguins").as_deref(), Some("penguin"));
         let terms = analyzer.name_terms("Tom Holland (author)");
         assert_eq!(terms.len(), 2);
-        assert_eq!(terms[1], format!("{QUALIFIED_NAME_KEY}{}", analyzer.name_key("tom holland").unwrap()));
+        assert_eq!(
+            terms[1],
+            format!(
+                "{QUALIFIED_NAME_KEY}{}",
+                analyzer.name_key("tom holland").unwrap()
+            )
+        );
         assert_eq!(analyzer.name_terms("Kansas City, Missouri").len(), 2);
         assert_eq!(analyzer.name_terms("1965"), vec![format!("{NAME_KEY}1965")]);
         assert!(analyzer.name_terms(&"word ".repeat(40)).is_empty());
-        assert_eq!(analyzer.name_key("Spider-Man"), analyzer.name_key("spider man"));
-        assert_eq!(analyzer.name_key("King of the Hill").as_deref(), Some("king _ hill"));
-        assert_ne!(analyzer.name_key("In New York"), analyzer.name_key("new york"));
-        assert_eq!(analyzer.name_key("The Beatles"), analyzer.name_key("beatles"));
+        assert_eq!(
+            analyzer.name_key("Spider-Man"),
+            analyzer.name_key("spider man")
+        );
+        assert_eq!(
+            analyzer.name_key("King of the Hill").as_deref(),
+            Some("king _ hill")
+        );
+        assert_ne!(
+            analyzer.name_key("In New York"),
+            analyzer.name_key("new york")
+        );
+        assert_eq!(
+            analyzer.name_key("The Beatles"),
+            analyzer.name_key("beatles")
+        );
     }
 }
 
