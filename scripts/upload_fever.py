@@ -1,99 +1,105 @@
 import json
+import os
 import random
-import time
 import subprocess
-#
-INPUT_FILE = "./corpus.jsonl"
+import sys
+import time
+
+INPUT_FILE = "../../fever/corpus.jsonl"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
 
 # custom constant, tune to taste
 BATCH_SIZE = 60000
 
-USERNAME = "admin"
-PASSWORD = "secret"
+# prefer environment variables; fall back to the old defaults
+USERNAME = os.environ.get("CORELAMO_USER", "admin")
+PASSWORD = os.environ.get("CORELAMO_PASS", "secret")
 
 POLICY = """\
-[[fields]]
-name = "_id"
-kind = "IdAuto"
-list = true
-[fields.weight]
-min = 90
-max = 95
-
-[[fields]]
-name = "title"
-kind = "Text"
-list = true
-exact = true
-stemming = "english"
-[fields.weight]
-min = 40
-max = 80
-
-[[fields]]
-name = "text"
-kind = "Text"
-list = true
-stemming = "english"
-[fields.weight]
-min = 1
-max = 100
-
-[[fields]]
-name = "random_year"
-kind = "Integer"
-searchable = true
-list = true
-[fields.weight]
-min = 1
-max = 50
-
-[[fields]]
-name = "random_float"
-kind = "Float"
-list = true
-[fields.weight]
-min = 1
-max = 50
-"""
+{
+  "_id": {
+    "$type": "id",
+    "$weight": { "min": 90, "max": 95 }
+  },
+  "title": {
+    "$type": "text",
+    "$exact": true,
+    "$stemming": "english",
+    "$weight": { "min": 40, "max": 80 }
+  },
+  "text": {
+    "$type": "text",
+    "$stemming": "english",
+    "$weight": { "min": 1, "max": 100 }
+  },
+  "random_year": {
+    "$type": "integer",
+    "$searchable": true,
+    "$weight": { "min": 1, "max": 50 }
+  },
+  "random_float": {
+    "$type": "float",
+    "$weight": { "min": 1, "max": 50 }
+  }
+}"""
 
 
 def login(username, password):
     body = json.dumps({"username": username, "password": password})
     result = subprocess.run(
-        ["curl", "-s", "-X", "POST", f"{BASE_URL}/api/login",
+        ["curl", "-sS", "-X", "POST", f"{BASE_URL}/api/login",
          "-H", "Accept: application/json",
          "-H", "Content-Type: application/json",
          "-d", body],
         capture_output=True,
         text=True,
     )
-    print(result.stdout)
-    return json.loads(result.stdout)["data"]["token"]
+    if result.returncode != 0:
+        sys.exit(f"[FATAL] login request failed: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)["data"]["token"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        # don't echo the whole response on success (it contains the token),
+        # but on failure it's what you need to see
+        sys.exit(f"[FATAL] login failed, server said: {result.stdout.strip()}")
 
 
 def curl_post(url, body, token):
+    """POST a JSON body. Returns (response_text, http_status, curl_exit_code)."""
     result = subprocess.run(
-        ["curl", "-s", "-X", "POST", url,
+        ["curl", "-sS", "-X", "POST", url,
          "-H", "Accept: application/json",
+         "-H", "Content-Type: application/json",
          "-H", f"X-Corelamo-Key: {token}",
+         "-w", "\n%{http_code}",
          "--data-binary", "@-"],
         input=body,
         capture_output=True,
         text=True,
     )
-    return result.stdout.strip(), result.returncode
+    out = result.stdout
+    text, _, status = out.rpartition("\n")
+    try:
+        status = int(status)
+    except ValueError:
+        status = 0
+    if result.returncode != 0 and result.stderr:
+        text = (text + "\n" + result.stderr).strip()
+    return text.strip(), status, result.returncode
+
+
+def ok(status, code):
+    return code == 0 and 200 <= status < 300
 
 
 def count_lines(path):
-    # cheap pass just to give upload progress a denominator; skip if the
-    # file is huge enough that this itself takes too long
+    # cheap pass just to give upload progress a denominator
     total = 0
     with open(path, "r", encoding="utf-8") as f:
-        for _ in f:
-            total += 1
+        for line in f:
+            if line.strip():
+                total += 1
     return total
 
 
@@ -123,6 +129,19 @@ def batches_from_jsonl(path, batch_size):
         yield batch
 
 
+def step(label, url, body, token, fatal=True):
+    print(f"[INFO] {label}...")
+    out, status, code = curl_post(url, body, token)
+    print(f"[INFO] HTTP {status}: {out}")
+    if not ok(status, code):
+        msg = f"[{'FATAL' if fatal else 'WARN'}] {
+            label} failed (HTTP {status}, curl exit {code})"
+        if fatal:
+            sys.exit(msg)
+        print(msg)
+    return out
+
+
 def main():
     start_time = time.time()
     print("[INFO] Starting fever uploader...")
@@ -131,60 +150,45 @@ def main():
     token = login(USERNAME, PASSWORD)
     print("[INFO] Login successful, token acquired.")
 
-    # 1. delete if exists
-    # print(f"[INFO] Deleting existing '{DB_NAME}' database if it exists...")
-    # out, _ = curl_delete(
-    #     f"{BASE_URL}/api/databases/{DB_NAME}/clear-database", token)
-    # print(f"[INFO] {out}")
+    db = f"{BASE_URL}/api/databases/{DB_NAME}"
 
-    # 2. create database
-    print(f"[INFO] Creating database '{DB_NAME}'...")
-    out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/create-database", "{\"shard_count\": 5}", token)
-    print(f"[INFO] {out}")
+    # non-fatal: may fail simply because the database already exists
+    step(f"Creating database '{DB_NAME}'",
+         f"{db}/create-database", json.dumps({"shard_count": 5}), token,
+         fatal=False)
 
-    # 2b. start database
-    print(f"[INFO] Starting database '{DB_NAME}'...")
-    out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/start-database", "", token)
-    print(f"[INFO] {out}")
+    step(f"Starting database '{DB_NAME}'",
+         f"{db}/start-database", "", token, fatal=False)
 
-    # 3. set policy
-    print("[INFO] Setting policy...")
-    out, _ = curl_post(
-        f"{BASE_URL}/api/databases/{DB_NAME}/set-policy", POLICY, token)
-    print(f"[INFO] {out}")
+    step("Setting policy", f"{db}/set-policy", POLICY, token)
 
-    # 4. count lines up front so progress has a denominator
     print(f"[INFO] Counting lines in {INPUT_FILE}...")
     total_lines = count_lines(INPUT_FILE)
-    print(f"[INFO] {total_lines} line(s) found.")
+    print(f"[INFO] {total_lines} non-empty line(s) found.")
 
-    # 5. stream + upload in batches
     uploaded = 0
+    failed = 0
     for batch_no, batch in enumerate(batches_from_jsonl(INPUT_FILE, BATCH_SIZE), start=1):
         payload = json.dumps(batch, ensure_ascii=False)
-        out, code = curl_post(
-            f"{BASE_URL}/api/databases/{DB_NAME}/insert", payload, token)
+        out, status, code = curl_post(f"{db}/insert", payload, token)
+
+        if not ok(status, code):
+            failed += len(batch)
+            print(f"[ERROR] batch {batch_no} failed (HTTP {
+                  status}, curl exit {code})")
+            print(out)
+            continue
 
         uploaded += len(batch)
-        if code != 0:
-            print(f"[ERROR] batch {
-                  batch_no} failed to send (curl exit {code})")
-            print(out)
-        else:
-            pct = (uploaded / total_lines * 100) if total_lines else 0
-            print(f"[INFO] batch {batch_no}: {
-                  uploaded}/{total_lines} ({pct:.1f}%) — {out}")
-
-    # 6. reindex
-    # print("[INFO] Reindexing...")
-    # out, _ = curl_post(
-    #     f"{BASE_URL}/api/databases/{DB_NAME}/reindex", "", token)
-    # print(f"[INFO] {out}")
+        pct = (uploaded / total_lines * 100) if total_lines else 0
+        print(f"[INFO] batch {batch_no}: {
+              uploaded}/{total_lines} ({pct:.1f}%) - {out}")
 
     duration = time.time() - start_time
-    print(f"\n[INFO] Done in {duration:.2f}s.")
+    print(f"\n[INFO] Done in {duration:.2f}s. Uploaded {
+          uploaded}, failed {failed}.")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
