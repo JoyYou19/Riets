@@ -71,8 +71,10 @@ pub enum IndexCommand {
         xpath: XPathId,
         reply: InstallVectorsReply,
     },
+    
     Shutdown,
 }
+
 
 pub struct IndexWorker {
     sender: Sender<IndexCommand>,
