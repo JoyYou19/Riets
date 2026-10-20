@@ -1,6 +1,6 @@
 //include ALL
 use crate::ShardDb;
-use crate::metrics::DbStats;
+use crate::metrics::{DbStats, EmbeddingStatus};
 use crate::reindex::{PendingReindexJob, ReindexPool};
 use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
@@ -14,7 +14,8 @@ use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::index_worker::Phase;
-use core_index::types::{ShardId, XPathId, shard_of};
+use core_index::types::{DocId, ShardId, XPathId, shard_of};
+use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{
     DidYouMeanRequest, HighlightFieldOptions, LookupCommand, LookupResponse, SearchCommand,
     SortMode, TotalHits,
@@ -53,6 +54,83 @@ use tokio::task::JoinSet;
 use crate::shard_manager_helpers::{
     compile_filters, fold_sort_bounds, order_blended, order_strict, resolve_sorts,
 };
+use core_embed::{Embedder, ModelRegistry};
+
+//mististiskas konstantes 
+/// How many hits each list contributes to fusion. Deeper than a page, so a document ranked
+/// moderately in both lists can still reach the top.
+const FUSION_DEPTH: usize = 100;
+/// The usual RRF constant: damps the difference between the very top ranks.
+const RRF_K: f32 = 60.0;
+/// Fewer words than this are usually names or codes, which word search already handles best.
+const SEMANTIC_MIN_WORDS: usize = 3;
+/// Automatic fusion needs at least this share of documents embedded (percent).
+const SEMANTIC_MIN_PROGRESS: u8 = 95;
+/// Largest result count a vector-only query returns (matches the total-hits cap).
+const MAX_VECTOR_RESULTS: usize = 1000;
+/// A query that is only `{"vector": "text"}` or `{"vector": {"text": "...", "field": "..."}}`.
+struct VectorRequest {
+    text: String,
+    field: Option<String>,
+}
+
+fn vector_request(query: &OwnedValue) -> Result<Option<VectorRequest>, CorelamoError> {
+    let OwnedValue::Object(obj) = query else {
+        return Ok(None);
+    };
+    let Some(node) = obj.get("vector") else {
+        return Ok(None);
+    };
+    if obj.len() != 1 {
+        return Err(CorelamoError::InvalidData(
+            "\"vector\" cannot be combined with other operators at the same level".into(),
+        ));
+    }
+    let (text, field) = match node {
+        OwnedValue::String(text) => (text.clone(), None),
+        OwnedValue::Object(inner) => {
+            let text = match inner.get("text") {
+                Some(OwnedValue::String(text)) => text.clone(),
+                _ => {
+                    return Err(CorelamoError::InvalidData(
+                        "\"vector\" object needs a \"text\" string".into(),
+                    ))
+                }
+            };
+            let field = match inner.get("field") {
+                None => None,
+                Some(OwnedValue::String(field)) => Some(field.clone()),
+                Some(_) => {
+                    return Err(CorelamoError::InvalidData("\"vector.field\" must be a string".into()))
+                }
+            };
+            (text, field)
+        }
+        _ => {
+            return Err(CorelamoError::InvalidData(
+                "\"vector\" must be a string or {\"text\": ..., \"field\": ...}".into(),
+            ))
+        }
+    };
+    if text.trim().is_empty() {
+        return Err(CorelamoError::InvalidData("\"vector\" text is empty".into()));
+    }
+    Ok(Some(VectorRequest { text, field }))
+}
+
+/// Vector fields of the policy, limited to `names` when given (full path or field name).
+fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId> {
+    policy
+        .vector_fields()
+        .into_iter()
+        .filter(|field| {
+            names.is_none_or(|names| {
+                names.iter().any(|name| *name == field.full_path || *name == field.name)
+            })
+        })
+        .map(|field| field.xpath(policy))
+        .collect()
+}
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
     root: PathBuf,
@@ -65,7 +143,7 @@ pub struct ShardManager {
     all_fields: RwLock<AllFields>,
     // the database's synonym dictionary, dictionary.toml in its directory
     synonyms: Arc<SynonymManager>,
-
+    models: Arc<ModelRegistry>,
     // taken and joined in shutdown(); a Mutex because shutdown() only gets &self
     joins: Mutex<Vec<JoinHandle<()>>>, //JoinHandle atgriez kad thread uztaisits
     // main, delete and rename all reach shutdown(), so it has to be safe twice
@@ -81,6 +159,7 @@ impl ShardManager {
         options: DatabaseOptions,
         shard_count: u16,
         synonym_registry: &SynonymRegistry,
+        models:Arc<ModelRegistry>
     ) -> Result<Self, CorelamoError> {
         if shard_count == 0 {
             return Err(CorelamoError::InvalidData(
@@ -114,6 +193,7 @@ impl ShardManager {
                 options.clone(),
                 policy.clone(),
                 db_stats.handle(shard_id as usize),
+                Arc::clone(&models),
             )?;
             let (handle, join, boot_rx) =
                 shard_worker::spawn(db, Self::DEFAULT_QUEUE_DEPTH, options.bootable)?;
@@ -139,9 +219,137 @@ impl ShardManager {
             db_stats,
             backup_dir,
             synonyms,
+            models
         })
     }
 
+     //INFO: manual load is basically only used for rename_database so that it doesnt start based on
+    //boot : bool
+    #[timed(database_lifecycle)]
+    pub fn load(
+        root: PathBuf,
+        manual_load: bool,
+        synonym_registry: &SynonymRegistry,
+        models:Arc<ModelRegistry>
+    ) -> Result<Self, CorelamoError> {
+        let shards_dir = root.join("shards");
+
+        if !shards_dir.exists() {
+            return Err(CorelamoError::NotFound(format!(
+                "shards directory not found at {}",
+                shards_dir.display()
+            )));
+        }
+
+        let mut shard_paths = Vec::new();
+        for entry in std::fs::read_dir(&shards_dir)? {
+            let entry = entry?;
+            if entry.path().is_dir() {
+                shard_paths.push(entry.path());
+            }
+        }
+
+        shard_paths.sort_by_key(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|s| s.strip_prefix("shard-"))
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(u16::MAX)
+        });
+
+        // Routing returns a position in `shards`, while document ids carry the shard id, so
+        // the shard at position i must be shard-i. Checked before any shard is started.
+        let shard_count_u16 = u16::try_from(shard_paths.len()).map_err(|_| {
+            CorelamoError::InvalidData(format!(
+                "{} shard directories exceed the supported maximum of {}",
+                shard_paths.len(),
+                u16::MAX
+            ))
+        })?;
+        for (position, path) in shard_paths.iter().enumerate() {
+            let parsed = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|s| s.strip_prefix("shard-"))
+                .and_then(|s| s.parse::<u16>().ok());
+            if parsed.map(usize::from) != Some(position) {
+                return Err(CorelamoError::InvalidData(format!(
+                    "shard directory {} is at position {position}; shard directories must be shard-0 to shard-{}",
+                    path.display(),
+                    shard_paths.len() - 1
+                )));
+            }
+        }
+
+        let policy_path = root.join(IndexPolicy::POLICY_FILE_NAME);
+
+        if !policy_path.exists() {
+            return Err(CorelamoError::NotFound(format!(
+                "policy not found at {}",
+                policy_path.display()
+            )));
+        }
+
+        let policy = IndexPolicy::load(&root)?;
+
+        let options = match DatabaseOptions::load_from_file(&root) {
+            Ok(o) => o,
+            Err(e) => {
+                return Err(CorelamoError::from(e));
+            }
+        };
+
+        let backup_dir = root.join("backups");
+        let shard_count = shard_paths.len();
+        let db_stats = DbStats::new(shard_count);
+        let mut shards = Vec::new();
+        let mut joins = Vec::new();
+        let mut boot_rxs = Vec::new();
+        let all_fields = AllFields::load(&root)?;
+        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
+      
+        //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
+        for (i, shard_path) in shard_paths.iter().enumerate() {
+            let db = ShardDb::load(
+                shard_path,
+                &root,
+                shard_count_u16,
+                &policy,
+                &options,
+                db_stats.handle(i),
+                Arc::clone(&models),
+            )?;
+            let (handle, join, boot_rx) = shard_worker::spawn(
+                db,
+                Self::DEFAULT_QUEUE_DEPTH,
+                options.bootable && manual_load,
+            )?;
+            shards.push(handle);
+            joins.push(join);
+            boot_rxs.push((i, boot_rx));
+        }
+        for (i, boot_rx) in boot_rxs {
+            boot_rx.recv().map_err(|_| {
+                CorelamoError::Internal(format!("shard {i} thread died during start"))
+            })??;
+        }
+
+        Ok(Self {
+            shards,
+            joins: Mutex::new(joins),
+            shutdown_done: AtomicBool::new(false),
+            root,
+            policy: RwLock::new(policy),
+            options: RwLock::new(options),
+            analyzer: Analyzer::new(),
+            reindex_pool: ReindexPool::start(shard_count as usize),
+            all_fields: RwLock::new(all_fields),
+            db_stats,
+            backup_dir,
+            synonyms,
+            models
+        })
+    }
     pub fn all_fields(&self) -> AllFields {
         self.all_fields.read().clone()
     }
@@ -521,131 +729,12 @@ impl ShardManager {
         }
     }
 
-    //INFO: manual load is basically only used for rename_database so that it doesnt start based on
-    //boot : bool
-    #[timed(database_lifecycle)]
-    pub fn load(
-        root: PathBuf,
-        manual_load: bool,
-        synonym_registry: &SynonymRegistry,
-    ) -> Result<Self, CorelamoError> {
-        let shards_dir = root.join("shards");
-
-        if !shards_dir.exists() {
-            return Err(CorelamoError::NotFound(format!(
-                "shards directory not found at {}",
-                shards_dir.display()
-            )));
-        }
-
-        let mut shard_paths = Vec::new();
-        for entry in std::fs::read_dir(&shards_dir)? {
-            let entry = entry?;
-            if entry.path().is_dir() {
-                shard_paths.push(entry.path());
-            }
-        }
-
-        shard_paths.sort_by_key(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|s| s.strip_prefix("shard-"))
-                .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(u16::MAX)
-        });
-
-        // Routing returns a position in `shards`, while document ids carry the shard id, so
-        // the shard at position i must be shard-i. Checked before any shard is started.
-        let shard_count_u16 = u16::try_from(shard_paths.len()).map_err(|_| {
-            CorelamoError::InvalidData(format!(
-                "{} shard directories exceed the supported maximum of {}",
-                shard_paths.len(),
-                u16::MAX
-            ))
-        })?;
-        for (position, path) in shard_paths.iter().enumerate() {
-            let parsed = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|s| s.strip_prefix("shard-"))
-                .and_then(|s| s.parse::<u16>().ok());
-            if parsed.map(usize::from) != Some(position) {
-                return Err(CorelamoError::InvalidData(format!(
-                    "shard directory {} is at position {position}; shard directories must be shard-0 to shard-{}",
-                    path.display(),
-                    shard_paths.len() - 1
-                )));
-            }
-        }
-
-        let policy_path = root.join(IndexPolicy::POLICY_FILE_NAME);
-
-        if !policy_path.exists() {
-            return Err(CorelamoError::NotFound(format!(
-                "policy not found at {}",
-                policy_path.display()
-            )));
-        }
-
-        let policy = IndexPolicy::load(&root)?;
-
-        let options = match DatabaseOptions::load_from_file(&root) {
-            Ok(o) => o,
-            Err(e) => {
-                return Err(CorelamoError::from(e));
-            }
-        };
-
-        let backup_dir = root.join("backups");
-        let shard_count = shard_paths.len();
-        let db_stats = DbStats::new(shard_count);
-        let mut shards = Vec::new();
-        let mut joins = Vec::new();
-        let mut boot_rxs = Vec::new();
-        let all_fields = AllFields::load(&root)?;
-        let synonyms = Arc::new(synonym_registry.open_database(&root)?);
-
-        //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
-        for (i, shard_path) in shard_paths.iter().enumerate() {
-            let db = ShardDb::load(
-                shard_path,
-                &root,
-                shard_count_u16,
-                &policy,
-                &options,
-                db_stats.handle(i),
-            )?;
-            let (handle, join, boot_rx) = shard_worker::spawn(
-                db,
-                Self::DEFAULT_QUEUE_DEPTH,
-                options.bootable && manual_load,
-            )?;
-            shards.push(handle);
-            joins.push(join);
-            boot_rxs.push((i, boot_rx));
-        }
-        for (i, boot_rx) in boot_rxs {
-            boot_rx.recv().map_err(|_| {
-                CorelamoError::Internal(format!("shard {i} thread died during start"))
-            })??;
-        }
-
-        Ok(Self {
-            shards,
-            joins: Mutex::new(joins),
-            shutdown_done: AtomicBool::new(false),
-            root,
-            policy: RwLock::new(policy),
-            options: RwLock::new(options),
-            analyzer: Analyzer::new(),
-            reindex_pool: ReindexPool::start(shard_count as usize),
-            all_fields: RwLock::new(all_fields),
-            db_stats,
-            backup_dir,
-            synonyms,
-        })
+   /// The configured embedding model, loaded on first use and shared by all databases.
+    pub fn embedder(&self) -> Result<Arc<Embedder>, CorelamoError> {
+        self.models
+            .default_embedder()
+            .map_err(|e| CorelamoError::Internal(format!("embedding model: {e}")))
     }
-
     pub fn root(&self) -> &std::path::Path {
         &self.root
     }
@@ -1077,6 +1166,9 @@ impl ShardManager {
         if fetch == 0 {
             return Ok((Vec::new(), TotalHits::default()));
         }
+        if let Some(request) = vector_request(&command.query)? {
+            return self.search_vectors_only(command, request, fetch, offset, limit).await;
+        }
         if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
             return Err(CorelamoError::InvalidData(
                 "Search for something not nothing....".into(),
@@ -1097,6 +1189,11 @@ impl ShardManager {
         )?;
         let filters = compile_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
+        //vector search
+        let filtered = command.filters.as_ref().is_some_and(|f| !f.is_empty());
+        let semantic = self.semantic_fields(command, &policy, sorts.is_some(), filtered);
+        // fusion ranks the top FUSION_DEPTH of each list, so the word side must fetch that deep
+        let word_fetch = if semantic.is_some() { fetch.max(FUSION_DEPTH) } else { fetch };
 
         //INFO:                page * multiplier    min    max
         //WARN: results may change based on the "docs": x lol
@@ -1110,7 +1207,7 @@ impl ShardManager {
                     resolved.clone(),
                     &self.analyzer,
                     has_exact_field
-                ).stopping_after(if sorts.is_some() { window } else { fetch })
+                 ).stopping_after(if sorts.is_some() { window } else { word_fetch })
             }
             _ => RankPlan::default(),
         };
@@ -1125,7 +1222,8 @@ impl ShardManager {
             _ => Vec::new(),
         };
         let query = Arc::new(query);
-
+        let vector_task =
+            semantic.map(|(text, xpaths)| self.spawn_vector_search(text, xpaths, FUSION_DEPTH));
         // resolve highlight fields once + collect query matchers once
         let highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)> =
             match &command.highlight {
@@ -1235,7 +1333,7 @@ impl ShardManager {
                         filters.as_deref(),
                         &ctxs,
                         // hits merge by (tier, score): each shard's top `fetch` covers the merged top `fetch`
-                        fetch,
+                        word_fetch,
                         matchmode,
                     )
                 }
@@ -1282,111 +1380,21 @@ impl ShardManager {
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
         }
-
+        if let Some(task) = vector_task {
+            // Any failure on the vector side leaves the word ranking as it is.
+            if let Ok(Some(vector_hits)) = task.await {
+                items.truncate(word_fetch);
+                items = fuse_rrf(items, &vector_hits);
+            }
+        }
         if items.len() > fetch {
             items.truncate(fetch);
         }
-
-        let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
-        if offset >= just_hits.len() {
-            return Ok((Vec::new(), TotalHits::default()));
-        }
-
-        //for the resolve hit to save position
-        let page: Vec<(usize, SearchHit)> = just_hits
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .enumerate()
-            .collect();
-        let page_len = page.len();
-
-        let mut by_shard: HashMap<usize, Vec<(usize, SearchHit)>> = HashMap::new();
-        for (pos, hit) in page {
-            by_shard
-                .entry(shard_of(hit.doc_id).0 as usize)
-                .or_default()
-                .push((pos, hit));
-        }
-
-        //sorted hits -> full documents for pretty results :)
-        let mut set = JoinSet::new();
-        for (idx, hits) in by_shard {
-            let handle = self.shards[idx].clone();
-            let return_fields = command.return_fields.clone();
-            let policy = policy.clone();
-            let positions: Vec<usize> = hits.iter().map(|(pos, _)| *pos).collect();
-            let bare_hits: Vec<SearchHit> = hits.into_iter().map(|(_, h)| h).collect();
-            set.spawn(async move {
-                (
-                    positions,
-                    handle
-                        .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
-                        .await,
-                )
-            });
-        }
-
-        //join results
-        let mut resolved: Vec<Option<SearchDocumentHit>> = vec![None; page_len];
-        let mut first_err = None;
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok((positions, Ok(hits))) => {
-                    for (pos, hit) in positions.into_iter().zip(hits) {
-                        resolved[pos] = hit;
-                    }
-                }
-                Ok((_, Err(e))) if first_err.is_none() => {
-                    first_err = Some(e);
-                }
-                Err(je) if first_err.is_none() => {
-                    first_err = Some(CorelamoError::Internal(format!(
-                        "shard resolve panicked: {je}"
-                    )));
-                }
-                _ => {}
-            }
-        }
-        if let Some(e) = first_err {
-            return Err(e);
-        }
-
-        //populate highlights
-        if let Some((fields, matchers)) = &highlight {
-            let fields = fields.clone();
-            let matchers = matchers.clone();
-            let analyzer = self.analyzer.clone();
-            resolved = tokio::task::spawn_blocking(move || {
-                for slot in &mut resolved {
-                    let Some(hit) = slot else {
-                        continue;
-                    };
-                    let mut highlights = Vec::new();
-                    if !matchers.is_empty() {
-                        if let Ok(value) = hit.doc.to_value(None) {
-                            for (full_path, opts) in &fields {
-                                for text in field_texts(&value, full_path) {
-                                    highlights
-                                        .extend(highlight_text(&text, &analyzer, &matchers, opts));
-                                }
-                            }
-                        }
-                    }
-                    hit.highlights = highlights;
-                }
-                resolved
-            })
+         let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
+        self.resolve_page(just_hits, offset, limit, total_hits, command, &policy, highlight)
             .await
-            .map_err(|e| CorelamoError::Internal(format!("highlight task panicked: {e}")))?;
-        }
-
-        let total_hits = TotalHits {
-            value: total_hits.min(1000),
-            more: total_hits >= 1000,
-        };
-
-        Ok((resolved.into_iter().flatten().collect(), total_hits))
+    
+       
     }
 
     pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
@@ -1817,6 +1825,171 @@ impl ShardManager {
         Ok(())
     }
 
+        /// `{"vector": ...}`: nearest documents by meaning only, no word matching.
+    async fn search_vectors_only(
+        &self,
+        command: &SearchCommand,
+        request: VectorRequest,
+        fetch: usize,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
+        if command.filters.as_ref().is_some_and(|f| !f.is_empty()) || command.sort.is_some() {
+            return Err(CorelamoError::InvalidData(
+                "vector queries do not support filters or sort yet".into(),
+            ));
+        }
+        let policy = self.policy.read().clone();
+        let names: Option<Vec<String>> = match request.field {
+            Some(field) => Some(vec![field]),
+            None => command.search_fields.clone(),
+        };
+        let xpaths = vector_xpaths(&policy, names.as_deref());
+        if xpaths.is_empty() {
+            return Err(CorelamoError::InvalidData(
+                "no vector field to search: mark a text field with \"$vector\": true".into(),
+            ));
+        }
+
+        let k = fetch.min(MAX_VECTOR_RESULTS);
+        let hits = self
+            .spawn_vector_search(request.text, xpaths, k)
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("vector search task panicked: {e}")))?
+            .ok_or_else(|| {
+                CorelamoError::Internal(
+                    "vector search unavailable: the embedding model could not be loaded".into(),
+                )
+            })?;
+
+        let total = hits.len() as u64;
+        let just_hits: Vec<SearchHit> = hits
+            .into_iter()
+            .map(|hit| SearchHit {
+                doc_id: hit.doc_id,
+                matched_terms: 0,
+                weight_sum: 0,
+                distance_factor: 1.0,
+                score: hit.score,
+                tier: 0,
+            })
+            .collect();
+        self.resolve_page(just_hits, offset, limit, total, command, &policy, None)
+            .await
+    }
+        /// Loads the requested page of ranked hits as documents, with highlights when asked.
+       /// Loads the requested page of ranked hits as documents, with highlights when asked.
+    /// Shared by word, fused and vector-only searches.
+    async fn resolve_page(
+        &self,
+        just_hits: Vec<SearchHit>,
+        offset: usize,
+        limit: usize,
+        total_hits: u64,
+        command: &SearchCommand,
+        policy: &IndexPolicy,
+        highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)>,
+    ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
+        if offset >= just_hits.len() {
+            return Ok((Vec::new(), TotalHits::default()));
+        }
+
+        //for the resolve hit to save position
+        let page: Vec<(usize, SearchHit)> = just_hits
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .enumerate()
+            .collect();
+        let page_len = page.len();
+
+        let mut by_shard: HashMap<usize, Vec<(usize, SearchHit)>> = HashMap::new();
+        for (pos, hit) in page {
+            by_shard
+                .entry(shard_of(hit.doc_id).0 as usize)
+                .or_default()
+                .push((pos, hit));
+        }
+
+        //sorted hits -> full documents for pretty results :)
+        let mut set = JoinSet::new();
+        for (idx, hits) in by_shard {
+            let handle = self.shards[idx].clone();
+            let return_fields = command.return_fields.clone();
+            let policy = policy.clone();
+            let positions: Vec<usize> = hits.iter().map(|(pos, _)| *pos).collect();
+            let bare_hits: Vec<SearchHit> = hits.into_iter().map(|(_, h)| h).collect();
+            set.spawn(async move {
+                (
+                    positions,
+                    handle
+                        .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
+                        .await,
+                )
+            });
+        }
+
+        //join results
+        let mut resolved: Vec<Option<SearchDocumentHit>> = vec![None; page_len];
+        let mut first_err = None;
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((positions, Ok(hits))) => {
+                    for (pos, hit) in positions.into_iter().zip(hits) {
+                        resolved[pos] = hit;
+                    }
+                }
+                Ok((_, Err(e))) if first_err.is_none() => {
+                    first_err = Some(e);
+                }
+                Err(je) if first_err.is_none() => {
+                    first_err = Some(CorelamoError::Internal(format!(
+                        "shard resolve panicked: {je}"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+
+        //populate highlights
+        if let Some((fields, matchers)) = &highlight {
+            let fields = fields.clone();
+            let matchers = matchers.clone();
+            let analyzer = self.analyzer.clone();
+            resolved = tokio::task::spawn_blocking(move || {
+                for slot in &mut resolved {
+                    let Some(hit) = slot else {
+                        continue;
+                    };
+                    let mut highlights = Vec::new();
+                    if !matchers.is_empty() {
+                        if let Ok(value) = hit.doc.to_value(None) {
+                            for (full_path, opts) in &fields {
+                                for text in field_texts(&value, full_path) {
+                                    highlights
+                                        .extend(highlight_text(&text, &analyzer, &matchers, opts));
+                                }
+                            }
+                        }
+                    }
+                    hit.highlights = highlights;
+                }
+                resolved
+            })
+            .await
+            .map_err(|e| CorelamoError::Internal(format!("highlight task panicked: {e}")))?;
+        }
+
+        let total_hits = TotalHits {
+            value: total_hits.min(1000),
+            more: total_hits >= 1000,
+        };
+
+        Ok((resolved.into_iter().flatten().collect(), total_hits))
+    }
     #[timed(backup)]
     pub fn delete_backups_old(&self, lifetime: Duration) -> Result<(), CorelamoError> {
         let cutoff = SystemTime::now() - lifetime;
@@ -1889,4 +2062,118 @@ impl ShardManager {
             }
         });
     }
+        /// The vector fields to search for this request, or None when fusion does not apply.
+        /// 
+        /// 
+        /// VECTOR PRIKOLI
+    fn semantic_fields(
+        &self,
+        command: &SearchCommand,
+        policy: &IndexPolicy,
+        sorted: bool,
+        filtered: bool,
+    ) -> Option<(String, Vec<XPathId>)> {
+        let OwnedValue::String(text) = &command.query else {
+            return None;
+        };
+        // v1: vectors cannot be filtered yet, and sorted results do not use relevance ranks
+        if command.semantic == Some(false) || sorted || filtered {
+            return None;
+        }
+        if command.semantic.is_none() {
+            if text.split_whitespace().count() < SEMANTIC_MIN_WORDS {
+                return None;
+            }
+            // partly embedded databases would favour documents that happen to have vectors
+           let embedding = self.db_stats.snapshot().background.embedding;
+            let ready = match embedding.status {
+                EmbeddingStatus::Complete => true,
+                EmbeddingStatus::Embedding => embedding.progress >= SEMANTIC_MIN_PROGRESS,
+                EmbeddingStatus::Disabled => false,
+            };
+            if !ready {
+                return None;
+            }
+        }
+        let xpaths = vector_xpaths(policy, command.search_fields.as_deref());
+        (!xpaths.is_empty()).then(|| (text.clone(), xpaths))
+    }
+
+    /// Embeds the query once and searches every shard and field in parallel.
+    /// Resolves to None when the model or any step is unavailable.
+    fn spawn_vector_search(
+        &self,
+        text: String,
+        xpaths: Vec<XPathId>,
+        k:usize
+    ) -> tokio::task::JoinHandle<Option<Vec<VectorHit>>> {
+        let models = Arc::clone(&self.models);
+        let shards = self.shards.clone();
+        tokio::task::spawn_blocking(move || {
+            let embedder = models.default_embedder().ok()?;
+            let query = embedder.embed_query(&text).ok()?;
+            let lists: Vec<Vec<VectorHit>> = std::thread::scope(|scope| {
+                let jobs: Vec<_> = shards
+                    .iter()
+                    .flat_map(|shard| xpaths.iter().map(move |&xpath| (shard, xpath)))
+                    .map(|(shard, xpath)| {
+                        let query = &query;
+                        scope.spawn(move || shard.vector_search(xpath, query, k))
+                    })
+                    .collect();
+                jobs.into_iter()
+                    .filter_map(|job| job.join().ok()?.ok())
+                    .collect()
+            });
+            Some(merge_hits(lists, k))
+        })
+    }
+}
+//VECTOR
+/// Reciprocal Rank Fusion of the word ranking and the vector ranking: every document scores
+/// Σ 1 / (RRF_K + rank) over the lists it appears in. It only uses ranks, so BM25 and cosine
+/// scores never need to be on the same scale. Fused hits share tier 0 and are ordered by the
+/// fused score, which also becomes their reported score.
+fn fuse_rrf(
+    words: Vec<(SearchHit, Vec<Option<f64>>)>,
+    vectors: &[VectorHit],
+) -> Vec<(SearchHit, Vec<Option<f64>>)> {
+    let contribution = |rank: usize| 1.0 / (RRF_K + rank as f32 + 1.0);
+    let mut fused: HashMap<DocId, (SearchHit, f32)> =
+        HashMap::with_capacity(words.len() + vectors.len());
+
+    for (rank, (hit, _)) in words.into_iter().enumerate() {
+        fused.insert(hit.doc_id, (hit, contribution(rank)));
+    }
+    for (rank, hit) in vectors.iter().enumerate() {
+        fused
+            .entry(hit.doc_id)
+            .and_modify(|(_, score)| *score += contribution(rank))
+            .or_insert_with(|| {
+                (
+                    SearchHit {
+                        doc_id: hit.doc_id,
+                        matched_terms: 0,
+                        weight_sum: 0,
+                        distance_factor: 1.0,
+                        score: 0.0,
+                        tier: 0,
+                    },
+                    contribution(rank),
+                )
+            });
+    }
+
+    let mut out: Vec<(SearchHit, Vec<Option<f64>>)> = fused
+        .into_values()
+        .map(|(mut hit, score)| {
+            hit.score = score;
+            hit.tier = 0;
+            (hit, Vec::new())
+        })
+        .collect();
+    out.sort_unstable_by(|(a, _), (b, _)| {
+        b.score.total_cmp(&a.score).then(a.doc_id.cmp(&b.doc_id))
+    });
+    out
 }

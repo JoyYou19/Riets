@@ -19,6 +19,7 @@ members = [
   "crates/core-backup",
   "crates/core-timing",
   "crates/core-timing-macros",
+  "crates/core-embed",
   ]
 
 [workspace.package]

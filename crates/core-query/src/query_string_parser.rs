@@ -189,6 +189,13 @@ pub fn parse_json_query(v: &OwnedValue) -> Result<Query, CorelamoError> {
             if let Some(inner) = obj.get("fuzzy") {
                 return fuzzy(inner);
             }
+            if obj.contains_key("vector") {
+                return Err(CorelamoError::InvalidData(
+                    "\"vector\" must be the whole query, e.g. {\"query\": {\"vector\": \"some text\"}}; \
+                     to combine meaning with word matching, send the text as the query with \"semantic\": true"
+                        .into(),
+                ));
+            }
             let keys: Vec<&str> = obj
                 .keys()
                 .map(|k| k.as_str())

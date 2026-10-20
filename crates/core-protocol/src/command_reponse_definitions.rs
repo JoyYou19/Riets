@@ -116,6 +116,12 @@ pub struct SearchCommand {
 
     #[serde(default)]
     pub match_mode: MatchMode,
+
+    /// Semantic (vector) search fused with word search. None: automatic (plain text of 3+
+    /// words, the database has vector fields and they are fully embedded). true: always.
+    /// false: never.
+    #[serde(default)]
+    pub semantic: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

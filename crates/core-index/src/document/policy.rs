@@ -450,6 +450,19 @@ impl IndexPolicy {
             .map(|field| field.xpath(self))
             .collect()
     }
+        pub fn vector_fields(&self) -> Vec<&FieldPolicy> {
+        self.indexed_fields()
+            .into_iter()
+            .filter(|field| field.vector)
+            .collect()
+    }
+
+    pub fn vector_xpaths(&self) -> Vec<XPathId> {
+        self.vector_fields()
+            .into_iter()
+            .map(|field| field.xpath(self))
+            .collect()
+    }
 
     pub fn resolve(&mut self, root: impl AsRef<Path>) -> io::Result<()> {
         let root = root.as_ref();
@@ -705,6 +718,14 @@ fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
         for sub in &field.subfields {
             validate_field(sub, depth)?;
         }
+    } else if field.vector && field.kind != FieldKind::Text {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "field '{}' has $vector = true, but only text fields can be vector-indexed",
+                field.name
+            ),
+        ));
     } else if field.kind.is_numeric() && !field.exact {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -872,9 +893,53 @@ impl Serialize for FullField<'_> {
         m.serialize_entry("$full_path", &f.full_path)?;
         m.serialize_entry("$row_keyed", &f.row_keyed)?;
         m.serialize_entry("$depth", &f.depth)?;
+        m.serialize_entry("$vector",&f.vector)?;
         for sub in &f.subfields {
             m.serialize_entry(&sub.name, &FullField(sub))?;
         }
         m.end()
+    }
+}
+#[cfg(test)]
+mod vector_flag_tests {
+    use super::*;
+
+    fn parse(json: &str) -> IndexPolicy {
+        serde_json::from_str(json).expect("policy parses")
+    }
+
+    #[test]
+    fn vector_flag_round_trips_and_is_listed() {
+        let policy = parse(r#"{
+            "id":    { "$type": "id_auto" },
+            "title": { "$type": "text" },
+            "body":  { "$type": "text", "$vector": true }
+        }"#);
+        policy.validate().expect("valid");
+        let names: Vec<&str> = policy.vector_fields().iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["body"]);
+
+        let json = serde_json::to_string(&policy).unwrap();
+        assert!(json.contains("\"$vector\":true"));
+        assert_eq!(json.matches("$vector").count(), 1, "false is omitted in the minimal form");
+    }
+
+    #[test]
+    fn vector_flag_on_non_text_field_is_rejected() {
+        let policy = parse(r#"{
+            "id":   { "$type": "id_auto" },
+            "year": { "$type": "int", "$vector": true }
+        }"#);
+        assert_eq!(policy.validate().unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn vector_flag_must_be_bool() {
+        let err = serde_json::from_str::<IndexPolicy>(r#"{
+            "id":   { "$type": "id_auto" },
+            "body": { "$type": "text", "$vector": "yes" }
+        }"#)
+        .unwrap_err();
+        assert!(err.to_string().contains("$vector must be a bool"));
     }
 }

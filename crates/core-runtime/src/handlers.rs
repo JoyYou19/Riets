@@ -1234,6 +1234,7 @@ pub async fn create_database_handler(
             DatabaseOptions::default(),
             shard_count,
             crate::corelamo_settings::synonym_registry(),
+            crate::corelamo_settings::model_registry()
         )
     })
     .await;
@@ -1407,7 +1408,7 @@ pub async fn stats_handler(
     let reindexing = &stats.reindexing;
     let metrics = &stats.metrics;
     let backup = &stats.backup;
-
+     let background = &stats.background;
     HttpOk::with_data(
         format!("stats for '{db_name}'"),
         json!({
@@ -1435,6 +1436,21 @@ pub async fn stats_handler(
                 "progress": reindexing.progress,
                 "documents_indexed": reindexing.documents_indexed,
                 "eta_seconds": reindexing.eta_seconds,
+            },
+                "background": {
+                "shards_compacting": background.shards_compacting,
+                "shards_embedding": background.shards_embedding,
+                "compactions_completed": indexing.compactions_completed,
+                "compaction_failures": background.compaction_failures,
+                "last_compaction_ms": background.last_compaction_ms,
+                "embedding": {
+                    "status": background.embedding.status.as_str(),
+                    "progress": background.embedding.progress,
+                    "vectors_total": background.embedding.vectors_total,
+                    "vectors_done": background.embedding.vectors_done,
+                    "docs_per_second": background.embedding.docs_per_second,
+                    "eta_seconds": background.embedding.eta_seconds,
+                },
             },
             "backup": {
             "status": backup.status,
@@ -2072,6 +2088,7 @@ pub async fn rename_database_handler(
             new_task.clone(),
             false,
             crate::corelamo_settings::synonym_registry(),
+            crate::corelamo_settings::model_registry()
         )
         .map_err(|e| {
             // it moved but does not open: move it back so the old name keeps working

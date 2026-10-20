@@ -14,3 +14,5 @@ pub mod segment;
 pub mod term_dict;
 pub mod types;
 pub mod wildcard;
+pub mod vector;
+

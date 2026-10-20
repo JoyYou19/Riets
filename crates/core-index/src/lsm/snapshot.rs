@@ -13,6 +13,7 @@ use crate::{
     search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
     types::{ArrayRowId, DocId, XPathId},
     wildcard::WildcardPattern,
+    vector::{SegmentVectors, VectorHit, search_segments},
 };
 
 /*
@@ -24,6 +25,7 @@ pub struct IndexSnapshot {
     mem: Arc<MemIndex>,
     segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
     deleted: DeleteSet,
+    vectors:Arc<Vec<SegmentVectors>>
 }
 
 impl SearchIndex for IndexSnapshot {
@@ -282,6 +284,7 @@ impl IndexSnapshot {
             mem,
             segments,
             deleted,
+            vectors:Arc::default()
         }
     }
 
@@ -360,6 +363,25 @@ impl IndexSnapshot {
         }
 
         self.apply_deletes(union_many(lists.iter()))
+    }
+    //vectors 
+    pub fn with_vectors(mut self, vectors: Arc<Vec<SegmentVectors>>) -> Self {
+        self.vectors = vectors;
+        self
+    }
+     /// Vector files of the published segments.
+    pub fn vectors(&self) -> &[SegmentVectors] {
+        &self.vectors
+    }
+
+    /// Exact vector search over the published segments. `query` must be L2-normalized.
+    pub fn vector_search(
+        &self,
+        xpath: XPathId,
+        query: &[f32],
+        k: usize,
+    ) -> std::io::Result<Vec<VectorHit>> {
+        search_segments(&self.vectors, xpath, query, k, &self.deleted)
     }
 }
 

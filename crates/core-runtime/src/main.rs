@@ -182,6 +182,10 @@ async fn main() -> io::Result<()> {
         error!(log, "error loading the synonym dictionary"; "error" => %e);
         process::exit(1);
     }
+    if let Err(e) = corelamo_settings::init_models(&settings) {
+        error!(log, "error setting up embedding models"; "error" => %e);
+        process::exit(1);
+    }
 
     //clear all directories that somehow didnt get deleted before restart
     sweep_trash(&databases_dir);

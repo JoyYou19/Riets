@@ -1,0 +1,10 @@
+[package]
+name = "core-embed"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fastembed = { version = "5", default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }

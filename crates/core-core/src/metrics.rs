@@ -1,9 +1,9 @@
 use crate::shard_db::DatabaseStats;
 use core_backup::progress::{ BackupPhase, BackupProgress };
 use core_index::lsm::index_worker::{ IndexingStats, Phase, ReindexProgress };
-use std::sync::Arc;
-use std::sync::atomic::{ AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed };
-use std::time::Duration;
+use std::sync::{ Arc, OnceLock };
+use std::sync::atomic::{ AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed };
+use std::time::{ Duration, Instant };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DatabaseMetrics {
@@ -17,6 +17,67 @@ pub struct DatabaseMetrics {
     pub reindex_errors: u64,
     pub reindex_total_time: Duration,
 }
+
+/// What a shard's background worker is doing right now.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundActivity {
+    #[default]
+    Idle = 0,
+    Compacting = 1,
+    Embedding = 2,
+}
+
+impl BackgroundActivity {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Compacting,
+            2 => Self::Embedding,
+            _ => Self::Idle,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingStatus {
+    /// No `$vector` fields in the policy.
+    Disabled,
+    /// Some documents still need vectors.
+    Embedding,
+    /// Every document with a vector field has one (or could not be embedded).
+    Complete,
+}
+
+impl EmbeddingStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Embedding => "embedding",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbeddingStats {
+    pub status: EmbeddingStatus,
+    pub progress: u8,
+    pub vectors_total: u64,
+    pub vectors_done: u64,
+    pub docs_per_second: Option<u64>,
+    pub eta_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundStats {
+    pub shards_compacting: usize,
+    pub shards_embedding: usize,
+    pub compaction_failures: u64,
+    /// Duration of the longest most recent compaction across shards.
+    pub last_compaction_ms: Option<u64>,
+    pub embedding: EmbeddingStats,
+}
+
 #[derive(Debug)]
 pub struct DbStats {
     counters: Counters,
@@ -30,8 +91,12 @@ pub struct DbStats {
     backup_outstanding: AtomicUsize,
     backup_failed: AtomicBool,
     restore: Arc<BackupProgress>,
-    // documents_indexed: AtomicU64,
+    /// When the first embedding round that embedded anything started; the database-wide rate
+    /// is measured from here because all shards share one model.
+    embedding_started: OnceLock<Instant>,
+
 }
+
 /// Counters written by shard threads and the manager. Relaxed throughout:
 /// these guard no other memory, only themselves.
 #[derive(Debug, Default)]
@@ -53,11 +118,20 @@ struct ShardGauges {
     segments: AtomicUsize,
     memtable_terms: AtomicUsize,
     compaction_enabled: AtomicBool,
-    // Add cumulative counters that the shard thread updates
+    // cumulative counters that the shard thread updates
     documents_indexed: AtomicU64,
     documents_deleted: AtomicU64,
     segments_written: AtomicU64,
     compactions_completed: AtomicU64,
+    // background worker
+    activity: AtomicU8,
+    compaction_failures: AtomicU64,
+    last_compaction_ms: AtomicU64,
+    embedding_enabled: AtomicBool,
+    vectors_total: AtomicU64,
+    vectors_measured:AtomicBool,
+    vectors_done: AtomicU64,
+    embedded: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +155,7 @@ impl DatabaseMetrics {
         Some(self.indexing_total_time / (self.indexing_requests as u32))
     }
 }
+
 impl DbStats {
     pub fn new(shard_count: usize) -> Arc<Self> {
         Arc::new(Self {
@@ -93,7 +168,7 @@ impl DbStats {
             backup_outstanding: AtomicUsize::new(0),
             backup_failed: AtomicBool::new(false),
             restore: BackupProgress::new(),
-            // documents_indexed: AtomicU64::new(0),
+            embedding_started: OnceLock::new(),
         })
     }
 
@@ -111,6 +186,7 @@ impl DbStats {
     pub fn finish_restore(&self, ok: bool) {
         self.restore.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
+
     pub fn finish_backup(&self, ok: bool) {
         self.backup.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
@@ -135,6 +211,7 @@ impl DbStats {
             c.search_errors.fetch_add(1, Relaxed);
         }
     }
+
     /// An insert fans out across shards too, so the manager records it once
     /// rather than each shard counting the same request.
     pub fn record_indexing(&self, failed: bool, elapsed: Duration) {
@@ -167,9 +244,6 @@ impl DbStats {
     pub fn add_reindex_total(&self, documents: u64) {
         self.reindex.grow_total(documents);
     }
-    // pub fn update_reindex_progress(&self, documents_indexed: u64) {
-    //     self.reindex.add_indexed(documents_indexed);
-    // }
 
     /// The last shard to finish settles the phase for the database.
     pub fn finish_shard_reindex(&self, ok: bool, elapsed: Duration) {
@@ -194,7 +268,7 @@ impl DbStats {
         }
     }
 
-    //backup related shit
+    // ---- backup lifecycle ----
 
     pub fn begin_backup(&self, shard_count: usize) -> bool {
         if !self.backup.try_begin() {
@@ -236,6 +310,7 @@ impl DbStats {
             reindex_total_time: Duration::from_nanos(c.reindex_nanos.load(Relaxed)),
         }
     }
+
     pub fn snapshot(&self) -> DatabaseStats {
         let mut documents = 0usize;
         let mut segments = 0usize;
@@ -246,15 +321,26 @@ impl DbStats {
         let mut written = 0u64;
         let mut compactions = 0u64;
 
+        let mut compacting = 0usize;
+        let mut embedding_now = 0usize;
+        let mut compaction_failures = 0u64;
+        let mut last_compaction_ms = 0u64;
+        let mut embedding_enabled = false;
+        let mut vectors_total = 0u64;
+        let mut vectors_done = 0u64;
+        let embedded = 0u64;
+        let mut all_measured=true;
         for g in &self.shards {
             let doc_gauge = g.documents.load(Relaxed) as u64;
             let doc_indexed = g.documents_indexed.load(Relaxed);
+            if g.embedding_enabled.load(Relaxed) && !g.vectors_measured.load(Relaxed) {
+                all_measured = false;
+            }
             // documents gauge is only refreshed by publish() (start/clear/reindex);
             // documents_indexed is a live running counter updated on every insert.
             // Use whichever is larger so status reflects live inserts without
             // needing a reindex/restart to refresh the gauge.
-            documents += doc_gauge.max(doc_indexed) as usize;
-
+            documents += doc_gauge.max(doc_indexed) as usize; 
             segments += g.segments.load(Relaxed);
             terms += g.memtable_terms.load(Relaxed);
             compaction |= g.compaction_enabled.load(Relaxed);
@@ -262,6 +348,22 @@ impl DbStats {
             deleted += g.documents_deleted.load(Relaxed);
             written += g.segments_written.load(Relaxed);
             compactions += g.compactions_completed.load(Relaxed);
+            
+            match BackgroundActivity::from_u8(g.activity.load(Relaxed)) {
+                BackgroundActivity::Compacting => {
+                    compacting += 1;
+                }
+                BackgroundActivity::Embedding => {
+                    embedding_now += 1;
+                }
+                BackgroundActivity::Idle => {}
+            }
+            compaction_failures += g.compaction_failures.load(Relaxed);
+            last_compaction_ms = last_compaction_ms.max(g.last_compaction_ms.load(Relaxed));
+            embedding_enabled |= g.embedding_enabled.load(Relaxed);
+            vectors_total += g.vectors_total.load(Relaxed);
+            vectors_done += g.vectors_done.load(Relaxed);
+           
         }
 
         DatabaseStats {
@@ -282,9 +384,59 @@ impl DbStats {
             backup: self.backup.snapshot().into(),
             restoring: false,
             reindexing: self.reindex.snapshot().into(),
+            background: BackgroundStats {
+                shards_compacting: compacting,
+                shards_embedding: embedding_now,
+                compaction_failures,
+                last_compaction_ms: (last_compaction_ms > 0).then_some(last_compaction_ms),
+                embedding: self.embedding_stats(
+                    embedding_enabled,
+                    vectors_total,
+                    vectors_done,
+                    embedded,
+                    all_measured
+                ),
+            },
         }
     }
+
+    fn embedding_stats(&self, enabled: bool, total: u64, done: u64, embedded: u64, measured:bool) -> EmbeddingStats {
+        let done = done.min(total);
+        let status = if !enabled {
+            EmbeddingStatus::Disabled
+        } else if measured && done >= total {
+            EmbeddingStatus::Complete
+        } else {
+            EmbeddingStatus::Embedding
+        };
+        let progress = match status {
+            EmbeddingStatus::Disabled => 0,
+            _ if total == 0 => 100,
+            _ => (done.saturating_mul(100) / total).min(100) as u8,
+        };
+        let rate = self.embedding_started
+            .get()
+            .map(|started| started.elapsed().as_secs_f64())
+            .filter(|secs| *secs >= 2.0)
+            .map(|secs| (embedded as f64) / secs)
+            .filter(|rate| rate.is_finite() && *rate > 0.0);
+        let eta_seconds = match (status, rate) {
+            (EmbeddingStatus::Embedding, Some(rate)) =>
+                Some((((total - done) as f64) / rate).ceil() as u64),
+            _ => None,
+        };
+        EmbeddingStats {
+            status,
+            progress,
+            vectors_total: total,
+            vectors_done: done,
+            docs_per_second: rate.map(|rate| rate.round() as u64),
+            eta_seconds,
+        }
+    }
+    
 }
+
 impl ShardStatsHandle {
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.stats.reindex
@@ -293,9 +445,11 @@ impl ShardStatsHandle {
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.stats.backup
     }
+
     pub fn add_documents_indexed(&self, n: u64) {
         self.stats.shards[self.index].documents_indexed.fetch_add(n, Relaxed);
     }
+
     /// Levels, so publish after anything that changes the index. The shard
     /// thread pays for reading these so the HTTP reader never has to.
     pub fn publish(&self, document_count: usize, stats: &IndexingStats) {
@@ -308,14 +462,85 @@ impl ShardStatsHandle {
         g.segments_written.store(stats.segments_written, Relaxed);
         g.compactions_completed.store(stats.compactions_completed, Relaxed);
     }
-    // pub fn add_indexed(&self, n: u64) {
-    //     self.stats.counters.indexing_requests.fetch_add(n, Relaxed);
-    // }
-    // pub fn add_deleted(&self, n: u64) {
-    //     self.stats.counters.documents_deleted.fetch_add(n, Relaxed);
-    // }
 
     pub fn set_compaction_enabled(&self, on: bool) {
         self.stats.shards[self.index].compaction_enabled.store(on, Relaxed);
+    }
+
+    // ---- background worker ----
+
+    pub fn set_activity(&self, activity: BackgroundActivity) {
+        self.stats.shards[self.index].activity.store(activity as u8, Relaxed);
+    }
+
+    pub fn record_compaction(&self, ok: bool, elapsed: Duration) {
+        let g = &self.stats.shards[self.index];
+        if ok {
+            g.last_compaction_ms.store(elapsed.as_millis() as u64, Relaxed);
+        } else {
+            g.compaction_failures.fetch_add(1, Relaxed);
+        }
+    }
+
+     pub fn set_embedding_enabled(&self, on: bool) {
+        let g = &self.stats.shards[self.index];
+        g.embedding_enabled.store(on, Relaxed);
+        // a (re)started worker must measure again before its figures count
+        g.vectors_measured.store(false, Relaxed);
+    }
+
+    pub fn set_vector_progress(&self, total: u64, done: u64) {
+        let g = &self.stats.shards[self.index];
+        g.vectors_total.store(total, Relaxed);
+        g.vectors_done.store(done, Relaxed);
+        g.vectors_measured.store(true, Relaxed);
+    }
+
+    /// `round_started` anchors the database-wide rate at the first round that embedded anything.
+    pub fn add_embedded(&self, count: u64, round_started: Instant) {
+        self.stats.embedding_started.get_or_init(|| round_started);
+        self.stats.shards[self.index].embedded.fetch_add(count, Relaxed);
+    }
+    
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedding_status_follows_progress() {
+        let stats = DbStats::new(2);
+        let (a, b) = (stats.handle(0), stats.handle(1));
+
+        assert_eq!(stats.snapshot().background.embedding.status, EmbeddingStatus::Disabled);
+
+        a.set_embedding_enabled(true);
+        b.set_embedding_enabled(true);
+        a.set_vector_progress(100, 100);
+        b.set_vector_progress(300, 100);
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Embedding);
+        assert_eq!((embedding.vectors_total, embedding.vectors_done, embedding.progress), (400, 200, 50));
+
+        b.set_vector_progress(300, 300);
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Complete);
+        assert_eq!(embedding.progress, 100);
+        assert_eq!(embedding.eta_seconds, None);
+    }
+
+    #[test]
+    fn activity_and_compaction_results_are_aggregated() {
+        let stats = DbStats::new(3);
+        stats.handle(0).set_activity(BackgroundActivity::Compacting);
+        stats.handle(1).set_activity(BackgroundActivity::Embedding);
+        stats.handle(2).record_compaction(false, Duration::from_millis(5));
+        stats.handle(2).record_compaction(true, Duration::from_millis(1200));
+
+        let background = stats.snapshot().background;
+        assert_eq!((background.shards_compacting, background.shards_embedding), (1, 1));
+        assert_eq!(background.compaction_failures, 1);
+        assert_eq!(background.last_compaction_ms, Some(1200));
     }
 }

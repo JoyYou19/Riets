@@ -7,7 +7,6 @@ use std::{
 use core_core::shard_manager::ShardManager;
 use core_protocol::errors::CorelamoError;
 use core_timing::timed;
-
 use simd_json::{OwnedValue, StaticNode, json, owned::Object};
 use slog::{error, info};
 
@@ -32,7 +31,7 @@ pub fn load_saved_shard_managers(
         let name = entry.file_name().to_string_lossy().to_string();
 
         let registry = crate::corelamo_settings::synonym_registry();
-        let manager = match ShardManager::load(path, true, registry) {
+        let manager = match ShardManager::load(path, true, registry, crate::corelamo_settings::model_registry()) {
             Ok(mgr) => mgr,
             Err(e) => {
                 error!(log,"database failed to load";"name"=>%name,"error"=>%e);
