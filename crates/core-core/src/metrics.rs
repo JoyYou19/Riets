@@ -328,7 +328,7 @@ impl DbStats {
         let mut embedding_enabled = false;
         let mut vectors_total = 0u64;
         let mut vectors_done = 0u64;
-        let mut embedded = 0u64;
+        let embedded = 0u64;
         let mut all_measured=true;
         for g in &self.shards {
             let doc_gauge = g.documents.load(Relaxed) as u64;

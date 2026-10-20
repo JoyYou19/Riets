@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, io, path::PathBuf, process, sync::{Arc, OnceLock}};
 use core_query::dictionary::SynonymRegistry;
-use core_embed::ModelRegistry;
+use core_embed::{ModelConfig, ModelRegistry};
 
 use slog::{info, warn};
 //helper file to manage and easilly add corelamo settings
@@ -16,7 +16,11 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("auth", "true"),
     ("max_payload_size", "1024"),
     ("max_request_timeout", "240"),
-    ("embedding-model", "bge-small-en-v1.5")
+    ("embedding-model", "bge-small-en-v1.5"),
+    ("embedding-instances", "1"),
+    ("embedding-batch-size", "32"),
+    ("embedding-max-tokens", "256"),
+    ("embedding-max-chars", "2000"),
 ];
 
 pub const HELP: &str = "\
@@ -57,13 +61,14 @@ OPTIONS:
                           [default: false]
                           [CLI only - not persisted to config file]
     --embedding-model <id>
-                          Embedding model for vector fields, shared by all databases
+                          Embedding model for vector fields, shared by all databases and config
                           (bge-small-en-v1.5, multilingual-e5-small)
                           [default: bge-small-en-v1.5]
 
     NOTE: config file takes priority over CLI args if it exists (unless --overwrite_config true)
 
     -h, --h, -help, --help            Print this help message and exit
+
 ";
 
 pub fn default_value(key: &str) -> &'static str {
@@ -293,12 +298,18 @@ static MODEL_REGISTRY: OnceLock<Arc<ModelRegistry>> = OnceLock::new();
 /// first use, so a server whose databases have no vector fields never loads one.
 pub fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
     let root_path = PathBuf::from(get(settings, "root-path"));
-    let model_id = get(settings, "embedding-model");
-    let registry = ModelRegistry::new(root_path.join("models"), &model_id)
-        .map_err(|e| format!("failed to set up embedding models: {e}"))?;
+    let config = ModelConfig {
+        model_id: get(settings, "embedding-model"),
+        instances: get_usize(settings, "embedding-instances"),
+        batch_size: get_usize(settings, "embedding-batch-size"),
+        max_tokens: get_usize(settings, "embedding-max-tokens"),
+        max_chars: get_usize(settings, "embedding-max-chars"),
+    };
+    let registry = ModelRegistry::new(root_path.join("models"), config.clone())
+        .map_err(|e| format!("invalid embedding settings: {e}"))?;
     let log = slog_scope::logger();
     info!(log, "embedding models configured";
-        "default_model" => %registry.default_model().id,
+        "config" => ?config,
         "cache_dir" => %registry.cache_dir().display());
     MODEL_REGISTRY
         .set(Arc::new(registry))

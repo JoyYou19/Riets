@@ -4,6 +4,8 @@ use std::path::{ Path, PathBuf };
 use std::time::Duration;
 use std::{ fs, io };
 
+use crate::embed::EmbeddingConfig;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +20,8 @@ pub struct DatabaseOptions {
     pub backup_lifetime: Duration,
     #[serde(default)]
     pub sync_mode: core_storage::wal::SyncMode,
+    #[serde(default)]
+    pub embed:EmbeddingConfig
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -60,6 +64,7 @@ impl Default for DatabaseOptions {
             backup_lifetime: Duration::from_hours(24 * 7),
             bootable: true,
             sync_mode: core_storage::wal::SyncMode::Manual,
+            embed: EmbeddingConfig::default()
         }
     }
 }

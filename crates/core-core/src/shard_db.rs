@@ -1384,6 +1384,7 @@ impl ShardDb {
             db.index_sender(),
             self.shared_state(),
             self.policy.clone(),
+            self.options.embed,
             self.log.new(slog::o!("component" => "embedding")),
         );
         self.stats.set_embedding_enabled(embedding.is_some());

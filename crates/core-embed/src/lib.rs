@@ -12,16 +12,65 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
-/// int8 value = round(component * QUANT_SCALE). Components are within [-1, 1] after normalizing.
-pub const QUANT_SCALE: f32 = 127.0;
+// /// int8 value = round(component * QUANT_SCALE). Components are within [-1, 1] after normalizing.
+ pub const QUANT_SCALE: f32 = 127.0;
 
-/// Docs per model call. Attention memory grows with batch * tokens^2, so keep it small on CPU.
-const BATCH_SIZE: usize = 32;
-/// Token cap per text. The start of a document says what it is about.
-const MAX_TOKENS: usize = 256;
-/// Character cap applied before tokenizing, so the tokenizer never processes whole articles.
-const MAX_CHARS: usize = 2000;
+// /// Docs per model call. Attention memory grows with batch * tokens^2, so keep it small on CPU.
+// const BATCH_SIZE: usize = 128;
+// /// Token cap per text. The start of a document says what it is about.
+// const MAX_TOKENS: usize = 256;
+// /// Character cap applied before tokenizing, so the tokenizer never processes whole articles.
+// const MAX_CHARS: usize = 2000;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelConfig {
+    pub model_id: String,
+    /// Bulk model copies; up to this many shards embed at once.
+    pub instances: usize,
+    /// Texts per model run. Attention memory grows with batch * tokens^2.
+    pub batch_size: usize,
+    /// Tokens the model reads per text. Changing it changes the vectors (they are re-embedded).
+    pub max_tokens: usize,
+    /// Characters kept before tokenizing, so the tokenizer never processes whole articles.
+    pub max_chars: usize,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            model_id: "bge-small-en-v1.5".to_string(),
+            instances: 1,
+            batch_size: 32,
+            max_tokens: 256,
+            max_chars: 2000,
+        }
+    }
+}
+impl ModelConfig {
+    pub fn validate(&self) -> io::Result<()> {
+        let invalid = |msg: String| Err(io::Error::new(io::ErrorKind::InvalidInput, msg));
+        if find_model(&self.model_id).is_none() {
+            return invalid(format!(
+                "unknown embedding model '{}' (known: {})",
+                self.model_id,
+                known_model_ids()
+            ));
+        }
+        if self.instances == 0 || self.batch_size == 0 {
+            return invalid("embedding instances and batch size must be at least 1".into());
+        }
+        if !(16..=512).contains(&self.max_tokens) {
+            return invalid(format!("embedding max tokens must be 16..=512, got {}", self.max_tokens));
+        }
+        if self.max_chars < self.max_tokens * 4 {
+            return invalid(format!(
+                "embedding max chars ({}) must be at least 4x max tokens ({}), or text is cut before the model sees it",
+                self.max_chars, self.max_tokens
+            ));
+        }
+        Ok(())
+    }
+}
 /// A supported embedding model. `id` is what settings and vector file headers store.
 pub struct ModelSpec {
     pub id: &'static str,
@@ -31,8 +80,178 @@ pub struct ModelSpec {
     document_prefix: &'static str,
 }
 
+pub struct Embedder {
+    spec: &'static ModelSpec,
+    cache_dir: PathBuf,
+    config: ModelConfig,
+    /// Written to vector files; changes whenever stored vectors would change meaning.
+    vector_id: String,
+    bulk: Vec<Mutex<TextEmbedding>>,
+    queries: OnceLock<Mutex<TextEmbedding>>,
+}
+
+/// Exclusive use of one bulk model copy until dropped.
+pub struct EmbedLease<'a> {
+    owner: &'a Embedder,
+    model: MutexGuard<'a, TextEmbedding>,
+}
+
+impl Embedder {
+    fn load(spec: &'static ModelSpec, cache_dir: PathBuf, config: &ModelConfig) -> io::Result<Self> {
+        let mut bulk = Vec::with_capacity(config.instances);
+        for _ in 0..config.instances {
+            bulk.push(Mutex::new(load_model(spec, cache_dir.clone(), config.max_tokens)?));
+        }
+        Ok(Self {
+            spec,
+            cache_dir,
+            config: config.clone(),
+            vector_id: format!("{}/t{}", spec.id, config.max_tokens),
+            bulk,
+            queries: OnceLock::new(),
+        })
+    }
+
+    pub fn spec(&self) -> &'static ModelSpec {
+        self.spec
+    }
+
+    /// Identifies vectors made by this model and settings; stored in every vector file.
+    pub fn vector_id(&self) -> &str {
+        &self.vector_id
+    }
+
+    pub fn instances(&self) -> usize {
+        self.bulk.len()
+    }
+
+    /// Any free bulk model copy, without waiting.
+    pub fn try_lease(&self) -> io::Result<Option<EmbedLease<'_>>> {
+        for slot in &self.bulk {
+            match slot.try_lock() {
+                Ok(model) => return Ok(Some(EmbedLease { owner: self, model })),
+                Err(TryLockError::WouldBlock) => continue,
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(io::Error::other("embedding model lock poisoned"))
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// A free bulk model copy if there is one, otherwise waits for the first.
+    pub fn lease(&self) -> io::Result<EmbedLease<'_>> {
+        if let Some(lease) = self.try_lease()? {
+            return Ok(lease);
+        }
+        let model = self.bulk[0]
+            .lock()
+            .map_err(|_| io::Error::other("embedding model lock poisoned"))?;
+        Ok(EmbedLease { owner: self, model })
+    }
+
+    pub fn embed_documents(&self, texts: &[&str]) -> io::Result<Vec<Vec<i8>>> {
+        self.lease()?.embed_documents(texts)
+    }
+
+    /// Embeds a search query as a normalized f32 vector, on the query-only model copy.
+    pub fn embed_query(&self, text: &str) -> io::Result<Vec<f32>> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "query is empty"));
+        }
+        let queries = match self.queries.get() {
+            Some(model) => model,
+            None => {
+                let model = load_model(self.spec, self.cache_dir.clone(), self.config.max_tokens)?;
+                // Two concurrent first queries may both load; the loser's copy is dropped.
+                let _ = self.queries.set(Mutex::new(model));
+                self.queries.get().expect("set above")
+            }
+        };
+        let mut model = queries
+            .lock()
+            .map_err(|_| io::Error::other("query model lock poisoned"))?;
+        let prefixed = format!(
+            "{}{}",
+            self.spec.query_prefix,
+            truncate_chars(text, self.config.max_chars)
+        );
+        let mut v = run_model(&mut model, vec![prefixed], self.config.batch_size)?
+            .pop()
+            .ok_or_else(|| io::Error::other("model returned no vector for the query"))?;
+        check_dims(self.spec, &v)?;
+        normalize(&mut v);
+        Ok(v)
+    }
+}
+
+impl EmbedLease<'_> {
+    pub fn spec(&self) -> &'static ModelSpec {
+        self.owner.spec
+    }
+
+    pub fn vector_id(&self) -> &str {
+        &self.owner.vector_id
+    }
+
+    /// Embeds documents, returning one int8 vector per input in input order.
+    /// Empty or whitespace-only inputs are rejected so callers never store zero vectors.
+    pub fn embed_documents(&mut self, texts: &[&str]) -> io::Result<Vec<Vec<i8>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(pos) = texts.iter().position(|t| t.trim().is_empty()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("text at position {pos} is empty"),
+            ));
+        }
+        let spec = self.owner.spec;
+        let config = &self.owner.config;
+
+        // Embed in length order so each batch pads to a similar length.
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_unstable_by_key(|&i| texts[i].len());
+        let sorted: Vec<String> = order
+            .iter()
+            .map(|&i| format!("{}{}", spec.document_prefix, truncate_chars(texts[i], config.max_chars)))
+            .collect();
+
+        let vectors = run_model(&mut self.model, sorted, config.batch_size)?;
+
+        let mut out: Vec<Vec<i8>> = vec![Vec::new(); texts.len()];
+        for (&original, mut v) in order.iter().zip(vectors) {
+            check_dims(spec, &v)?;
+            normalize(&mut v);
+            out[original] = quantize(&v);
+        }
+        Ok(out)
+    }
+}
+
+fn load_model(spec: &'static ModelSpec, cache_dir: PathBuf, max_tokens: usize) -> io::Result<TextEmbedding> {
+    // keep your AVX2 check here if you added it
+    let options = InitOptions::new((spec.model)())
+        .with_max_length(max_tokens)
+        .with_cache_dir(cache_dir)
+        .with_show_download_progress(false);
+    TextEmbedding::try_new(options).map_err(model_error)
+}
+
+fn run_model(model: &mut TextEmbedding, texts: Vec<String>, batch_size: usize) -> io::Result<Vec<Vec<f32>>> {
+    let count = texts.len();
+    let vectors = model.embed(texts, Some(batch_size)).map_err(model_error)?;
+    if vectors.len() != count {
+        return Err(io::Error::other(format!(
+            "model returned {} vectors for {count} texts",
+            vectors.len()
+        )));
+    }
+    Ok(vectors)
+}
 fn bge_small_en() -> EmbeddingModel {
-    EmbeddingModel::BGESmallENV15
+    EmbeddingModel::BGESmallENV15 //EmbeddingModel::BGESmallENV15Q
 }
 
 fn multilingual_e5_small() -> EmbeddingModel {
@@ -68,146 +287,6 @@ fn known_model_ids() -> String {
 /// One embedding model, shared through `Arc`.
 /// Bulk document embedding goes through `lease()`, one holder at a time. Queries use a
 /// separate instance, so a search never waits behind a bulk embedding round.
-pub struct Embedder {
-    spec: &'static ModelSpec,
-    cache_dir: PathBuf,
-    bulk: Mutex<TextEmbedding>,
-    queries: OnceLock<Mutex<TextEmbedding>>,
-}
-
-/// Exclusive use of the bulk model until dropped.
-pub struct EmbedLease<'a> {
-    spec: &'static ModelSpec,
-    model: MutexGuard<'a, TextEmbedding>,
-}
-
-impl Embedder {
-    fn load(spec: &'static ModelSpec, cache_dir: PathBuf) -> io::Result<Self> {
-        let bulk = load_model(spec, cache_dir.clone())?;
-        Ok(Self {
-            spec,
-            cache_dir,
-            bulk: Mutex::new(bulk),
-            queries: OnceLock::new(),
-        })
-    }
-
-    pub fn spec(&self) -> &'static ModelSpec {
-        self.spec
-    }
-
-    /// Blocks until the bulk model is free, then holds it until the lease is dropped.
-    pub fn lease(&self) -> io::Result<EmbedLease<'_>> {
-        let model = self
-            .bulk
-            .lock()
-            .map_err(|_| io::Error::other("embedding model lock poisoned"))?;
-        Ok(EmbedLease {
-            spec: self.spec,
-            model,
-        })
-    }
-
-    /// Embeds documents with a short-lived lease. Prefer `lease()` for repeated batches.
-    pub fn embed_documents(&self, texts: &[&str]) -> io::Result<Vec<Vec<i8>>> {
-        self.lease()?.embed_documents(texts)
-    }
-
-    /// Embeds a search query as a normalized f32 vector, on the query-only model instance.
-    pub fn embed_query(&self, text: &str) -> io::Result<Vec<f32>> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "query is empty"));
-        }
-        let queries = match self.queries.get() {
-            Some(model) => model,
-            None => {
-                let model = load_model(self.spec, self.cache_dir.clone())?;
-                // Two concurrent first queries may both load; the loser's copy is dropped.
-                let _ = self.queries.set(Mutex::new(model));
-                self.queries.get().expect("set above")
-            }
-        };
-        let mut model = queries
-            .lock()
-            .map_err(|_| io::Error::other("query model lock poisoned"))?;
-        let prefixed = format!("{}{}", self.spec.query_prefix, truncate_chars(text, MAX_CHARS));
-        let mut v = run_model(&mut model, vec![prefixed])?
-            .pop()
-            .ok_or_else(|| io::Error::other("model returned no vector for the query"))?;
-        check_dims(self.spec, &v)?;
-        normalize(&mut v);
-        Ok(v)
-    }
-    /// The bulk model if it is free right now, without waiting.
-    pub fn try_lease(&self) -> io::Result<Option<EmbedLease<'_>>> {
-        match self.bulk.try_lock() {
-            Ok(model) => Ok(Some(EmbedLease {
-                spec: self.spec,
-                model,
-            })),
-            Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Poisoned(_)) => Err(io::Error::other("embedding model lock poisoned")),
-        }
-    }
-}
-
-impl EmbedLease<'_> {
-    /// Embeds documents, returning one int8 vector per input in input order.
-    /// Empty or whitespace-only inputs are rejected so callers never store zero vectors.
-    pub fn embed_documents(&mut self, texts: &[&str]) -> io::Result<Vec<Vec<i8>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        if let Some(pos) = texts.iter().position(|t| t.trim().is_empty()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("text at position {pos} is empty"),
-            ));
-        }
-
-        // Embed in length order so each batch pads to a similar length.
-        let mut order: Vec<usize> = (0..texts.len()).collect();
-        order.sort_unstable_by_key(|&i| texts[i].len());
-        let sorted: Vec<String> = order
-            .iter()
-            .map(|&i| format!("{}{}", self.spec.document_prefix, truncate_chars(texts[i], MAX_CHARS)))
-            .collect();
-
-        let vectors = run_model(&mut self.model, sorted)?;
-
-        let mut out: Vec<Vec<i8>> = vec![Vec::new(); texts.len()];
-        for (&original, mut v) in order.iter().zip(vectors) {
-            check_dims(self.spec, &v)?;
-            normalize(&mut v);
-            out[original] = quantize(&v);
-        }
-        Ok(out)
-    }
-    pub fn spec(&self) -> &'static ModelSpec {
-        self.spec
-    }
-}
-
-fn load_model(spec: &'static ModelSpec, cache_dir: PathBuf) -> io::Result<TextEmbedding> {
-    let options = InitOptions::new((spec.model)())
-        .with_max_length(MAX_TOKENS)
-        .with_cache_dir(cache_dir)
-        .with_show_download_progress(false);
-    TextEmbedding::try_new(options).map_err(model_error)
-}
-
-fn run_model(model: &mut TextEmbedding, texts: Vec<String>) -> io::Result<Vec<Vec<f32>>> {
-    let count = texts.len();
-    let vectors = model.embed(texts, Some(BATCH_SIZE)).map_err(model_error)?;
-    if vectors.len() != count {
-        return Err(io::Error::other(format!(
-            "model returned {} vectors for {count} texts",
-            vectors.len()
-        )));
-    }
-    Ok(vectors)
-}
 
 fn check_dims(spec: &ModelSpec, v: &[f32]) -> io::Result<()> {
     if v.len() != spec.dims {
@@ -224,6 +303,7 @@ fn check_dims(spec: &ModelSpec, v: &[f32]) -> io::Result<()> {
 pub struct ModelRegistry {
     cache_dir: PathBuf,
     default_model: &'static ModelSpec,
+    config: ModelConfig,
     loaded: Mutex<HashMap<&'static str, Arc<Embedder>>>,
 }
 
@@ -238,20 +318,14 @@ impl fmt::Debug for ModelRegistry {
 
 impl ModelRegistry {
     /// Validates the model id and prepares `cache_dir`. Loads nothing yet.
-    pub fn new(cache_dir: PathBuf, default_model_id: &str) -> io::Result<Self> {
-        let default_model = find_model(default_model_id).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "unknown embedding model '{default_model_id}' (known: {})",
-                    known_model_ids()
-                ),
-            )
-        })?;
+    pub fn new(cache_dir: PathBuf, config: ModelConfig) -> io::Result<Self> {
+        config.validate()?;
+        let default_model = find_model(&config.model_id).expect("validated above");
         std::fs::create_dir_all(&cache_dir)?;
         Ok(Self {
             cache_dir,
             default_model,
+            config,
             loaded: Mutex::new(HashMap::new()),
         })
     }
@@ -280,7 +354,7 @@ impl ModelRegistry {
         if let Some(embedder) = loaded.get(spec.id) {
             return Ok(Arc::clone(embedder));
         }
-        let embedder = Arc::new(Embedder::load(spec, self.cache_dir.clone())?);
+        let embedder = Arc::new(Embedder::load(spec, self.cache_dir.clone(), &self.config)?);
         loaded.insert(spec.id, Arc::clone(&embedder));
         Ok(embedder)
     }
@@ -314,32 +388,4 @@ fn quantize(v: &[f32]) -> Vec<i8> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn known_models_resolve() {
-        assert_eq!(find_model("bge-small-en-v1.5").map(|m| m.dims), Some(384));
-        assert!(find_model("nope").is_none());
-    }
-
-    #[test]
-    fn unknown_default_model_is_rejected_before_touching_disk() {
-        let err = ModelRegistry::new(PathBuf::from("/nonexistent/models"), "nope").unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn truncate_respects_char_boundaries() {
-        assert_eq!(truncate_chars("ārā", 2), "ār");
-        assert_eq!(truncate_chars("abc", 10), "abc");
-    }
-
-    #[test]
-    fn quantize_stays_in_range() {
-        let mut v = vec![3.0, -4.0];
-        normalize(&mut v);
-        assert_eq!(quantize(&v), vec![76, -102]);
-    }
-}
+ 

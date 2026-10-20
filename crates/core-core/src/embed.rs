@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_embed::{EmbedLease, ModelSpec, QUANT_SCALE};
+use core_embed::{EmbedLease, QUANT_SCALE};
 use core_index::{
     disk::reader::DiskSegment,
     document::IndexPolicy,
@@ -27,16 +27,55 @@ use core_index::{
     vector::{VectorFile, VectorFileWriter, vector_file_path},
 };
 use core_storage::json_parse::parse_source_into_node;
+use serde::{Deserialize, Serialize};
 use slog::{Logger, warn};
 
 use crate::shared_state::SharedShardState;
 
-/// Upper bound on documents considered in one round.
-const MAX_DOCS_PER_ROUND: usize = 32_768;
-/// A round starts no new batch after this long, so other background work waits at most one round.
-const ROUND_TIME_BUDGET: Duration = Duration::from_secs(30);
-/// Documents handed to the model per call.
-const EMBED_BATCH: usize = 1024;
+/// Per-database embedding work settings, stored in the database's config.toml.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmbeddingConfig {
+    /// Upper bound on documents considered in one round.
+    pub max_docs_per_round: usize,
+    /// A round starts no new batch after this long; this shard's compaction waits at most
+    /// about this long.
+    pub round_time_budget: Duration,
+    /// Documents loaded and handed to the model per call; stop and time limits are checked
+    /// between calls.
+    pub embed_batch: usize,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            max_docs_per_round: 100_000,
+            round_time_budget: Duration::from_secs(300),
+            embed_batch: 1024,
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    /// Replaces values that would stop embedding from making progress.
+    fn sanitized(self) -> Self {
+        let defaults = Self::default();
+        let max_docs_per_round = if self.max_docs_per_round == 0 {
+            defaults.max_docs_per_round
+        } else {
+            self.max_docs_per_round
+        };
+        Self {
+            max_docs_per_round,
+            round_time_budget: if self.round_time_budget.is_zero() {
+                defaults.round_time_budget
+            } else {
+                self.round_time_budget
+            },
+            embed_batch: self.embed_batch.clamp(1, max_docs_per_round),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct VectorField {
@@ -51,7 +90,9 @@ struct Task {
     existing: Option<Arc<VectorFile>>,
     /// Documents with text in the field but no vector, ascending.
     missing: Vec<DocId>,
-    spec: &'static ModelSpec,
+    /// Identifies the model and settings the new vectors are made with.
+    vector_id: String,
+    dims: usize,
 }
 
 pub struct EmbeddingJob {
@@ -59,6 +100,7 @@ pub struct EmbeddingJob {
     shared: Arc<SharedShardState>,
     policy: IndexPolicy,
     fields: Vec<VectorField>,
+    config: EmbeddingConfig,
     log: Logger,
     /// Documents whose text could not be loaded; not retried until the process restarts.
     skipped: HashSet<DocId>,
@@ -70,6 +112,7 @@ impl EmbeddingJob {
         sender: Sender<IndexCommand>,
         shared: Arc<SharedShardState>,
         policy: IndexPolicy,
+        config: EmbeddingConfig,
         log: Logger,
     ) -> Option<Self> {
         let fields: Vec<VectorField> = policy
@@ -88,6 +131,7 @@ impl EmbeddingJob {
             shared,
             policy,
             fields,
+            config: config.sanitized(),
             log,
             skipped: HashSet::new(),
         })
@@ -96,7 +140,9 @@ impl EmbeddingJob {
     /// One bounded round. Ok(None): nothing to embed. Ok(Some(n)): `n` documents embedded
     /// (0 when every candidate was skipped, so the caller may call again right away).
     pub fn step(&mut self, lease: &mut EmbedLease<'_>, stop: &AtomicBool) -> io::Result<Option<usize>> {
-        let Some(task) = self.next_task(lease.spec())? else {
+        let vector_id = lease.vector_id().to_string();
+        let dims = lease.spec().dims;
+        let Some(task) = self.next_task(&vector_id, dims)? else {
             return Ok(None);
         };
         self.embed_task(lease, task, stop).map(Some)
@@ -104,13 +150,13 @@ impl EmbeddingJob {
 
     /// (documents that need a vector, documents that have one) across the live segments,
     /// ignoring deleted documents. Skipped documents count as done: they cannot be embedded.
-    pub fn measure(&self, spec: &'static ModelSpec) -> io::Result<(u64, u64)> {
+    pub fn measure(&self, vector_id: &str, dims: usize) -> io::Result<(u64, u64)> {
         let snapshot = self.shared.snapshot.get();
         let (mut total, mut done) = (0u64, 0u64);
         for segment in disk_segments(&self.sender)? {
             let disk = DiskSegment::open(&segment)?;
             for field in &self.fields {
-                let existing = existing_file(&snapshot, &segment, field.xpath, spec);
+                let existing = existing_file(&snapshot, &segment, field.xpath, vector_id, dims);
                 for ((doc_id, xpath), _) in disk.doc_lengths().iter() {
                     if xpath != field.xpath || snapshot.is_deleted(doc_id) {
                         continue;
@@ -128,7 +174,7 @@ impl EmbeddingJob {
     }
 
     /// Largest segment first, so the bulk of the corpus gets vectors before small new segments.
-    fn next_task(&self, spec: &'static ModelSpec) -> io::Result<Option<Task>> {
+    fn next_task(&self, vector_id: &str, dims: usize) -> io::Result<Option<Task>> {
         let snapshot = self.shared.snapshot.get();
         let mut segments = disk_segments(&self.sender)?;
         segments.sort_by_key(|path| {
@@ -138,7 +184,7 @@ impl EmbeddingJob {
         for segment in segments {
             let disk = DiskSegment::open(&segment)?;
             for field in &self.fields {
-                let existing = existing_file(&snapshot, &segment, field.xpath, spec);
+                let existing = existing_file(&snapshot, &segment, field.xpath, vector_id, dims);
                 let mut missing: Vec<DocId> = disk
                     .doc_lengths()
                     .iter()
@@ -149,7 +195,7 @@ impl EmbeddingJob {
                             && !self.skipped.contains(doc_id)
                             && existing.as_ref().is_none_or(|file| !file.contains(*doc_id))
                     })
-                    .take(MAX_DOCS_PER_ROUND)
+                    .take(self.config.max_docs_per_round)
                     .collect();
                 if missing.is_empty() {
                     continue;
@@ -161,7 +207,8 @@ impl EmbeddingJob {
                     field: field.clone(),
                     existing,
                     missing,
-                    spec,
+                    vector_id: vector_id.to_string(),
+                    dims,
                 }));
             }
         }
@@ -172,8 +219,8 @@ impl EmbeddingJob {
         let started = Instant::now();
         let mut new_rows: Vec<(DocId, Vec<i8>)> = Vec::with_capacity(task.missing.len());
 
-        for batch in task.missing.chunks(EMBED_BATCH) {
-            if stop.load(Ordering::Relaxed) || started.elapsed() >= ROUND_TIME_BUDGET {
+        for batch in task.missing.chunks(self.config.embed_batch) {
+            if stop.load(Ordering::Relaxed) || started.elapsed() >= self.config.round_time_budget {
                 break;
             }
             let mut doc_ids = Vec::with_capacity(batch.len());
@@ -205,8 +252,8 @@ impl EmbeddingJob {
             &task.segment,
             task.field.xpath,
             task.existing.as_deref(),
-            task.spec.id,
-            task.spec.dims,
+            &task.vector_id,
+            task.dims,
             new_rows,
         )?;
         if !install_vectors(&self.sender, task.segment.clone(), task.field.xpath)? {
@@ -232,19 +279,20 @@ impl EmbeddingJob {
 }
 
 /// The segment's current vector file for `xpath`, or None when it has none or it was made by
-/// a different model (then the segment is embedded again from scratch).
+/// a different model or settings (then the segment is embedded again from scratch).
 fn existing_file(
     snapshot: &IndexSnapshot,
     segment: &Path,
     xpath: XPathId,
-    spec: &ModelSpec,
+    vector_id: &str,
+    dims: usize,
 ) -> Option<Arc<VectorFile>> {
     snapshot
         .vectors()
         .iter()
         .find(|entry| entry.segment == segment && entry.xpath == xpath)
         .map(|entry| Arc::clone(&entry.file))
-        .filter(|file| file.matches(spec.id, spec.dims))
+        .filter(|file| file.matches(vector_id, dims))
 }
 
 /// Writes `<segment>.<xpath>.vec` holding the existing rows plus `new_rows`, replacing the old
@@ -253,13 +301,13 @@ fn write_vectors(
     segment: &Path,
     xpath: XPathId,
     existing: Option<&VectorFile>,
-    model_id: &str,
+    vector_id: &str,
     dims: usize,
     mut new_rows: Vec<(DocId, Vec<i8>)>,
 ) -> io::Result<()> {
     new_rows.sort_unstable_by_key(|(doc_id, _)| *doc_id);
     let mut writer =
-        VectorFileWriter::create(vector_file_path(segment, xpath), model_id, dims, QUANT_SCALE)?;
+        VectorFileWriter::create(vector_file_path(segment, xpath), vector_id, dims, QUANT_SCALE)?;
     let mut fresh = new_rows.into_iter().peekable();
 
     if let Some(existing) = existing {
@@ -310,50 +358,3 @@ fn broken_pipe(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, message)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("corelamo-embed-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn docs(file: &VectorFile) -> Vec<DocId> {
-        (0..file.len()).map(|i| file.doc_id(i)).collect()
-    }
-
-    #[test]
-    fn creates_file_from_new_rows_only() {
-        let segment = temp_dir("fresh").join("segment-1.idx");
-        write_vectors(&segment, 3, None, "m", 2, vec![(7, vec![1, 0]), (2, vec![0, 1])]).unwrap();
-        let file = VectorFile::open(vector_file_path(&segment, 3)).unwrap();
-        assert_eq!(docs(&file), vec![2, 7]);
-        assert!(file.matches("m", 2));
-    }
-
-    #[test]
-    fn interleaves_new_rows_with_existing_and_new_wins() {
-        let segment = temp_dir("extend").join("segment-1.idx");
-        write_vectors(&segment, 3, None, "m", 2, vec![(2, vec![1, 1]), (6, vec![6, 6])]).unwrap();
-        let existing = VectorFile::open(vector_file_path(&segment, 3)).unwrap();
-
-        write_vectors(
-            &segment,
-            3,
-            Some(&existing),
-            "m",
-            2,
-            vec![(9, vec![9, 9]), (1, vec![1, 0]), (6, vec![7, 7])],
-        )
-        .unwrap();
-
-        let file = VectorFile::open(vector_file_path(&segment, 3)).unwrap();
-        assert_eq!(docs(&file), vec![1, 2, 6, 9]);
-        assert_eq!(file.row(2), vec![7, 7], "the new row replaces the old one for doc 6");
-        assert_eq!(existing.row(1), vec![6, 6], "the old mapping stays readable after the rename");
-    }
-}

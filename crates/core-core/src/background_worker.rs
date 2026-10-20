@@ -165,10 +165,12 @@ impl BackgroundLoop {
             return Ok(false);
         }; 
         let spec = embedder.spec();
-        // Counting needs no model, so a shard waiting for the lease still reports progress.
+        let vector_id = embedder.vector_id().to_string();
+        let dims = embedder.spec().dims;
         if self.last_measure.is_none_or(|at| at.elapsed() >= MEASURE_EVERY) {
-            self.measure(spec);
+            self.measure(&vector_id, dims);
         }
+        // Counting needs no model, so a shard waiting for the lease still reports progress.
         // Never wait for the model: another shard is embedding, and waiting here would stall
         // this shard's compaction.
         let Some(mut lease) = embedder.try_lease()? else {
@@ -184,6 +186,7 @@ impl BackgroundLoop {
             .step(&mut lease, stop);
         self.stats.set_activity(BackgroundActivity::Idle);
         drop(lease);
+        
 
         let did_work = match result? {
             None => false,
@@ -196,14 +199,14 @@ impl BackgroundLoop {
             }
         };
         if did_work {
-            self.measure(spec);
+            self.measure(&vector_id,dims);
         }
         Ok(did_work)
     }
 
-    fn measure(&mut self, spec: &'static ModelSpec) {
+    fn measure(&mut self, vector_id: &str, dims: usize) {
         let job = self.embedding.as_ref().expect("measure is only called with a job");
-        match job.measure(spec) {
+        match job.measure(vector_id, dims) {
             Ok((total, done)) => self.stats.set_vector_progress(total, done),
             Err(e) => warn!(self.log, "measuring embedding progress failed"; "error" => %e),
         }

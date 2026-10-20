@@ -11,7 +11,7 @@ BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
 SHARD_COUNT = 4
 
-BATCH_SIZE = 50_000   # documents per insert request
+BATCH_SIZE = 70_000   # documents per insert request
 IN_FLIGHT = 12      # insert requests running at the same time
 
 POLICY = """\
@@ -34,17 +34,6 @@ POLICY = """\
     "$stemming": "english",
     "$weight": { "min": 1, "max": 100 },
     "$vector":true
-  },
-  "random_year": {
-    "$type": "int",
-    "$searchable": true,
-    "$list": true,
-    "$weight": { "min": 1, "max": 50 }
-  },
-  "random_float": {
-    "$type": "float",
-    "$list": true,
-    "$weight": { "min": 1, "max": 50 }
   }
 }
 """
