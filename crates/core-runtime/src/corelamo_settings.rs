@@ -17,8 +17,9 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("max_payload_size", "1024"),
     ("max_request_timeout", "240"),
     ("embedding-model", "bge-small-en-v1.5"),
+    ("embedding-runtime", ""),
     ("embedding-instances", "1"),
-    ("embedding-batch-size", "32"),
+    ("embedding-batch-size", "64"),
     ("embedding-max-tokens", "256"),
     ("embedding-max-chars", "2000"),
 ];
@@ -298,19 +299,33 @@ static MODEL_REGISTRY: OnceLock<Arc<ModelRegistry>> = OnceLock::new();
 /// first use, so a server whose databases have no vector fields never loads one.
 pub fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
     let root_path = PathBuf::from(get(settings, "root-path"));
+    let runtime_setting = get(settings, "embedding-runtime");
+    let install_runtime = runtime_setting.trim().is_empty();
+    let runtime_library = if install_runtime {
+        root_path
+            .join("runtime")
+            .join(core_embed::RUNTIME_RELEASE)
+            .join(core_embed::RUNTIME_LIBRARY_NAME)
+    } else {
+        PathBuf::from(runtime_setting.trim())
+    };
     let config = ModelConfig {
         model_id: get(settings, "embedding-model"),
         instances: get_usize(settings, "embedding-instances"),
         batch_size: get_usize(settings, "embedding-batch-size"),
         max_tokens: get_usize(settings, "embedding-max-tokens"),
         max_chars: get_usize(settings, "embedding-max-chars"),
+        runtime_library,
+        install_runtime,
     };
     let registry = ModelRegistry::new(root_path.join("models"), config.clone())
         .map_err(|e| format!("invalid embedding settings: {e}"))?;
     let log = slog_scope::logger();
     info!(log, "embedding models configured";
         "config" => ?config,
-        "cache_dir" => %registry.cache_dir().display());
+        "cache_dir" => %registry.cache_dir().display(),
+        "runtime_library" => %config.runtime_library.display(),
+        "runtime_found" => config.runtime_library.is_file());
     MODEL_REGISTRY
         .set(Arc::new(registry))
         .map_err(|_| "model registry initialised twice".to_string())

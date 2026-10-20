@@ -6,4 +6,5 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-fastembed = "5"
+fastembed = { version = "5", default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }

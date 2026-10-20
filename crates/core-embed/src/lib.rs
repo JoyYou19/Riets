@@ -6,9 +6,11 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
@@ -21,7 +23,108 @@ use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 // const MAX_TOKENS: usize = 256;
 // /// Character cap applied before tokenizing, so the tokenizer never processes whole articles.
 // const MAX_CHARS: usize = 2000;
+pub const RUNTIME_RELEASE: &str = "1.28.0";
 
+#[cfg(target_os = "macos")]
+pub const RUNTIME_LIBRARY_NAME: &str = "libonnxruntime.dylib";
+#[cfg(target_os = "windows")]
+pub const RUNTIME_LIBRARY_NAME: &str = "onnxruntime.dll";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const RUNTIME_LIBRARY_NAME: &str = "libonnxruntime.so";
+fn ensure_runtime(library: &Path, install: bool) -> io::Result<()> {
+    static READY: Mutex<bool> = Mutex::new(false);
+    let mut ready = READY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *ready {
+        return Ok(());
+    }
+    if !library.is_file() {
+        if !install {
+            return Err(io::Error::other(format!(
+                "ONNX Runtime {RUNTIME_RELEASE} library not found at {}",
+                library.display()
+            )));
+        }
+        install_runtime(library).map_err(|e| {
+            io::Error::other(format!(
+                "installing ONNX Runtime {RUNTIME_RELEASE} into {}: {e}",
+                library.display()
+            ))
+        })?;
+    }
+    let builder = ort::init_from(library.to_string_lossy().to_string()).map_err(|e| {
+        io::Error::other(format!("loading ONNX Runtime from {}: {e}", library.display()))
+    })?;
+    let _ = builder.commit();
+    *ready = true;
+    Ok(())
+}
+fn install_runtime(library: &Path) -> io::Result<()> {
+    let package = runtime_package().ok_or_else(|| {
+        io::Error::other(format!(
+            "no ONNX Runtime download for {}-{}; install it and set embedding-runtime",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ))
+    })?;
+    let dir = library
+        .parent()
+        .ok_or_else(|| io::Error::other("runtime library path has no parent folder"))?;
+    fs::create_dir_all(dir)?;
+    let name = format!("{package}-{RUNTIME_RELEASE}");
+    let url = format!(
+        "https://github.com/microsoft/onnxruntime/releases/download/v{RUNTIME_RELEASE}/{name}.tgz"
+    );
+    let work = dir.join(format!(".download-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&work);
+    fs::create_dir_all(&work)?;
+    let result = download_and_extract(&url, &name, &work, library);
+    let _ = fs::remove_dir_all(&work);
+    result
+}
+
+fn download_and_extract(url: &str, name: &str, work: &Path, library: &Path) -> io::Result<()> {
+    let archive = work.join("onnxruntime.tgz");
+    run_tool(
+        Command::new("curl")
+            .args(["-fsSL", "--retry", "3", "-o"])
+            .arg(&archive)
+            .arg(url),
+        "curl",
+    )?;
+    run_tool(
+        Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(work),
+        "tar",
+    )?;
+    // the package's libonnxruntime.{so,dylib} is a link; fs::copy follows it to the real file
+    let source = work.join(name).join("lib").join(RUNTIME_LIBRARY_NAME);
+    let staged = library.with_extension("partial");
+    fs::copy(&source, &staged)?;
+    fs::rename(&staged, library)
+}
+
+fn run_tool(command: &mut Command, tool: &str) -> io::Result<()> {
+    let output = command
+        .output()
+        .map_err(|e| io::Error::other(format!("{tool} could not start: {e}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{tool} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+/// Microsoft's release package for this machine; these builds pick CPU code at runtime.
+fn runtime_package() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("onnxruntime-osx-arm64"),
+        ("macos", "x86_64") => Some("onnxruntime-osx-x86_64"),
+        ("linux", "x86_64") => Some("onnxruntime-linux-x64"),
+        ("linux", "aarch64") => Some("onnxruntime-linux-aarch64"),
+        _ => None,
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelConfig {
     pub model_id: String,
@@ -33,6 +136,8 @@ pub struct ModelConfig {
     pub max_tokens: usize,
     /// Characters kept before tokenizing, so the tokenizer never processes whole articles.
     pub max_chars: usize,
+    pub runtime_library: PathBuf,
+    pub install_runtime: bool,
 }
 
 impl Default for ModelConfig {
@@ -40,9 +145,11 @@ impl Default for ModelConfig {
         Self {
             model_id: "bge-small-en-v1.5".to_string(),
             instances: 1,
-            batch_size: 32,
+            batch_size: 128,
             max_tokens: 256,
             max_chars: 2000,
+            runtime_library:PathBuf::from(RUNTIME_LIBRARY_NAME),
+            install_runtime:true
         }
     }
 }
@@ -100,7 +207,7 @@ impl Embedder {
     fn load(spec: &'static ModelSpec, cache_dir: PathBuf, config: &ModelConfig) -> io::Result<Self> {
         let mut bulk = Vec::with_capacity(config.instances);
         for _ in 0..config.instances {
-            bulk.push(Mutex::new(load_model(spec, cache_dir.clone(), config.max_tokens)?));
+            bulk.push(Mutex::new(load_model(spec, cache_dir.clone(), config)?));
         }
         Ok(Self {
             spec,
@@ -163,7 +270,7 @@ impl Embedder {
         let queries = match self.queries.get() {
             Some(model) => model,
             None => {
-                let model = load_model(self.spec, self.cache_dir.clone(), self.config.max_tokens)?;
+                let model = load_model(self.spec, self.cache_dir.clone(), &self.config)?;
                 // Two concurrent first queries may both load; the loser's copy is dropped.
                 let _ = self.queries.set(Mutex::new(model));
                 self.queries.get().expect("set above")
@@ -230,10 +337,10 @@ impl EmbedLease<'_> {
     }
 }
 
-fn load_model(spec: &'static ModelSpec, cache_dir: PathBuf, max_tokens: usize) -> io::Result<TextEmbedding> {
-    // keep your AVX2 check here if you added it
+fn load_model(spec: &'static ModelSpec, cache_dir: PathBuf, config: &ModelConfig) -> io::Result<TextEmbedding> {
+    ensure_runtime(&config.runtime_library, config.install_runtime)?;
     let options = InitOptions::new((spec.model)())
-        .with_max_length(max_tokens)
+        .with_max_length(config.max_tokens)
         .with_cache_dir(cache_dir)
         .with_show_download_progress(false);
     TextEmbedding::try_new(options).map_err(model_error)
@@ -251,7 +358,7 @@ fn run_model(model: &mut TextEmbedding, texts: Vec<String>, batch_size: usize) -
     Ok(vectors)
 }
 fn bge_small_en() -> EmbeddingModel {
-    EmbeddingModel::BGESmallENV15 //EmbeddingModel::BGESmallENV15Q
+   EmbeddingModel::BGESmallENV15Q // EmbeddingModel::BGESmallENV15 
 }
 
 fn multilingual_e5_small() -> EmbeddingModel {
