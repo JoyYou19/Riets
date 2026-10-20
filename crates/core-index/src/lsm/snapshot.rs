@@ -12,8 +12,8 @@ use crate::{
     posting::{DeleteSet, PostingList, ops::union_many},
     search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
     types::{ArrayRowId, DocId, XPathId},
+    vector::{SegmentVectors, VectorFilter, VectorHit, search_segments},
     wildcard::WildcardPattern,
-    vector::{SegmentVectors, VectorHit, search_segments},
 };
 
 /*
@@ -25,7 +25,7 @@ pub struct IndexSnapshot {
     mem: Arc<MemIndex>,
     segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
     deleted: DeleteSet,
-    vectors:Arc<Vec<SegmentVectors>>
+    vectors: Arc<Vec<SegmentVectors>>,
 }
 
 impl SearchIndex for IndexSnapshot {
@@ -284,7 +284,7 @@ impl IndexSnapshot {
             mem,
             segments,
             deleted,
-            vectors:Arc::default()
+            vectors: Arc::default(),
         }
     }
 
@@ -312,7 +312,7 @@ impl IndexSnapshot {
             .iter()
             .map(|segment| segment.lookup(term, xpath))
             .collect();
-         // the word is in one segment only (the usual case after compaction): that list was just
+        // the word is in one segment only (the usual case after compaction): that list was just
         // decoded for this lookup, hand it over instead of copying every posting into a union
         if mem_list.is_none() && segment_lists.len() <= 1 {
             return self.apply_deletes(segment_lists.pop().unwrap_or_default());
@@ -364,12 +364,12 @@ impl IndexSnapshot {
 
         self.apply_deletes(union_many(lists.iter()))
     }
-    //vectors 
+    //vectors
     pub fn with_vectors(mut self, vectors: Arc<Vec<SegmentVectors>>) -> Self {
         self.vectors = vectors;
         self
     }
-     /// Vector files of the published segments.
+    /// Vector files of the published segments.
     pub fn vectors(&self) -> &[SegmentVectors] {
         &self.vectors
     }
@@ -380,8 +380,10 @@ impl IndexSnapshot {
         xpath: XPathId,
         query: &[f32],
         k: usize,
+        allowed: Option<&ahash::HashSet<DocId>>,
     ) -> std::io::Result<Vec<VectorHit>> {
-        search_segments(&self.vectors, xpath, query, k, &self.deleted)
+        let filter = VectorFilter::new(&self.deleted, allowed);
+        search_segments(&self.vectors, xpath, query, k, &filter)
     }
 }
 

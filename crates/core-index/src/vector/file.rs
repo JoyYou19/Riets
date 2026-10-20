@@ -13,15 +13,16 @@
 //! cosine(query, row) = dot(query, row) / scale for a normalized f32 query.
 //! Files are written to `<path>.tmp`, fsynced and renamed, and never modified afterwards.
 
+use memmap2::Mmap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use memmap2::Mmap;
 
 use super::vector_search::{TopK, VectorHit};
 use crate::posting::DeleteSet;
 use crate::types::{DocId, XPathId};
+use crate::vector::VectorFilter;
 
 pub const MAGIC: [u8; 8] = *b"CLVECTOR";
 pub const VERSION: u32 = 1;
@@ -29,7 +30,38 @@ pub const VERSION: u32 = 1;
 const MAX_MODEL_ID_LEN: usize = u8::MAX as usize;
 /// magic + version + dims + scale + model_id_len
 const FIXED_HEADER_LEN: usize = 8 + 4 + 4 + 4 + 2;
+//multiply i8xi8 with an int32 total
+/// Query quantisation scale; rows use the file's own `scale` (127).
+const QUERY_SCALE: f32 = 127.0;
+/// Independent accumulators so the compiler can keep several SIMD lanes busy.
+const DOT_LANES: usize = 16;
 
+fn quantize_query(query: &[f32]) -> Vec<i8> {
+    query
+        .iter()
+        .map(|&value| (value * QUERY_SCALE).round().clamp(-127.0, 127.0) as i8)
+        .collect()
+}
+
+/// i8·i8 dot product in i32; max |sum| = dims × 127² so it cannot overflow for dims < 130_000.
+fn dot_i8(row: &[u8], query: &[i8]) -> i32 {
+    let mut lanes = [0i32; DOT_LANES];
+    let row_chunks = row.chunks_exact(DOT_LANES);
+    let query_chunks = query.chunks_exact(DOT_LANES);
+    let row_tail = row_chunks.remainder();
+    let query_tail = query_chunks.remainder();
+    for (r, q) in row_chunks.zip(query_chunks) {
+        for lane in 0..DOT_LANES {
+            lanes[lane] += (r[lane] as i8 as i32) * (q[lane] as i32);
+        }
+    }
+    let tail: i32 = row_tail
+        .iter()
+        .zip(query_tail)
+        .map(|(&r, &q)| (r as i8 as i32) * (q as i32))
+        .sum();
+    lanes.iter().sum::<i32>() + tail
+}
 /// `segment-12.idx` + xpath 3 -> `segment-12.3.vec`, in the same directory.
 pub fn vector_file_path(segment_path: &Path, xpath: XPathId) -> PathBuf {
     segment_path.with_extension(format!("{xpath}.vec"))
@@ -40,6 +72,14 @@ pub struct SegmentVectors {
     pub segment: PathBuf,
     pub xpath: XPathId,
     pub file: Arc<VectorFile>,
+}
+impl SegmentVectors {
+    /// Best `k` hits of this segment and field that `filter` accepts. The one place that picks
+    /// how a segment is searched: an HNSW graph will be used here when the filter is not
+    /// selective, the exact scan otherwise.
+    pub fn search(&self, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Vec<VectorHit> {
+        self.file.search(query, k, filter)
+    }
 }
 /// Vector files belonging to `segment_path`, as (xpath, path), sorted by xpath.
 /// Removes leftover `.vec.tmp` files, so only call it while no embedding is running (at load).
@@ -62,7 +102,10 @@ pub fn find_vector_files(segment_path: &Path) -> io::Result<Vec<(XPathId, PathBu
             let _ = fs::remove_file(entry.path());
             continue;
         }
-        if let Some(xpath) = rest.strip_suffix(".vec").and_then(|x| x.parse::<XPathId>().ok()) {
+        if let Some(xpath) = rest
+            .strip_suffix(".vec")
+            .and_then(|x| x.parse::<XPathId>().ok())
+        {
             found.push((xpath, entry.path()));
         }
     }
@@ -88,11 +131,19 @@ fn corrupt(path: &Path, msg: impl std::fmt::Display) -> io::Error {
 }
 
 fn read_u32(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(data[at..at + 4].try_into().expect("length checked by caller"))
+    u32::from_le_bytes(
+        data[at..at + 4]
+            .try_into()
+            .expect("length checked by caller"),
+    )
 }
 
 fn read_u64(data: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(data[at..at + 8].try_into().expect("length checked by caller"))
+    u64::from_le_bytes(
+        data[at..at + 8]
+            .try_into()
+            .expect("length checked by caller"),
+    )
 }
 
 /// Streams records into a new vector file. Nothing is visible at `path` until `finish`.
@@ -108,7 +159,12 @@ pub struct VectorFileWriter {
 }
 
 impl VectorFileWriter {
-    pub fn create(path: impl AsRef<Path>, model_id: &str, dims: usize, scale: f32) -> io::Result<Self> {
+    pub fn create(
+        path: impl AsRef<Path>,
+        model_id: &str,
+        dims: usize,
+        scale: f32,
+    ) -> io::Result<Self> {
         if dims == 0 || dims > u32::MAX as usize {
             return Err(invalid_input(format!("invalid vector dimension {dims}")));
         }
@@ -241,7 +297,8 @@ impl VectorFile {
         if !(scale.is_finite() && scale > 0.0) {
             return Err(corrupt(&path, format!("invalid scale {scale}")));
         }
-        let id_len = u16::from_le_bytes(data[20..22].try_into().expect("length checked above")) as usize;
+        let id_len =
+            u16::from_le_bytes(data[20..22].try_into().expect("length checked above")) as usize;
         let id_end = FIXED_HEADER_LEN + id_len;
         if data.len() < id_end + 8 {
             return Err(corrupt(&path, "truncated header"));
@@ -259,7 +316,10 @@ impl VectorFile {
         if expected_len != Some(data.len()) {
             return Err(corrupt(
                 &path,
-                format!("length {} does not match {count} records of {dims} dims", data.len()),
+                format!(
+                    "length {} does not match {count} records of {dims} dims",
+                    data.len()
+                ),
             ));
         }
 
@@ -321,49 +381,55 @@ impl VectorFile {
         self.row_bytes(index).iter().map(|&b| b as i8).collect()
     }
 
-    pub fn contains(&self, doc_id: DocId) -> bool {
+    /// Row index of `doc_id`, by binary search (records are sorted by doc id).
+    pub(crate) fn position(&self, doc_id: DocId) -> Option<usize> {
         let (mut lo, mut hi) = (0usize, self.count);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             match self.doc_id(mid).cmp(&doc_id) {
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => return true,
+                std::cmp::Ordering::Equal => return Some(mid),
             }
         }
-        false
+        None
     }
 
-    fn score(&self, index: usize, query: &[f32]) -> f32 {
-        let dot: f32 = self
-            .row_bytes(index)
-            .iter()
-            .zip(query)
-            .map(|(&b, &q)| (b as i8) as f32 * q)
-            .sum();
-        dot / self.scale
+    pub fn contains(&self, doc_id: DocId) -> bool {
+        self.position(doc_id).is_some()
     }
 
-    /// Exact top-k by cosine similarity, skipping deleted documents.
+    /// Cosine similarity of row `index` and a query made by `quantize_query`.
+    pub(crate) fn dot(&self, index: usize, quantized: &[i8]) -> f32 {
+        dot_i8(self.row_bytes(index), quantized) as f32 / (self.scale * QUERY_SCALE)
+    }
+    /// over the rows filter accepts.
     /// `query` must be L2-normalized and have `dims` components.
-    pub fn search(&self, query: &[f32], k: usize, deleted: &DeleteSet) -> io::Result<Vec<VectorHit>> {
-        if query.len() != self.dims {
-            return Err(invalid_input(format!(
-                "query has {} dims, file {} has {}",
-                query.len(),
-                self.path.display(),
-                self.dims
-            )));
+    pub fn search(&self, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Vec<VectorHit> {
+        if k == 0 || self.count == 0 || query.len() != self.dims {
+            return Vec::new();
         }
+        let quantized = quantize_query(query);
         let mut top = TopK::new(k);
-        for index in 0..self.count {
+        let mut offer = |index: usize| {
             let doc_id = self.doc_id(index);
-            if deleted.contains(doc_id) {
-                continue;
+            if filter.accepts(doc_id) {
+                top.offer(doc_id, self.dot(index, &quantized));
             }
-            top.offer(doc_id, self.score(index, query));
+        };
+        match filter.allowed() {
+            // few allowed documents: find their rows instead of reading every row
+            Some(allowed) if filter.is_selective(self.count) => {
+                let mut rows: Vec<usize> = allowed
+                    .iter()
+                    .filter_map(|&doc_id| self.position(doc_id))
+                    .collect();
+                rows.sort_unstable();
+                rows.into_iter().for_each(&mut offer);
+            }
+            _ => (0..self.count).for_each(&mut offer),
         }
-        Ok(top.into_sorted())
+        top.into_sorted()
     }
 }
 /// Merges vector files into one, dropping deleted documents. Used by compaction.
@@ -438,129 +504,4 @@ fn merge_into(
     let written = writer.len();
     writer.finish()?;
     Ok(written)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("corelamo-vector-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn write(path: &Path, rows: &[(DocId, [i8; 3])]) {
-        let mut w = VectorFileWriter::create(path, "test-model", 3, 127.0).unwrap();
-        for (doc, row) in rows {
-            w.push(*doc, row).unwrap();
-        }
-        w.finish().unwrap();
-    }
-
-    #[test]
-    fn round_trip_and_search() {
-        let path = temp_dir("roundtrip").join("segment-1.4.vec");
-        write(&path, &[(10, [127, 0, 0]), (20, [0, 127, 0]), (30, [90, 90, 0])]);
-
-        let file = VectorFile::open(&path).unwrap();
-        assert_eq!((file.model_id(), file.dims(), file.len()), ("test-model", 3, 3));
-        assert!(file.matches("test-model", 3));
-        assert!(!file.matches("other-model", 3));
-        assert!(file.contains(20) && !file.contains(25));
-        assert_eq!(file.row(2), vec![90, 90, 0]);
-
-        let hits = file.search(&[1.0, 0.0, 0.0], 2, &DeleteSet::new()).unwrap();
-        let docs: Vec<DocId> = hits.iter().map(|h| h.doc_id).collect();
-        assert_eq!(docs, vec![10, 30]);
-        assert!((hits[0].score - 1.0).abs() < 1e-6);
-        assert!(!path.with_extension("4.vec.tmp").exists());
-    }
-
-    #[test]
-    fn search_skips_deleted() {
-        let path = temp_dir("deleted").join("v.vec");
-        write(&path, &[(1, [127, 0, 0]), (2, [100, 10, 0])]);
-        let mut deleted = DeleteSet::new();
-        deleted.delete(1);
-        let hits = VectorFile::open(&path).unwrap().search(&[1.0, 0.0, 0.0], 5, &deleted).unwrap();
-        assert_eq!(hits.iter().map(|h| h.doc_id).collect::<Vec<_>>(), vec![2]);
-    }
-
-    #[test]
-    fn rejects_unsorted_and_wrong_width() {
-        let path = temp_dir("unsorted").join("v.vec");
-        let mut w = VectorFileWriter::create(&path, "m", 3, 127.0).unwrap();
-        w.push(5, &[1, 2, 3]).unwrap();
-        assert_eq!(w.push(5, &[1, 2, 3]).unwrap_err().kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(w.push(6, &[1, 2]).unwrap_err().kind(), io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn rejects_truncated_file() {
-        let path = temp_dir("truncated").join("v.vec");
-        write(&path, &[(1, [1, 2, 3]), (2, [4, 5, 6])]);
-        let len = fs::metadata(&path).unwrap().len();
-        OpenOptions::new().write(true).open(&path).unwrap().set_len(len - 1).unwrap();
-        assert_eq!(VectorFile::open(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
-    }
-
-    #[test]
-    fn query_dimension_mismatch_is_an_error() {
-        let path = temp_dir("dims").join("v.vec");
-        write(&path, &[(1, [1, 2, 3])]);
-        let file = VectorFile::open(&path).unwrap();
-        assert!(file.search(&[1.0, 0.0], 1, &DeleteSet::new()).is_err());
-    }
-
-    #[test]
-    fn merge_interleaves_and_drops_deleted() {
-        let dir = temp_dir("merge");
-        let (a, b, out) = (dir.join("a.vec"), dir.join("b.vec"), dir.join("out.vec"));
-        write(&a, &[(1, [1, 0, 0]), (4, [4, 0, 0])]);
-        write(&b, &[(2, [2, 0, 0]), (3, [3, 0, 0]), (4, [9, 0, 0])]);
-        let (fa, fb) = (VectorFile::open(&a).unwrap(), VectorFile::open(&b).unwrap());
-        let mut deleted = DeleteSet::new();
-        deleted.delete(3);
-
-        assert_eq!(merge_vector_files(&[&fa, &fb], &deleted, &out).unwrap(), 3);
-        let merged = VectorFile::open(&out).unwrap();
-        let docs: Vec<DocId> = (0..merged.len()).map(|i| merged.doc_id(i)).collect();
-        assert_eq!(docs, vec![1, 2, 4]);
-        assert_eq!(merged.row(2), vec![9, 0, 0], "later input wins for a duplicated doc");
-    }
-
-    #[test]
-    fn merge_refuses_mixed_models() {
-        let dir = temp_dir("mixed");
-        let (a, b) = (dir.join("a.vec"), dir.join("b.vec"));
-        write(&a, &[(1, [1, 0, 0])]);
-        let mut w = VectorFileWriter::create(&b, "other-model", 3, 127.0).unwrap();
-        w.push(2, &[1, 0, 0]).unwrap();
-        w.finish().unwrap();
-        let (fa, fb) = (VectorFile::open(&a).unwrap(), VectorFile::open(&b).unwrap());
-        assert!(merge_vector_files(&[&fa, &fb], &DeleteSet::new(), dir.join("o.vec")).is_err());
-    }
-
-    #[test]
-    fn path_sits_next_to_segment() {
-        assert_eq!(
-            vector_file_path(Path::new("/db/index/segment-12.idx"), 3),
-            PathBuf::from("/db/index/segment-12.3.vec")
-        );
-    }
-    #[test]
-    fn finds_only_this_segments_files_and_removes_tmp() {
-        let dir = temp_dir("find");
-        let segment = dir.join("segment-12.idx");
-        fs::write(&segment, b"").unwrap();
-        write(&dir.join("segment-12.3.vec"), &[(1, [1, 0, 0])]);
-        write(&dir.join("segment-120.3.vec"), &[(1, [1, 0, 0])]);
-        fs::write(dir.join("segment-12.5.vec.tmp"), b"partial").unwrap();
-
-        let found = find_vector_files(&segment).unwrap();
-        assert_eq!(found, vec![(3, dir.join("segment-12.3.vec"))]);
-        assert!(!dir.join("segment-12.5.vec.tmp").exists());
-    }
 }

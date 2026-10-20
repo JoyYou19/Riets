@@ -1,9 +1,3 @@
-use std::{
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, Instant, SystemTime},
-};
 use core_backup::{
     backup::{BackupManager, BackupManifest},
     progress::BackupStats,
@@ -14,7 +8,6 @@ use core_index::{
     lsm::{
         LsmIndex,
         index_worker::{IndexingStats, ReindexProgress, ReindexingStats},
-        
     },
     types::ShardId,
 };
@@ -23,10 +16,21 @@ use core_protocol::{
     errors::{CorelamoError, DocFailure, FailReason},
 };
 use core_timing::timed;
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant, SystemTime},
+};
 
 use crate::{
-    background_worker::BackgroundWorker, metrics::{BackgroundStats, DatabaseMetrics, ShardStatsHandle}, options::DatabaseOptions, reindex::{CompletedShardReindex, ReindexParams}, shared_state::SharedShardState,
+    background_worker::BackgroundWorker,
+    metrics::{BackgroundStats, DatabaseMetrics, ShardStatsHandle},
+    options::DatabaseOptions,
+    reindex::{CompletedShardReindex, ReindexParams},
+    shared_state::SharedShardState,
 };
+use core_embed::ModelRegistry;
 use core_logs::logger;
 use core_storage::{
     binary_store::{
@@ -39,9 +43,8 @@ use core_storage::{
     },
     wal::{Wal, WalRecord},
 };
-use core_embed::ModelRegistry;
 
-use crate::{ embed::EmbeddingJob};
+use crate::embed::EmbeddingJob;
 use slog::{Logger, error, info, warn};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,8 +73,8 @@ pub struct ShardDb {
     //each shard kip holds this yeye
     db: Option<SearchDatabase<BinaryDocumentStore>>,
     //embedding/reindex/compaction
-    background_worker:Option<BackgroundWorker>,  
-    models:Arc<ModelRegistry>,
+    background_worker: Option<BackgroundWorker>,
+    models: Arc<ModelRegistry>,
     stats: ShardStatsHandle,
     log: Logger,
     wal: Wal,
@@ -126,7 +129,7 @@ impl ShardDb {
             policy,
             options,
             db: None,
-            background_worker:None,
+            background_worker: None,
             models,
             log,
             wal,
@@ -206,7 +209,7 @@ impl ShardDb {
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents");
         let analyzer = self.analyzer();
-       
+
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let store = BinaryDocumentStore::open_with_maps(
             &store_path,
@@ -327,8 +330,6 @@ impl ShardDb {
             }
         }
 
-       
-
         self.db = Some(db);
         self.start_background();
         self.publish_stats();
@@ -372,7 +373,7 @@ impl ShardDb {
             return Ok(());
         }
 
-         if let Some(worker) = self.background_worker.take() {
+        if let Some(worker) = self.background_worker.take() {
             worker.stop()?;
             info!(self.log, "background worker stopped"; "shard_id" => self.shard_id);
         }
@@ -443,7 +444,7 @@ impl ShardDb {
     }
 
     #[timed(database_lifecycle)]
-   pub fn set_policy(&mut self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
+    pub fn set_policy(&mut self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
         policy.validate()?;
         if let Some(db) = &mut self.db {
             db.set_policy(policy.clone())?;
@@ -1100,7 +1101,6 @@ impl ShardDb {
         self.wal_append_record(&WalRecord::Clear)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
-        
         if let Some(worker) = self.background_worker.take() {
             match worker.stop() {
                 Ok(()) => {
@@ -1166,7 +1166,7 @@ impl ShardDb {
             self.shared.snapshot.clone(),
         )?;
 
-         if let Some(worker) = self.background_worker.take() {
+        if let Some(worker) = self.background_worker.take() {
             match worker.stop() {
                 Ok(()) => {
                     info!(self.log, "background worker stopped for clear"; "shard_id" => self.shard_id);
@@ -1176,7 +1176,7 @@ impl ShardDb {
             }
         }
 
-         self.db = Some(db);
+        self.db = Some(db);
         self.start_background();
         self.publish_stats();
         self.last_write = Instant::now();
@@ -1368,7 +1368,7 @@ impl ShardDb {
         self.publish_stats();
         Ok(())
     }
-        /// Starts compaction and embedding for the live index, replacing any running worker.
+    /// Starts compaction and embedding for the live index, replacing any running worker.
     fn start_background(&mut self) {
         if let Some(worker) = self.background_worker.take() {
             worker.stop_async();
@@ -1380,7 +1380,7 @@ impl ShardDb {
             .options
             .enable_background_compaction
             .then_some(self.options.runtime.compaction);
-         let embedding = EmbeddingJob::new(
+        let embedding = EmbeddingJob::new(
             db.index_sender(),
             self.shared_state(),
             self.policy.clone(),
@@ -1397,6 +1397,7 @@ impl ShardDb {
             self.stats.clone(),
             self.log.new(slog::o!("component" => "background")),
         );
-        self.stats.set_compaction_enabled(compaction.is_some() && self.background_worker.is_some());
+        self.stats
+            .set_compaction_enabled(compaction.is_some() && self.background_worker.is_some());
     }
 }

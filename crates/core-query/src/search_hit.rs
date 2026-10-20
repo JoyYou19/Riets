@@ -9,7 +9,7 @@ pub struct SearchHit {
     pub weight_sum: u32,
     pub distance_factor: f32,
     pub score: f32,
-    pub tier:u8
+    pub tier: u8,
 }
 
 #[derive(Debug, Clone)]

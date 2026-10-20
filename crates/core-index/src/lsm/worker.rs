@@ -1,11 +1,11 @@
 use std::{
     io,
     sync::{
-        Arc, Condvar, Mutex,
+        Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
-    thread::{self, JoinHandle},
+    thread::{self},
     time::{Duration, Instant},
 };
 
@@ -13,8 +13,10 @@ use core_timing::timed;
 
 use crate::lsm::{
     compaction::{
-        CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming, compact_vectors,
-    }, index_worker::IndexCommand,
+        CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
+        compact_vectors,
+    },
+    index_worker::IndexCommand,
 };
 
 const MAX_CONCURRENT_INDEX_COMPACTIONS: usize = 8;
@@ -38,7 +40,6 @@ impl CompactionPermit {
     }
 }
 
-
 impl Drop for CompactionPermit {
     fn drop(&mut self) {
         let (lock, available) = &INDEX_COMPACTION_SLOTS;
@@ -47,8 +48,6 @@ impl Drop for CompactionPermit {
         available.notify_one();
     }
 }
-
-
 
 /// Plans, runs and installs at most one compaction.
 /// Returns Ok(true) if a job was installed, Ok(false) if there was nothing to do.
@@ -122,13 +121,12 @@ fn broken_pipe(message: &'static str) -> io::Error {
 #[timed(compaction)]
 fn run_compaction_job(job: CompactionJob) -> io::Result<CompletedCompaction> {
     compact_segments_streaming(&job.selected, &job.deleted, &job.output_path)?;
-     let vector_xpaths = compact_vectors(&job.vectors, &job.deleted, &job.output_path);
+    let vector_xpaths = compact_vectors(&job.vectors, &job.deleted, &job.output_path);
     Ok(CompletedCompaction {
         job_id: job.job_id,
         selected: job.selected,
         output_path: job.output_path,
         delete_generation: job.delete_generation,
-        vector_xpaths
+        vector_xpaths,
     })
 }
-

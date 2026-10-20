@@ -46,7 +46,7 @@ pub struct FieldPolicy {
     pub full_path: String,
     pub row_keyed: bool,
     pub depth: u32,
-    pub vector: bool
+    pub vector: bool,
 }
 
 impl Serialize for FieldPolicy {
@@ -117,7 +117,7 @@ impl FieldPolicy {
             full_path: name.to_string(),
             row_keyed: false,
             depth: 0,
-            vector:false
+            vector: false,
         }
     }
 
@@ -136,7 +136,7 @@ impl FieldPolicy {
             full_path: name.to_string(),
             row_keyed: false,
             depth: 0,
-            vector:false
+            vector: false,
         }
     }
 
@@ -208,8 +208,10 @@ impl FieldPolicy {
         if let Some(w) = obj.get("$weight") {
             f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
         }
-        if let Some(v) =obj.get("$vector"){
-            f.vector = v.as_bool().ok_or_else(|| format!("field '{name}': $vector must be a bool"))?;
+        if let Some(v) = obj.get("$vector") {
+            f.vector = v
+                .as_bool()
+                .ok_or_else(|| format!("field '{name}': $vector must be a bool"))?;
         }
         Ok(f)
     }
@@ -450,7 +452,7 @@ impl IndexPolicy {
             .map(|field| field.xpath(self))
             .collect()
     }
-        pub fn vector_fields(&self) -> Vec<&FieldPolicy> {
+    pub fn vector_fields(&self) -> Vec<&FieldPolicy> {
         self.indexed_fields()
             .into_iter()
             .filter(|field| field.vector)
@@ -545,7 +547,6 @@ pub enum FieldKind {
     IdAuto,
     Struct, // list of objects
     Bool,
-
 }
 
 impl Serialize for FieldKind {
@@ -616,7 +617,6 @@ impl FieldKind {
                 weight: WeightInterval::DEFAULT,
                 exact: false,
             },
-            
         }
     }
 
@@ -893,7 +893,7 @@ impl Serialize for FullField<'_> {
         m.serialize_entry("$full_path", &f.full_path)?;
         m.serialize_entry("$row_keyed", &f.row_keyed)?;
         m.serialize_entry("$depth", &f.depth)?;
-        m.serialize_entry("$vector",&f.vector)?;
+        m.serialize_entry("$vector", &f.vector)?;
         for sub in &f.subfields {
             m.serialize_entry(&sub.name, &FullField(sub))?;
         }
@@ -910,35 +910,52 @@ mod vector_flag_tests {
 
     #[test]
     fn vector_flag_round_trips_and_is_listed() {
-        let policy = parse(r#"{
+        let policy = parse(
+            r#"{
             "id":    { "$type": "id_auto" },
             "title": { "$type": "text" },
             "body":  { "$type": "text", "$vector": true }
-        }"#);
+        }"#,
+        );
         policy.validate().expect("valid");
-        let names: Vec<&str> = policy.vector_fields().iter().map(|f| f.name.as_str()).collect();
+        let names: Vec<&str> = policy
+            .vector_fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
         assert_eq!(names, vec!["body"]);
 
         let json = serde_json::to_string(&policy).unwrap();
         assert!(json.contains("\"$vector\":true"));
-        assert_eq!(json.matches("$vector").count(), 1, "false is omitted in the minimal form");
+        assert_eq!(
+            json.matches("$vector").count(),
+            1,
+            "false is omitted in the minimal form"
+        );
     }
 
     #[test]
     fn vector_flag_on_non_text_field_is_rejected() {
-        let policy = parse(r#"{
+        let policy = parse(
+            r#"{
             "id":   { "$type": "id_auto" },
             "year": { "$type": "int", "$vector": true }
-        }"#);
-        assert_eq!(policy.validate().unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }"#,
+        );
+        assert_eq!(
+            policy.validate().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
     fn vector_flag_must_be_bool() {
-        let err = serde_json::from_str::<IndexPolicy>(r#"{
+        let err = serde_json::from_str::<IndexPolicy>(
+            r#"{
             "id":   { "$type": "id_auto" },
             "body": { "$type": "text", "$vector": "yes" }
-        }"#)
+        }"#,
+        )
         .unwrap_err();
         assert!(err.to_string().contains("$vector must be a bool"));
     }

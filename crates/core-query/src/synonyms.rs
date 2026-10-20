@@ -173,17 +173,17 @@ impl QueryNode {
     fn from_terms(terms: Vec<String>) -> Self {
         match <[String; 1]>::try_from(terms.clone()) {
             Ok([term]) => QueryNode::Term(term),
-           Err(terms) => {
-            let phrase_terms = terms
-            .into_iter()
-            .enumerate()
-            .map(|(index,text)|PhraseTerm{
-                text,
-                offset: index as u32,
-            })
-            .collect();
-            QueryNode::Phrase(phrase_terms)
-           }
+            Err(terms) => {
+                let phrase_terms = terms
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, text)| PhraseTerm {
+                        text,
+                        offset: index as u32,
+                    })
+                    .collect();
+                QueryNode::Phrase(phrase_terms)
+            }
         }
     }
 }
@@ -665,9 +665,7 @@ pub fn expand_synonyms(query: Query, dictionary: &Synonyms, analyzer: &Analyzer)
                 Err(many) => Query::Wand(many),
             }
         }
-        Query::Wand(subs) => {
-            Query::Wand(expand_children(subs, dictionary, analyzer, Query::Wand))
-        }
+        Query::Wand(subs) => Query::Wand(expand_children(subs, dictionary, analyzer, Query::Wand)),
         Query::And(subs) => Query::And(expand_children(subs, dictionary, analyzer, Query::And)),
         Query::Or(subs) => Query::Or(expand_children(subs, dictionary, analyzer, Query::Or)),
         //children map 1:1 onto same_element bindings, so they are never merged
@@ -711,7 +709,12 @@ fn expand_children(
             Query::Term(word) if !is_multi_word(&word) => run.push(word),
             other => {
                 if !run.is_empty() {
-                    out.extend(expand_run(std::mem::take(&mut run), dictionary, analyzer, wrap));
+                    out.extend(expand_run(
+                        std::mem::take(&mut run),
+                        dictionary,
+                        analyzer,
+                        wrap,
+                    ));
                 }
                 out.push(expand_synonyms(other, dictionary, analyzer));
             }
@@ -833,12 +836,13 @@ fn is_typed_form(node: &QueryNode, typed_words: &[String]) -> bool {
     match node {
         QueryNode::Term(term) => typed_words.len() == 1 && *term == typed_words[0],
         QueryNode::Phrase(phrase_terms) => {
-            phrase_terms.len() == typed_words.len() && phrase_terms
-            .iter()
-            .zip(typed_words)
-            .all(|(pt, word)| pt.text==*word)
+            phrase_terms.len() == typed_words.len()
+                && phrase_terms
+                    .iter()
+                    .zip(typed_words)
+                    .all(|(pt, word)| pt.text == *word)
         }
-        QueryNode::Exact(_) => false
+        QueryNode::Exact(_) => false,
     }
 }
 

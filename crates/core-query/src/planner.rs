@@ -288,4 +288,3 @@ fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
         })
         .collect()
 }
-

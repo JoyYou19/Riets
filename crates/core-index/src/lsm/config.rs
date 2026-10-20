@@ -18,7 +18,7 @@ pub struct IndexRuntimeConfig {
 impl Default for IndexRuntimeConfig {
     fn default() -> Self {
         Self {
-            flush_threshold:16 * 1024 * 1024, //TAGAD TIE IR MB NEVIS TERMS, labaks memory control
+            flush_threshold: 16 * 1024 * 1024, //TAGAD TIE IR MB NEVIS TERMS, labaks memory control
             indexing_window_size: 4,
             indexing_batch_size: 100_000,
             compaction: CompactionConfig::default(),

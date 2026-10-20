@@ -37,5 +37,5 @@ pub struct SynonymAlternative {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PhraseTerm {
     pub text: String,
-    pub offset: u32,  // position relative to first word
+    pub offset: u32, // position relative to first word
 }

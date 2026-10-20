@@ -58,16 +58,33 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub enum ConfigError {
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     /// Not valid TOML, or a section/setting that doesn't exist.
-    Syntax { source_name: String, line: Option<usize>, message: String },
+    Syntax {
+        source_name: String,
+        line: Option<usize>,
+        message: String,
+    },
     /// A group that can't be used (too few forms, a form with no words or too many).
-    Dictionary { source_name: String, line: Option<usize>, source: DictionaryError },
+    Dictionary {
+        source_name: String,
+        line: Option<usize>,
+        source: DictionaryError,
+    },
     /// Valid shape, impossible values (min_value above max_value, ...).
-    Invalid { message: String },
+    Invalid {
+        message: String,
+    },
     /// The file changed on disk since it was loaded; reload before writing.
-    Conflict { path: PathBuf },
-    NoPath { source_name: String },
+    Conflict {
+        path: PathBuf,
+    },
+    NoPath {
+        source_name: String,
+    },
 }
 
 fn location(source_name: &str, line: Option<usize>) -> String {
@@ -81,10 +98,18 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
-            Self::Syntax { source_name, line, message } => {
+            Self::Syntax {
+                source_name,
+                line,
+                message,
+            } => {
                 write!(f, "{}: {message}", location(source_name, *line))
             }
-            Self::Dictionary { source_name, line, source } => {
+            Self::Dictionary {
+                source_name,
+                line,
+                source,
+            } => {
                 write!(f, "{}: {source}", location(source_name, *line))
             }
             Self::Invalid { message } => write!(f, "invalid dictionary: {message}"),
@@ -171,13 +196,20 @@ impl Default for RomanSection {
             max_value: defaults.max_value,
             min_len: defaults.min_len,
             arabic_to_roman: defaults.arabic_to_roman,
-            denylist: denylist.into_iter().map(|item| Spanned::new(0..0, item)).collect(),
+            denylist: denylist
+                .into_iter()
+                .map(|item| Spanned::new(0..0, item))
+                .collect(),
         }
     }
 }
 
 fn line_of(text: &str, offset: usize) -> usize {
-    text.as_bytes()[..offset.min(text.len())].iter().filter(|&&b| b == b'\n').count() + 1
+    text.as_bytes()[..offset.min(text.len())]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+        + 1
 }
 
 fn span_line(text: &str, span: Range<usize>) -> Option<usize> {
@@ -215,7 +247,13 @@ impl<F: DeserializeOwned> Document<F> {
             message: err.message().to_owned(),
             source_name: name.clone(),
         })?;
-        Ok(Self { name, path: None, text: text.to_owned(), file, disk_fingerprint: None })
+        Ok(Self {
+            name,
+            path: None,
+            text: text.to_owned(),
+            file,
+            disk_fingerprint: None,
+        })
     }
 
     /// A missing file loads as `missing` bound to `path` with `exists_on_disk() == false`.
@@ -236,7 +274,10 @@ impl<F: DeserializeOwned> Document<F> {
                 doc.path = Some(path.to_path_buf());
                 Ok(doc)
             }
-            Err(source) => Err(ConfigError::Io { path: path.to_path_buf(), source }),
+            Err(source) => Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            }),
         }
     }
 
@@ -258,9 +299,9 @@ impl<F: DeserializeOwned> Document<F> {
     }
 
     fn require_path(&self) -> Result<PathBuf, ConfigError> {
-        self.path
-            .clone()
-            .ok_or_else(|| ConfigError::NoPath { source_name: self.name.clone() })
+        self.path.clone().ok_or_else(|| ConfigError::NoPath {
+            source_name: self.name.clone(),
+        })
     }
 
     /// Takes over another document's file (path and last-seen state). The name stays: errors
@@ -275,8 +316,10 @@ impl<F: DeserializeOwned> Document<F> {
     fn save(&mut self) -> Result<(), ConfigError> {
         let path = self.require_path()?;
         check_unchanged(&path, self.disk_fingerprint)?;
-        write_atomic(&path, self.text.as_bytes())
-            .map_err(|source| ConfigError::Io { path: path.clone(), source })?;
+        write_atomic(&path, self.text.as_bytes()).map_err(|source| ConfigError::Io {
+            path: path.clone(),
+            source,
+        })?;
         self.disk_fingerprint = Some(fingerprint(self.text.as_bytes()));
         Ok(())
     }
@@ -302,10 +345,17 @@ pub fn compile_default(
 ) -> Result<SynonymDictionary, ConfigError> {
     let file = &doc.file;
     let roman = &file.roman;
-    let invalid = |message: String| ConfigError::Invalid { message: format!("{}: {message}", doc.name) };
-    for (key, value) in [("min_value", roman.min_value), ("max_value", roman.max_value)] {
+    let invalid = |message: String| ConfigError::Invalid {
+        message: format!("{}: {message}", doc.name),
+    };
+    for (key, value) in [
+        ("min_value", roman.min_value),
+        ("max_value", roman.max_value),
+    ] {
         if !(1..=3999).contains(&value) {
-            return Err(invalid(format!("[roman] {key} must be in 1..=3999, got {value}")));
+            return Err(invalid(format!(
+                "[roman] {key} must be in 1..=3999, got {value}"
+            )));
         }
     }
     if roman.min_value > roman.max_value {
@@ -315,7 +365,10 @@ pub fn compile_default(
         )));
     }
     if !(1..=15).contains(&roman.min_len) {
-        return Err(invalid(format!("[roman] min_len must be in 1..=15, got {}", roman.min_len)));
+        return Err(invalid(format!(
+            "[roman] min_len must be in 1..=15, got {}",
+            roman.min_len
+        )));
     }
     let mut denylist = std::collections::HashSet::with_capacity(roman.denylist.len());
     for item in &roman.denylist {
@@ -324,7 +377,10 @@ pub fn compile_default(
             return Err(ConfigError::Syntax {
                 source_name: doc.name.clone(),
                 line: span_line(&doc.text, item.span()),
-                message: format!("[roman] denylist entry {:?} is not a Roman numeral", item.get_ref()),
+                message: format!(
+                    "[roman] denylist entry {:?} is not a Roman numeral",
+                    item.get_ref()
+                ),
             });
         }
         denylist.insert(upper);
@@ -444,12 +500,19 @@ fn check_unchanged(path: &Path, expected: Option<u64>) -> Result<(), ConfigError
     let on_disk = match fs::read(path) {
         Ok(bytes) => Some(fingerprint(&bytes)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(source) => return Err(ConfigError::Io { path: path.to_path_buf(), source }),
+        Err(source) => {
+            return Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
     };
     if on_disk == expected {
         Ok(())
     } else {
-        Err(ConfigError::Conflict { path: path.to_path_buf() })
+        Err(ConfigError::Conflict {
+            path: path.to_path_buf(),
+        })
     }
 }
 
@@ -484,7 +547,11 @@ impl SynonymRegistry {
         let analyzer = Analyzer::new();
         let template = Document::<DefaultFile>::load_or_seed(&template_path, DEFAULT_DICTIONARY)?;
         let default = Arc::new(compile_default(&template, &analyzer)?);
-        Ok(Self { template_path, analyzer, default })
+        Ok(Self {
+            template_path,
+            analyzer,
+            default,
+        })
     }
 
     pub fn template_path(&self) -> &Path {
@@ -493,7 +560,10 @@ impl SynonymRegistry {
 
     /// Opens `<database_dir>/dictionary.toml`, writing a new one (using the default, no groups of
     /// its own) if the database has none.
-    pub fn open_database(&self, database_dir: impl AsRef<Path>) -> Result<SynonymManager, ConfigError> {
+    pub fn open_database(
+        &self,
+        database_dir: impl AsRef<Path>,
+    ) -> Result<SynonymManager, ConfigError> {
         let path = database_dir.as_ref().join(DATABASE_FILE_NAME);
         let file = DictionaryDocument::load_or_seed(&path, NEW_DATABASE_DICTIONARY)?;
         let manager = SynonymManager {
@@ -557,7 +627,8 @@ impl SynonymManager {
     /// On any error the synonyms in use stay.
     pub fn reload(&self) -> Result<(), ConfigError> {
         let mut file = lock(&self.file);
-        let fresh = DictionaryDocument::load_or_seed(&file.require_path()?, NEW_DATABASE_DICTIONARY)?;
+        let fresh =
+            DictionaryDocument::load_or_seed(&file.require_path()?, NEW_DATABASE_DICTIONARY)?;
         let synonyms = self.synonyms(&fresh)?;
         self.store.replace(synonyms);
         *file = fresh;

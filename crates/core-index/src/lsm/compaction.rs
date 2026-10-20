@@ -1,13 +1,3 @@
-use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BinaryHeap},
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-    fs
-};
-use serde::{Deserialize, Serialize};
-use core_timing::timed;
 use crate::{
     array_rows::ArrayRowIndex,
     disk::{reader::DiskSegment, writer::write_merged_segment},
@@ -16,7 +6,16 @@ use crate::{
     posting::{DeleteSet, PostingList},
     segment::{ImmutableSegment, SegmentHandle},
     types::{DocId, TermKey, XPathId},
-    vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path}
+    vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
+};
+use core_timing::timed;
+use serde::{Deserialize, Serialize};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap},
+    fs, io,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
@@ -30,7 +29,9 @@ impl OpenSegment {
     fn doc_lengths(&self) -> Box<dyn Iterator<Item = ((DocId, XPathId), u32)> + '_> {
         match self {
             OpenSegment::Disk(d) => Box::new(d.doc_lengths().iter()),
-            OpenSegment::Memory(m) => Box::new(m.doc_lengths().iter().map(|(&key, &len)| (key, len))),
+            OpenSegment::Memory(m) => {
+                Box::new(m.doc_lengths().iter().map(|(&key, &len)| (key, len)))
+            }
         }
     }
 
@@ -146,7 +147,7 @@ pub struct CompactionJob {
     pub deleted: DeleteSet,
     pub delete_generation: u64,
     pub output_path: PathBuf,
-    pub vectors: Vec<SegmentVectors>
+    pub vectors: Vec<SegmentVectors>,
 }
 #[derive(Debug)]
 pub struct CompletedCompaction {
@@ -154,7 +155,7 @@ pub struct CompletedCompaction {
     pub selected: Vec<SegmentHandle>,
     pub output_path: PathBuf,
     pub delete_generation: u64,
-    pub vector_xpaths:Vec<XPathId>
+    pub vector_xpaths: Vec<XPathId>,
 }
 #[timed(compaction)]
 pub fn compact_segments_streaming(
@@ -268,14 +269,20 @@ mod vector_compaction_tests {
     use crate::vector::{VectorFile, VectorFileWriter};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("corelamo-vcompact-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("corelamo-vcompact-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn entry(dir: &Path, segment: &str, xpath: XPathId, model: &str, docs: &[DocId]) -> SegmentVectors {
+    fn entry(
+        dir: &Path,
+        segment: &str,
+        xpath: XPathId,
+        model: &str,
+        docs: &[DocId],
+    ) -> SegmentVectors {
         let segment = dir.join(segment);
         let path = vector_file_path(&segment, xpath);
         let mut w = VectorFileWriter::create(&path, model, 2, 127.0).unwrap();
@@ -283,7 +290,11 @@ mod vector_compaction_tests {
             w.push(*doc, &[1, 0]).unwrap();
         }
         w.finish().unwrap();
-        SegmentVectors { segment, xpath, file: Arc::new(VectorFile::open(&path).unwrap()) }
+        SegmentVectors {
+            segment,
+            xpath,
+            file: Arc::new(VectorFile::open(&path).unwrap()),
+        }
     }
 
     #[test]
@@ -300,9 +311,18 @@ mod vector_compaction_tests {
         let output = dir.join("segment-9.idx");
 
         let produced = compact_vectors(&vectors, &deleted, &output);
-        assert_eq!(produced, vec![3], "field 4 had only deleted docs, so no file");
+        assert_eq!(
+            produced,
+            vec![3],
+            "field 4 had only deleted docs, so no file"
+        );
         let merged = VectorFile::open(vector_file_path(&output, 3)).unwrap();
-        assert_eq!((0..merged.len()).map(|i| merged.doc_id(i)).collect::<Vec<_>>(), vec![5]);
+        assert_eq!(
+            (0..merged.len())
+                .map(|i| merged.doc_id(i))
+                .collect::<Vec<_>>(),
+            vec![5]
+        );
         assert!(!vector_file_path(&output, 4).exists());
     }
 
@@ -320,5 +340,3 @@ mod vector_compaction_tests {
         assert!(!dir.join("segment-9.3.vec.tmp").exists());
     }
 }
-
-

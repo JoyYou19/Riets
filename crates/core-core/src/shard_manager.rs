@@ -30,7 +30,7 @@ use core_query::highlight::{
 };
 use core_query::planner::RankPlan;
 use core_query::resolver::{
-    compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
+    FieldQuery, compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
 };
 use core_query::{CorpusStats, SearchHit};
 use core_storage::document_projections::id_path_to_strip;
@@ -56,7 +56,7 @@ use crate::shard_manager_helpers::{
 };
 use core_embed::{Embedder, ModelRegistry};
 
-//mististiskas konstantes 
+//mististiskas konstantes
 /// How many hits each list contributes to fusion. Deeper than a page, so a document ranked
 /// moderately in both lists can still reach the top.
 const FUSION_DEPTH: usize = 100;
@@ -94,14 +94,16 @@ fn vector_request(query: &OwnedValue) -> Result<Option<VectorRequest>, CorelamoE
                 _ => {
                     return Err(CorelamoError::InvalidData(
                         "\"vector\" object needs a \"text\" string".into(),
-                    ))
+                    ));
                 }
             };
             let field = match inner.get("field") {
                 None => None,
                 Some(OwnedValue::String(field)) => Some(field.clone()),
                 Some(_) => {
-                    return Err(CorelamoError::InvalidData("\"vector.field\" must be a string".into()))
+                    return Err(CorelamoError::InvalidData(
+                        "\"vector.field\" must be a string".into(),
+                    ));
                 }
             };
             (text, field)
@@ -109,11 +111,13 @@ fn vector_request(query: &OwnedValue) -> Result<Option<VectorRequest>, CorelamoE
         _ => {
             return Err(CorelamoError::InvalidData(
                 "\"vector\" must be a string or {\"text\": ..., \"field\": ...}".into(),
-            ))
+            ));
         }
     };
     if text.trim().is_empty() {
-        return Err(CorelamoError::InvalidData("\"vector\" text is empty".into()));
+        return Err(CorelamoError::InvalidData(
+            "\"vector\" text is empty".into(),
+        ));
     }
     Ok(Some(VectorRequest { text, field }))
 }
@@ -125,7 +129,9 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
         .into_iter()
         .filter(|field| {
             names.is_none_or(|names| {
-                names.iter().any(|name| *name == field.full_path || *name == field.name)
+                names
+                    .iter()
+                    .any(|name| (*name == field.full_path || *name == field.name))
             })
         })
         .map(|field| field.xpath(policy))
@@ -159,7 +165,7 @@ impl ShardManager {
         options: DatabaseOptions,
         shard_count: u16,
         synonym_registry: &SynonymRegistry,
-        models:Arc<ModelRegistry>
+        models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         if shard_count == 0 {
             return Err(CorelamoError::InvalidData(
@@ -219,18 +225,18 @@ impl ShardManager {
             db_stats,
             backup_dir,
             synonyms,
-            models
+            models,
         })
     }
 
-     //INFO: manual load is basically only used for rename_database so that it doesnt start based on
+    //INFO: manual load is basically only used for rename_database so that it doesnt start based on
     //boot : bool
     #[timed(database_lifecycle)]
     pub fn load(
         root: PathBuf,
         manual_load: bool,
         synonym_registry: &SynonymRegistry,
-        models:Arc<ModelRegistry>
+        models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         let shards_dir = root.join("shards");
 
@@ -307,7 +313,7 @@ impl ShardManager {
         let mut boot_rxs = Vec::new();
         let all_fields = AllFields::load(&root)?;
         let synonyms = Arc::new(synonym_registry.open_database(&root)?);
-      
+
         //TODO: sitaa jobnutaa hujna nenotiek paraleeli, tapec start_database it leens
         for (i, shard_path) in shard_paths.iter().enumerate() {
             let db = ShardDb::load(
@@ -347,7 +353,7 @@ impl ShardManager {
             db_stats,
             backup_dir,
             synonyms,
-            models
+            models,
         })
     }
     pub fn all_fields(&self) -> AllFields {
@@ -443,14 +449,16 @@ impl ShardManager {
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Err(e)) => first_err.get_or_insert(e),
-                Err(je) => first_err.get_or_insert(CorelamoError::Internal(format!(
-                    "shard task panicked: {je}"
-                ))),
-                Ok(Ok(())) => {
-                    continue;
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    first_err.get_or_insert(e);
                 }
-            }; //te pazud citreiz ;
+                Err(je) => {
+                    first_err.get_or_insert(CorelamoError::Internal(format!(
+                        "shard task panicked: {je}"
+                    )));
+                }
+            }
         }
         first_err.map_or(Ok(()), Err)
     }
@@ -729,7 +737,7 @@ impl ShardManager {
         }
     }
 
-   /// The configured embedding model, loaded on first use and shared by all databases.
+    /// The configured embedding model, loaded on first use and shared by all databases.
     pub fn embedder(&self) -> Result<Arc<Embedder>, CorelamoError> {
         self.models
             .default_embedder()
@@ -933,7 +941,9 @@ impl ShardManager {
                 stats: Arc::clone(&self.db_stats),
             };
             match self.reindex_pool.submit(job) {
-                Ok(()) => submitted += 1,
+                Ok(()) => {
+                    submitted += 1;
+                }
                 Err(e) => {
                     first_err = Some(e);
                     break;
@@ -1167,7 +1177,9 @@ impl ShardManager {
             return Ok((Vec::new(), TotalHits::default()));
         }
         if let Some(request) = vector_request(&command.query)? {
-            return self.search_vectors_only(command, request, fetch, offset, limit).await;
+            return self
+                .search_vectors_only(command, request, fetch, offset, limit)
+                .await;
         }
         if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
             return Err(CorelamoError::InvalidData(
@@ -1190,10 +1202,16 @@ impl ShardManager {
         let filters = compile_filters(&self.analyzer, command, &policy)?;
         let sorts = resolve_sorts(command, &policy)?;
         //vector search
-        let filtered = command.filters.as_ref().is_some_and(|f| !f.is_empty());
-        let semantic = self.semantic_fields(command, &policy, sorts.is_some(), filtered);
+        let strict_sort = sorts
+            .as_ref()
+            .is_some_and(|specs| matches!(specs.mode, SortMode::Strict));
+        let semantic = self.semantic_fields(command, &policy, strict_sort);
         // fusion ranks the top FUSION_DEPTH of each list, so the word side must fetch that deep
-        let word_fetch = if semantic.is_some() { fetch.max(FUSION_DEPTH) } else { fetch };
+        let word_fetch = if semantic.is_some() {
+            fetch.max(FUSION_DEPTH)
+        } else {
+            fetch
+        };
 
         //INFO:                page * multiplier    min    max
         //WARN: results may change based on the "docs": x lol
@@ -1202,12 +1220,8 @@ impl ShardManager {
         let full_plan = match (&command.query, query.as_ref()) {
             (OwnedValue::String(text), Some(resolved)) => {
                 let has_exact_field = ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
-                RankPlan::cascade(
-                    text,
-                    resolved.clone(),
-                    &self.analyzer,
-                    has_exact_field
-                 ).stopping_after(if sorts.is_some() { window } else { word_fetch })
+                RankPlan::cascade(text, resolved.clone(), &self.analyzer, has_exact_field)
+                    .stopping_after(if sorts.is_some() { window } else { word_fetch })
             }
             _ => RankPlan::default(),
         };
@@ -1222,8 +1236,9 @@ impl ShardManager {
             _ => Vec::new(),
         };
         let query = Arc::new(query);
-        let vector_task =
-            semantic.map(|(text, xpaths)| self.spawn_vector_search(text, xpaths, FUSION_DEPTH));
+        let vector_task = semantic.map(|(text, xpaths)| {
+            self.spawn_vector_search(text, xpaths, FUSION_DEPTH, filters.clone())
+        });
         // resolve highlight fields once + collect query matchers once
         let highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)> =
             match &command.highlight {
@@ -1370,8 +1385,17 @@ impl ShardManager {
             return Err(e);
         }
 
-        //sort keys when sort given, otherwise just relevance/docid
+        // Any failure on the vector side leaves the word ranking as it is.
+        let vector_hits = match vector_task {
+            Some(task) => task.await.ok().flatten(),
+            None => None,
+        };
         if let Some(specs) = sorts.as_ref() {
+            if let Some(vectors) = vector_hits.as_deref() {
+                // blend: vector ranks feed the relevance part; only candidates with sort keys
+                items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
+                items = fuse_rrf(items, vectors, false);
+            }
             let bounds = fold_sort_bounds(&specs.fields, per_shard_bounds);
             match specs.mode {
                 SortMode::Blend => order_blended(&mut items, &specs.fields, &bounds),
@@ -1379,22 +1403,19 @@ impl ShardManager {
             }
         } else {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
-        }
-        if let Some(task) = vector_task {
-            // Any failure on the vector side leaves the word ranking as it is.
-            if let Ok(Some(vector_hits)) = task.await {
+            if let Some(vectors) = vector_hits.as_deref() {
                 items.truncate(word_fetch);
-                items = fuse_rrf(items, &vector_hits);
+                items = fuse_rrf(items, vectors, true);
             }
         }
         if items.len() > fetch {
             items.truncate(fetch);
         }
-         let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
-        self.resolve_page(just_hits, offset, limit, total_hits, command, &policy, highlight)
-            .await
-    
-       
+        let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
+        self.resolve_page(
+            just_hits, offset, limit, total_hits, command, &policy, highlight,
+        )
+        .await
     }
 
     pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
@@ -1825,7 +1846,7 @@ impl ShardManager {
         Ok(())
     }
 
-        /// `{"vector": ...}`: nearest documents by meaning only, no word matching.
+    /// `{"vector": ...}`: nearest documents by meaning only, no word matching.
     async fn search_vectors_only(
         &self,
         command: &SearchCommand,
@@ -1834,12 +1855,13 @@ impl ShardManager {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
-        if command.filters.as_ref().is_some_and(|f| !f.is_empty()) || command.sort.is_some() {
+        if command.sort.is_some() {
             return Err(CorelamoError::InvalidData(
-                "vector queries do not support filters or sort yet".into(),
+                "vector queries do not support sort yet".into(),
             ));
         }
         let policy = self.policy.read().clone();
+        let filters = compile_filters(&self.analyzer, command, &policy)?;
         let names: Option<Vec<String>> = match request.field {
             Some(field) => Some(vec![field]),
             None => command.search_fields.clone(),
@@ -1853,7 +1875,7 @@ impl ShardManager {
 
         let k = fetch.min(MAX_VECTOR_RESULTS);
         let hits = self
-            .spawn_vector_search(request.text, xpaths, k)
+            .spawn_vector_search(request.text, xpaths, k, filters)
             .await
             .map_err(|e| CorelamoError::Internal(format!("vector search task panicked: {e}")))?
             .ok_or_else(|| {
@@ -1877,8 +1899,8 @@ impl ShardManager {
         self.resolve_page(just_hits, offset, limit, total, command, &policy, None)
             .await
     }
-        /// Loads the requested page of ranked hits as documents, with highlights when asked.
-       /// Loads the requested page of ranked hits as documents, with highlights when asked.
+    /// Loads the requested page of ranked hits as documents, with highlights when asked.
+    /// Loads the requested page of ranked hits as documents, with highlights when asked.
     /// Shared by word, fused and vector-only searches.
     async fn resolve_page(
         &self,
@@ -2062,22 +2084,24 @@ impl ShardManager {
             }
         });
     }
-        /// The vector fields to search for this request, or None when fusion does not apply.
-        /// 
-        /// 
-        /// VECTOR PRIKOLI
+    /// The vector fields to search for this request, or None when fusion does not apply.
+    ///
+    ///
+    /// VECTOR PRIKOLI
     fn semantic_fields(
         &self,
         command: &SearchCommand,
         policy: &IndexPolicy,
-        sorted: bool,
-        filtered: bool,
+        strict_sort: bool,
     ) -> Option<(String, Vec<XPathId>)> {
         let OwnedValue::String(text) = &command.query else {
             return None;
         };
-        // v1: vectors cannot be filtered yet, and sorted results do not use relevance ranks
-        if command.semantic == Some(false) || sorted || filtered {
+        if text.trim().is_empty() {
+            return None;
+        }
+        // a strict sort ignores relevance, so vector ranks could not change the order
+        if command.semantic == Some(false) || strict_sort {
             return None;
         }
         if command.semantic.is_none() {
@@ -2085,7 +2109,7 @@ impl ShardManager {
                 return None;
             }
             // partly embedded databases would favour documents that happen to have vectors
-           let embedding = self.db_stats.snapshot().background.embedding;
+            let embedding = self.db_stats.snapshot().background.embedding;
             let ready = match embedding.status {
                 EmbeddingStatus::Complete => true,
                 EmbeddingStatus::Embedding => embedding.progress >= SEMANTIC_MIN_PROGRESS,
@@ -2105,20 +2129,21 @@ impl ShardManager {
         &self,
         text: String,
         xpaths: Vec<XPathId>,
-        k:usize
+        k: usize,
+        filters: Option<Arc<HashMap<String, FieldQuery>>>,
     ) -> tokio::task::JoinHandle<Option<Vec<VectorHit>>> {
         let models = Arc::clone(&self.models);
         let shards = self.shards.clone();
         tokio::task::spawn_blocking(move || {
             let embedder = models.default_embedder().ok()?;
             let query = embedder.embed_query(&text).ok()?;
+            let filters = filters.as_deref();
             let lists: Vec<Vec<VectorHit>> = std::thread::scope(|scope| {
                 let jobs: Vec<_> = shards
                     .iter()
-                    .flat_map(|shard| xpaths.iter().map(move |&xpath| (shard, xpath)))
-                    .map(|(shard, xpath)| {
-                        let query = &query;
-                        scope.spawn(move || shard.vector_search(xpath, query, k))
+                    .map(|shard| {
+                        let (query, xpaths) = (&query, &xpaths);
+                        scope.spawn(move || shard.vector_search(xpaths, query, k, filters))
                     })
                     .collect();
                 jobs.into_iter()
@@ -2132,44 +2157,47 @@ impl ShardManager {
 //VECTOR
 /// Reciprocal Rank Fusion of the word ranking and the vector ranking: every document scores
 /// Σ 1 / (RRF_K + rank) over the lists it appears in. It only uses ranks, so BM25 and cosine
-/// scores never need to be on the same scale. Fused hits share tier 0 and are ordered by the
-/// fused score, which also becomes their reported score.
+/// scores never need to be on the same scale. `add_vector_only` adds documents only the vector
+/// side found (they carry no sort keys, so sorted searches pass false). Fused scores are
+/// scaled so the best is 1.0, the scale blended sorting expects; all hits share tier 0.
 fn fuse_rrf(
     words: Vec<(SearchHit, Vec<Option<f64>>)>,
     vectors: &[VectorHit],
+    add_vector_only: bool,
 ) -> Vec<(SearchHit, Vec<Option<f64>>)> {
     let contribution = |rank: usize| 1.0 / (RRF_K + rank as f32 + 1.0);
-    let mut fused: HashMap<DocId, (SearchHit, f32)> =
+    let mut fused: HashMap<DocId, (SearchHit, Vec<Option<f64>>, f32)> =
         HashMap::with_capacity(words.len() + vectors.len());
 
-    for (rank, (hit, _)) in words.into_iter().enumerate() {
-        fused.insert(hit.doc_id, (hit, contribution(rank)));
+    for (rank, (hit, keys)) in words.into_iter().enumerate() {
+        fused.insert(hit.doc_id, (hit, keys, contribution(rank)));
     }
     for (rank, hit) in vectors.iter().enumerate() {
-        fused
-            .entry(hit.doc_id)
-            .and_modify(|(_, score)| *score += contribution(rank))
-            .or_insert_with(|| {
-                (
-                    SearchHit {
-                        doc_id: hit.doc_id,
-                        matched_terms: 0,
-                        weight_sum: 0,
-                        distance_factor: 1.0,
-                        score: 0.0,
-                        tier: 0,
-                    },
-                    contribution(rank),
-                )
-            });
+        if let Some(entry) = fused.get_mut(&hit.doc_id) {
+            entry.2 += contribution(rank);
+        } else if add_vector_only {
+            let vector_hit = SearchHit {
+                doc_id: hit.doc_id,
+                matched_terms: 0,
+                weight_sum: 0,
+                distance_factor: 1.0,
+                score: 0.0,
+                tier: 0,
+            };
+            fused.insert(hit.doc_id, (vector_hit, Vec::new(), contribution(rank)));
+        }
     }
 
+    let best = fused
+        .values()
+        .map(|(_, _, score)| *score)
+        .fold(0.0f32, f32::max);
     let mut out: Vec<(SearchHit, Vec<Option<f64>>)> = fused
         .into_values()
-        .map(|(mut hit, score)| {
-            hit.score = score;
+        .map(|(mut hit, keys, score)| {
+            hit.score = if best > 0.0 { score / best } else { 0.0 };
             hit.tier = 0;
-            (hit, Vec::new())
+            (hit, keys)
         })
         .collect();
     out.sort_unstable_by(|(a, _), (b, _)| {

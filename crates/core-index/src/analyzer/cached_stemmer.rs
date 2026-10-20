@@ -10,7 +10,9 @@ pub struct CachedStemmer {
 
 impl CachedStemmer {
     pub fn new(capacity: usize) -> Self {
-        Self { capacity: capacity.max(1) }
+        Self {
+            capacity: capacity.max(1),
+        }
     }
 }
 
@@ -32,7 +34,10 @@ struct StemCache {
 
 impl StemCache {
     fn new(capacity: usize) -> Self {
-        Self { capacity, stems: AHashMap::new() }
+        Self {
+            capacity,
+            stems: AHashMap::new(),
+        }
     }
 }
 

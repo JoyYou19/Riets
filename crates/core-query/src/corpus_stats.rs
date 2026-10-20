@@ -134,7 +134,8 @@ impl CorpusStats {
     /// Documents containing `term` in `xpath`, summed over every shard. Every term of the query
     /// is prepared, so a term with no entry is in no document.
     pub fn term_doc_freq(&self, xpath: XPathId, term: &str) -> u32 {
-        self.doc_freq(xpath, &LeafKey::Term(term.to_string())).unwrap_or(0)
+        self.doc_freq(xpath, &LeafKey::Term(term.to_string()))
+            .unwrap_or(0)
     }
 
     pub fn field(&self, xpath: XPathId) -> Option<FieldTotals> {
@@ -182,4 +183,3 @@ impl<S: SearchStats> SearchStats for ScoringStats<'_, S> {
         self.index.doc_range()
     }
 }
-

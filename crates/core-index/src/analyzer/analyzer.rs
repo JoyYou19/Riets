@@ -1,12 +1,12 @@
+use crate::analyzer::cached_stemmer::CachedStemmer;
+use crate::analyzer::{token::Token, word_delimiter::WordDelimiterTokenizer};
+use core_timing::timed;
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
-    cell::RefCell,
 };
-use core_timing::timed;
 use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, StopWordFilter, TextAnalyzer, TokenStream};
-use crate::analyzer::{token::Token, word_delimiter::WordDelimiterTokenizer};
-use crate::analyzer::cached_stemmer::CachedStemmer;
 
 #[derive(Clone)]
 pub struct Analyzer {

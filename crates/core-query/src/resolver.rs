@@ -16,7 +16,7 @@ use simd_json::{OwnedValue, StaticNode, base::ValueAsScalar};
 
 use crate::{
     Query,
-        query_string_parser::{analyze_query, parse_json_query},
+    query_string_parser::{analyze_query, parse_json_query},
     synonyms::{Synonyms, expand_synonyms},
 };
 
@@ -166,7 +166,9 @@ fn tree_has_exact(q: &Query) -> bool {
         Query::And(ps) | Query::Or(ps) | Query::Wand(ps) => ps.iter().any(tree_has_exact),
         Query::SameElement(ps) => ps.iter().any(tree_has_exact),
         //the dictionary's exact forms are optional: only what was typed counts
-        Query::Synonym(forms) => forms.first().is_some_and(|typed| tree_has_exact(&typed.query)),
+        Query::Synonym(forms) => forms
+            .first()
+            .is_some_and(|typed| tree_has_exact(&typed.query)),
         _ => false,
     }
 }

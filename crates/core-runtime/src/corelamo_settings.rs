@@ -1,7 +1,12 @@
-
-use std::{collections::HashMap, io, path::PathBuf, process, sync::{Arc, OnceLock}};
-use core_query::dictionary::SynonymRegistry;
 use core_embed::{ModelConfig, ModelRegistry};
+use core_query::dictionary::SynonymRegistry;
+use std::{
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    process,
+    sync::{Arc, OnceLock},
+};
 
 use slog::{info, warn};
 //helper file to manage and easilly add corelamo settings

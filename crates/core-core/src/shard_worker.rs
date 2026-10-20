@@ -11,7 +11,7 @@ use core_index::analyzer::Analyzer;
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
 use core_index::search::{SearchIndex, SearchNumeric};
-use core_index::vector::VectorHit;
+use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse, MatchMode};
 use core_query::planner::RankPlan;
 use core_query::resolver::{FieldCtx, FieldQuery};
@@ -352,16 +352,29 @@ impl ShardHandle {
     /// Exact vector search over this shard's published segments. `query` must be L2-normalized.
     pub fn vector_search(
         &self,
-        xpath: XPathId,
+        xpaths: &[XPathId],
         query: &[f32],
         k: usize,
+        filters: Option<&HashMap<String, FieldQuery>>,
     ) -> Result<Vec<VectorHit>, CorelamoError> {
         self.ensure_readable()?;
-        self.shared
-            .snapshot
-            .get()
-            .vector_search(xpath, query, k)
-            .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))
+        // filters and vectors read one snapshot, so a concurrent write cannot split them
+        let snapshot = self.shared.snapshot.get();
+        let allowed = filters.and_then(|filters| {
+            QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(filters)
+        });
+        if allowed.as_ref().is_some_and(|set| set.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let mut lists = Vec::with_capacity(xpaths.len());
+        for &xpath in xpaths {
+            lists.push(
+                snapshot
+                    .vector_search(xpath, query, k, allowed.as_ref())
+                    .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?,
+            );
+        }
+        Ok(merge_hits(lists, k))
     }
     #[timed(search)]
     pub fn rank_sorted(

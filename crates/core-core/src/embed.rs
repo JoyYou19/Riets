@@ -139,7 +139,11 @@ impl EmbeddingJob {
 
     /// One bounded round. Ok(None): nothing to embed. Ok(Some(n)): `n` documents embedded
     /// (0 when every candidate was skipped, so the caller may call again right away).
-    pub fn step(&mut self, lease: &mut EmbedLease<'_>, stop: &AtomicBool) -> io::Result<Option<usize>> {
+    pub fn step(
+        &mut self,
+        lease: &mut EmbedLease<'_>,
+        stop: &AtomicBool,
+    ) -> io::Result<Option<usize>> {
         let vector_id = lease.vector_id().to_string();
         let dims = lease.spec().dims;
         let Some(task) = self.next_task(&vector_id, dims)? else {
@@ -215,7 +219,12 @@ impl EmbeddingJob {
         Ok(None)
     }
 
-    fn embed_task(&mut self, lease: &mut EmbedLease<'_>, task: Task, stop: &AtomicBool) -> io::Result<usize> {
+    fn embed_task(
+        &mut self,
+        lease: &mut EmbedLease<'_>,
+        task: Task,
+        stop: &AtomicBool,
+    ) -> io::Result<usize> {
         let started = Instant::now();
         let mut new_rows: Vec<(DocId, Vec<i8>)> = Vec::with_capacity(task.missing.len());
 
@@ -306,8 +315,12 @@ fn write_vectors(
     mut new_rows: Vec<(DocId, Vec<i8>)>,
 ) -> io::Result<()> {
     new_rows.sort_unstable_by_key(|(doc_id, _)| *doc_id);
-    let mut writer =
-        VectorFileWriter::create(vector_file_path(segment, xpath), vector_id, dims, QUANT_SCALE)?;
+    let mut writer = VectorFileWriter::create(
+        vector_file_path(segment, xpath),
+        vector_id,
+        dims,
+        QUANT_SCALE,
+    )?;
     let mut fresh = new_rows.into_iter().peekable();
 
     if let Some(existing) = existing {
@@ -341,7 +354,11 @@ fn disk_segments(sender: &Sender<IndexCommand>) -> io::Result<Vec<PathBuf>> {
         .map_err(|_| broken_pipe("index worker dropped disk segment reply"))?
 }
 
-fn install_vectors(sender: &Sender<IndexCommand>, segment: PathBuf, xpath: XPathId) -> io::Result<bool> {
+fn install_vectors(
+    sender: &Sender<IndexCommand>,
+    segment: PathBuf,
+    xpath: XPathId,
+) -> io::Result<bool> {
     let (reply, rx) = mpsc::channel();
     sender
         .send(IndexCommand::InstallVectors {
@@ -357,4 +374,3 @@ fn install_vectors(sender: &Sender<IndexCommand>, segment: PathBuf, xpath: XPath
 fn broken_pipe(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, message)
 }
-
