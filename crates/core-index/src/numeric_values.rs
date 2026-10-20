@@ -96,7 +96,7 @@ pub struct NumericPoints {
 }
 
 impl NumericPoints {
-     pub fn insert(&mut self, xpath: XPathId, value: NumericValue, doc_id: DocId) {
+    pub fn insert(&mut self, xpath: XPathId, value: NumericValue, doc_id: DocId) {
         let points = self.points.entry(xpath).or_default();
         // kept in document order (documents arrive in it, so this is a push) so `get` can
         // binary search
@@ -116,7 +116,10 @@ impl NumericPoints {
     pub fn get(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
         let points = self.points.get(&xpath)?;
         let at = points.partition_point(|&(doc, _)| doc < doc_id);
-        points.get(at).filter(|(doc, _)| *doc == doc_id).map(|(_, value)| *value)
+        points
+            .get(at)
+            .filter(|(doc, _)| *doc == doc_id)
+            .map(|(_, value)| *value)
     }
 
     pub fn range(

@@ -138,4 +138,3 @@ pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> Posti
     // segments, so duplicates are real here — from_sorted merges them.
     PostingList::from_sorted(out)
 }
-

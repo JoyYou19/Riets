@@ -66,8 +66,8 @@ pub fn shard_logger(root: &Path, name: &str) -> Logger {
 }
 
 pub fn program_logger(root: &Path) -> (Logger, slog_async::AsyncGuard) {
-    let file =
-        DailyLog::new(root.join("logs"), "program").unwrap_or_else(|e| panic!("Failed to open log file: {e}"));
+    let file = DailyLog::new(root.join("logs"), "program")
+        .unwrap_or_else(|e| panic!("Failed to open log file: {e}"));
     let file_drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
         .use_custom_timestamp(timestamp)
         .build()
@@ -82,4 +82,3 @@ pub fn program_logger(root: &Path) -> (Logger, slog_async::AsyncGuard) {
         .build_with_guard();
     (Logger::root(drain.fuse(), o!("component" => "main")), guard)
 }
-

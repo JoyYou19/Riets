@@ -10,12 +10,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
 // /// int8 value = round(component * QUANT_SCALE). Components are within [-1, 1] after normalizing.
- pub const QUANT_SCALE: f32 = 127.0;
+pub const QUANT_SCALE: f32 = 127.0;
 
 // /// Docs per model call. Attention memory grows with batch * tokens^2, so keep it small on CPU.
 // const BATCH_SIZE: usize = 128;
@@ -33,7 +33,9 @@ pub const RUNTIME_LIBRARY_NAME: &str = "onnxruntime.dll";
 pub const RUNTIME_LIBRARY_NAME: &str = "libonnxruntime.so";
 fn ensure_runtime(library: &Path, install: bool) -> io::Result<()> {
     static READY: Mutex<bool> = Mutex::new(false);
-    let mut ready = READY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut ready = READY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if *ready {
         return Ok(());
     }
@@ -52,7 +54,10 @@ fn ensure_runtime(library: &Path, install: bool) -> io::Result<()> {
         })?;
     }
     let builder = ort::init_from(library.to_string_lossy().to_string()).map_err(|e| {
-        io::Error::other(format!("loading ONNX Runtime from {}: {e}", library.display()))
+        io::Error::other(format!(
+            "loading ONNX Runtime from {}: {e}",
+            library.display()
+        ))
     })?;
     let _ = builder.commit();
     *ready = true;
@@ -92,7 +97,11 @@ fn download_and_extract(url: &str, name: &str, work: &Path, library: &Path) -> i
         "curl",
     )?;
     run_tool(
-        Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(work),
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(work),
         "tar",
     )?;
     // the package's libonnxruntime.{so,dylib} is a link; fs::copy follows it to the real file
@@ -148,8 +157,8 @@ impl Default for ModelConfig {
             batch_size: 128,
             max_tokens: 256,
             max_chars: 2000,
-            runtime_library:PathBuf::from(RUNTIME_LIBRARY_NAME),
-            install_runtime:true
+            runtime_library: PathBuf::from(RUNTIME_LIBRARY_NAME),
+            install_runtime: true,
         }
     }
 }
@@ -167,7 +176,10 @@ impl ModelConfig {
             return invalid("embedding instances and batch size must be at least 1".into());
         }
         if !(16..=512).contains(&self.max_tokens) {
-            return invalid(format!("embedding max tokens must be 16..=512, got {}", self.max_tokens));
+            return invalid(format!(
+                "embedding max tokens must be 16..=512, got {}",
+                self.max_tokens
+            ));
         }
         if self.max_chars < self.max_tokens * 4 {
             return invalid(format!(
@@ -204,7 +216,11 @@ pub struct EmbedLease<'a> {
 }
 
 impl Embedder {
-    fn load(spec: &'static ModelSpec, cache_dir: PathBuf, config: &ModelConfig) -> io::Result<Self> {
+    fn load(
+        spec: &'static ModelSpec,
+        cache_dir: PathBuf,
+        config: &ModelConfig,
+    ) -> io::Result<Self> {
         let mut bulk = Vec::with_capacity(config.instances);
         for _ in 0..config.instances {
             bulk.push(Mutex::new(load_model(spec, cache_dir.clone(), config)?));
@@ -239,7 +255,7 @@ impl Embedder {
                 Ok(model) => return Ok(Some(EmbedLease { owner: self, model })),
                 Err(TryLockError::WouldBlock) => continue,
                 Err(TryLockError::Poisoned(_)) => {
-                    return Err(io::Error::other("embedding model lock poisoned"))
+                    return Err(io::Error::other("embedding model lock poisoned"));
                 }
             }
         }
@@ -265,7 +281,10 @@ impl Embedder {
     pub fn embed_query(&self, text: &str) -> io::Result<Vec<f32>> {
         let text = text.trim();
         if text.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "query is empty"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "query is empty",
+            ));
         }
         let queries = match self.queries.get() {
             Some(model) => model,
@@ -322,7 +341,13 @@ impl EmbedLease<'_> {
         order.sort_unstable_by_key(|&i| texts[i].len());
         let sorted: Vec<String> = order
             .iter()
-            .map(|&i| format!("{}{}", spec.document_prefix, truncate_chars(texts[i], config.max_chars)))
+            .map(|&i| {
+                format!(
+                    "{}{}",
+                    spec.document_prefix,
+                    truncate_chars(texts[i], config.max_chars)
+                )
+            })
             .collect();
 
         let vectors = run_model(&mut self.model, sorted, config.batch_size)?;
@@ -337,7 +362,11 @@ impl EmbedLease<'_> {
     }
 }
 
-fn load_model(spec: &'static ModelSpec, cache_dir: PathBuf, config: &ModelConfig) -> io::Result<TextEmbedding> {
+fn load_model(
+    spec: &'static ModelSpec,
+    cache_dir: PathBuf,
+    config: &ModelConfig,
+) -> io::Result<TextEmbedding> {
     ensure_runtime(&config.runtime_library, config.install_runtime)?;
     let options = InitOptions::new((spec.model)())
         .with_max_length(config.max_tokens)
@@ -346,7 +375,11 @@ fn load_model(spec: &'static ModelSpec, cache_dir: PathBuf, config: &ModelConfig
     TextEmbedding::try_new(options).map_err(model_error)
 }
 
-fn run_model(model: &mut TextEmbedding, texts: Vec<String>, batch_size: usize) -> io::Result<Vec<Vec<f32>>> {
+fn run_model(
+    model: &mut TextEmbedding,
+    texts: Vec<String>,
+    batch_size: usize,
+) -> io::Result<Vec<Vec<f32>>> {
     let count = texts.len();
     let vectors = model.embed(texts, Some(batch_size)).map_err(model_error)?;
     if vectors.len() != count {
@@ -358,7 +391,7 @@ fn run_model(model: &mut TextEmbedding, texts: Vec<String>, batch_size: usize) -
     Ok(vectors)
 }
 fn bge_small_en() -> EmbeddingModel {
-   EmbeddingModel::BGESmallENV15Q // EmbeddingModel::BGESmallENV15 
+    EmbeddingModel::BGESmallENV15Q // EmbeddingModel::BGESmallENV15 
 }
 
 fn multilingual_e5_small() -> EmbeddingModel {
@@ -387,7 +420,11 @@ pub fn find_model(id: &str) -> Option<&'static ModelSpec> {
 }
 
 fn known_model_ids() -> String {
-    MODELS.iter().map(|spec| spec.id).collect::<Vec<_>>().join(", ")
+    MODELS
+        .iter()
+        .map(|spec| spec.id)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// One loaded model. Shared through `Arc`; calls are serialized by an internal lock.
@@ -450,7 +487,10 @@ impl ModelRegistry {
         let spec = find_model(model_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown embedding model '{model_id}' (known: {})", known_model_ids()),
+                format!(
+                    "unknown embedding model '{model_id}' (known: {})",
+                    known_model_ids()
+                ),
             )
         })?;
         // Held during loading so concurrent first requests load the model only once.
@@ -494,5 +534,3 @@ fn quantize(v: &[f32]) -> Vec<i8> {
         .map(|&x| (x * QUANT_SCALE).round().clamp(-QUANT_SCALE, QUANT_SCALE) as i8)
         .collect()
 }
-
- 

@@ -22,7 +22,10 @@ use core_index::lsm::{
 };
 use slog::{Logger, error, info, warn};
 
-use crate::{embed::EmbeddingJob, metrics::{BackgroundActivity, ShardStatsHandle}};
+use crate::{
+    embed::EmbeddingJob,
+    metrics::{BackgroundActivity, ShardStatsHandle},
+};
 
 /// How long to wait before trying to load the embedding model again after a failure.
 const MODEL_RETRY: Duration = Duration::from_secs(60);
@@ -163,11 +166,14 @@ impl BackgroundLoop {
         }
         let Some(embedder) = self.embedder() else {
             return Ok(false);
-        }; 
+        };
         let spec = embedder.spec();
         let vector_id = embedder.vector_id().to_string();
         let dims = embedder.spec().dims;
-        if self.last_measure.is_none_or(|at| at.elapsed() >= MEASURE_EVERY) {
+        if self
+            .last_measure
+            .is_none_or(|at| at.elapsed() >= MEASURE_EVERY)
+        {
             self.measure(&vector_id, dims);
         }
         // Counting needs no model, so a shard waiting for the lease still reports progress.
@@ -186,7 +192,6 @@ impl BackgroundLoop {
             .step(&mut lease, stop);
         self.stats.set_activity(BackgroundActivity::Idle);
         drop(lease);
-        
 
         let did_work = match result? {
             None => false,
@@ -199,13 +204,16 @@ impl BackgroundLoop {
             }
         };
         if did_work {
-            self.measure(&vector_id,dims);
+            self.measure(&vector_id, dims);
         }
         Ok(did_work)
     }
 
     fn measure(&mut self, vector_id: &str, dims: usize) {
-        let job = self.embedding.as_ref().expect("measure is only called with a job");
+        let job = self
+            .embedding
+            .as_ref()
+            .expect("measure is only called with a job");
         match job.measure(vector_id, dims) {
             Ok((total, done)) => self.stats.set_vector_progress(total, done),
             Err(e) => warn!(self.log, "measuring embedding progress failed"; "error" => %e),
@@ -238,4 +246,3 @@ impl BackgroundLoop {
         }
     }
 }
-

@@ -1,7 +1,10 @@
 use ahash::HashSet;
 use core_timing::timed;
 
-use crate::{ posting::{ Posting, PostingList }, types::DocId };
+use crate::{
+    posting::{Posting, PostingList},
+    types::DocId,
+};
 
 // Whenever a document gets deleted, a tombstone is created for it
 // this means it won't apear in any queries, and won't be saved to the disk
@@ -53,6 +56,6 @@ impl DeleteSet {
         self.deleted.contains(&doc_id)
     }
     pub fn iter(&self) -> impl Iterator<Item = DocId> + '_ {
-     self.deleted.iter().copied()
- }
+        self.deleted.iter().copied()
+    }
 }

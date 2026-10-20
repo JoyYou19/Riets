@@ -135,7 +135,6 @@ impl WildcardPattern {
             }
         }
     }
-    
 }
 /// The postings of the `MAX_PATTERN_TERMS` terms in the most documents, as one list.
 /// Ties are broken by term so the result doesn't depend on map order.

@@ -181,7 +181,9 @@ pub fn record(category: &'static str, name: &'static str, file: &'static str, el
     let file = filename_only(file);
     let ns = elapsed.as_nanos() as u64;
     let mut map = registry().lock().unwrap();
-    let entry = map.entry((category, name, file)).or_insert_with(FnStats::empty);
+    let entry = map
+        .entry((category, name, file))
+        .or_insert_with(FnStats::empty);
     entry.count += 1;
     entry.total_ns += ns;
     if ns < entry.min_ns {
@@ -221,7 +223,9 @@ pub fn record(category: &'static str, name: &'static str, file: &'static str, el
 pub fn add_bytes(category: &'static str, name: &'static str, file: &'static str, bytes: u64) {
     let file = filename_only(file);
     let mut map = registry().lock().unwrap();
-    let entry = map.entry((category, name, file)).or_insert_with(FnStats::empty);
+    let entry = map
+        .entry((category, name, file))
+        .or_insert_with(FnStats::empty);
     entry.total_bytes += bytes;
 }
 
@@ -339,7 +343,10 @@ fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
         // count stays 0 and min_ns is stuck at its u64::MAX sentinel.
         // These carry no timing data and would print garbage (a bogus
         // multi-billion-second "max").
-        let entries: CategoryEntries = entries.into_iter().filter(|(_, _, s)| s.count > 0).collect();
+        let entries: CategoryEntries = entries
+            .into_iter()
+            .filter(|(_, _, s)| s.count > 0)
+            .collect();
         if entries.is_empty() {
             continue;
         }
@@ -373,10 +380,18 @@ fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
             };
             let drift = match s.drift_pct() {
                 Some(pct) if s.baseline_bytes_rate.is_some() => {
-                    format!("{:+.1}% (was {})", pct, fmt_bytes_rate(s.baseline_bytes_rate.unwrap()))
+                    format!(
+                        "{:+.1}% (was {})",
+                        pct,
+                        fmt_bytes_rate(s.baseline_bytes_rate.unwrap())
+                    )
                 }
                 Some(pct) => {
-                    format!("{:+.1}% (was {})", pct, fmt_duration(s.baseline_avg_ns.unwrap() as u64))
+                    format!(
+                        "{:+.1}% (was {})",
+                        pct,
+                        fmt_duration(s.baseline_avg_ns.unwrap() as u64)
+                    )
                 }
                 None => "(warming up)".to_string(),
             };

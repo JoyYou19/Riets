@@ -8,10 +8,10 @@ pub mod shared_state;
 use core_timing::timed;
 pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;
+pub mod background_worker;
+pub mod embed;
 pub mod segment_compaction;
 pub mod shard_manager_helpers;
-pub mod embed;
-pub mod background_worker;
 /// Returns the shard that owns `external_id` in a database with `num_shards` shards.
 ///
 /// Where every stored document lives depends on this function, so its output must never
@@ -78,5 +78,3 @@ fn jump_consistent_hash(mut key: u64, num_buckets: u16) -> u16 {
     }
     bucket as u16
 }
-
-

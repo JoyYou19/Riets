@@ -1,9 +1,9 @@
 use crate::shard_db::DatabaseStats;
-use core_backup::progress::{ BackupPhase, BackupProgress };
-use core_index::lsm::index_worker::{ IndexingStats, Phase, ReindexProgress };
-use std::sync::{ Arc, OnceLock };
-use std::sync::atomic::{ AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed };
-use std::time::{ Duration, Instant };
+use core_backup::progress::{BackupPhase, BackupProgress};
+use core_index::lsm::index_worker::{IndexingStats, Phase, ReindexProgress};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DatabaseMetrics {
@@ -94,7 +94,6 @@ pub struct DbStats {
     /// When the first embedding round that embedded anything started; the database-wide rate
     /// is measured from here because all shards share one model.
     embedding_started: OnceLock<Instant>,
-
 }
 
 /// Counters written by shard threads and the manager. Relaxed throughout:
@@ -129,7 +128,7 @@ struct ShardGauges {
     last_compaction_ms: AtomicU64,
     embedding_enabled: AtomicBool,
     vectors_total: AtomicU64,
-    vectors_measured:AtomicBool,
+    vectors_measured: AtomicBool,
     vectors_done: AtomicU64,
     embedded: AtomicU64,
 }
@@ -184,11 +183,19 @@ impl DbStats {
     }
 
     pub fn finish_restore(&self, ok: bool) {
-        self.restore.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
+        self.restore.set_phase(if ok {
+            BackupPhase::Complete
+        } else {
+            BackupPhase::Failed
+        });
     }
 
     pub fn finish_backup(&self, ok: bool) {
-        self.backup.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
+        self.backup.set_phase(if ok {
+            BackupPhase::Complete
+        } else {
+            BackupPhase::Failed
+        });
     }
 
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
@@ -217,7 +224,8 @@ impl DbStats {
     pub fn record_indexing(&self, failed: bool, elapsed: Duration) {
         let c = &self.counters;
         c.indexing_requests.fetch_add(1, Relaxed);
-        c.indexing_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.indexing_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Relaxed);
         if failed {
             c.indexing_errors.fetch_add(1, Relaxed);
         }
@@ -248,7 +256,8 @@ impl DbStats {
     /// The last shard to finish settles the phase for the database.
     pub fn finish_shard_reindex(&self, ok: bool, elapsed: Duration) {
         let c = &self.counters;
-        c.reindex_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.reindex_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Relaxed);
         if !ok {
             c.reindex_errors.fetch_add(1, Relaxed);
             self.reindex_failed.store(true, Relaxed);
@@ -257,13 +266,12 @@ impl DbStats {
             if self.reindex.is_cancelled() {
                 self.reindex.reset();
             } else {
-                self.reindex.set_phase(
-                    if self.reindex_failed.load(Relaxed) {
+                self.reindex
+                    .set_phase(if self.reindex_failed.load(Relaxed) {
                         Phase::Failed
                     } else {
                         Phase::Complete
-                    }
-                );
+                    });
             }
         }
     }
@@ -284,13 +292,11 @@ impl DbStats {
             self.backup_failed.store(true, Relaxed);
         }
         if self.backup_outstanding.fetch_sub(1, Relaxed) == 1 {
-            self.backup.set_phase(
-                if self.backup_failed.load(Relaxed) {
-                    BackupPhase::Failed
-                } else {
-                    BackupPhase::Complete
-                }
-            );
+            self.backup.set_phase(if self.backup_failed.load(Relaxed) {
+                BackupPhase::Failed
+            } else {
+                BackupPhase::Complete
+            });
         }
     }
 
@@ -329,7 +335,7 @@ impl DbStats {
         let mut vectors_total = 0u64;
         let mut vectors_done = 0u64;
         let embedded = 0u64;
-        let mut all_measured=true;
+        let mut all_measured = true;
         for g in &self.shards {
             let doc_gauge = g.documents.load(Relaxed) as u64;
             let doc_indexed = g.documents_indexed.load(Relaxed);
@@ -340,7 +346,7 @@ impl DbStats {
             // documents_indexed is a live running counter updated on every insert.
             // Use whichever is larger so status reflects live inserts without
             // needing a reindex/restart to refresh the gauge.
-            documents += doc_gauge.max(doc_indexed) as usize; 
+            documents += doc_gauge.max(doc_indexed) as usize;
             segments += g.segments.load(Relaxed);
             terms += g.memtable_terms.load(Relaxed);
             compaction |= g.compaction_enabled.load(Relaxed);
@@ -348,7 +354,7 @@ impl DbStats {
             deleted += g.documents_deleted.load(Relaxed);
             written += g.segments_written.load(Relaxed);
             compactions += g.compactions_completed.load(Relaxed);
-            
+
             match BackgroundActivity::from_u8(g.activity.load(Relaxed)) {
                 BackgroundActivity::Compacting => {
                     compacting += 1;
@@ -363,7 +369,6 @@ impl DbStats {
             embedding_enabled |= g.embedding_enabled.load(Relaxed);
             vectors_total += g.vectors_total.load(Relaxed);
             vectors_done += g.vectors_done.load(Relaxed);
-           
         }
 
         DatabaseStats {
@@ -394,13 +399,20 @@ impl DbStats {
                     vectors_total,
                     vectors_done,
                     embedded,
-                    all_measured
+                    all_measured,
                 ),
             },
         }
     }
 
-    fn embedding_stats(&self, enabled: bool, total: u64, done: u64, embedded: u64, measured:bool) -> EmbeddingStats {
+    fn embedding_stats(
+        &self,
+        enabled: bool,
+        total: u64,
+        done: u64,
+        embedded: u64,
+        measured: bool,
+    ) -> EmbeddingStats {
         let done = done.min(total);
         let status = if !enabled {
             EmbeddingStatus::Disabled
@@ -414,15 +426,17 @@ impl DbStats {
             _ if total == 0 => 100,
             _ => (done.saturating_mul(100) / total).min(100) as u8,
         };
-        let rate = self.embedding_started
+        let rate = self
+            .embedding_started
             .get()
             .map(|started| started.elapsed().as_secs_f64())
             .filter(|secs| *secs >= 2.0)
             .map(|secs| (embedded as f64) / secs)
             .filter(|rate| rate.is_finite() && *rate > 0.0);
         let eta_seconds = match (status, rate) {
-            (EmbeddingStatus::Embedding, Some(rate)) =>
-                Some((((total - done) as f64) / rate).ceil() as u64),
+            (EmbeddingStatus::Embedding, Some(rate)) => {
+                Some((((total - done) as f64) / rate).ceil() as u64)
+            }
             _ => None,
         };
         EmbeddingStats {
@@ -434,7 +448,6 @@ impl DbStats {
             eta_seconds,
         }
     }
-    
 }
 
 impl ShardStatsHandle {
@@ -447,7 +460,9 @@ impl ShardStatsHandle {
     }
 
     pub fn add_documents_indexed(&self, n: u64) {
-        self.stats.shards[self.index].documents_indexed.fetch_add(n, Relaxed);
+        self.stats.shards[self.index]
+            .documents_indexed
+            .fetch_add(n, Relaxed);
     }
 
     /// Levels, so publish after anything that changes the index. The shard
@@ -457,32 +472,40 @@ impl ShardStatsHandle {
         g.documents.store(document_count, Relaxed);
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
-        g.documents_indexed.store(stats.total_documents_indexed, Relaxed);
-        g.documents_deleted.store(stats.total_documents_deleted, Relaxed);
+        g.documents_indexed
+            .store(stats.total_documents_indexed, Relaxed);
+        g.documents_deleted
+            .store(stats.total_documents_deleted, Relaxed);
         g.segments_written.store(stats.segments_written, Relaxed);
-        g.compactions_completed.store(stats.compactions_completed, Relaxed);
+        g.compactions_completed
+            .store(stats.compactions_completed, Relaxed);
     }
 
     pub fn set_compaction_enabled(&self, on: bool) {
-        self.stats.shards[self.index].compaction_enabled.store(on, Relaxed);
+        self.stats.shards[self.index]
+            .compaction_enabled
+            .store(on, Relaxed);
     }
 
     // ---- background worker ----
 
     pub fn set_activity(&self, activity: BackgroundActivity) {
-        self.stats.shards[self.index].activity.store(activity as u8, Relaxed);
+        self.stats.shards[self.index]
+            .activity
+            .store(activity as u8, Relaxed);
     }
 
     pub fn record_compaction(&self, ok: bool, elapsed: Duration) {
         let g = &self.stats.shards[self.index];
         if ok {
-            g.last_compaction_ms.store(elapsed.as_millis() as u64, Relaxed);
+            g.last_compaction_ms
+                .store(elapsed.as_millis() as u64, Relaxed);
         } else {
             g.compaction_failures.fetch_add(1, Relaxed);
         }
     }
 
-     pub fn set_embedding_enabled(&self, on: bool) {
+    pub fn set_embedding_enabled(&self, on: bool) {
         let g = &self.stats.shards[self.index];
         g.embedding_enabled.store(on, Relaxed);
         // a (re)started worker must measure again before its figures count
@@ -499,9 +522,10 @@ impl ShardStatsHandle {
     /// `round_started` anchors the database-wide rate at the first round that embedded anything.
     pub fn add_embedded(&self, count: u64, round_started: Instant) {
         self.stats.embedding_started.get_or_init(|| round_started);
-        self.stats.shards[self.index].embedded.fetch_add(count, Relaxed);
+        self.stats.shards[self.index]
+            .embedded
+            .fetch_add(count, Relaxed);
     }
-    
 }
 
 #[cfg(test)]
@@ -513,7 +537,10 @@ mod tests {
         let stats = DbStats::new(2);
         let (a, b) = (stats.handle(0), stats.handle(1));
 
-        assert_eq!(stats.snapshot().background.embedding.status, EmbeddingStatus::Disabled);
+        assert_eq!(
+            stats.snapshot().background.embedding.status,
+            EmbeddingStatus::Disabled
+        );
 
         a.set_embedding_enabled(true);
         b.set_embedding_enabled(true);
@@ -521,7 +548,14 @@ mod tests {
         b.set_vector_progress(300, 100);
         let embedding = stats.snapshot().background.embedding;
         assert_eq!(embedding.status, EmbeddingStatus::Embedding);
-        assert_eq!((embedding.vectors_total, embedding.vectors_done, embedding.progress), (400, 200, 50));
+        assert_eq!(
+            (
+                embedding.vectors_total,
+                embedding.vectors_done,
+                embedding.progress
+            ),
+            (400, 200, 50)
+        );
 
         b.set_vector_progress(300, 300);
         let embedding = stats.snapshot().background.embedding;
@@ -535,11 +569,18 @@ mod tests {
         let stats = DbStats::new(3);
         stats.handle(0).set_activity(BackgroundActivity::Compacting);
         stats.handle(1).set_activity(BackgroundActivity::Embedding);
-        stats.handle(2).record_compaction(false, Duration::from_millis(5));
-        stats.handle(2).record_compaction(true, Duration::from_millis(1200));
+        stats
+            .handle(2)
+            .record_compaction(false, Duration::from_millis(5));
+        stats
+            .handle(2)
+            .record_compaction(true, Duration::from_millis(1200));
 
         let background = stats.snapshot().background;
-        assert_eq!((background.shards_compacting, background.shards_embedding), (1, 1));
+        assert_eq!(
+            (background.shards_compacting, background.shards_embedding),
+            (1, 1)
+        );
         assert_eq!(background.compaction_failures, 1);
         assert_eq!(background.last_compaction_ms, Some(1200));
     }

@@ -2,12 +2,12 @@ use core_timing::timed;
 use rayon::prelude::*;
 use std::{
     io,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
-    path::PathBuf,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -62,11 +62,11 @@ pub enum IndexCommand {
     GetStats {
         reply: Sender<io::Result<IndexingStats>>,
     },
-    //vector things 
+    //vector things
     DiskSegments {
         reply: DiskSegmentReply,
     },
-     InstallVectors {
+    InstallVectors {
         segment: PathBuf,
         xpath: XPathId,
         reply: InstallVectorsReply,
@@ -237,7 +237,7 @@ impl IndexWorker {
             )
         })?
     }
-        /// Attaches a finished vector file. Ok(false) means the segment was merged away meanwhile.
+    /// Attaches a finished vector file. Ok(false) means the segment was merged away meanwhile.
     pub fn install_vectors(&self, segment: PathBuf, xpath: XPathId) -> io::Result<bool> {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::InstallVectors {

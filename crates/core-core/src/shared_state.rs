@@ -82,7 +82,7 @@ impl SharedShardState {
         Ok(Some(doc))
     }
     ///VECTOR THINGS
-        /// Synchronous read by internal id for background work. Unlike `get_document` it does not
+    /// Synchronous read by internal id for background work. Unlike `get_document` it does not
     /// fill the document cache, so bulk reads do not evict documents that searches use.
     /// Ok(None) means the document is gone (deleted, or moved by store compaction).
     pub fn read_document_by_doc_id(&self, doc_id: DocId) -> io::Result<Option<StoredDocument>> {

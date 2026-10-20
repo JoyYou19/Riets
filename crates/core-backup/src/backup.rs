@@ -678,10 +678,10 @@ fn tar_dir(
     let enc = GzEncoder::new(file, Compression::fast());
     let buffered = BufWriter::with_capacity(COPY_BUF_SIZE, enc);
     let mut builder = match progress {
-        Some(p) =>
-            tar::Builder::new(
-                Box::new(ProgressWriter { inner: buffered, progress: p }) as Box<dyn Write>
-            ),
+        Some(p) => tar::Builder::new(Box::new(ProgressWriter {
+            inner: buffered,
+            progress: p,
+        }) as Box<dyn Write>),
         None => tar::Builder::new(Box::new(buffered) as Box<dyn Write>),
     };
     builder.append_dir_all(entry_name, src)?;
@@ -740,4 +740,3 @@ fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Resul
     fs::rename(&tmp, &dst)?;
     Ok(())
 }
-

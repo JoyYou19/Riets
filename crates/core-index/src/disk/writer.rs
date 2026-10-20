@@ -445,4 +445,3 @@ fn finish_file(out: PositionWriter<BufWriter<File>>) -> io::Result<()> {
     let file = out.into_inner().into_inner().map_err(|e| e.into_error())?;
     file.sync_all()
 }
-

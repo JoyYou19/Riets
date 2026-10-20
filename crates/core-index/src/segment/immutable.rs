@@ -5,7 +5,14 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    array_rows::ArrayRowIndex, document::document::BoolField, numeric_values::{ NumericBound, NumericFields, NumericValue }, posting::{ Posting, PostingList }, search::{ SearchIndex, SearchNumeric, SearchStats }, segment::{ build_field_stats, compute_doc_id_range }, types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId }, wildcard::{WildcardPattern, capped_union},
+    array_rows::ArrayRowIndex,
+    document::document::BoolField,
+    numeric_values::{NumericBound, NumericFields, NumericValue},
+    posting::{Posting, PostingList},
+    search::{SearchIndex, SearchNumeric, SearchStats},
+    segment::{build_field_stats, compute_doc_id_range},
+    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
+    wildcard::{WildcardPattern, capped_union},
 };
 
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
@@ -92,14 +99,13 @@ impl SearchNumeric for ImmutableSegment {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> PostingList {
         let docs = self.numeric_fields.range(xpath, lo, hi);
         PostingList::from_items(
-            docs
-                .into_iter()
+            docs.into_iter()
                 .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect()
+                .collect(),
         )
     }
 
@@ -143,7 +149,7 @@ impl ImmutableSegment {
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
         bool_fields: BTreeMap<XPathId, BoolField>,
-        array_row_index: ArrayRowIndex
+        array_row_index: ArrayRowIndex,
     ) -> Self {
         debug_assert_eq!(
             field_stats,

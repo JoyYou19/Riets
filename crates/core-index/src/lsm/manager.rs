@@ -1,6 +1,6 @@
 use std::{
     io,
-    path::{PathBuf,Path},
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,8 +24,8 @@ use crate::{
     search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
     segment::{ImmutableSegment, SegmentHandle},
     types::{ArrayRowId, DocId, XPathId},
+    vector::{SegmentVectors, VectorFile, find_vector_files, vector_file_path},
     wildcard::WildcardPattern,
-    vector::{SegmentVectors, VectorFile, find_vector_files, vector_file_path}
 };
 
 // Live index of data, this will be flushed in other words put into a persistent
@@ -46,7 +46,7 @@ pub struct LsmIndex {
     next_compaction_job_id: u64,
     max_array_row: ArrayRowId,
     last_ingest: Instant,
-    vectors:Arc<Vec<SegmentVectors>>
+    vectors: Arc<Vec<SegmentVectors>>,
 }
 
 //INFO: WATAFAK - normunds
@@ -188,7 +188,7 @@ impl LsmIndex {
             next_compaction_job_id: 0,
             max_array_row: 0,
             last_ingest: Instant::now(),
-            vectors:Arc::new(Vec::new())
+            vectors: Arc::new(Vec::new()),
         }
     }
 
@@ -256,7 +256,7 @@ impl LsmIndex {
             next_compaction_job_id: 0,
             max_array_row,
             last_ingest: Instant::now(),
-            vectors:Arc::new(vectors)
+            vectors: Arc::new(vectors),
         })
     }
 
@@ -298,7 +298,7 @@ impl LsmIndex {
         );
         segments.extend(self.query_segments.iter().cloned());
         IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
-        .with_vectors(Arc::clone(&self.vectors))
+            .with_vectors(Arc::clone(&self.vectors))
     }
 
     #[timed(indexing_documents)]
@@ -583,7 +583,7 @@ impl LsmIndex {
             deleted: self.deleted.clone(),
             delete_generation: self.delete_generation,
             output_path,
-            vectors
+            vectors,
         }))
     }
 
@@ -725,7 +725,7 @@ impl LsmIndex {
         self.mem.term_count()
     }
     //VECTORS
-        /// Paths of the live on-disk segments, oldest first. Empty for in-memory indexes.
+    /// Paths of the live on-disk segments, oldest first. Empty for in-memory indexes.
     pub fn disk_segment_paths(&self) -> Vec<PathBuf> {
         self.segment_handles
             .iter()
@@ -735,7 +735,7 @@ impl LsmIndex {
             })
             .collect()
     }
-        /// Attaches `<segment>.<xpath>.vec`, replacing any earlier version.
+    /// Attaches `<segment>.<xpath>.vec`, replacing any earlier version.
     /// Returns false (and removes the file) when the segment is no longer live.
     /// Attaches `<segment>.<xpath>.vec`, replacing any earlier version.
     /// Returns false (and removes the file) when the segment is no longer live.

@@ -1234,7 +1234,7 @@ pub async fn create_database_handler(
             DatabaseOptions::default(),
             shard_count,
             crate::corelamo_settings::synonym_registry(),
-            crate::corelamo_settings::model_registry()
+            crate::corelamo_settings::model_registry(),
         )
     })
     .await;
@@ -1408,7 +1408,7 @@ pub async fn stats_handler(
     let reindexing = &stats.reindexing;
     let metrics = &stats.metrics;
     let backup = &stats.backup;
-     let background = &stats.background;
+    let background = &stats.background;
     HttpOk::with_data(
         format!("stats for '{db_name}'"),
         json!({
