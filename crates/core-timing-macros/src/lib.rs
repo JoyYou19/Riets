@@ -5,7 +5,7 @@
 //! this macro so consumers only ever need to depend on `core-timing`.
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::quote_spanned;
 use syn::{
     Ident, ItemFn, LitStr, ReturnType, Token,
     parse::{Parse, ParseStream},
@@ -88,6 +88,13 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
         ..
     } = input;
 
+    // Tokens this macro generates must carry a span taken from the input
+    // item. `quote!` stamps them with `Span::call_site()`, whose expansion
+    // context makes rustc treat the whole function as macro-generated and
+    // skip the `dead_code` lint for it. `quote_spanned!` with an input span
+    // keeps the lint working; interpolated `#sig`/`#block` keep their own
+    // spans either way, so diagnostics stay accurate.
+    let span = sig.ident.span();
     let is_async = sig.asyncness.is_some();
     let is_unsafe = sig.unsafety.is_some();
     let fn_name = sig.ident.to_string();
@@ -99,21 +106,21 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let label = args.label.map(|lit| lit.value()).unwrap_or(fn_name);
 
     let ret_ty = match &sig.output {
-        ReturnType::Default => quote! { () },
-        ReturnType::Type(_, ty) => quote! { #ty },
+        ReturnType::Default => quote_spanned! { span => () },
+        ReturnType::Type(_, ty) => quote_spanned! { span => #ty },
     };
 
     // If the original fn was `unsafe fn`, its body may rely on being an
     // implicit unsafe context. Wrapping the body in a plain closure/async
     // block loses that, so we re-wrap explicitly in that case.
     let body_tokens = if is_unsafe {
-        quote! { unsafe #block }
+        quote_spanned! { span => unsafe #block }
     } else {
-        quote! { #block }
+        quote_spanned! { span => #block }
     };
 
     let timed_expr = if is_async {
-        quote! {
+        quote_spanned! { span =>
             {
                 let __perf_start = ::std::time::Instant::now();
                 let __perf_result: #ret_ty = (async move #body_tokens).await;
@@ -122,7 +129,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else {
-        quote! {
+        quote_spanned! { span =>
             {
                 let __perf_start = ::std::time::Instant::now();
                 let __perf_result: #ret_ty = (move || -> #ret_ty #body_tokens)();
@@ -132,7 +139,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let output = quote! {
+    let output = quote_spanned! { span =>
         #(#attrs)*
         #vis #sig {
             if cfg!(feature = "timing") {
