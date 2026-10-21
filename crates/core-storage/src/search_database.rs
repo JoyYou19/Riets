@@ -9,7 +9,7 @@ use crate::{
 use core_index::{
     analyzer::analyzer::Analyzer,
     array_rows::ArrayRowAllocator,
-    document::{ IndexPolicy, IndexedDocument },
+    document::{ AnalyzedDocument, IndexPolicy, IndexedDocument },
     lsm::{
         LsmIndex,
         index_worker::{
@@ -65,7 +65,7 @@ pub struct IndexPipeline<'a, S: DocumentStore> {
     // The documents that are waiting to be written to document store
     current_store_batch: Vec<StoredDocument>,
     // The current batch waiting to be written to the index segment
-    current_batch: Vec<IndexedDocument>,
+    current_batch: Vec<AnalyzedDocument>,
 
     //completed batches that are waiting to be indexed together
     // pending_batches: Vec<Vec<IndexedDocument>>,
@@ -73,7 +73,7 @@ pub struct IndexPipeline<'a, S: DocumentStore> {
     failures: Vec<DocFailure>,
     seen: HashSet<String>,
 }
-const MIN_INDEX_BATCH: usize = 256;
+const MIN_INDEX_BATCH: usize = 4096;
 ///nezinu mosk vairak mosk mazak jauztaisa
 pub struct SearchDatabase<S: DocumentStore> {
     store: S,
@@ -270,7 +270,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &self.policy,
                 &mut self.array_row_allocator
             );
-            self.index_worker.add_indexed_document_wait(indexed)?;
+           self.index_worker
+    .add_indexed_document_wait(indexed.analyze(&self.analyzer))?;
         }
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -358,7 +359,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &self.policy,
                 &mut self.array_row_allocator
             );
-            self.index_worker.add_indexed_document_wait(indexed)?;
+            self.index_worker
+    .add_indexed_document_wait(indexed.analyze(&self.analyzer))?;
         }
 
         let doc = StoredDocument {
@@ -538,7 +540,6 @@ fn publish_window(
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
-        
         let external_id = input.external_id;
 
         if self.external_id_exists(&external_id)? {
@@ -561,9 +562,9 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
             source: Arc::from(input.source),
             format: input.format,
         };
-
+        let analyzed = indexed.analyze(&self.db.analyzer);
         self.current_store_batch.push(stored);
-        self.current_batch.push(indexed);
+        self.current_batch.push(analyzed);
         self.inserted += 1;
 
         let len = self.current_batch.len();
