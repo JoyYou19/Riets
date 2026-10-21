@@ -1,14 +1,8 @@
-use core_embed::{ModelConfig, ModelRegistry};
+use core_embed::{ ModelConfig, ModelRegistry };
 use core_query::dictionary::SynonymRegistry;
-use std::{
-    collections::HashMap,
-    io,
-    path::PathBuf,
-    process,
-    sync::{Arc, OnceLock},
-};
+use std::{ collections::HashMap, io, path::PathBuf, process, sync::{ Arc, OnceLock } };
 
-use slog::{info, warn};
+use slog::{ info, warn };
 //helper file to manage and easilly add corelamo settings
 
 pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
@@ -21,7 +15,8 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("auth", "true"),
     ("max_payload_size", "1024"),
     ("max_request_timeout", "240"),
-    ("embedding-model", "bge-small-en-v1.5"),
+    ("embedding-model", "multilingual-e5-small"),
+    ("embedding-device", "auto"),
     ("embedding-runtime", ""),
     ("embedding-instances", "1"),
     ("embedding-batch-size", "64"),
@@ -29,7 +24,8 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("embedding-max-chars", "2000"),
 ];
 
-pub const HELP: &str = "\
+pub const HELP: &str =
+    "\
 corelamo-runtime 
 USAGE:
     corelamo-runtime [OPTIONS]
@@ -78,23 +74,20 @@ OPTIONS:
 ";
 
 pub fn default_value(key: &str) -> &'static str {
-    DEFAULT_SETTINGS
-        .iter()
+    DEFAULT_SETTINGS.iter()
         .find(|(k, _)| *k == key)
         .map(|(_, v)| *v)
         .unwrap_or("")
 }
 
 pub fn valid_keys() -> Vec<&'static str> {
-    DEFAULT_SETTINGS.iter().map(|(k, _)| *k).collect()
+    DEFAULT_SETTINGS.iter()
+        .map(|(k, _)| *k)
+        .collect()
 }
 
 pub fn resolve_root(path: PathBuf) -> PathBuf {
-    if path.ends_with("corelamo") {
-        path
-    } else {
-        path.join("corelamo")
-    }
+    if path.ends_with("corelamo") { path } else { path.join("corelamo") }
 }
 
 pub fn parse_args() -> Result<HashMap<String, String>, String> {
@@ -107,19 +100,13 @@ pub fn parse_args() -> Result<HashMap<String, String>, String> {
             process::exit(0);
         }
 
-        let key = arg
-            .strip_prefix("--")
-            .ok_or_else(|| format!("unknown argument: {arg}"))?;
+        let key = arg.strip_prefix("--").ok_or_else(|| format!("unknown argument: {arg}"))?;
 
         // Allow overwrite_config as CLI-only option
         if key == "overwrite_config" {
-            let val = args
-                .next()
-                .ok_or_else(|| format!("--{key} requires a value (true/false)"))?;
+            let val = args.next().ok_or_else(|| format!("--{key} requires a value (true/false)"))?;
             if val != "true" && val != "false" {
-                return Err(format!(
-                    "--overwrite_config must be 'true' or 'false', got '{val}'"
-                ));
+                return Err(format!("--overwrite_config must be 'true' or 'false', got '{val}'"));
             }
             overrides.insert(key.to_string(), val);
             continue;
@@ -129,9 +116,7 @@ pub fn parse_args() -> Result<HashMap<String, String>, String> {
             return Err(format!("unknown argument: --{key}"));
         }
 
-        let val = args
-            .next()
-            .ok_or_else(|| format!("--{key} requires a value"))?;
+        let val = args.next().ok_or_else(|| format!("--{key} requires a value"))?;
 
         overrides.insert(key.to_string(), val);
     }
@@ -142,7 +127,7 @@ pub fn parse_args() -> Result<HashMap<String, String>, String> {
 //config wins over cli, cli wins over hardcoded defaults
 //unless overwrite_config is true, then cli wins over config AND gets written to file
 pub fn load_or_init_settings(
-    cli_overrides: HashMap<String, String>,
+    cli_overrides: HashMap<String, String>
 ) -> io::Result<HashMap<String, String>> {
     //root path is either default or specified cause we dont know where it is lmao
     let root_path_str = cli_overrides
@@ -155,7 +140,7 @@ pub fn load_or_init_settings(
     let log = slog_scope::logger();
     let mut settings: HashMap<String, String> = if settings_path.exists() {
         let raw = std::fs::read_to_string(&settings_path)?;
-        info!(log,"config loaded";"settings_path"=>%settings_path.display() );
+        info!(log,"config loaded";"settings_path"=>%settings_path.display());
         toml::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
     } else {
         warn!(log, "No config found,writing defaults..");
@@ -172,10 +157,7 @@ pub fn load_or_init_settings(
         .unwrap_or(false);
 
     if overwrite_config {
-        info!(
-            log,
-            "overwrite_config enabled: CLI args will override config file and be persisted"
-        );
+        info!(log, "overwrite_config enabled: CLI args will override config file and be persisted");
     }
 
     // fill in any missing keys:
@@ -188,9 +170,7 @@ pub fn load_or_init_settings(
                 settings.insert(key.to_string(), cli_value.clone());
             } else {
                 // No CLI override, keep config or use default
-                settings
-                    .entry(key.to_string())
-                    .or_insert_with(|| default.to_string());
+                settings.entry(key.to_string()).or_insert_with(|| default.to_string());
             }
         } else {
             // Config wins over CLI (current behavior)
@@ -203,10 +183,7 @@ pub fn load_or_init_settings(
         }
     }
 
-    settings.insert(
-        "root-path".to_string(),
-        root_path.to_string_lossy().to_string(),
-    );
+    settings.insert("root-path".to_string(), root_path.to_string_lossy().to_string());
 
     settings.remove("overwrite_config");
 
@@ -245,22 +222,22 @@ pub fn get_usize(settings: &HashMap<String, String>, key: &str) -> usize {
 }
 
 pub fn validate_settings(settings: &HashMap<String, String>) -> Result<(), String> {
-    let max_payload_size: usize = get(settings, "max_payload_size").parse().map_err(|_| {
-        format!(
-            "invalid max_payload_size '{}': must be a valid integer",
-            get(settings, "max_payload_size")
-        )
-    })?;
+    let max_payload_size: usize = get(settings, "max_payload_size")
+        .parse()
+        .map_err(|_| {
+            format!(
+                "invalid max_payload_size '{}': must be a valid integer",
+                get(settings, "max_payload_size")
+            )
+        })?;
 
     if max_payload_size < 1 {
-        return Err(format!(
-            "invalid max_payload_size {}: must be at least 1 MB",
-            max_payload_size
-        ));
+        return Err(format!("invalid max_payload_size {}: must be at least 1 MB", max_payload_size));
     }
 
-    let max_request_timeout: usize =
-        get(settings, "max_request_timeout").parse().map_err(|_| {
+    let max_request_timeout: usize = get(settings, "max_request_timeout")
+        .parse()
+        .map_err(|_| {
             format!(
                 "invalid max_request_timeout '{}': must be a valid integer",
                 get(settings, "max_payload_size")
@@ -268,10 +245,9 @@ pub fn validate_settings(settings: &HashMap<String, String>) -> Result<(), Strin
         })?;
 
     if max_request_timeout < 1 {
-        return Err(format!(
-            "invalid max_request_timeout {}: must be at least 1s",
-            max_request_timeout
-        ));
+        return Err(
+            format!("invalid max_request_timeout {}: must be at least 1s", max_request_timeout)
+        );
     }
 
     Ok(())
@@ -283,19 +259,18 @@ static SYNONYM_REGISTRY: OnceLock<SynonymRegistry> = OnceLock::new();
 /// first start); every database copies it when it is created.
 pub fn init_synonyms(settings: &HashMap<String, String>) -> Result<(), String> {
     let root_path = PathBuf::from(get(settings, "root-path"));
-    let registry = SynonymRegistry::open(&root_path)
-        .map_err(|e| format!("failed to load the synonym dictionary: {e}"))?;
+    let registry = SynonymRegistry::open(&root_path).map_err(|e|
+        format!("failed to load the synonym dictionary: {e}")
+    )?;
     let log = slog_scope::logger();
     info!(log, "synonym dictionary loaded"; "template_path" => %registry.template_path().display());
-    SYNONYM_REGISTRY
-        .set(registry)
-        .map_err(|_| "synonym registry initialised twice".to_string())
+    SYNONYM_REGISTRY.set(registry).map_err(|_| "synonym registry initialised twice".to_string())
 }
 
 pub fn synonym_registry() -> &'static SynonymRegistry {
-    SYNONYM_REGISTRY
-        .get()
-        .expect("synonym registry used before corelamo_settings::init_synonyms in main")
+    SYNONYM_REGISTRY.get().expect(
+        "synonym registry used before corelamo_settings::init_synonyms in main"
+    )
 }
 
 static MODEL_REGISTRY: OnceLock<Arc<ModelRegistry>> = OnceLock::new();
@@ -307,39 +282,41 @@ pub fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
     let runtime_setting = get(settings, "embedding-runtime");
     let install_runtime = runtime_setting.trim().is_empty();
     let runtime_library = if install_runtime {
-        root_path
-            .join("runtime")
-            .join(core_embed::RUNTIME_RELEASE)
-            .join(core_embed::RUNTIME_LIBRARY_NAME)
+        core_embed::default_runtime_library(&root_path.join("runtime"))
     } else {
         PathBuf::from(runtime_setting.trim())
     };
+    let device = core_embed::DevicePreference
+        ::parse(&get(settings, "embedding-device"))
+        .map_err(|e| format!("invalid embedding settings: {e}"))?;
     let config = ModelConfig {
         model_id: get(settings, "embedding-model"),
         instances: get_usize(settings, "embedding-instances"),
         batch_size: get_usize(settings, "embedding-batch-size"),
         max_tokens: get_usize(settings, "embedding-max-tokens"),
         max_chars: get_usize(settings, "embedding-max-chars"),
+        device,
         runtime_library,
         install_runtime,
     };
-    let registry = ModelRegistry::new(root_path.join("models"), config.clone())
-        .map_err(|e| format!("invalid embedding settings: {e}"))?;
+    let registry = ModelRegistry::new(root_path.join("models"), config.clone()).map_err(|e|
+        format!("invalid embedding settings: {e}")
+    )?;
     let log = slog_scope::logger();
     info!(log, "embedding models configured";
         "config" => ?config,
         "cache_dir" => %registry.cache_dir().display(),
         "runtime_library" => %config.runtime_library.display(),
         "runtime_found" => config.runtime_library.is_file());
-    MODEL_REGISTRY
-        .set(Arc::new(registry))
-        .map_err(|_| "model registry initialised twice".to_string())
+    MODEL_REGISTRY.set(Arc::new(registry)).map_err(|_|
+        "model registry initialised twice".to_string()
+    )
 }
 
 pub(crate) fn model_registry() -> Arc<ModelRegistry> {
     Arc::clone(
-        MODEL_REGISTRY
-            .get()
-            .expect("model registry used before corelamo_settings::init_models in main"),
+        MODEL_REGISTRY.get().expect(
+            "model registry used before corelamo_settings::init_models in main"
+        )
     )
 }

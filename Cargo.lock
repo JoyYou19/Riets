@@ -664,7 +664,10 @@ name = "core-embed"
 version = "0.1.0"
 dependencies = [
  "fastembed",
+ "hf-hub",
  "ort",
+ "serde_json",
+ "tokenizers",
 ]
 
 [[package]]
