@@ -1,4 +1,5 @@
 use core_timing::timed;
+use std::fs::File;
 use std::io::Write;
 use std::{
     fs, io,
@@ -46,27 +47,14 @@ pub(super) fn append_segment(root: &Path, segment: &Path) -> io::Result<()> {
     let file_name = segment.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "segment path has no file name")
     })?;
-
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(manifest_path(root))?;
-
-    writeln!(file, "{}", file_name.to_string_lossy())
+    writeln!(file, "{}", file_name.to_string_lossy())?;
+    file.sync_data()?;
+    // Persists both the new segment's and (first time) the manifest's directory entry.
+    File::open(root)?.sync_all()
 }
 
-// #[timed(writing_files)]
-// pub fn write_manifest(root: &Path, segments: &[PathBuf]) -> io::Result<()> {
-//     let mut text = String::new();
 
-//     for path in segments {
-//         let file_name = path.file_name().ok_or_else(|| {
-//             io::Error::new(io::ErrorKind::InvalidData, "segment path has no file name")
-//         })?;
-
-//         text.push_str(&file_name.to_string_lossy());
-//         text.push('\n');
-//     }
-
-//     fs::write(manifest_path(root), text)
-// }

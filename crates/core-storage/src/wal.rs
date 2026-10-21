@@ -39,7 +39,16 @@ pub enum WalRecord {
     Delete(Vec<String>),
     Clear,
 }
-
+///faster encoding
+/// Borrowed mirror of `WalRecord` for encoding. Variant ORDER must match `WalRecord`.
+#[derive(Encode)]
+pub enum WalRecordRef<'a> {
+    Create(&'a [DocumentInput]),
+    Upsert(&'a [DocumentInput]),
+    Replace(&'a [DocumentInput]),
+    Delete(&'a [String]),
+    Clear,
+}
 pub struct Wal {
     inner: Mutex<Inner>,
     mode: SyncMode,
@@ -304,4 +313,13 @@ impl Wal {
         g.written_offset = 0;
         Ok(())
     }
+}
+#[cfg(test)]
+#[test]
+fn wal_record_ref_matches_owned_encoding() {
+    let cfg = bincode::config::standard();
+    let ids = vec!["a".to_string(), "b".to_string()];
+    let owned = bincode::encode_to_vec(WalRecord::Delete(ids.clone()), cfg).unwrap();
+    let borrowed = bincode::encode_to_vec(WalRecordRef::Delete(&ids), cfg).unwrap();
+    assert_eq!(owned, borrowed);
 }
