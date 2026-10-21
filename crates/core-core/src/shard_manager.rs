@@ -131,7 +131,7 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
             names.is_none_or(|names| {
                 names
                     .iter()
-                    .any(|name| (*name == field.full_path || *name == field.name))
+                    .any(|name| *name == field.full_path || *name == field.name)
             })
         })
         .map(|field| field.xpath(policy))

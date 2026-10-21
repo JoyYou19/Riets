@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use core_timing::timed;
 use rayon::prelude::*;
 use std::{
@@ -76,26 +77,50 @@ pub enum IndexCommand {
 }
 
 
+#[must_use = "dropping a PendingAck discards the batch's indexing result"]
+pub struct PendingAck(Mutex<Receiver<io::Result<()>>>);
+
+impl PendingAck {
+    pub fn wait(self) -> io::Result<()> {
+        let rx = self.0.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+        wait_for_acknowledgement(rx)
+    }
+
+    /// Non-blocking. `None` while the worker is still indexing the batch;
+    /// `Some(result)` once it has finished (or the worker is gone).
+    pub fn try_take(&mut self) -> Option<io::Result<()>> {
+        // `get_mut` needs `&mut self`, so no lock is ever taken.
+        let rx = self.0.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "index worker dropped acknowledgement",
+            ))),
+        }
+    }
+}
 pub struct IndexWorker {
     sender: Sender<IndexCommand>,
     handle: Option<JoinHandle<io::Result<LsmIndex>>>,
+    stats: Arc<ArcSwap<IndexingStats>>,
 }
 
 impl IndexWorker {
-    pub fn start(index: LsmIndex, analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
+   pub fn start(index: LsmIndex, analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
         shared.publish(index.snapshot());
 
         let (sender, receiver) = mpsc::channel();
+        let stats = Arc::new(ArcSwap::from_pointee(IndexingStats::default()));
+        let worker_stats = Arc::clone(&stats);
 
         let handle = thread::Builder::new()
             .name("index-worker".to_string())
-            .spawn(move || run_index_worker(index, analyzer, shared, receiver))
+            .spawn(move || run_index_worker(index, analyzer, shared, receiver, worker_stats))
             .expect("failed to spawn index worker");
 
-        Self {
-            sender,
-            handle: Some(handle),
-        }
+        Self { sender, handle: Some(handle), stats }
     }
 
     pub fn sender(&self) -> Sender<IndexCommand> {
@@ -106,6 +131,11 @@ impl IndexWorker {
         self.sender
             .send(command)
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped"))
+    }
+    /// Stats as of the last command the worker finished. May lag queued batches;
+    /// use `get_stats` when an exact value is required.
+    pub fn cached_stats(&self) -> IndexingStats {
+        (**self.stats.load()).clone()
     }
 
     pub fn shutdown(mut self) -> io::Result<LsmIndex> {
@@ -130,6 +160,18 @@ impl IndexWorker {
 
     pub fn add_indexed_document(&self, document: IndexedDocument) -> io::Result<()> {
         self.add_indexed_documents(vec![document])
+    }
+    /// Sends a batch and returns immediately; call `wait()` on the result later.
+    pub fn add_indexed_documents_deferred(
+        &self,
+        documents: Vec<IndexedDocument>,
+    ) -> io::Result<PendingAck> {
+        let (ack, rx) = mpsc::channel();
+        self.send(IndexCommand::AddIndexedDocuments {
+            documents,
+            ack: Some(ack),
+        })?;
+        Ok(PendingAck(Mutex::new(rx)))
     }
 
     pub fn delete_document(&self, doc_id: DocId) -> io::Result<()> {
@@ -280,6 +322,7 @@ fn run_index_worker(
     analyzer: Analyzer,
     shared: SharedIndexSnapshot,
     receiver: Receiver<IndexCommand>,
+    published_stats: Arc<ArcSwap<IndexingStats>>,
 ) -> io::Result<LsmIndex> {
     let mut stats = IndexingStats::default();
     let mut docs_since_publish: u64 = 0;
@@ -465,6 +508,9 @@ fn run_index_worker(
             docs_since_publish = 0;
             last_publish = Instant::now();
         }
+        stats.segment_count = index.segment_count();
+        stats.memtable_term_count = index.memtable_term_count();
+        published_stats.store(Arc::new(stats.clone()));
     }
 
     index.flush()?;
@@ -498,12 +544,7 @@ fn send_acknowledgement(
     result: io::Result<()>,
 ) -> io::Result<()> {
     if let Some(acknowledgement) = acknowledgement {
-        acknowledgement.send(result).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "acknowledgement receiver dropped",
-            )
-        })?;
+       let _ = acknowledgement.send(result);
     }
 
     Ok(())

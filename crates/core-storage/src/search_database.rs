@@ -16,6 +16,7 @@ use core_index::{
             IndexCommand,
             IndexWorker,
             IndexingStats,
+            PendingAck,
             ReindexProgress,
             build_segments_parallel,
         },
@@ -72,7 +73,8 @@ pub struct IndexPipeline<'a, S: DocumentStore> {
     failures: Vec<DocFailure>,
     seen: HashSet<String>,
 }
-
+const MIN_INDEX_BATCH: usize = 256;
+///nezinu mosk vairak mosk mazak jauztaisa
 pub struct SearchDatabase<S: DocumentStore> {
     store: S,
     index_worker: IndexWorker,
@@ -82,6 +84,7 @@ pub struct SearchDatabase<S: DocumentStore> {
     shard_id: ShardId,
     next_local_id: LocalDocId,
     array_row_allocator: ArrayRowAllocator,
+    index_in_flight: Option<PendingAck>,
 }
 
 pub struct InsertReport {
@@ -143,7 +146,28 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn shard_id(&self) -> ShardId {
         self.shard_id
     }
-
+    /// True when no batch is in flight. Collects the finished batch's result,
+    /// so an indexing error surfaces here.
+    fn index_idle(&mut self) -> io::Result<bool> {
+        let Some(pending) = self.index_in_flight.as_mut() else {
+            return Ok(true);
+        };
+        match pending.try_take() {
+            None => Ok(false),
+            Some(result) => {
+                self.index_in_flight = None;
+                result.map(|()| true)
+            }
+        }
+    }
+    /// Waits for the previous batch; returns its indexing error, if any.
+    #[timed(flushing)]
+    fn wait_index_in_flight(&mut self) -> io::Result<()> {
+        match self.index_in_flight.take() {
+            Some(pending) => pending.wait(),
+            None => Ok(()),
+        }
+    }
 
     // WARN: This is old, must be changed, backwards compatibility here is 0
     #[timed(database_lifecycle)]
@@ -180,6 +204,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             shard_id,
             next_local_id,
             array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
+            index_in_flight: None,
         })
     }
 
@@ -205,6 +230,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             shard_id,
             next_local_id,
             array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
+            index_in_flight: None,
         })
     }
 
@@ -386,20 +412,17 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(flushing)]
     pub fn flush(&mut self) -> io::Result<()> {
         // Store first: a durable index segment must never reference undurable sources.
+        self.wait_index_in_flight()?;
         self.store.sync()?;
         self.index_worker.flush_wait()
     }
 
-    // pub fn compact_all(&mut self) -> io::Result<()> {
-    //     self.index.compact_all()
-    // }
-    //
-    // pub fn segment_count(&self) -> usize {
-    //     self.index.segment_count()
-    // }
-    //
+    pub fn index_stats_cached(&self) -> IndexingStats {
+        self.index_worker.cached_stats()
+    }
     #[timed(database_lifecycle)]
-    pub fn shutdown(self) -> io::Result<LsmIndex> {
+    pub fn shutdown(mut self) -> io::Result<LsmIndex> {
+        self.wait_index_in_flight()?;
         self.index_worker.shutdown()
     }
 
@@ -541,7 +564,9 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         self.current_batch.push(indexed);
         self.inserted += 1;
 
-        if self.current_batch.len() >= self.batch_size {
+        let len = self.current_batch.len();
+        let at_cap = len >= self.batch_size;
+        if at_cap || (len >= MIN_INDEX_BATCH && self.db.index_idle()?) {
             self.flush_batch()?;
         }
         Ok(())
@@ -605,9 +630,9 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         let stored = std::mem::take(&mut self.current_store_batch);
         self.db.store.put_batch(stored)?;
-
+        self.db.wait_index_in_flight()?;
         let docs = std::mem::take(&mut self.current_batch);
-        self.db.index_worker.add_indexed_documents_wait(docs)?;
+        self.db.index_in_flight = Some(self.db.index_worker.add_indexed_documents_deferred(docs)?);
 
         self.current_store_batch = Vec::with_capacity(self.batch_size);
         self.current_batch = Vec::with_capacity(self.batch_size);

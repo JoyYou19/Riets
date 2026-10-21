@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_embed::{Embedder, ModelRegistry, ModelSpec};
+use core_embed::{Embedder, ModelRegistry};
 use core_index::lsm::{
     compaction::CompactionConfig,
     index_worker::IndexCommand,
@@ -167,7 +167,7 @@ impl BackgroundLoop {
         let Some(embedder) = self.embedder() else {
             return Ok(false);
         };
-        let spec = embedder.spec();
+        let _spec = embedder.spec();
         let vector_id = embedder.vector_id().to_string();
         let dims = embedder.spec().dims;
         if self

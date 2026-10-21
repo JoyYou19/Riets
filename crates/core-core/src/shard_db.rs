@@ -28,17 +28,14 @@ use core_storage::{
         DEFAULT_SEGMENT_SIZE,
         SegmentCompactionJob,
         save_maps,
-    },
-    document_store::StoredDocument,
-    search_database::{
+    }, document_store::StoredDocument, search_database::{
         DeleteReport,
         DocumentInput,
         IndexMode,
         InsertReport,
         ReplaceReport,
         SearchDatabase,
-    },
-    wal::{ Wal, WalRecord },
+    }, wal::{ Wal, WalRecord, WalRecordRef },
 };
 
 use crate::embed::EmbeddingJob;
@@ -80,6 +77,7 @@ pub struct ShardDb {
     backup: BackupManager,
     pending: u32,
     last_write: Instant,
+    failed:bool
 }
 
 impl ShardDb {
@@ -136,6 +134,7 @@ impl ShardDb {
             backup,
             pending: 0,
             last_write: Instant::now(),
+            failed:false
         })
     }
 
@@ -192,6 +191,7 @@ impl ShardDb {
             pending: 0,
             backup,
             last_write: Instant::now(),
+            failed:false
         })
     }
 
@@ -509,13 +509,19 @@ impl ShardDb {
     }
 
     fn ensure_running(&self) -> Result<(), CorelamoError> {
-        if self.db.is_none() {
-            return Err(
-                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
-            );
-        }
-        Ok(())
+    if self.db.is_none() {
+        return Err(
+            CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
+        );
     }
+    if self.failed {
+        return Err(CorelamoError::Internal(format!(
+            "shard {} failed a durability step; restart it to replay the WAL",
+            self.shard_id
+        )));
+    }
+    Ok(())
+}
 
     #[timed(inserting)]
     pub fn insert(
@@ -661,7 +667,7 @@ impl ShardDb {
         let mut failures: Vec<DocFailure> = Vec::new();
 
         let _offset = self
-            .wal_append_record(&WalRecord::Delete(ids.clone()))
+            .wal_append_record(&WalRecordRef::Delete(&ids))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
         {
             let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
@@ -858,7 +864,7 @@ impl ShardDb {
         let mut written_ids = Vec::new();
 
         let _offset = self
-            .wal_append_record(&WalRecord::Replace(inputs.clone()))
+            .wal_append_record(&WalRecordRef::Replace(&inputs))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
         //vajag info log?
         {
@@ -940,7 +946,7 @@ impl ShardDb {
         let mut old_internal_ids = Vec::new();
         let mut written_ids = Vec::new();
         let _offset = self
-            .wal_append_record(&WalRecord::Upsert(inputs.clone()))
+            .wal_append_record(&WalRecordRef::Upsert(&inputs))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
         //vajag info log?
         {
@@ -1054,7 +1060,7 @@ impl ShardDb {
         let was_running = self.db.is_some();
         // Written first so a crash mid-clear is completed on replay.
         self
-            .wal_append_record(&WalRecord::Clear)
+            .wal_append_record(&WalRecordRef::Clear)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
         if let Some(worker) = self.background_worker.take() {
@@ -1254,14 +1260,11 @@ impl ShardDb {
     }
 
     fn publish_stats(&self) {
-        let Ok(db) = self.db_ref() else {
-            return;
-        };
-        let Ok(stats) = db.index_stats() else {
-            return;
-        };
-        self.stats.publish(db.document_count(), &stats);
-    }
+    let Ok(db) = self.db_ref() else {
+        return;
+    };
+    self.stats.publish(db.document_count(), &db.index_stats_cached());
+}
 
     #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {

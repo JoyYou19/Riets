@@ -159,6 +159,7 @@ impl BinaryDocumentStore {
             internal_to_external: Arc::new(DashMap::new()),
             locations: Arc::new(DashMap::new()),
             next_segment_id: AtomicU32::new(existing_max + 1),
+            unsynced_from: AtomicU32::new(current_segment),
         };
 
         store.load()?;
@@ -221,6 +222,7 @@ impl BinaryDocumentStore {
             path,
             current_segment: AtomicU32::new(current_segment),
             next_segment_id: AtomicU32::new(next_segment_id),
+            unsynced_from: AtomicU32::new(current_segment),
             docs,
             internal_to_external,
             locations,
