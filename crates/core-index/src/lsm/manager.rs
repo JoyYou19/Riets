@@ -741,6 +741,7 @@ impl LsmIndex {
     pub fn memtable_term_count(&self) -> usize {
         self.mem.term_count()
     }
+    
     //VECTORS
     /// Paths of the live on-disk segments, oldest first. Empty for in-memory indexes.
     pub fn disk_segment_paths(&self) -> Vec<PathBuf> {

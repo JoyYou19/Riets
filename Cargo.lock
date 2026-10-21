@@ -823,6 +823,7 @@ dependencies = [
  "dashmap",
  "indexmap",
  "moka",
+ "rayon",
  "serde",
  "simd-json",
  "slog",

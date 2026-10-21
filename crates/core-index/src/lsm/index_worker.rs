@@ -117,7 +117,10 @@ impl IndexWorker {
         shared.publish(index.snapshot());
 
         let (sender, receiver) = mpsc::channel();
-        let stats = Arc::new(ArcSwap::from_pointee(IndexingStats::default()));
+        let mut initial = IndexingStats::default();
+        initial.segment_count = index.segment_count();
+        initial.memtable_term_count = index.memtable_term_count();
+        let stats = Arc::new(ArcSwap::from_pointee(initial));
         let worker_stats = Arc::clone(&stats);
 
         let handle = thread::Builder
@@ -219,14 +222,19 @@ impl IndexWorker {
     }
 
     #[timed(flushing)]
-    pub fn flush_wait(&self) -> io::Result<()> {
+    pub fn flush_wait(&self) -> io::Result<PendingAck> {
         let (ack, rx) = mpsc::channel();
 
         self.send(IndexCommand::Flush { ack: Some(ack) })?;
 
-        wait_for_acknowledgement(rx)
+       Ok(PendingAck(Mutex::new(rx)))
     }
-
+    //basically flush that does not need to be waited on 
+    pub fn flush_deferred(&self) -> io::Result<PendingAck> {
+    let (ack, rx) = mpsc::channel();
+    self.send(IndexCommand::Flush { ack: Some(ack) })?;
+    Ok(PendingAck(Mutex::new(rx)))
+}
     #[timed(modifying_documents)]
     pub fn delete_document_wait(&self, doc_id: DocId) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
@@ -330,7 +338,7 @@ fn run_index_worker(
     receiver: Receiver<IndexCommand>,
     published_stats: Arc<ArcSwap<IndexingStats>>
 ) -> io::Result<LsmIndex> {
-    let mut stats = IndexingStats::default();
+    let mut stats = (**published_stats.load()).clone();
     let mut docs_since_publish: u64 = 0;
     let mut last_publish = Instant::now();
     loop {
@@ -384,12 +392,13 @@ fn run_index_worker(
                 if ok {
                     stats.total_documents_deleted += 1;
                 }
-                send_acknowledgement(ack, outcome)?;
+                
                 if ok {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
                     last_publish = Instant::now();
                 }
+                send_acknowledgement(ack, outcome)?;
             }
             IndexCommand::AddSegment { segments, doc_count, ack } => {
                 let outcome = index.add_immutable_segment(segments);
@@ -398,7 +407,7 @@ fn run_index_worker(
                     stats.segments_written += 1;
                     stats.total_documents_indexed += doc_count;
                 }
-                send_acknowledgement(ack, outcome)?;
+               
                 if ok {
                     docs_since_publish += doc_count;
                     maybe_publish_on_threshold(
@@ -408,6 +417,7 @@ fn run_index_worker(
                         &mut last_publish
                     );
                 }
+                send_acknowledgement(ack, outcome)?;
             }
             IndexCommand::PlanCompaction { config, reply } => {
                 let result = index.plan_compaction(config);
@@ -439,13 +449,17 @@ fn run_index_worker(
             }
             IndexCommand::Flush { ack } => {
                 let outcome = index.flush();
-                let ok = outcome.is_ok();
-                send_acknowledgement(ack, outcome)?;
-                if ok {
+                if outcome.is_ok() {
+                    // Before acknowledging: a caller that waited for the flush must see the new
+                    // segments in searches and in the cached stats it reads next.
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
                     last_publish = Instant::now();
+                    stats.segment_count = index.segment_count();
+                    stats.memtable_term_count = index.memtable_term_count();
+                    published_stats.store(Arc::new(stats.clone()));
                 }
+                send_acknowledgement(ack, outcome)?;
             }
             IndexCommand::Shutdown => {
                 index.flush()?;

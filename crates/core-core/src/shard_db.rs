@@ -10,7 +10,7 @@ use core_protocol::{
     errors::{ CorelamoError, DocFailure, FailReason },
 };
 use core_timing::timed;
-use std::{ io, path::{ Path, PathBuf }, sync::Arc, time::{ Duration, Instant, SystemTime } };
+use std::{ collections::VecDeque, io, path::{ Path, PathBuf }, sync::Arc, time::{ Duration, Instant, SystemTime } };
 
 use crate::{
     background_worker::BackgroundWorker,
@@ -28,17 +28,9 @@ use core_storage::{
         DEFAULT_SEGMENT_SIZE,
         SegmentCompactionJob,
         save_maps,
-    },
-    document_store::StoredDocument,
-    search_database::{
-        DeleteReport,
-        DocumentInput,
-        IndexMode,
-        InsertReport,
-        ReplaceReport,
-        SearchDatabase,
-    },
-    wal::{ Wal, WalRecord, WalRecordRef },
+    }, document_store::StoredDocument, search_database::{
+        DeleteReport, DocumentInput, FlushTicket, IndexMode, InsertReport, ReplaceReport, SearchDatabase,
+    }, wal::{ SyncMode, Wal, WalRecord, WalRecordRef},
 };
 
 use crate::embed::EmbeddingJob;
@@ -61,15 +53,11 @@ pub struct DatabaseStats {
 pub(crate) const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
 pub struct ShardDb {
     shard_id: ShardId,
-    // Number of shards in the database; `shard_for(id, shard_count)` must return `shard_id`
-    // for every document stored here.
     shard_count: u16,
     root: PathBuf,
     policy: IndexPolicy,
     options: DatabaseOptions,
-    //each shard kip holds this yeye
     db: Option<SearchDatabase<BinaryDocumentStore>>,
-    //embedding/reindex/compaction
     background_worker: Option<BackgroundWorker>,
     models: Arc<ModelRegistry>,
     stats: ShardStatsHandle,
@@ -81,8 +69,16 @@ pub struct ShardDb {
     pending: u32,
     last_write: Instant,
     failed: bool,
+    /// Checkpoints started but not yet finished, oldest first. At most one is in flight.
+    pending_checkpoints: VecDeque<PendingCheckpoint>,
 }
-
+struct PendingCheckpoint{
+    through_segment:u64,
+    ticket:FlushTicket
+}
+ fn open_wal(root: &Path, mode: SyncMode) -> io::Result<Wal> {
+    Wal::open(root.join("wal"), mode)
+}
 impl ShardDb {
     pub fn shared_state(&self) -> Arc<SharedShardState> {
         self.shared.clone()
@@ -138,6 +134,7 @@ impl ShardDb {
             pending: 0,
             last_write: Instant::now(),
             failed: false,
+            pending_checkpoints:VecDeque::new()
         })
     }
 
@@ -195,6 +192,7 @@ impl ShardDb {
             backup,
             last_write: Instant::now(),
             failed: false,
+            pending_checkpoints:VecDeque::new()
         })
     }
 
@@ -204,8 +202,7 @@ impl ShardDb {
             return Ok(());
         }
         if self.failed {
-            let sync_mode = self.options.sync_mode;
-            self.wal = Wal::open(self.root.join("wal.log"), sync_mode).map_err(|e|
+           self.wal = open_wal(&self.root, self.options.sync_mode).map_err(|e|
                 CorelamoError::Internal(format!("failed to reopen WAL: {e}"))
             )?;
         }
@@ -231,22 +228,20 @@ impl ShardDb {
             self.shared.snapshot.clone()
         )?;
 
-        let checkpoint = self.wal
-            .read_checkpoint()
-            .map_err(|e| CorelamoError::Internal(format!("failed to read WAL checkpoint: {e}")))?;
+        self.pending_checkpoints.clear();
         let records = self.wal
-            .replay_from(checkpoint)
+            .replay_all()
             .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
+        let replayed_any = !records.is_empty();
 
         info!(self.log, "WAL recovery started";
-
             "shard_id" => self.shard_id,
-            "checkpoint" => checkpoint,
+            "wal_segment" => self.wal.current_segment(),
             "durable_offset" => self.wal.durable_offset(),
             "records_to_replay" => records.len(),
         );
 
-        for (_offset, payload) in records {
+        for payload in records {
             let (record, _): (WalRecord, usize) = bincode
                 ::decode_from_slice(&payload, bincode::config::standard())
                 .map_err(|e| {
@@ -337,7 +332,9 @@ impl ShardDb {
                 WalRecord::Clear => {}
             }
         }
-
+        if replayed_any{
+            self.pending=self.pending.max(1);
+        }
         self.db = Some(db);
         self.start_background();
         self.publish_stats();
@@ -385,7 +382,10 @@ impl ShardDb {
             worker.stop()?;
             info!(self.log, "background worker stopped"; "shard_id" => self.shard_id);
         }
-
+        if let Err(e) = self.wait_checkpoints() {
+            warn!(self.log, "checkpoint failed during stop; WAL kept for replay";
+                "shard_id" => self.shard_id, "error" => %e);
+        }
         if let Some(db) = self.db.take() {
             db.shutdown()?;
             info!(self.log, "shard stopped"; "shard_id" => self.shard_id);
@@ -400,9 +400,6 @@ impl ShardDb {
             self.wal
                 .reset()
                 .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
-            self.wal
-                .write_checkpoint(0)
-                .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
         }
         self.shared.release();
 
@@ -520,6 +517,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))
     }
 
+   
     fn ensure_running(&self) -> Result<(), CorelamoError> {
         if self.db.is_none() {
             return Err(
@@ -569,12 +567,9 @@ impl ShardDb {
             let report = db.put_documents_parallel(inputs, batch_size)?; // moved, never cloned
 
             if should_checkpoint {
-                self.flush_and_reset_wal()?;
+                self.start_checkpoint()?;
             }
 
-            // if let Err(e) = self.wal.write_checkpoint(self.wal.durable_offset()) {
-            //     warn!(self.log, "checkpoint write failed"; "error" => %e);
-            // }
 
             Ok(report)
         })();
@@ -724,7 +719,7 @@ impl ShardDb {
             }
         }
         if should_checkpoint {
-            self.flush_and_reset_wal()?;
+            self.start_checkpoint()?;
         }
         self.publish_stats();
         self.last_write = Instant::now();
@@ -805,59 +800,6 @@ impl ShardDb {
         );
         Ok(())
     }
-
-    #[timed(modifying_database_documents)]
-    // pub fn partial_replace(
-    //     &mut self,
-    //     items: Vec<(String, simd_json::Value)>,
-    //     user: String,
-    // ) -> Result<ReplaceReport, CorelamoError> {
-    //     let started = std::time::Instant::now();
-    //     let count = items.len();
-    //     let mut replaced: u32 = 0;
-    //     let mut failures: Vec<DocFailure> = Vec::new();
-
-    //     let db = self
-    //         .db_mut()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
-    //     for (external_id, patch) in items {
-    //         match db.partial_replace_document(&external_id, &patch) {
-    //             Ok(Some(_)) => {
-    //                 replaced += 1;
-    //             }
-    //             Ok(None) => {
-    //                 failures.push(DocFailure::new(
-    //                     None,
-    //                     Some(external_id),
-    //                     FailReason::NotFound,
-    //                 ));
-    //             }
-    //             Err(e) => {
-    //                 failures.push(DocFailure::new(
-    //                     None,
-    //                     Some(external_id),
-    //                     FailReason::Internal(e.to_string()),
-    //                 ));
-    //             }
-    //         }
-    //     }
-
-    //     db.flush()
-    //         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
-    //     let elapsed = started.elapsed();
-    //     info!(self.log, "partial replace batch";
-    //         "user" => user.clone(),
-    //         "shard_id" => %self.shard_id,
-    //         "requested" => count,
-    //         "replaced" => replaced,
-    //         "failed" => failures.len(),
-    //         "elapsed_ms" => elapsed.as_millis(),
-    //     );
-
-    //     Ok(ReplaceReport { replaced, failures })
-    // }
     #[timed(modifying_database_documents)]
     pub fn replace(
         &mut self,
@@ -925,7 +867,7 @@ impl ShardDb {
             }
         }
         if should_checkpoint {
-            self.flush_and_reset_wal()?;
+            self.start_checkpoint()?;
         }
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
@@ -1003,7 +945,7 @@ impl ShardDb {
             }
         }
         if should_checkpoint {
-            self.flush_and_reset_wal()?;
+            self.start_checkpoint()?;
         }
         let elapsed = started.elapsed();
         info!(self.log, "upsert batch";
@@ -1018,12 +960,14 @@ impl ShardDb {
         Ok(InsertReport { inserted, failures })
     }
 
-    #[timed(flushing)]
+       /// Explicit flush: everything written so far goes to segments, and the WAL segments that
+    /// held it are deleted. Returns once all of it is on disk.
     pub fn flush(&mut self) -> Result<(), CorelamoError> {
-        self.db_mut()
-            .map_err(|e| CorelamoError::Internal(e.to_string()))?
-            .flush()
-            .map_err(|e| CorelamoError::Internal(e.to_string()))
+        self.ensure_running()?;
+        self.start_checkpoint()?;
+        self.wait_checkpoints()?;
+        self.last_write = Instant::now();
+        Ok(())
     }
 
     pub fn progress(&self) -> Arc<ReindexProgress> {
@@ -1085,7 +1029,7 @@ impl ShardDb {
                 "shard_id" => self.shard_id, "error" => %e),
             }
         }
-
+        self.pending_checkpoints.clear();
         if let Some(db) = self.db.take() {
             if let Err(e) = db.shutdown() {
                 warn!(self.log, "clear: shutdown of old database failed";
@@ -1112,11 +1056,10 @@ impl ShardDb {
         }
 
         // outright WAL reset
-        self.wal.reset().map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+       
         self.wal
-            .write_checkpoint(0)
-            .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))?;
-
+                .reset()
+                .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
         if !was_running {
             self.shared.release();
             info!(self.log, "shard cleared while stopped; not reopening"; "shard_id" => self.shard_id);
@@ -1193,15 +1136,10 @@ impl ShardDb {
         shard_backup_path: &PathBuf,
         backup_id: &String
     ) -> Result<BackupManifest, CorelamoError> {
-        let checkpoint = self.wal
-            .read_checkpoint()
-            .map_err(|e| CorelamoError::Internal(format!("failed to read WAL checkpoint: {e}")))?;
-
-        let record_count = self.wal
-            .replay_from(checkpoint)
+         let record_count = self.wal
+            .replay_all()
             .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?
             .len();
-
         let progress = self.stats.backup_progress().clone();
         self.backup
             .create_full_backup(
@@ -1295,51 +1233,104 @@ impl ShardDb {
         Ok(())
     }
 
-    //full flush of everything + WAL reset
-    fn flush_and_reset_wal(&mut self) -> Result<(), CorelamoError> {
+
+
+
+
+    ////NEW WAL 
+       /// Starts a checkpoint without waiting for it. New writes go to a fresh WAL segment from
+    /// here on; the older segments are deleted once the store and the index hold everything
+    /// in them. Waits only while the previous checkpoint is still running.
+    fn start_checkpoint(&mut self) -> Result<(), CorelamoError> {
+        self.wait_checkpoints()?;
         let result = (|| {
-            self
+            // Rotate first: every record before this point is in `through_segment` or older,
+            // and every document of those records was already sent for indexing.
+            let through_segment = self.wal
+                .rotate()
+                .map_err(|e| CorelamoError::Internal(format!("wal rotate failed: {e}")))?;
+            let ticket = self
                 .db_mut()
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?
-                .flush()
+                .start_flush()
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            self.wal
-                .reset()
-                .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
-            self.wal
-                .write_checkpoint(0)
-                .map_err(|e| CorelamoError::Internal(format!("checkpoint write failed: {e}")))
+            Ok(PendingCheckpoint { through_segment, ticket })
         })();
         match result {
-            Ok(()) => {
+            Ok(checkpoint) => {
+                self.pending_checkpoints.push_back(checkpoint);
                 self.pending = 0;
                 Ok(())
             }
             Err(e) => {
                 self.failed = true;
-                Err(e)
-            } // WAL stays intact; restart replays it
+                Err(e) // WAL stays intact; restart replays it
+            }
         }
     }
 
-    //flushes when there have been no writes for the given time (2s now)
-    pub fn maybe_idle_flush(&mut self) -> Result<(), CorelamoError> {
-        //
-        if self.last_write.elapsed() < IDLE_FLUSH_AFTER {
-            return Ok(());
+    /// Finishes the checkpoints whose flush is done, without waiting.
+    fn reap_checkpoints(&mut self) -> Result<(), CorelamoError> {
+        while let Some(checkpoint) = self.pending_checkpoints.front_mut() {
+            let Some(result) = checkpoint.ticket.try_complete() else {
+                return Ok(());
+            };
+            let through_segment = checkpoint.through_segment;
+            self.pending_checkpoints.pop_front();
+            self.finish_checkpoint(through_segment, result)?;
         }
-
-        let db = self.db_ref()?;
-        let stats = db.index_stats().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        if stats.memtable_term_count == 0 {
-            return Ok(()); //nothing in memory
-        }
-
-        self.flush_and_reset_wal()?;
-        self.last_write = Instant::now();
-        self.publish_stats();
         Ok(())
     }
+
+    /// Waits for every pending checkpoint and finishes it.
+    fn wait_checkpoints(&mut self) -> Result<(), CorelamoError> {
+        while let Some(checkpoint) = self.pending_checkpoints.pop_front() {
+            let result = checkpoint.ticket.wait();
+            self.finish_checkpoint(checkpoint.through_segment, result)?;
+        }
+        Ok(())
+    }
+
+    /// On success the covered WAL segments are deleted and the new segments show up in
+    /// status. On failure the shard stops taking writes and keeps every segment.
+    fn finish_checkpoint(
+        &mut self,
+        through_segment: u64,
+        result: io::Result<()>
+    ) -> Result<(), CorelamoError> {
+        let outcome = result
+            .map_err(|e| CorelamoError::Internal(format!("checkpoint flush failed: {e}")))
+            .and_then(|()| {
+                self.wal
+                    .remove_through(through_segment)
+                    .map_err(|e| CorelamoError::Internal(format!("wal cleanup failed: {e}")))
+            });
+        match &outcome {
+            Ok(()) => self.publish_stats(),
+            Err(_) => {
+                self.failed = true;
+                // Later checkpoints depend on this one's segments; they are replayed instead.
+                self.pending_checkpoints.clear();
+            }
+        }
+        outcome
+    }
+
+    /// Runs about every second while the shard is idle: finishes checkpoints that completed in
+    /// the meantime, and checkpoints anything written since the last one once the shard has
+    /// been quiet for `IDLE_FLUSH_AFTER`, whatever `indexing_batch_size` is.
+    pub fn maybe_idle_flush(&mut self) -> Result<(), CorelamoError> {
+        self.reap_checkpoints()?;
+        if self.pending == 0
+            || !self.pending_checkpoints.is_empty()
+            || self.last_write.elapsed() < IDLE_FLUSH_AFTER
+        {
+            return Ok(());
+        }
+        self.start_checkpoint()?;
+        self.last_write = Instant::now();
+        Ok(())
+    } 
     /// Starts compaction and embedding for the live index, replacing any running worker.
     fn start_background(&mut self) {
         if let Some(worker) = self.background_worker.take() {

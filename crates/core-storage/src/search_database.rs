@@ -43,30 +43,50 @@ pub enum IndexMode {
     StoreAndIndex,
 }
 
-// For the ability to create many windows and many batches
-// instead of simply indexing everything at once
-// and dumping everything at once we create a pipeline
-//
-// 1. Collects batch_size amount of docs
-// 2. writes them to the document store
-// 3. queues the indexed batch
-// 4. after window_size batches are enough, build_segments_parallel and publishes them
-// 5. releases the memory and repeats (SHOULD FIX THE PROBLEM OF 250GB imports)
+/// A flush started with `SearchDatabase::start_flush`: the index batches sent before it,
+/// then the index flush itself, in the order the index worker finishes them.
+#[must_use = "a flush ticket must be completed or waited on to know the flush succeeded"]
+pub struct FlushTicket {
+    acks: VecDeque<PendingAck>,
+}
+
+impl FlushTicket {
+    /// Non-blocking. `None` while the worker is still busy; `Some(Ok(()))` once every batch
+    /// and the flush are on disk; `Some(Err(_))` with the first failure.
+    pub fn try_complete(&mut self) -> Option<io::Result<()>> {
+        while let Some(front) = self.acks.front_mut() {
+            match front.try_take()? {
+                Ok(()) => {
+                    self.acks.pop_front();
+                }
+                Err(e) => {
+                    return Some(Err(e));
+                }
+            }
+        }
+        Some(Ok(()))
+    }
+
+    /// Waits until everything is on disk, or returns the first failure.
+    pub fn wait(self) -> io::Result<()> {
+        for ack in self.acks {
+            ack.wait()?;
+        }
+        Ok(())
+    }
+}
 pub struct IndexPipeline<'a, S: DocumentStore> {
     // Database that we import into
     db: &'a mut SearchDatabase<S>,
-
     // Number of docs per ImmutableSegment
     batch_size: usize,
     // Number of completed batches before building segments in
     // parallel
     //window_size: usize,
-
     // The documents that are waiting to be written to document store
     current_store_batch: Vec<StoredDocument>,
     // The current batch waiting to be written to the index segment
-    current_batch: Vec<AnalyzedDocument>,
-
+    current_batch: Vec<IndexedDocument>,
     //completed batches that are waiting to be indexed together
     // pending_batches: Vec<Vec<IndexedDocument>>,
     inserted: u32,
@@ -148,10 +168,12 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
     /// Collects the results of batches the worker has finished, oldest first, without waiting.
     /// An indexing error from an earlier batch is returned here.
-    fn  error_return(&mut self) -> io::Result<()> {
+    fn error_return(&mut self) -> io::Result<()> {
         while let Some(pending) = self.index_in_flight.front_mut() {
             match pending.try_take() {
-                None => break,
+                None => {
+                    break;
+                }
                 Some(result) => {
                     self.index_in_flight.pop_front();
                     result?;
@@ -162,7 +184,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
     /// True when no batch is in flight. Collects the finished batch's result,
     /// so an indexing error surfaces here.
-     fn index_idle(&mut self) -> io::Result<bool> {
+    fn index_idle(&mut self) -> io::Result<bool> {
         self.error_return()?;
         Ok(self.index_in_flight.is_empty())
     }
@@ -236,7 +258,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             shard_id,
             next_local_id,
             array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
-            index_in_flight: VecDeque::new()
+            index_in_flight: VecDeque::new(),
         })
     }
 
@@ -276,8 +298,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &self.policy,
                 &mut self.array_row_allocator
             );
-           self.index_worker
-    .add_indexed_document_wait(indexed.analyze(&self.analyzer))?;
+            self.index_worker.add_indexed_document_wait(indexed.analyze(&self.analyzer))?;
         }
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -365,8 +386,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &self.policy,
                 &mut self.array_row_allocator
             );
-            self.index_worker
-    .add_indexed_document_wait(indexed.analyze(&self.analyzer))?;
+            self.index_worker.add_indexed_document_wait(indexed.analyze(&self.analyzer))?;
         }
 
         let doc = StoredDocument {
@@ -419,11 +439,23 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     #[timed(flushing)]
-    pub fn flush(&mut self) -> io::Result<()> {
+    pub fn start_flush(&mut self) -> io::Result<FlushTicket> {
         // Store first: a durable index segment must never reference undurable sources.
-        self.wait_index_in_flight()?;
         self.store.sync()?;
-        self.index_worker.flush_wait()
+        let mut acks = std::mem::take(&mut self.index_in_flight);
+        match self.index_worker.flush_deferred() {
+            Ok(flush) => acks.push_back(flush),
+            Err(e) => {
+                self.index_in_flight = acks;
+                return Err(e);
+            }
+        }
+        Ok(FlushTicket { acks })
+    }
+
+    /// Flushes the store and the index and waits until both are on disk.
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.start_flush()?.wait()
     }
 
     pub fn index_stats_cached(&self) -> IndexingStats {
@@ -515,34 +547,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 }
 
-#[timed(reindex)]
-fn publish_window(
-    worker: &IndexWorker,
-    analyzer: &Analyzer,
-    pending: &mut Vec<Vec<IndexedDocument>>,
-    progress: &ReindexProgress
-) -> io::Result<()> {
-    if pending.is_empty() {
-        return Ok(());
-    }
-    if progress.is_cancelled() {
-        return Err(io::Error::other("reindex cancelled"));
-    }
-
-    let counts: Vec<u64> = pending
-        .iter()
-        .map(|b| b.len() as u64)
-        .collect();
-    let total: u64 = counts.iter().sum();
-    let batches = std::mem::take(pending);
-    let segments = build_segments_parallel(analyzer.clone(), batches);
-
-    worker.add_segment_wait(segments, total)?;
-    progress.add(total);
-
-    Ok(())
-}
-
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
@@ -568,9 +572,8 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
             source: Arc::from(input.source),
             format: input.format,
         };
-        let analyzed = indexed.analyze(&self.db.analyzer);
         self.current_store_batch.push(stored);
-        self.current_batch.push(analyzed);
+        self.current_batch.push(indexed);
         self.inserted += 1;
 
         let len = self.current_batch.len();
@@ -640,15 +643,55 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         let stored = std::mem::take(&mut self.current_store_batch);
         self.db.store.put_batch(stored)?;
         self.db.error_return()?;
-        let docs = std::mem::take(&mut self.current_batch);
+
+        let indexed = std::mem::take(&mut self.current_batch);
+        let docs = analyze_batch(&self.db.analyzer, &indexed);
         let pending = self.db.index_worker.add_indexed_documents_deferred(docs)?;
         self.db.index_in_flight.push_back(pending);
 
         self.current_store_batch = Vec::with_capacity(self.batch_size);
         self.current_batch = Vec::with_capacity(self.batch_size);
-
         Ok(())
     }
+    
+}
+
+
+    /// Tokenizes a batch, in parallel on rayon's pool for larger batches. The output keeps the
+    /// input order, so it lines up with the store batch.
+    #[timed(indexing_documents)]
+    fn analyze_batch(analyzer: &Analyzer, docs: &[IndexedDocument]) -> Vec<AnalyzedDocument> {
+        use rayon::prelude::*;
+        docs.par_iter()
+            .map(|doc| doc.analyze(analyzer))
+            .collect()
+    }
+#[timed(reindex)]
+fn publish_window(
+    worker: &IndexWorker,
+    analyzer: &Analyzer,
+    pending: &mut Vec<Vec<IndexedDocument>>,
+    progress: &ReindexProgress
+) -> io::Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    if progress.is_cancelled() {
+        return Err(io::Error::other("reindex cancelled"));
+    }
+
+    let counts: Vec<u64> = pending
+        .iter()
+        .map(|b| b.len() as u64)
+        .collect();
+    let total: u64 = counts.iter().sum();
+    let batches = std::mem::take(pending);
+    let segments = build_segments_parallel(analyzer.clone(), batches);
+
+    worker.add_segment_wait(segments, total)?;
+    progress.add(total);
+
+    Ok(())
 }
 
 #[timed(database_lifecycle)]

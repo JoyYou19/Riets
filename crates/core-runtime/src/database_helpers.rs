@@ -257,12 +257,10 @@ pub(crate) fn compute_disk_usage(
         documents_total += doc_size;
         documents_per_shard.insert(shard_name.clone(), json!(format_size(doc_size)));
 
-        let wal_log = file_size_opt(&shard_root.join("wal.log"))?.unwrap_or(0);
-        let wal_checkpoint = file_size_opt(&shard_root.join("wal.checkpoint"))?.unwrap_or(0);
-        let wal_shard_total = wal_log + wal_checkpoint;
+       
+                let wal_shard_total = dir_total_size_opt(&shard_root.join("wal"))?.unwrap_or(0);
         wal_total += wal_shard_total;
         wal_per_shard.insert(shard_name.clone(), json!(format_size(wal_shard_total)));
-
         let logs_size = dir_total_size_opt(&shard_root.join("logs"))?.unwrap_or(0);
         logs_total += logs_size;
         logs_per_shard.insert(shard_name.clone(), json!(format_size(logs_size)));
