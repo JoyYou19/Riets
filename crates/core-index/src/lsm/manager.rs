@@ -409,9 +409,7 @@ impl LsmIndex {
         if self.generations.is_empty() {
             return Ok(());
         }
-        if self.generations.is_empty() {
-            return Ok(());
-        }
+        
 
         // Oldest first: index 0 holds the lowest doc ids.
         let mut generations = std::mem::take(&mut self.generations).into_iter();

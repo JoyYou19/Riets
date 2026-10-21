@@ -279,6 +279,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             format: input.format,
         };
         self.store.put(doc)?;
+        self.store.sync()?;
         Ok(())
     }
 
@@ -423,6 +424,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     #[timed(database_lifecycle)]
     pub fn shutdown(mut self) -> io::Result<LsmIndex> {
         self.wait_index_in_flight()?;
+        self.store.sync()?;
         self.index_worker.shutdown()
     }
 
@@ -536,7 +538,7 @@ fn publish_window(
 impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
     #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
-        let internal_id = self.db.allocate_internal_id()?;
+        
         let external_id = input.external_id;
 
         if self.external_id_exists(&external_id)? {
@@ -545,7 +547,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
             );
             return Ok(());
         }
-
+        let internal_id = self.db.allocate_internal_id()?;
         self.seen.insert(external_id.clone());
         let indexed = index_document(
             internal_id,

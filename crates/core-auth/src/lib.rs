@@ -59,6 +59,7 @@ impl AuthService {
             .map_err(|e| {
                 CorelamoError::Internal(format!("failed to create user '{username}': {e}"))
             })?;
+        
         Ok(())
     }
     pub fn delete_user(
