@@ -287,16 +287,16 @@ impl MemIndex {
         positions: Vec<u32>,
         weight: u16,
     ) {
-        self.estimated_bytes += std::mem::size_of::<DocId>()
-            + std::mem::size_of::<u16>()
-            + positions.len() * std::mem::size_of::<u32>();
+        self.estimated_bytes += size_of::<DocId>()
+            + size_of::<u16>()
+            + positions.len() * size_of::<u32>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
-            std::collections::hash_map::Entry::Occupied(mut slot) => {
+            Entry::Occupied(mut slot) => {
                 slot.get_mut().insert_posting(doc_id, positions, weight);
             }
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
+            Entry::Vacant(slot) => {
+                self.estimated_bytes += slot.key().term.len() + size_of::<TermKey>();
                 slot.insert(PostingList::new())
                     .insert_posting(doc_id, positions, weight);
             }
@@ -507,10 +507,10 @@ impl MemIndex {
 
         for (key, list) in newer.terms {
             match self.terms.entry(key) {
-                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                Entry::Occupied(mut slot) => {
                     slot.get_mut().append(list);
                 }
-                std::collections::hash_map::Entry::Vacant(slot) => {
+                Entry::Vacant(slot) => {
                     slot.insert(list);
                 }
             }

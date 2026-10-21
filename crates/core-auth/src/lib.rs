@@ -71,8 +71,7 @@ impl AuthService {
             Ok(())
         } else {
             Err(CorelamoError::NotFound(format!(
-                "user '{}' not found",
-                username
+                "user '{username}' not found"
             )))
         }
     }
@@ -90,8 +89,7 @@ impl AuthService {
             Ok(())
         } else {
             Err(CorelamoError::NotFound(format!(
-                "user '{}' not found",
-                username
+                "user '{username}' not found"
             )))
         }
     }
@@ -106,8 +104,7 @@ impl AuthService {
             Ok(())
         } else {
             Err(CorelamoError::NotFound(format!(
-                "user '{}'not found ",
-                username
+                "user '{username}'not found "
             )))
         }
     }

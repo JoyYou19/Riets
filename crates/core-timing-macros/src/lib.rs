@@ -100,10 +100,8 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_name = sig.ident.to_string();
 
     let category = args
-        .category
-        .map(|ident| ident.to_string())
-        .unwrap_or_else(|| "uncategorized".to_string());
-    let label = args.label.map(|lit| lit.value()).unwrap_or(fn_name);
+        .category.map_or_else(|| "uncategorized".to_string(), |ident| ident.to_string());
+    let label = args.label.map_or(fn_name, |lit| lit.value());
 
     let ret_ty = match &sig.output {
         ReturnType::Default => quote_spanned! { span => () },

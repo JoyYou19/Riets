@@ -60,7 +60,7 @@ impl fmt::Display for Device {
 
 /// True when an NVIDIA kernel driver is loaded. Only then is CUDA worth trying, and only then
 /// is the GPU build of ONNX Runtime worth downloading.
-pub fn nvidia_driver_present() -> bool {
+pub(crate) fn nvidia_driver_present() -> bool {
     cfg!(all(target_os = "linux", target_arch = "x86_64"))
         && Path::new("/proc/driver/nvidia/version").is_file()
 }

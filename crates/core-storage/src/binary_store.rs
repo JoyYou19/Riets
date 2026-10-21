@@ -189,7 +189,7 @@ impl BinaryDocumentStore {
     pub fn current_segment_path(&self) -> PathBuf {
         let id = self
             .current_segment
-            .load(std::sync::atomic::Ordering::Relaxed);
+            .load(Ordering::Relaxed);
         self.path.join(Self::segment_filename(id))
     }
 

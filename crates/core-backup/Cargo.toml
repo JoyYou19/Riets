@@ -24,3 +24,5 @@ tokio.workspace = true
 simd-json = "0.18.1"
 [features]
 timing = ["core-timing/timing", "core-storage/timing"]
+[lints]
+workspace = true

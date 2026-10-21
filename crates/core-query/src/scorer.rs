@@ -17,7 +17,7 @@ const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
 const SCORE_SCALE: f32 = 1000.0;
 
-pub fn bm25_score(
+pub(crate) fn bm25_score(
     tf: u32,
     weight: u16,
     doc_len: u32,
@@ -45,7 +45,7 @@ pub fn bm25_score(
 
 // I just put this function here so we automatically multiply, I can already see ways of me messing
 // this up in the future
-pub fn bm25_score_scaled(
+pub(crate) fn bm25_score_scaled(
     tf: u32,
     weight: u16,
     doc_len: u32,
@@ -60,7 +60,7 @@ pub fn bm25_score_scaled(
 // took this code from our generative friend, and honestly, I have no clue how it measures
 // anything, but if this is what they use in ElasticSearch then we use it as well. At least for
 // now.
-pub fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
+pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
     if doc_count == 0 || doc_frequency == 0 || max_weight == 0 {
         return 0;
     }
@@ -82,7 +82,7 @@ pub fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> 
 // }
 
 #[timed(search)]
-pub fn score_term_into<S: SearchStats>(
+pub(crate) fn score_term_into<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
     xpath: XPathId,
@@ -119,6 +119,6 @@ pub fn score_term_into<S: SearchStats>(
     }
 }
 
-pub fn fuzzy_decay(edits: u8) -> f32 {
+pub(crate) fn fuzzy_decay(edits: u8) -> f32 {
     1.0 / (1.0 + edits as f32)
 }

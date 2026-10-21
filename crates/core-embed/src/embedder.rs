@@ -127,14 +127,11 @@ impl Embedder {
                 "query is empty",
             ));
         }
-        let queries = match self.queries.get() {
-            Some(model) => model,
-            None => {
-                let model = load_model(self.spec, self.cache_dir.clone(), &self.config)?;
-                // Two concurrent first queries may both load; the loser's copy is dropped.
-                let _ = self.queries.set(Mutex::new(model));
-                self.queries.get().expect("set above")
-            }
+        let queries = if let Some(model) = self.queries.get() { model } else {
+            let model = load_model(self.spec, self.cache_dir.clone(), &self.config)?;
+            // Two concurrent first queries may both load; the loser's copy is dropped.
+            let _ = self.queries.set(Mutex::new(model));
+            self.queries.get().expect("set above")
         };
         let mut model = queries
             .lock()

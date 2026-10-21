@@ -61,7 +61,7 @@ pub struct DatabaseStats {
     pub restoring: bool,
 }
 //has it been quiet long enough to flush
-pub const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
+pub(crate) const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
 pub struct ShardDb {
     shard_id: ShardId,
     // Number of shards in the database; `shard_for(id, shard_count)` must return `shard_id`
@@ -536,7 +536,7 @@ impl ShardDb {
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
         self.ensure_running()?;
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let count = inputs.len();
         let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
         core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
@@ -668,7 +668,7 @@ impl ShardDb {
         user: String,
     ) -> Result<DeleteReport, CorelamoError> {
         self.ensure_running()?;
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let count = ids.len();
 
         self.pending += count as u32;
@@ -878,7 +878,7 @@ impl ShardDb {
         user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
         self.ensure_running()?;
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let count = inputs.len();
 
         self.pending += count as u32;
@@ -970,7 +970,7 @@ impl ShardDb {
         user: String,
     ) -> Result<InsertReport, CorelamoError> {
         self.ensure_running()?;
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let count = inputs.len();
 
         self.pending += count as u32;

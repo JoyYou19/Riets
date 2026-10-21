@@ -24,18 +24,18 @@ pub struct ResolvedSort {
     pub fields: Arc<Vec<SortField>>,
 }
 
-fn cmp_desc(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
+fn cmp_desc(a: Option<f64>, b: Option<f64>) -> Ordering {
     match (a, b) {
-        (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(Ordering::Equal),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
 }
 
-fn cmp_asc(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
+fn cmp_asc(a: Option<f64>, b: Option<f64>) -> Ordering {
     match (a, b) {
-        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
@@ -50,25 +50,6 @@ fn apply_modifier(v: f64, m: SortModifier) -> f64 {
     }
 }
 
-//chatin paldies par komentaru
-/// Blend sort: combine relevance and any number of sort fields into one
-/// 0..100 score, then rank by it.
-///
-/// Each sort field's value is min-max normalized to [0, 1] using the bounds
-/// gathered across all shards, then multiplied by that field's `ratio`.
-/// Relevance is normalized to [0, 1] (relative to the highest score on this
-/// page) and multiplied by whatever weight is left over:
-///
-///     score = relevance_norm * (100 - Σ ratios)  +  Σ (field_norm_i * ratio_i)
-///
-/// So `ratio` is literally "how many of the 100 points this field controls":
-///   ratio 0   → 100 points relevance, 0 points field  (pure relevance)
-///   ratio 100 →   0 points relevance, 100 points field (pure field sort)
-///   ratio 40  →  60 points relevance, 40 points field  (field "nudges" but
-///                 never overrides relevance)
-///
-/// The result stays in 0..100 as long as ratios sum to at most 100, which
-/// `resolve_sorts` enforces.
 fn fold_min(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x.min(y)),
@@ -181,7 +162,7 @@ pub fn order_blended(
     order.sort_unstable_by(|&a, &b| {
         blends[b]
             .partial_cmp(&blends[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(Ordering::Equal)
             .then_with(|| items[a].0.doc_id.cmp(&items[b].0.doc_id))
     });
 
@@ -280,14 +261,14 @@ pub fn order_strict(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[Sor
                 SortOrderRequest::Desc => cmp_desc(av, bv),
                 SortOrderRequest::Asc => cmp_asc(av, bv),
             };
-            if cmp != std::cmp::Ordering::Equal {
+            if cmp != Ordering::Equal {
                 return cmp;
             }
         }
         // relevance tiebreak
         b.score
             .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(Ordering::Equal)
             .then_with(|| a.doc_id.cmp(&b.doc_id))
     });
 }

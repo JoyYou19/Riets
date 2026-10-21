@@ -227,7 +227,7 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
 // We need to search this segment for sure
 impl SearchIndex for DiskSegment {
     #[timed(search)]
-    fn lookup(&self, term: &str, xpath: crate::types::XPathId) -> PostingList {
+    fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         match self.dictionary.get(xpath, term) {
             Some(meta) => self.read_postings(meta),
             None => PostingList::default(),
@@ -308,7 +308,7 @@ impl SearchIndex for DiskSegment {
     }
 
     #[timed(search)]
-    fn lookup_prefix(&self, prefix: &str, xpath: crate::types::XPathId) -> PostingList {
+    fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let Some(dict) = self.dictionary.field(xpath) else {
             return PostingList::default();
         };
@@ -331,7 +331,7 @@ impl SearchIndex for DiskSegment {
     fn lookup_wildcard(
         &self,
         pattern: &crate::wildcard::WildcardPattern,
-        xpath: crate::types::XPathId,
+        xpath: XPathId,
     ) -> PostingList {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);

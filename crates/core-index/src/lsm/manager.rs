@@ -784,6 +784,6 @@ impl LsmIndex {
 }
 
 #[timed(flushing)]
-fn drop_flushed_segment(segment: Arc<crate::segment::ImmutableSegment>) {
+fn drop_flushed_segment(segment: Arc<ImmutableSegment>) {
     drop(segment);
 }

@@ -137,7 +137,7 @@ fn fetch_model_files(model: &EmbeddingModel, cache_dir: &Path) -> io::Result<Mod
 
 /// CPU threads for one model copy when it runs on the CPU: the cores split between copies.
 fn cpu_threads_per_instance(instances: usize) -> usize {
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     (cores / instances.max(1)).max(1)
 }
 

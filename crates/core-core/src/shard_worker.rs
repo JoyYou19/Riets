@@ -481,7 +481,7 @@ impl ShardHandle {
         }
 
         let mut files: Vec<PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(&logs_dir)? {
+        for entry in fs::read_dir(&logs_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|e| e == "log") {
@@ -502,7 +502,7 @@ impl ShardHandle {
 
         let mut output = String::new();
         for file_path in files {
-            let content = std::fs::read_to_string(&file_path)?;
+            let content = fs::read_to_string(&file_path)?;
             output.push_str(&content);
             if !content.ends_with('\n') {
                 output.push('\n');
@@ -516,11 +516,11 @@ impl ShardHandle {
         if !logs_dir.exists() {
             return Ok(());
         }
-        for entry in std::fs::read_dir(&logs_dir)? {
+        for entry in fs::read_dir(&logs_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|e| e == "log") {
-                std::fs::remove_file(&path)?;
+                fs::remove_file(&path)?;
             }
         }
         Ok(())

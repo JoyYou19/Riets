@@ -24,7 +24,7 @@ pub(super) fn hidden_state_output(outputs: &[Outlet], dims: usize) -> ort::Resul
         matches!(
             output.dtype(),
             ValueType::Tensor { ty: TensorElementType::Float32, shape, .. }
-                if shape.len() == 3 && shape[2] == dims as i64
+                if shape.len() == 3 && shape[2] == super::onnx_dim(dims)
         )
     };
     if let Some(output) = outputs
@@ -77,7 +77,7 @@ pub(super) fn pooling_model(
         OUTPUT,
         ValueType::Tensor {
             ty: TensorElementType::Float32,
-            shape: Shape::new([-1, dims as i64]),
+            shape: Shape::new([-1, super::onnx_dim(dims)]),
             dimension_symbols: SymbolicDimensions::new(["batch_size".to_owned(), String::new()]),
         },
     )])?;
@@ -174,13 +174,13 @@ pub(super) fn pooling_model(
 
 /// Initializers must be allocated by ONNX Runtime, which takes ownership of them.
 fn i64_initializer(values: &[i64]) -> ort::Result<Tensor<i64>> {
-    let mut tensor = Tensor::<i64>::new(&Allocator::default(), [values.len() as i64])?;
+    let mut tensor = Tensor::<i64>::new(&Allocator::default(), [super::onnx_dim(values.len())])?;
     tensor.extract_tensor_mut().1.copy_from_slice(values);
     Ok(tensor)
 }
 
 fn f32_initializer(values: &[f32]) -> ort::Result<Tensor<f32>> {
-    let mut tensor = Tensor::<f32>::new(&Allocator::default(), [values.len() as i64])?;
+    let mut tensor = Tensor::<f32>::new(&Allocator::default(), [super::onnx_dim(values.len())])?;
     tensor.extract_tensor_mut().1.copy_from_slice(values);
     Ok(tensor)
 }

@@ -41,7 +41,7 @@ pub struct BackupManager {
 }
 #[derive(Debug)]
 pub enum BackupError {
-    IoError(std::io::Error),
+    IoError(io::Error),
     SerdeError(simd_json::Error),
     BincodeError(String),
     WalError(String),
@@ -74,8 +74,8 @@ impl<'a, W: Write> Write for ProgressWriter<'a, W> {
         self.inner.flush()
     }
 }
-impl From<std::io::Error> for BackupError {
-    fn from(error: std::io::Error) -> Self {
+impl From<io::Error> for BackupError {
+    fn from(error: io::Error) -> Self {
         BackupError::IoError(error)
     }
 }
@@ -613,7 +613,7 @@ impl BackupManager {
 
         for backup in self.list_backups()? {
             if backup.created_at < cutoff_ms {
-                std::fs::remove_dir_all(self.shard_backup_path(&backup.backup_id))?;
+                fs::remove_dir_all(self.shard_backup_path(&backup.backup_id))?;
             }
         }
         Ok(())
@@ -621,13 +621,13 @@ impl BackupManager {
 
     #[timed(backup)]
     pub fn delete_backup(&self, backup_id: &str) -> Result<(), BackupError> {
-        std::fs::remove_dir_all(self.shard_backup_path(backup_id))?;
+        fs::remove_dir_all(self.shard_backup_path(backup_id))?;
         Ok(())
     }
 }
 
 #[timed(writing_files)]
-fn copy_with_progress<R: io::Read, W: io::Write>(
+fn copy_with_progress<R: Read, W: Write>(
     mut reader: R,
     mut writer: W,
     progress: &BackupProgress,
@@ -698,39 +698,6 @@ pub fn compress_file(src: &Path, dst: &Path, progress: &BackupProgress) -> io::R
     Ok(())
 }
 
-#[timed(restore)]
-fn parse_wal_records(bytes: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, BackupError> {
-    let mut records = Vec::new();
-    let mut cursor = 0usize;
-
-    while cursor < bytes.len() {
-        if cursor + 12 > bytes.len() {
-            return Err(BackupError::CorruptRecord(
-                "truncated record header".to_string(),
-            ));
-        }
-
-        let offset = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
-        cursor += 8;
-        let len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
-        cursor += 4;
-
-        if cursor + len > bytes.len() {
-            return Err(BackupError::CorruptRecord(format!(
-                "record at offset {} claims {} bytes but only {} remain",
-                offset,
-                len,
-                bytes.len() - cursor
-            )));
-        }
-
-        let payload = bytes[cursor..cursor + len].to_vec();
-        cursor += len;
-        records.push((offset, payload));
-    }
-
-    Ok(records)
-}
 #[timed(writing_files)]
 fn write_manifest_atomic(backup_path: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
     let tmp = backup_path.join("manifest.json.tmp");

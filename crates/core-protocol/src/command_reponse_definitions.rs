@@ -528,7 +528,7 @@ impl ResponseData for LoginResponse {
 #[serde(deny_unknown_fields)]
 pub struct PartialReplaceItem {
     pub id: String,
-    pub patch: simd_json::OwnedValue,
+    pub patch: OwnedValue,
 }
 
 #[derive(Debug, Deserialize)]

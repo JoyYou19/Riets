@@ -39,3 +39,5 @@ timing = [
   "core-storage/timing",
   "core-backup/timing",
 ]
+[lints]
+workspace = true

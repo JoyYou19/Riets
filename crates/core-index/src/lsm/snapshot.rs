@@ -380,7 +380,7 @@ impl IndexSnapshot {
         xpath: XPathId,
         query: &[f32],
         k: usize,
-        allowed: Option<&ahash::HashSet<DocId>>,
+        allowed: Option<&HashSet<DocId>>,
     ) -> std::io::Result<Vec<VectorHit>> {
         let filter = VectorFilter::new(&self.deleted, allowed);
         search_segments(&self.vectors, xpath, query, k, &filter)

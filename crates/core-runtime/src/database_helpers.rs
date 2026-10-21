@@ -11,7 +11,7 @@ use simd_json::{OwnedValue, StaticNode, json, owned::Object};
 use slog::{error, info};
 
 #[timed(database_lifecycle)]
-pub fn load_saved_shard_managers(
+pub(crate) fn load_saved_shard_managers(
     databases_dir: &Path,
 ) -> io::Result<HashMap<String, ShardManager>> {
     let mut databases = HashMap::new();
@@ -50,7 +50,7 @@ pub fn load_saved_shard_managers(
     Ok(databases)
 }
 
-pub fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
+pub(crate) fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
     if name.is_empty() {
         return Err(CorelamoError::InvalidData(
             "database name cannot be empty".to_string(),
@@ -74,12 +74,12 @@ pub fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
     Ok(())
 }
 
-pub const TRASH_PREFIX: &str = ".deleting-";
-pub fn normalize_db_name(name: &str) -> String {
+pub(crate) const TRASH_PREFIX: &str = ".deleting-";
+pub(crate) fn normalize_db_name(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
 
-pub fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> {
+pub(crate) fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> {
     let entries = std::fs::read_dir(databases_dir).ok()?;
     for entry in entries.flatten() {
         let file_name = entry.file_name();
@@ -93,7 +93,7 @@ pub fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> {
     None
 }
 
-pub fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
+pub(crate) fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -104,7 +104,7 @@ pub fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
     ))
 }
 
-pub fn sweep_trash(databases_dir: &Path) {
+pub(crate) fn sweep_trash(databases_dir: &Path) {
     let log = slog_scope::logger();
     let Ok(entries) = std::fs::read_dir(databases_dir) else {
         return;
@@ -126,7 +126,7 @@ pub fn sweep_trash(databases_dir: &Path) {
 }
 
 //bellow are functions for determining what takes up how much disk space for a database
-fn file_size_opt(path: &std::path::Path) -> Result<Option<u64>, CorelamoError> {
+fn file_size_opt(path: &Path) -> Result<Option<u64>, CorelamoError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -135,7 +135,7 @@ fn file_size_opt(path: &std::path::Path) -> Result<Option<u64>, CorelamoError> {
     Ok(Some(meta.len()))
 }
 
-fn dir_total_size(path: &std::path::Path) -> Result<u64, CorelamoError> {
+fn dir_total_size(path: &Path) -> Result<u64, CorelamoError> {
     let mut total = 0u64;
     let entries = std::fs::read_dir(path).map_err(|e| {
         CorelamoError::Internal(format!("failed to read dir {}: {e}", path.display()))
@@ -156,7 +156,7 @@ fn dir_total_size(path: &std::path::Path) -> Result<u64, CorelamoError> {
     Ok(total)
 }
 
-fn dir_total_size_opt(path: &std::path::Path) -> Result<Option<u64>, CorelamoError> {
+fn dir_total_size_opt(path: &Path) -> Result<Option<u64>, CorelamoError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -187,8 +187,8 @@ fn format_size_opt(bytes: Option<u64>) -> OwnedValue {
     }
 }
 
-pub fn compute_disk_usage(
-    db_root: &std::path::Path,
+pub(crate) fn compute_disk_usage(
+    db_root: &Path,
     db_name: &str,
 ) -> Result<OwnedValue, CorelamoError> {
     if !db_root.exists() {

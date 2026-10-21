@@ -23,3 +23,5 @@ ahash = "0.8.12"
 
 [features]
 timing = ["core-timing/timing"]
+[lints] 
+workspace = true
