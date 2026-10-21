@@ -759,7 +759,6 @@ dependencies = [
  "ahash",
  "core-index",
  "core-protocol",
- "core-testkit",
  "core-timing",
  "criterion",
  "indexmap",
@@ -828,17 +827,6 @@ dependencies = [
  "simd-json",
  "slog",
  "tokio",
-]
-
-[[package]]
-name = "core-testkit"
-version = "0.1.0"
-dependencies = [
- "core-index",
- "core-query",
- "criterion",
- "serde",
- "simd-json",
 ]
 
 [[package]]

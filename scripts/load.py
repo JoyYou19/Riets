@@ -32,7 +32,7 @@ POLICY = """\
     "$type": "text",
     "$list": true,
     "$stemming": "english",
-    "$weight": { "min": 1, "max": 100 },
+    "$weight": { "min": 20, "max": 30 },
     "$vector":true
   }
 }

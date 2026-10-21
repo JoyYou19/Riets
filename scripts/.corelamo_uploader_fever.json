@@ -1,7 +1,0 @@
-{
-  "best_batch_size": 10740,
-  "best_in_flight": 12,
-  "best_throughput": 93897.58792168874,
-  "best_latency": 1.4327619075775146,
-  "saved_at": "2026-10-01T11:36:00"
-}

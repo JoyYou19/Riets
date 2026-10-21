@@ -16,7 +16,7 @@ pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
         return Ok(DeleteSet::new());
     }
 
-    let file = std::fs::File::open(path)?;
+    let file = File::open(path)?;
     let reader = BufReader::new(file);
 
     let mut deleted = DeleteSet::new();

@@ -1,4 +1,4 @@
-use std::{ io, sync::Arc };
+use std::{ collections::VecDeque, io, sync::Arc };
 
 use crate::{
     document_projections::{ id_path_to_strip, project_document },
@@ -84,7 +84,7 @@ pub struct SearchDatabase<S: DocumentStore> {
     shard_id: ShardId,
     next_local_id: LocalDocId,
     array_row_allocator: ArrayRowAllocator,
-    index_in_flight: Option<PendingAck>,
+    index_in_flight: VecDeque<PendingAck>,
 }
 
 pub struct InsertReport {
@@ -146,27 +146,33 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn shard_id(&self) -> ShardId {
         self.shard_id
     }
-    /// True when no batch is in flight. Collects the finished batch's result,
-    /// so an indexing error surfaces here.
-    fn index_idle(&mut self) -> io::Result<bool> {
-        let Some(pending) = self.index_in_flight.as_mut() else {
-            return Ok(true);
-        };
-        match pending.try_take() {
-            None => Ok(false),
-            Some(result) => {
-                self.index_in_flight = None;
-                result.map(|()| true)
+    /// Collects the results of batches the worker has finished, oldest first, without waiting.
+    /// An indexing error from an earlier batch is returned here.
+    fn  error_return(&mut self) -> io::Result<()> {
+        while let Some(pending) = self.index_in_flight.front_mut() {
+            match pending.try_take() {
+                None => break,
+                Some(result) => {
+                    self.index_in_flight.pop_front();
+                    result?;
+                }
             }
         }
+        Ok(())
+    }
+    /// True when no batch is in flight. Collects the finished batch's result,
+    /// so an indexing error surfaces here.
+     fn index_idle(&mut self) -> io::Result<bool> {
+        self.error_return()?;
+        Ok(self.index_in_flight.is_empty())
     }
     /// Waits for the previous batch; returns its indexing error, if any.
     #[timed(flushing)]
     fn wait_index_in_flight(&mut self) -> io::Result<()> {
-        match self.index_in_flight.take() {
-            Some(pending) => pending.wait(),
-            None => Ok(()),
+        while let Some(pending) = self.index_in_flight.pop_front() {
+            pending.wait()?;
         }
+        Ok(())
     }
 
     // WARN: This is old, must be changed, backwards compatibility here is 0
@@ -204,7 +210,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             shard_id,
             next_local_id,
             array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
-            index_in_flight: None,
+            index_in_flight: VecDeque::new(),
         })
     }
 
@@ -230,7 +236,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             shard_id,
             next_local_id,
             array_row_allocator: ArrayRowAllocator::starting_at(next_array_row),
-            index_in_flight: None,
+            index_in_flight: VecDeque::new()
         })
     }
 
@@ -633,9 +639,10 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
 
         let stored = std::mem::take(&mut self.current_store_batch);
         self.db.store.put_batch(stored)?;
-        self.db.wait_index_in_flight()?;
+        self.db.error_return()?;
         let docs = std::mem::take(&mut self.current_batch);
-        self.db.index_in_flight = Some(self.db.index_worker.add_indexed_documents_deferred(docs)?);
+        let pending = self.db.index_worker.add_indexed_documents_deferred(docs)?;
+        self.db.index_in_flight.push_back(pending);
 
         self.current_store_batch = Vec::with_capacity(self.batch_size);
         self.current_batch = Vec::with_capacity(self.batch_size);

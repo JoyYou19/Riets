@@ -79,14 +79,14 @@ fn analyze_target(
     bool_points: &[BoolPoint],
 ) -> AnalyzedTarget {
     AnalyzedTarget {
-        fields: parts.iter().map(|part| analyze_part(analyzer, part)).collect(),
+        fields: parts.iter().map(|part| add_weighted(analyzer, part)).collect(),
         numeric_points: numeric_points.to_vec(),
         bool_points: bool_points.to_vec(),
     }
 }
 
 /// Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
-fn analyze_part(analyzer: &Analyzer, part: &DocumentPart) -> AnalyzedField {
+fn add_weighted(analyzer: &Analyzer, part: &DocumentPart) -> AnalyzedField {
     // if this part has several strings (array of string), use them else one string
     let segments: Vec<&str> = if part.is_flattened() {
         part.segments.iter().map(String::as_str).collect()

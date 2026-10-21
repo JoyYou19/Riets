@@ -3,13 +3,13 @@ use std::collections::hash_map::Entry;
 use crate::document::analyzed::{ AnalyzedDocument, AnalyzedField, AnalyzedTarget };
 use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
-use crate::document::document::{ BoolField, BoolPoint, NumericPoint };
-use crate::document::{ DocumentPart, IndexedDocument, WeightInterval };
+use crate::document::document:: BoolField  ;
+use crate::document:: IndexedDocument ;
 use crate::fuzzy::{ FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix };
 use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
 use crate::posting::{ Posting, PostingList };
 use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
-use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId, encode_position };
+use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId };
 use crate::wildcard::{ WildcardPattern, capped_union };
 use ahash::AHashMap;
 use ahash::HashSet;
@@ -286,16 +286,16 @@ impl MemIndex {
         weight: u16
     ) {
         self.estimated_bytes +=
-            std::mem::size_of::<DocId>() +
-            std::mem::size_of::<u16>() +
-            positions.len() * std::mem::size_of::<u32>();
+            size_of::<DocId>() +
+            size_of::<u16>() +
+            positions.len() * size_of::<u32>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             Entry::Occupied(mut slot) => {
                 slot.get_mut().insert_posting(doc_id, positions, weight);
             }
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                self.estimated_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
+            Entry::Vacant(slot) => {
+                self.estimated_bytes += slot.key().term.len() + size_of::<TermKey>();
                 slot.insert(PostingList::new()).insert_posting(doc_id, positions, weight);
             }
         }
@@ -365,133 +365,6 @@ impl MemIndex {
         }
     }
 
-    fn add_weighted(
-        &mut self,
-        analyzer: &Analyzer,
-        doc_id: DocId,
-        xpath: XPathId,
-        weight: WeightInterval,
-        segments: &[&str],
-        gap: u32,
-        exact: bool,
-        names: bool
-    ) {
-        let mut token_positions: AHashMap<String, Vec<u32>> = AHashMap::new();
-        let mut total_words_len = 0u32;
-        let mut cur_position = 0u32;
-
-        //do this for every string in the array of strings
-        for seg in segments {
-            // words: the document length this segment adds. span: the positions it uses, so the
-            // next array element starts after its last word (stopwords leave gaps in positions)
-            let (words, span) = if exact {
-                let words: Vec<&str> = seg.split_whitespace().collect();
-                // write down each word, at position (offset + its index in this string)
-                for (i, word) in words.iter().enumerate() {
-                    token_positions
-                        .entry((*word).to_string())
-                        .or_default()
-                        .push(encode_position(cur_position + (i as u32), 1));
-                }
-                // the whole value as one term too, so a search can tell "this is the name" apart
-                // from "the name contains these words" (see Analyzer::name_terms)
-                for term in names.then(|| analyzer.name_terms(seg)).unwrap_or_default() {
-                    token_positions.entry(term).or_default().push(encode_position(cur_position, 1));
-                }
-                (words.len() as u32, words.len() as u32)
-            } else {
-                let mut span = 0u32;
-                let words = analyzer.for_each_token(seg, |term, position, length| {
-                    let encoded = encode_position(cur_position + position, length);
-                    let positions = token_positions.entry(term.to_owned()).or_default();
-                    // two forms of one word can analyze to the same term ("king's", "kings" -> king)
-                    if positions.last() != Some(&encoded) {
-                        positions.push(encoded);
-                    }
-                    span = span.max(position + length);
-                });
-                (words, span)
-            };
-            total_words_len += words;
-
-            //move our "cursor" forward past this string, PLUS the gap
-            cur_position += span + gap;
-        }
-
-        let old = self.doc_lengths.insert((doc_id, xpath), total_words_len);
-
-        //stats
-        let stats = self.field_stats.entry(xpath).or_default();
-        match old {
-            Some(old_len) => {
-                stats.total_doc_len =
-                    stats.total_doc_len - (old_len as u64) + (total_words_len as u64);
-            }
-            None => {
-                stats.doc_count += 1;
-                stats.total_doc_len += total_words_len as u64;
-            }
-        }
-
-        //write to seg
-        for (term, positions) in token_positions {
-            let extra_hits = positions.len().saturating_sub(1);
-            let posting_weight = usize
-                ::from(weight.min)
-                .saturating_add(extra_hits)
-                .min(usize::from(weight.max)) as u16;
-            self.add_posting_weighted(term, xpath, doc_id, positions, posting_weight);
-        }
-    }
-
-    //helper
-    fn add_parts_and_points(
-        &mut self,
-        analyzer: &Analyzer,
-        target_id: DocId, //array row id uses the same type for id
-        parts: &[DocumentPart],
-        numeric_points: &[NumericPoint],
-        bool_points: &[BoolPoint]
-    ) {
-        for part in parts {
-            //if this part has several strings (array of string), use them else one string
-            let segments: Vec<&str> = if part.is_flattened() {
-                part.segments
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect()
-            } else {
-                vec![part.text.as_str()]
-            };
-
-            // flattened parts skip positions between strings; normal parts don't
-            let gap = if part.is_flattened() { part.gap } else { 0 };
-
-            //one call does all the work part.exact pirck stem or step+exact
-            self.add_weighted(
-                analyzer,
-                target_id,
-                part.xpath,
-                part.weight,
-                &segments,
-                gap,
-                part.exact,
-                part.names
-            );
-        }
-        for point in numeric_points {
-            self.numeric_points.insert(point.xpath, point.value, target_id);
-        }
-
-        for point in bool_points {
-            let slot = self.bool_fields.entry(point.xpath).or_default();
-            if point.value {
-                slot.true_ids.insert(target_id);
-            } else {
-                slot.false_ids.insert(target_id);
-            }
-        }
-    }
 
     pub fn lookup_or_empty(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup(term, xpath).cloned().unwrap_or_default()
@@ -530,8 +403,8 @@ impl MemIndex {
         let mut duplicate_key_bytes = 0usize;
         for (key, list) in newer.terms {
             match self.terms.entry(key) {
-                std::collections::hash_map::Entry::Occupied(mut slot) => {
-                    duplicate_key_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
+                Entry::Occupied(mut slot) => {
+                    duplicate_key_bytes += slot.key().term.len() + size_of::<TermKey>();
                     slot.get_mut().append(list);
                 }
                 Entry::Vacant(slot) => {
