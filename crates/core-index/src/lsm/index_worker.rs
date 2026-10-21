@@ -1,28 +1,30 @@
+use arc_swap::ArcSwap;
 use core_timing::timed;
 use rayon::prelude::*;
 use std::{
     io,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender},
+        Arc,
+        Mutex,
+        atomic::{ AtomicBool, AtomicU8, AtomicU64, Ordering },
+        mpsc::{ self, Receiver, Sender },
     },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    thread::{ self, JoinHandle },
+    time::{ Duration, Instant },
 };
 
 use crate::{
     analyzer::Analyzer,
-    document::IndexedDocument,
+    document::{ AnalyzedDocument, IndexedDocument },
     lsm::{
         LsmIndex,
-        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
+        compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
         snapshot::SharedIndexSnapshot,
     },
     mem::MemIndex,
     segment::ImmutableSegment,
-    types::{DocId, XPathId},
+    types::{ DocId, XPathId },
 };
 type Acknowledgement = Sender<io::Result<()>>;
 type CompactionPlanReply = Sender<io::Result<Option<CompactionJob>>>;
@@ -32,7 +34,7 @@ type InstallVectorsReply = Sender<io::Result<bool>>;
 // Operate through commands
 pub enum IndexCommand {
     AddIndexedDocuments {
-        documents: Vec<IndexedDocument>,
+        documents: Vec<AnalyzedDocument>,
         ack: Option<Acknowledgement>,
     },
     DeleteDocument {
@@ -71,29 +73,60 @@ pub enum IndexCommand {
         xpath: XPathId,
         reply: InstallVectorsReply,
     },
+
     Shutdown,
 }
 
+#[must_use = "dropping a PendingAck discards the batch's indexing result"]
+pub struct PendingAck(Mutex<Receiver<io::Result<()>>>);
+
+impl PendingAck {
+    pub fn wait(self) -> io::Result<()> {
+        let rx = self.0.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+        wait_for_acknowledgement(rx)
+    }
+
+    /// Non-blocking. `None` while the worker is still indexing the batch;
+    /// `Some(result)` once it has finished (or the worker is gone).
+    pub fn try_take(&mut self) -> Option<io::Result<()>> {
+        // `get_mut` needs `&mut self`, so no lock is ever taken.
+        let rx = self.0.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) =>
+                Some(
+                    Err(
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "index worker dropped acknowledgement"
+                        )
+                    )
+                ),
+        }
+    }
+}
 pub struct IndexWorker {
     sender: Sender<IndexCommand>,
     handle: Option<JoinHandle<io::Result<LsmIndex>>>,
+    stats: Arc<ArcSwap<IndexingStats>>,
 }
 
 impl IndexWorker {
-    pub fn start(index: LsmIndex, analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
+    pub fn start(index: LsmIndex, _analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
         shared.publish(index.snapshot());
 
         let (sender, receiver) = mpsc::channel();
+        let stats = Arc::new(ArcSwap::from_pointee(IndexingStats::default()));
+        let worker_stats = Arc::clone(&stats);
 
-        let handle = thread::Builder::new()
+        let handle = thread::Builder
+            ::new()
             .name("index-worker".to_string())
-            .spawn(move || run_index_worker(index, analyzer, shared, receiver))
+            .spawn(move || run_index_worker(index, shared, receiver, worker_stats))
             .expect("failed to spawn index worker");
 
-        Self {
-            sender,
-            handle: Some(handle),
-        }
+        Self { sender, handle: Some(handle), stats }
     }
 
     pub fn sender(&self) -> Sender<IndexCommand> {
@@ -105,29 +138,43 @@ impl IndexWorker {
             .send(command)
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped"))
     }
+    /// Stats as of the last command the worker finished. May lag queued batches;
+    /// use `get_stats` when an exact value is required.
+    pub fn cached_stats(&self) -> IndexingStats {
+        (**self.stats.load()).clone()
+    }
 
     pub fn shutdown(mut self) -> io::Result<LsmIndex> {
         self.send(IndexCommand::Shutdown)?;
 
-        let handle = self
-            .handle
+        let handle = self.handle
             .take()
             .ok_or_else(|| io::Error::other("index worker already joined"))?;
-        handle
-            .join()
-            .map_err(|_| io::Error::other("index worker panicked"))?
+        handle.join().map_err(|_| io::Error::other("index worker panicked"))?
     }
 
     // Fire and forget functions
-    pub fn add_indexed_documents(&self, documents: Vec<IndexedDocument>) -> io::Result<()> {
+    pub fn add_indexed_documents(&self, documents: Vec<AnalyzedDocument>) -> io::Result<()> {
         self.send(IndexCommand::AddIndexedDocuments {
             documents,
             ack: None,
         })
     }
 
-    pub fn add_indexed_document(&self, document: IndexedDocument) -> io::Result<()> {
+    pub fn add_indexed_document(&self, document: AnalyzedDocument) -> io::Result<()> {
         self.add_indexed_documents(vec![document])
+    }
+    /// Sends a batch and returns immediately; call `wait()` on the result later.
+    pub fn add_indexed_documents_deferred(
+        &self,
+        documents: Vec<AnalyzedDocument>
+    ) -> io::Result<PendingAck> {
+        let (ack, rx) = mpsc::channel();
+        self.send(IndexCommand::AddIndexedDocuments {
+            documents,
+            ack: Some(ack),
+        })?;
+        Ok(PendingAck(Mutex::new(rx)))
     }
 
     pub fn delete_document(&self, doc_id: DocId) -> io::Result<()> {
@@ -144,17 +191,19 @@ impl IndexWorker {
 
         self.send(IndexCommand::PlanCompaction { config, reply })?;
 
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped compaction plan reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "index worker dropped compaction plan reply"
+                )
+            })?
     }
 
     // Waiting functions
     #[timed(indexing_documents)]
-    pub fn add_indexed_documents_wait(&self, documents: Vec<IndexedDocument>) -> io::Result<()> {
+    pub fn add_indexed_documents_wait(&self, documents: Vec<AnalyzedDocument>) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
         self.send(IndexCommand::AddIndexedDocuments {
@@ -165,7 +214,7 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
-    pub fn add_indexed_document_wait(&self, document: IndexedDocument) -> io::Result<()> {
+    pub fn add_indexed_document_wait(&self, document: AnalyzedDocument) -> io::Result<()> {
         self.add_indexed_documents_wait(vec![document])
     }
 
@@ -194,7 +243,7 @@ impl IndexWorker {
     pub fn add_segment_wait(
         &self,
         segments: Vec<ImmutableSegment>,
-        doc_count: u64,
+        doc_count: u64
     ) -> io::Result<()> {
         let (ack, rx) = mpsc::channel();
 
@@ -218,24 +267,25 @@ impl IndexWorker {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::SegmentCount { reply })?;
 
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped segment count reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "index worker dropped segment count reply"
+                )
+            })?
     }
     /// Live on-disk segment paths, oldest first.
     /// VECTOR THINGS
     pub fn disk_segment_paths(&self) -> io::Result<Vec<PathBuf>> {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::DiskSegments { reply })?;
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped disk segment reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "index worker dropped disk segment reply")
+            })?
     }
     /// Attaches a finished vector file. Ok(false) means the segment was merged away meanwhile.
     pub fn install_vectors(&self, segment: PathBuf, xpath: XPathId) -> io::Result<bool> {
@@ -245,19 +295,20 @@ impl IndexWorker {
             xpath,
             reply,
         })?;
-        rx.recv().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "index worker dropped install vectors reply",
-            )
-        })?
+        rx
+            .recv()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "index worker dropped install vectors reply"
+                )
+            })?
     }
     //stats
     pub fn get_stats(&self) -> io::Result<IndexingStats> {
         let (reply, rx) = mpsc::channel();
         self.send(IndexCommand::GetStats { reply })?;
-        rx.recv()
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped"))?
+        rx.recv().map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped"))?
     }
 }
 
@@ -275,66 +326,41 @@ fn publish_wait(docs_since_publish: u64, since_last_publish: Duration) -> Option
 
 fn run_index_worker(
     mut index: LsmIndex,
-    analyzer: Analyzer,
     shared: SharedIndexSnapshot,
     receiver: Receiver<IndexCommand>,
+    published_stats: Arc<ArcSwap<IndexingStats>>
 ) -> io::Result<LsmIndex> {
     let mut stats = IndexingStats::default();
     let mut docs_since_publish: u64 = 0;
     let mut last_publish = Instant::now();
     loop {
         let command = match publish_wait(docs_since_publish, last_publish.elapsed()) {
-            Some(timeout) => match receiver.recv_timeout(timeout) {
-                Ok(command) => command,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    shared.publish(index.publish_snapshot());
-                    docs_since_publish = 0;
-                    last_publish = Instant::now();
-                    continue;
+            Some(timeout) =>
+                match receiver.recv_timeout(timeout) {
+                    Ok(command) => command,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        shared.publish(index.publish_snapshot());
+                        docs_since_publish = 0;
+                        last_publish = Instant::now();
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        break;
+                    }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break;
-                }
-            },
             // Nothing to publish: sleep until the next command arrives.
-            None => match receiver.recv() {
-                Ok(command) => command,
-                Err(mpsc::RecvError) => {
-                    break;
+            None =>
+                match receiver.recv() {
+                    Ok(command) => command,
+                    Err(mpsc::RecvError) => {
+                        break;
+                    }
                 }
-            },
         };
 
         match command {
             IndexCommand::AddIndexedDocuments { documents, ack } => {
-                let mut staging = MemIndex::default();
-                let mut added = 0u64;
-                let mut outcome = Ok(());
-                let staging_cap = index.flush_threshold();
-
-                for document in documents {
-                    staging.add_indexed_document(&analyzer, &document);
-                    added += 1;
-
-                    let staged = staging.estimated_size_bytes();
-                    if staged >= staging_cap {
-                        // 64MB staging cap
-                        index.merge_into_memtable(std::mem::take(&mut staging));
-                        if index.memtable_size() >= index.flush_threshold() {
-                            if let Err(error) = index.flush() {
-                                outcome = Err(error);
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if outcome.is_ok() && added > 0 {
-                    index.merge_into_memtable(staging);
-                    if index.memtable_size() >= index.flush_threshold() {
-                        outcome = index.flush();
-                    }
-                }
+                let (added, outcome) = stage_and_merge(&mut index, documents.into_iter());
 
                 stats.total_documents_indexed += added;
                 docs_since_publish += added;
@@ -342,13 +368,13 @@ fn run_index_worker(
                     "indexing_documents",
                     "memtable_growth",
                     file!(),
-                    index.memtable_term_count() as u64,
+                    index.memtable_term_count() as u64
                 );
                 maybe_publish_on_threshold(
                     &shared,
                     &mut index,
                     &mut docs_since_publish,
-                    &mut last_publish,
+                    &mut last_publish
                 );
                 send_acknowledgement(ack, outcome)?;
             }
@@ -365,11 +391,7 @@ fn run_index_worker(
                     last_publish = Instant::now();
                 }
             }
-            IndexCommand::AddSegment {
-                segments,
-                doc_count,
-                ack,
-            } => {
+            IndexCommand::AddSegment { segments, doc_count, ack } => {
                 let outcome = index.add_immutable_segment(segments);
                 let ok = outcome.is_ok();
                 if ok {
@@ -383,19 +405,21 @@ fn run_index_worker(
                         &shared,
                         &mut index,
                         &mut docs_since_publish,
-                        &mut last_publish,
+                        &mut last_publish
                     );
                 }
             }
             IndexCommand::PlanCompaction { config, reply } => {
                 let result = index.plan_compaction(config);
 
-                reply.send(result).map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "compaction plan receiver dropped",
-                    )
-                })?;
+                reply
+                    .send(result)
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "compaction plan receiver dropped"
+                        )
+                    })?;
             }
 
             IndexCommand::InstallCompaction { completed, ack } => {
@@ -431,20 +455,18 @@ fn run_index_worker(
             IndexCommand::GetStats { reply } => {
                 stats.segment_count = index.segment_count();
                 stats.memtable_term_count = index.memtable_term_count();
-                reply.send(Ok(stats.clone())).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
-                })?;
+                reply
+                    .send(Ok(stats.clone()))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
+                    })?;
             }
             IndexCommand::DiskSegments { reply } => {
                 // A requester that stopped waiting must not stop the index worker.
                 let _ = reply.send(Ok(index.disk_segment_paths()));
             }
             //publishes like new snapshot so search can see
-            IndexCommand::InstallVectors {
-                segment,
-                xpath,
-                reply,
-            } => {
+            IndexCommand::InstallVectors { segment, xpath, reply } => {
                 let outcome = index.install_vectors(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
                 let _ = reply.send(outcome);
@@ -463,17 +485,51 @@ fn run_index_worker(
             docs_since_publish = 0;
             last_publish = Instant::now();
         }
+        stats.segment_count = index.segment_count();
+        stats.memtable_term_count = index.memtable_term_count();
+        published_stats.store(Arc::new(stats.clone()));
     }
 
     index.flush()?;
     Ok(index)
 }
 
+/// Stages documents, merges them into the memtable and flushes at the threshold.
+fn stage_and_merge(
+    index: &mut LsmIndex,
+    documents: impl Iterator<Item = AnalyzedDocument>
+) -> (u64, io::Result<()>) {
+    let mut staging = MemIndex::default();
+    let mut added = 0u64;
+    let staging_cap = index.flush_threshold();
+
+    for document in documents {
+        staging.add_analyzed_document(document);
+        added += 1;
+
+        if staging.estimated_size_bytes() >= staging_cap {
+            index.merge_into_memtable(std::mem::take(&mut staging));
+            if index.memtable_size() >= index.flush_threshold() {
+                if let Err(error) = index.flush() {
+                    return (added, Err(error));
+                }
+            }
+        }
+    }
+
+    if added > 0 {
+        index.merge_into_memtable(staging);
+        if index.memtable_size() >= index.flush_threshold() {
+            return (added, index.flush());
+        }
+    }
+    (added, Ok(()))
+}
 fn maybe_publish_on_threshold(
     shared: &SharedIndexSnapshot,
     index: &mut LsmIndex,
     docs_since_publish: &mut u64,
-    last_publish: &mut Instant,
+    last_publish: &mut Instant
 ) {
     if *docs_since_publish >= PUBLISH_DOC_THRESHOLD {
         shared.publish(index.publish_snapshot());
@@ -483,25 +539,19 @@ fn maybe_publish_on_threshold(
 }
 
 fn wait_for_acknowledgement(rx: Receiver<io::Result<()>>) -> io::Result<()> {
-    rx.recv().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "index worker dropped acknowledgement",
-        )
-    })?
+    rx
+        .recv()
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "index worker dropped acknowledgement")
+        })?
 }
 
 fn send_acknowledgement(
     acknowledgement: Option<Acknowledgement>,
-    result: io::Result<()>,
+    result: io::Result<()>
 ) -> io::Result<()> {
     if let Some(acknowledgement) = acknowledgement {
-        acknowledgement.send(result).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "acknowledgement receiver dropped",
-            )
-        })?;
+        let _ = acknowledgement.send(result);
     }
 
     Ok(())
@@ -510,7 +560,7 @@ fn send_acknowledgement(
 #[timed(indexing_documents)]
 pub fn build_segment_batch(
     analyzer: &Analyzer,
-    documents: Vec<IndexedDocument>,
+    documents: Vec<IndexedDocument>
 ) -> ImmutableSegment {
     let mut mem = MemIndex::with_capacity(documents.len(), documents.len() * 8);
 
@@ -524,7 +574,7 @@ pub fn build_segment_batch(
 #[timed(indexing_documents)]
 pub fn build_segments_parallel(
     analyzer: Analyzer,
-    batches: Vec<Vec<IndexedDocument>>,
+    batches: Vec<Vec<IndexedDocument>>
 ) -> Vec<ImmutableSegment> {
     batches
         .into_par_iter()
@@ -604,10 +654,7 @@ impl Phase {
     }
 
     pub fn is_running(self) -> bool {
-        matches!(
-            self,
-            Phase::Preparing | Phase::Reindexing | Phase::Swapping | Phase::CatchUp
-        )
+        matches!(self, Phase::Preparing | Phase::Reindexing | Phase::Swapping | Phase::CatchUp)
     }
 }
 
@@ -667,12 +714,14 @@ impl ReindexProgress {
             if Phase::from_u8(current).is_running() {
                 return false;
             }
-            match self.phase.compare_exchange_weak(
-                current,
-                Phase::Preparing as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match
+                self.phase.compare_exchange_weak(
+                    current,
+                    Phase::Preparing as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                )
+            {
                 Ok(_) => {
                     break;
                 }
@@ -696,7 +745,7 @@ impl ReindexProgress {
                 Phase::Preparing as u8,
                 Phase::Reindexing as u8,
                 Ordering::AcqRel,
-                Ordering::Acquire,
+                Ordering::Acquire
             );
             if let Ok(mut t) = self.first_add.lock() {
                 t.get_or_insert_with(Instant::now);
@@ -734,11 +783,7 @@ impl ReindexProgress {
         let phase = self.phase();
         let total = self.total.load(Ordering::Relaxed);
         let raw_done = self.done.load(Ordering::Relaxed);
-        let done = if total > 0 {
-            raw_done.min(total)
-        } else {
-            raw_done
-        };
+        let done = if total > 0 { raw_done.min(total) } else { raw_done };
 
         let percent = if phase == Phase::Complete {
             100
@@ -793,29 +838,5 @@ fn round_eta(secs: f64) -> u64 {
         0..=30 => s,
         31..=300 => s.div_ceil(5) * 5,
         _ => s.div_ceil(30) * 30,
-    }
-}
-
-#[cfg(test)]
-mod publish_wait_tests {
-    use super::*;
-
-    #[test]
-    fn an_idle_worker_blocks_instead_of_polling() {
-        assert_eq!(publish_wait(0, Duration::ZERO), None);
-        assert_eq!(publish_wait(0, Duration::from_secs(3600)), None);
-    }
-
-    #[test]
-    fn pending_documents_are_published_within_the_interval() {
-        assert_eq!(publish_wait(5, Duration::ZERO), Some(PUBLISH_INTERVAL));
-        assert_eq!(
-            publish_wait(5, Duration::from_millis(15)),
-            Some(PUBLISH_INTERVAL - Duration::from_millis(15))
-        );
-        assert_eq!(
-            publish_wait(5, Duration::from_secs(1)),
-            Some(Duration::ZERO)
-        );
     }
 }

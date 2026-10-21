@@ -1,7 +1,5 @@
 use std::{
-    fs::OpenOptions,
-    io::{self, BufRead, BufReader, Write},
-    path::Path,
+    fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Write}, path::Path,
 };
 
 use core_timing::timed;
@@ -61,4 +59,12 @@ pub fn clear_deletes(root: impl AsRef<Path>) -> io::Result<()> {
     }
 
     Ok(())
+}
+pub fn sync_deletes(root: impl AsRef<Path>) -> io::Result<()> {
+    let path = root.as_ref().join(DELETES_FILE);
+    match File::open(&path) {
+        Ok(file) => file.sync_data(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }

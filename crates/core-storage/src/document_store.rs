@@ -31,6 +31,7 @@ pub trait DocumentStore {
 
     fn document_count(&self) -> usize;
     fn contains(&self, external_id: &str) -> io::Result<bool>;
+    fn sync(&self) -> std::io::Result<()>;
 
     // WARN: For now we can load all docs, in the future we will need a for each function
     fn all_documents(&self) -> io::Result<Vec<StoredDocument>>;

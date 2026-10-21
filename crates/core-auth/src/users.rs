@@ -41,6 +41,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             format: Format::JSON,
         };
         self.db.put_document(input, IndexMode::StoreOnly)?;
+        
         Ok(())
     }
 

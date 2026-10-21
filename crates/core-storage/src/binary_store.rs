@@ -108,6 +108,7 @@ pub struct BinaryDocumentStore {
     locations: Arc<DashMap<String, DocLocation>>,
     current_segment: AtomicU32,
     next_segment_id: AtomicU32,
+    unsynced_from:AtomicU32
 }
 pub struct SegmentCompactionJob {
     pub segment_ids: Vec<u32>,
@@ -158,6 +159,7 @@ impl BinaryDocumentStore {
             internal_to_external: Arc::new(DashMap::new()),
             locations: Arc::new(DashMap::new()),
             next_segment_id: AtomicU32::new(existing_max + 1),
+            unsynced_from: AtomicU32::new(current_segment),
         };
 
         store.load()?;
@@ -220,6 +222,7 @@ impl BinaryDocumentStore {
             path,
             current_segment: AtomicU32::new(current_segment),
             next_segment_id: AtomicU32::new(next_segment_id),
+            unsynced_from: AtomicU32::new(current_segment),
             docs,
             internal_to_external,
             locations,
@@ -625,6 +628,26 @@ impl DocumentStore for BinaryDocumentStore {
         )?;
 
         Ok(docs)
+    }
+    fn sync(&self) -> io::Result<()> {
+        let from = self.unsynced_from.load(Ordering::Acquire);
+        let current = self.current_segment.load(Ordering::Acquire);
+        for id in from..=current {
+            let path = self.path.join(Self::segment_filename(id));
+            match File::open(&path) {
+                Ok(file) => file.sync_data().map_err(|e| with_path(e, &path))?,
+                // Ids in this range can belong to compaction outputs that were
+                // already synced and later removed.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(with_path(e, &path)),
+            }
+        }
+        if current != from {
+            // A rotation created at least one new file: persist its directory entry.
+            File::open(&self.path)?.sync_all()?;
+        }
+        self.unsynced_from.store(current, Ordering::Release);
+        Ok(())
     }
 }
 
