@@ -7,4 +7,11 @@ rust-version.workspace = true
 
 [dependencies]
 fastembed = { version = "5", default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }
+# `cuda` compiles in the code that registers the CUDA provider; with `load-dynamic` nothing
+# CUDA-related is needed at build time, so the same binary runs everywhere.
+# `api-22` is ONNX Runtime's model editor (1.22+), used to add pooling to the graph at load time.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "cuda", "api-22"] }
+# The versions fastembed uses, so each compiles once; their features come from fastembed.
+tokenizers = { version = "0.22", default-features = false }
+hf-hub = { version = "0.5", default-features = false }
+serde_json = "1"
