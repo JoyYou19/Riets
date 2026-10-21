@@ -52,7 +52,7 @@ impl Write for DailyLog {
         self.file.flush()
     }
 }
-fn timestamp(w: &mut dyn io::Write) -> io::Result<()> {
+fn timestamp(w: &mut dyn Write) -> io::Result<()> {
     write!(w, "{}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f%:z"))
 }
 pub fn shard_logger(root: &Path, name: &str) -> Logger {

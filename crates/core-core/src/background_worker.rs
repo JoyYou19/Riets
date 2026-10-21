@@ -221,39 +221,41 @@ impl BackgroundLoop {
         self.last_measure = Some(Instant::now());
     }
 
-   fn embedder(&mut self) -> Option<Arc<Embedder>> {
-    if let Some(embedder) = &self.embedder {
-        return Some(Arc::clone(embedder));
-    }
-    if self
-        .last_model_attempt
-        .is_some_and(|attempt| attempt.elapsed() < MODEL_RETRY)
-    {
-        return None;
-    }
-    self.last_model_attempt = Some(Instant::now());
-    match self.models.default_embedder() {
-        Ok(embedder) => {
-            match embedder.cpu_fallback() {
-                // `embedding-device = "auto"` on a machine with an NVIDIA driver, but CUDA did
-                // not start (usually a missing CUDA or cuDNN library). The model still works,
-                // on the CPU, so this is a warning and not an error.
-                Some(reason) => warn!(self.log, "embedding model ready on the CPU; CUDA did not start";
+    fn embedder(&mut self) -> Option<Arc<Embedder>> {
+        if let Some(embedder) = &self.embedder {
+            return Some(Arc::clone(embedder));
+        }
+        if self
+            .last_model_attempt
+            .is_some_and(|attempt| attempt.elapsed() < MODEL_RETRY)
+        {
+            return None;
+        }
+        self.last_model_attempt = Some(Instant::now());
+        match self.models.default_embedder() {
+            Ok(embedder) => {
+                match embedder.cpu_fallback() {
+                    // `embedding-device = "auto"` on a machine with an NVIDIA driver, but CUDA did
+                    // not start (usually a missing CUDA or cuDNN library). The model still works,
+                    // on the CPU, so this is a warning and not an error.
+                    Some(reason) => {
+                        warn!(self.log, "embedding model ready on the CPU; CUDA did not start";
                     "model" => embedder.spec().id,
                     "instances" => embedder.instances(),
-                    "reason" => reason),
-                None => info!(self.log, "embedding model ready";
+                    "reason" => reason)
+                    }
+                    None => info!(self.log, "embedding model ready";
                     "model" => embedder.spec().id,
                     "device" => %embedder.device(),
                     "instances" => embedder.instances()),
+                }
+                self.embedder = Some(Arc::clone(&embedder));
+                Some(embedder)
             }
-            self.embedder = Some(Arc::clone(&embedder));
-            Some(embedder)
-        }
-        Err(e) => {
-            warn!(self.log, "embedding model unavailable; retrying later"; "error" => %e);
-            None
+            Err(e) => {
+                warn!(self.log, "embedding model unavailable; retrying later"; "error" => %e);
+                None
+            }
         }
     }
-}
 }

@@ -68,7 +68,7 @@ fn error_to_status(err: &CorelamoError) -> StatusCode {
     }
 }
 
-pub struct HttpError {
+pub(crate) struct HttpError {
     pub error_type: String,
     pub title: String,
     pub status: StatusCode,
@@ -80,7 +80,7 @@ pub struct HttpError {
 }
 
 impl HttpError {
-    pub fn from_corelamo(err: CorelamoError, ctx: &RequestContext) -> Self {
+    pub(crate) fn from_corelamo(err: CorelamoError, ctx: &RequestContext) -> Self {
         Self {
             error_type: format!("{}{}", DOCS_ROOT_URL, err.code()),
             title: err.title().to_string(),
@@ -201,7 +201,7 @@ fn envelope_raw(
     return body;
 }
 
-pub struct HttpOk {
+pub(crate) struct HttpOk {
     pub status: StatusCode,
     pub title: String,
     pub data: Option<Box<dyn ResponseData>>,
@@ -213,7 +213,7 @@ pub struct HttpOk {
 }
 
 impl HttpOk {
-    pub fn new(title: impl Into<String>, ctx: &RequestContext) -> Self {
+    pub(crate) fn new(title: impl Into<String>, ctx: &RequestContext) -> Self {
         Self {
             status: StatusCode::OK,
             title: title.into(),
@@ -226,7 +226,7 @@ impl HttpOk {
         }
     }
 
-    pub fn with_status(status: StatusCode, title: impl Into<String>, ctx: &RequestContext) -> Self {
+    pub(crate) fn with_status(status: StatusCode, title: impl Into<String>, ctx: &RequestContext) -> Self {
         Self {
             status,
             title: title.into(),
@@ -239,7 +239,7 @@ impl HttpOk {
         }
     }
 
-    pub fn with_data<T: serde::Serialize + 'static>(
+    pub(crate) fn with_data<T: serde::Serialize + 'static>(
         title: impl Into<String>,
         data: T,
         ctx: &RequestContext,
@@ -256,7 +256,7 @@ impl HttpOk {
         }
     }
 
-    pub fn with_data_and_status<T: serde::Serialize + 'static>(
+    pub(crate) fn with_data_and_status<T: serde::Serialize + 'static>(
         status: StatusCode,
         title: impl Into<String>,
         data: T,
@@ -273,7 +273,7 @@ impl HttpOk {
             time_start: ctx.time_start,
         }
     }
-    pub fn with_response(
+    pub(crate) fn with_response(
         title: impl Into<String>,
         data: impl ResponseData + 'static,
         ctx: &RequestContext,
@@ -290,7 +290,7 @@ impl HttpOk {
         }
     }
 
-    pub fn raw(
+    pub(crate) fn raw(
         status: StatusCode,
         content_type: &'static str,
         body: String,
@@ -389,7 +389,7 @@ impl IntoResponse for HttpOk {
     }
 }
 
-pub struct BatchOutcome {
+pub(crate) struct BatchOutcome {
     success_label: &'static str,
     all_failed_status: StatusCode,
     succeeded: u32,
@@ -397,7 +397,7 @@ pub struct BatchOutcome {
 }
 
 impl BatchOutcome {
-    pub fn new(success_label: &'static str, all_failed_status: StatusCode) -> Self {
+    pub(crate) fn new(success_label: &'static str, all_failed_status: StatusCode) -> Self {
         Self {
             success_label,
             all_failed_status,
@@ -410,27 +410,27 @@ impl BatchOutcome {
     //     self.succeeded += 1;
     // }
 
-    pub fn succeed_many(&mut self, n: u32) {
+    pub(crate) fn succeed_many(&mut self, n: u32) {
         self.succeeded += n;
     }
 
-    pub fn fail_doc(&mut self, failure: DocFailure) {
+    pub(crate) fn fail_doc(&mut self, failure: DocFailure) {
         self.failures.push(failure);
     }
 
-    pub fn fail_many(&mut self, failures: impl IntoIterator<Item = DocFailure>) {
+    pub(crate) fn fail_many(&mut self, failures: impl IntoIterator<Item = DocFailure>) {
         self.failures.extend(failures);
     }
 
-    pub fn succeeded_count(&self) -> u32 {
+    pub(crate) fn succeeded_count(&self) -> u32 {
         self.succeeded
     }
 
-    pub fn failed_count(&self) -> usize {
+    pub(crate) fn failed_count(&self) -> usize {
         self.failures.len()
     }
 
-    pub fn has_failures(&self) -> bool {
+    pub(crate) fn has_failures(&self) -> bool {
         !self.failures.is_empty()
     }
 
@@ -469,7 +469,7 @@ impl BatchOutcome {
         OwnedValue::Object(obj.into())
     }
 
-    pub fn into_ok(
+    pub(crate) fn into_ok(
         mut self,
         clean_status: StatusCode,
         title: impl Into<String>,

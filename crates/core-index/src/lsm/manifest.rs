@@ -8,12 +8,12 @@ use std::{
 
 const MANIFEST_FILE: &str = "manifest.txt";
 
-pub fn manifest_path(root: &Path) -> PathBuf {
+pub(super) fn manifest_path(root: &Path) -> PathBuf {
     root.join(MANIFEST_FILE)
 }
 
 #[timed(database_lifecycle)]
-pub fn read_manifest(root: &Path) -> io::Result<Vec<PathBuf>> {
+pub(super) fn read_manifest(root: &Path) -> io::Result<Vec<PathBuf>> {
     let path = manifest_path(root);
     if !path.exists() {
         return Ok(Vec::new());
@@ -32,7 +32,7 @@ pub fn read_manifest(root: &Path) -> io::Result<Vec<PathBuf>> {
 
     Ok(live.into_iter().map(|name| root.join(name)).collect())
 }
-pub fn compact_manifest(root: &Path, live: &[PathBuf]) -> io::Result<()> {
+pub(super) fn compact_manifest(root: &Path, live: &[PathBuf]) -> io::Result<()> {
     let mut text = String::new();
     for path in live {
         if let Some(name) = path.file_name() {
@@ -43,7 +43,7 @@ pub fn compact_manifest(root: &Path, live: &[PathBuf]) -> io::Result<()> {
     fs::write(manifest_path(root), text)
 }
 #[timed(writing_files)]
-pub fn append_segment(root: &Path, segment: &Path) -> io::Result<()> {
+pub(super) fn append_segment(root: &Path, segment: &Path) -> io::Result<()> {
     let file_name = segment.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "segment path has no file name")
     })?;

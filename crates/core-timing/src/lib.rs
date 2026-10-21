@@ -157,9 +157,7 @@ fn registry() -> &'static Mutex<HashMap<Key, FnStats>> {
 /// or `src\shard_db.rs` on Windows) down to just the filename. Slicing a
 /// `&'static str` yields another `&'static str`, so no allocation.
 fn filename_only(file: &'static str) -> &'static str {
-    file.rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(file)
+    file.rsplit(['/', '\\']).next().unwrap_or(file)
 }
 
 /// Called by the `#[timed]` macro / `timed_block!`. Not usually called
@@ -245,7 +243,7 @@ pub fn snapshot() -> Vec<(&'static str, CategoryEntries)> {
     }
 
     let mut categories: Vec<(&'static str, CategoryEntries)> = by_category.into_iter().collect();
-    for (_, entries) in categories.iter_mut() {
+    for (_, entries) in &mut categories {
         entries.sort_by(|a, b| b.2.total_ns.cmp(&a.2.total_ns));
     }
     categories.sort_by(|a, b| {
@@ -315,7 +313,7 @@ pub fn report_filtered<S: AsRef<str>>(categories: &[S], file: Option<&str>) -> S
     if filtered.is_empty() {
         let mut parts = Vec::new();
         if !categories.is_empty() {
-            let names: Vec<&str> = categories.iter().map(|c| c.as_ref()).collect();
+            let names: Vec<&str> = categories.iter().map(AsRef::as_ref).collect();
             parts.push(format!(
                 "categor{} {}",
                 if names.len() == 1 { "y" } else { "ies" },

@@ -153,7 +153,7 @@ pub struct ShardManager {
     // taken and joined in shutdown(); a Mutex because shutdown() only gets &self
     joins: Mutex<Vec<JoinHandle<()>>>, //JoinHandle atgriez kad thread uztaisits
     // main, delete and rename all reach shutdown(), so it has to be safe twice
-    shutdown_done: std::sync::atomic::AtomicBool,
+    shutdown_done: AtomicBool,
 }
 
 impl ShardManager {
@@ -174,7 +174,7 @@ impl ShardManager {
         }
 
         let shards_dir = root.join("shards");
-        std::fs::create_dir_all(&shards_dir)?;
+        fs::create_dir_all(&shards_dir)?;
 
         //single policy and config
         let mut policy = IndexPolicy::default_document();
@@ -248,7 +248,7 @@ impl ShardManager {
         }
 
         let mut shard_paths = Vec::new();
-        for entry in std::fs::read_dir(&shards_dir)? {
+        for entry in fs::read_dir(&shards_dir)? {
             let entry = entry?;
             if entry.path().is_dir() {
                 shard_paths.push(entry.path());
@@ -422,11 +422,11 @@ impl ShardManager {
 
         let logs_dir = self.root.join("logs");
         if logs_dir.exists() {
-            for entry in std::fs::read_dir(&logs_dir)? {
+            for entry in fs::read_dir(&logs_dir)? {
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_file() && path.extension().map_or(false, |e| e == "log") {
-                    std::fs::remove_file(&path)?;
+                    fs::remove_file(&path)?;
                 }
             }
         }
@@ -1418,7 +1418,7 @@ impl ShardManager {
         .await
     }
 
-    pub fn record_search(&self, failed: bool, elapsed: std::time::Duration) {
+    pub fn record_search(&self, failed: bool, elapsed: Duration) {
         self.db_stats.record_search(failed, elapsed);
     }
 

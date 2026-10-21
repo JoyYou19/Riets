@@ -6,7 +6,7 @@ use std::sync::RwLock;
 use std::time::{Duration, SystemTime};
 
 //Can change to whatever
-const TOKEN_LIFETIME: Duration = Duration::from_secs(86400);
+const TOKEN_LIFETIME: Duration = Duration::from_hours(24);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Token(pub String);
@@ -54,7 +54,7 @@ impl TokenStore {
     }
     pub fn resolve_username(&self, token: &Token) -> Option<String> {
         let hashed = hash_token(token);
-        let store = self.tokens.read().unwrap_or_else(|e| e.into_inner());
+        let store = self.tokens.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = store.get(&hashed)?;
         if entry.issued_at.elapsed().ok()? > TOKEN_LIFETIME {
             return None;

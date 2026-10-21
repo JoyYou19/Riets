@@ -3,7 +3,7 @@
 //! The model file is the stock Hugging Face export that fastembed uses too. At load time its
 //! graph is extended in memory, through ONNX Runtime's model editor, with masked sum pooling
 //! and L2 normalization after the transformer's per-token output. Nothing is exported or
-//! prepared by hand. On CUDA a batch crosses the PCIe bus twice: token ids in, finished
+//! prepared by hand. On CUDA a batch crosses the `PCIe` bus twice: token ids in, finished
 //! `[batch, dims]` vectors out. ONNX Runtime keeps only shape bookkeeping (a few integers per
 //! run) on the CPU. Without CUDA the same extended graph runs on the CPU.
 
@@ -52,7 +52,7 @@ pub(crate) struct PooledModel {
 impl PooledModel {
     /// Builds the extended model on the preferred device. `cpu_threads` is only used when the
     /// model runs on the CPU.
-    pub fn load(
+    pub(crate) fn load(
         files: &ModelFiles,
         dims: usize,
         max_tokens: usize,
@@ -107,16 +107,16 @@ impl PooledModel {
         })
     }
 
-    pub fn device(&self) -> Device {
+    pub(crate) fn device(&self) -> Device {
         self.device
     }
 
-    pub fn cpu_fallback(&self) -> Option<&str> {
+    pub(crate) fn cpu_fallback(&self) -> Option<&str> {
         self.cpu_fallback.as_deref()
     }
 
     /// Embeds `texts` in order, `batch_size` per model run. Vectors come back L2-normalized.
-    pub fn embed(&mut self, texts: &[String], batch_size: usize) -> io::Result<Vec<Vec<f32>>> {
+    pub(crate) fn embed(&mut self, texts: &[String], batch_size: usize) -> io::Result<Vec<Vec<f32>>> {
         let mut vectors = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(batch_size.max(1)) {
             self.embed_batch(chunk, &mut vectors)?;
@@ -175,7 +175,7 @@ impl PooledModel {
         let (shape, data) = outputs[OUTPUT]
             .try_extract_tensor::<f32>()
             .map_err(model_error)?;
-        if !shape.iter().copied().eq([batch as i64, dims as i64]) {
+        if !shape.iter().copied().eq([onnx_dim(batch), onnx_dim(dims)]) {
             return Err(model_error(format!(
                 "model returned shape {:?}, expected [{batch}, {dims}]",
                 &shape[..]
@@ -185,7 +185,7 @@ impl PooledModel {
         Ok(())
     }
 }
-
+#[derive(Clone, Copy)]
 enum Target {
     Cpu { threads: usize },
     Cuda { device_id: i32 },
@@ -246,10 +246,11 @@ fn load_tokenizer(files: &ModelFiles, max_tokens: usize) -> io::Result<(Tokenize
         .as_i64()
         .ok_or_else(|| model_error(format!("{} has no pad_token_id", files.config.display())))?;
     // Some repositories store a huge placeholder here; `as` saturates it to usize::MAX.
-    let model_max = tokenizer_config["model_max_length"]
-        .as_f64()
-        .map_or(max_tokens, |max| max as usize);
-
+     let model_max = tokenizer_config["model_max_length"]
+        .as_u64()
+        .filter(|&max| max > 0)
+        .and_then(|max| usize::try_from(max).ok())
+        .unwrap_or(max_tokens);
     let mut tokenizer = Tokenizer::from_file(&files.tokenizer)
         .map_err(|e| model_error(format!("{}: {e}", files.tokenizer.display())))?;
     tokenizer
@@ -266,4 +267,11 @@ fn load_tokenizer(files: &ModelFiles, max_tokens: usize) -> io::Result<(Tokenize
 fn read_json(path: &Path) -> io::Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes).map_err(|e| model_error(format!("{}: {e}", path.display())))
+}
+/// Converts a length or dimension into an ONNX shape dimension.
+///
+/// Slice lengths are bounded by `isize::MAX` and model dimensions are small,
+/// so failure means a corrupted value, not a recoverable condition.
+fn onnx_dim(n: usize) -> i64 {
+    i64::try_from(n).expect("dimension exceeds i64::MAX")
 }

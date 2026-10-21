@@ -24,7 +24,7 @@ impl PartialEq for TopHit {
 impl Eq for TopHit {}
 
 impl PartialOrd for TopHit {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }

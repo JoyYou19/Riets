@@ -34,7 +34,7 @@ pub use model::{MODELS, ModelSpec, find_model};
 pub use registry::ModelRegistry;
 pub use runtime::{RUNTIME_LIBRARY_NAME, RUNTIME_RELEASE, default_runtime_library};
 
-/// int8 value = round(component * QUANT_SCALE). Components are within [-1, 1] after normalizing.
+/// int8 value = round(component * `QUANT_SCALE`). Components are within [-1, 1] after normalizing.
 pub const QUANT_SCALE: f32 = 127.0;
 
 /// Errors from downloading, loading or running a model.

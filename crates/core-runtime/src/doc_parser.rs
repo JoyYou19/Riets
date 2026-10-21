@@ -14,19 +14,19 @@ use rayon::prelude::*;
 use simd_json::OwnedValue as Value;
 use uuid::Uuid;
 
-pub trait DocumentConversion {
+pub(crate) trait DocumentConversion {
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError>;
 }
 
 // TODO: make this configurable
 const PARALLEL_PARSE_THRESHOLD: usize = 10;
 
-pub struct Json<'a> {
+pub(crate) struct Json<'a> {
     pub body: &'a str,
 }
 //pub struct Xml<'a>(pub &'a str);
 
-pub struct ParseOutcome {
+pub(crate) struct ParseOutcome {
     pub docs: Vec<DocumentInput>,
     //to save the original index of input unfiltered docs
     pub indices: Vec<usize>,
@@ -34,7 +34,7 @@ pub struct ParseOutcome {
 }
 
 #[timed(json_parsing)]
-pub fn parse_documents(
+pub(crate) fn parse_documents(
     body: &str,
     format: Format,
     policy: &IndexPolicy,
@@ -182,7 +182,7 @@ fn parse_one(
 
 //retrieve byte-for-byte response + skipped for format
 #[timed(retrieve_opps)]
-pub fn convert_from_storage(
+pub(crate) fn convert_from_storage(
     docs: &[StoredDocument],
     format: Format,
 ) -> (Vec<(String, Vec<u8>)>, Vec<ExternalDocId>) {
@@ -199,7 +199,7 @@ pub fn convert_from_storage(
 }
 
 #[timed(json_parsing)]
-pub fn parse_partial_replace_to_inputs(
+pub(crate) fn parse_partial_replace_to_inputs(
     items: &[(String, Value)],
     policy: &IndexPolicy,
     get_document: impl Fn(&str) -> Result<Option<StoredDocument>, CorelamoError>,
@@ -274,10 +274,10 @@ pub fn parse_partial_replace_to_inputs(
 }
 
 //polocy is just json so no worries
-pub fn serialize_policy(policy: &IndexPolicy) -> Result<String, CorelamoError> {
+pub(crate) fn serialize_policy(policy: &IndexPolicy) -> Result<String, CorelamoError> {
     serde_json::to_string_pretty(policy).map_err(CorelamoError::from)
 }
 
-pub fn parse_policy(body: &str) -> Result<IndexPolicy, CorelamoError> {
+pub(crate) fn parse_policy(body: &str) -> Result<IndexPolicy, CorelamoError> {
     serde_json::from_str(body).map_err(CorelamoError::from)
 }

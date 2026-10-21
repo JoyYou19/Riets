@@ -20,3 +20,5 @@ timing = ["core-timing/timing", "core-index/timing"]
 criterion = { workspace = true }
 core-testkit = { path = "../core-testkit" }
 
+[lints] 
+workspace = true

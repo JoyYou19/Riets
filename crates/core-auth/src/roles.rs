@@ -31,8 +31,7 @@ impl PolicyStore {
     pub fn role_has_permission(&self, role: &str, permission: &Permission) -> bool {
         self.role_permissions
             .get(role)
-            .map(|perms| perms.contains(permission))
-            .unwrap_or(false)
+            .is_some_and(|perms| perms.contains(permission))
     }
 
     pub fn remove(&mut self, role: impl Into<String>, permission: Permission) {

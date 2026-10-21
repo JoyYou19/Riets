@@ -10,3 +10,5 @@ core-timing-macros = { path = "../core-timing-macros" }
 
 [features]
 timing = []
+[lints]
+workspace = true

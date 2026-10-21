@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 //INFO: everything later will need these two to return
 #[derive(Debug, Clone)]
-pub struct RequestContext {
+pub(crate) struct RequestContext {
     pub format: Format,
     pub pretty: bool,
     pub request_id: Uuid,
@@ -64,7 +64,7 @@ fn resolve_accept(state: &AppState, request: &Request) -> Result<(Format, Option
     Ok((state.default_format, pretty))
 }
 
-pub async fn request_context_middleware(
+pub(crate) async fn request_context_middleware(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -105,7 +105,7 @@ pub async fn request_context_middleware(
     next.run(request).await
 }
 
-pub async fn auth_middleware(
+pub(crate) async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -146,7 +146,7 @@ pub async fn auth_middleware(
     }
 }
 
-pub async fn disabled_auth_middleware(mut request: Request, next: Next) -> Response {
+pub(crate) async fn disabled_auth_middleware(mut request: Request, next: Next) -> Response {
     let principal = Principal::new("anonymous").with_role("admin");
 
     request.extensions_mut().insert(principal);

@@ -15,3 +15,5 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dy
 tokenizers = { version = "0.22", default-features = false }
 hf-hub = { version = "0.5", default-features = false }
 serde_json = "1"
+[lints]
+workspace = true

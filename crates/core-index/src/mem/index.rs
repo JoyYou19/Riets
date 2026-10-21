@@ -291,7 +291,7 @@ impl MemIndex {
             positions.len() * std::mem::size_of::<u32>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
-            std::collections::hash_map::Entry::Occupied(mut slot) => {
+            Entry::Occupied(mut slot) => {
                 slot.get_mut().insert_posting(doc_id, positions, weight);
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
@@ -534,7 +534,7 @@ impl MemIndex {
                     duplicate_key_bytes += slot.key().term.len() + std::mem::size_of::<TermKey>();
                     slot.get_mut().append(list);
                 }
-                std::collections::hash_map::Entry::Vacant(slot) => {
+                Entry::Vacant(slot) => {
                     slot.insert(list);
                 }
             }

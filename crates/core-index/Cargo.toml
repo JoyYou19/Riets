@@ -45,7 +45,6 @@ serde_json = "1.0.154"
 [features]
 timing = ["core-timing/timing"]
 
-[dev-dependencies]
-criterion = {workspace = true}
-rand = "0.10.1"
 
+[lints] 
+workspace = true

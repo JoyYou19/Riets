@@ -17,16 +17,16 @@ pub struct StoredDocument {
 }
 
 pub trait DocumentStore {
-    fn put(&mut self, doc: StoredDocument) -> std::io::Result<()>;
-    fn put_batch(&mut self, docs: Vec<StoredDocument>) -> std::io::Result<()> {
+    fn put(&mut self, doc: StoredDocument) -> io::Result<()>;
+    fn put_batch(&mut self, docs: Vec<StoredDocument>) -> io::Result<()> {
         for doc in docs {
             self.put(doc)?;
         }
 
         Ok(())
     }
-    fn get(&self, external_id: &str) -> std::io::Result<Option<StoredDocument>>;
-    fn delete(&mut self, external_id: &str) -> std::io::Result<()>;
+    fn get(&self, external_id: &str) -> io::Result<Option<StoredDocument>>;
+    fn delete(&mut self, external_id: &str) -> io::Result<()>;
     fn max_internal_id(&self) -> DocId;
 
     fn document_count(&self) -> usize;

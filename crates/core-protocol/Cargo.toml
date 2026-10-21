@@ -19,3 +19,5 @@ serde_json = "1.0.154"
 
 [features]
 timing = ["core-timing/timing"]
+[lints] 
+workspace = true

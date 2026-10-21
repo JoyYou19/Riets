@@ -223,7 +223,7 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
 
 fn write_bool_fields(
     out: &mut impl Write,
-    fields: &std::collections::BTreeMap<XPathId, BoolField>,
+    fields: &BTreeMap<XPathId, BoolField>,
 ) -> io::Result<()> {
     write_u32(out, fields.len() as u32)?;
     for (xpath, field) in fields {
@@ -310,7 +310,7 @@ pub fn write_segment_to<W: Write + Seek>(
 #[timed(writing_files)]
 fn write_doc_lengths(
     out: &mut impl Write,
-    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+    doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
 ) -> io::Result<()> {
     write_u32(out, doc_lengths.len() as u32)?;
 
@@ -383,10 +383,10 @@ pub fn write_merged_segment(
 pub fn write_merged_segment_to<W: Write + Seek>(
     out: &mut W,
     terms: impl Iterator<Item = (TermKey, PostingList)>,
-    doc_lengths: &std::collections::BTreeMap<(DocId, XPathId), u32>,
+    doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
     array_row_index: &ArrayRowIndex,
-    bool_fields: &std::collections::BTreeMap<XPathId, BoolField>,
+    bool_fields: &BTreeMap<XPathId, BoolField>,
 ) -> io::Result<()> {
     write_header(out)?;
 
