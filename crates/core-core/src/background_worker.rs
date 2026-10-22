@@ -65,6 +65,7 @@ impl BackgroundWorker {
                     embedder: None,
                     last_model_attempt: None,
                     last_measure: None,
+                    measured: None,
                     log,
                 }
                 .run(&stop_thread)
@@ -110,6 +111,8 @@ struct BackgroundLoop {
     embedder: Option<Arc<Embedder>>,
     last_model_attempt: Option<Instant>,
     last_measure: Option<Instant>,
+    /// The latest measured (documents that need a vector, documents that have one).
+    measured: Option<(u64, u64)>,
     log: Logger,
 }
 
@@ -117,6 +120,7 @@ impl BackgroundLoop {
     fn run(mut self, stop: &AtomicBool) -> io::Result<()> {
         let result = self.run_loop(stop);
         self.stats.set_activity(BackgroundActivity::Idle);
+        self.stats.set_embedding_waiting(false);
         result
     }
 
@@ -158,25 +162,30 @@ impl BackgroundLoop {
         Ok(())
     }
 
-    /// One embedding round if there is a job and the model is free.
+    /// One embedding round if there is a job, no bulk load is running and the model is free.
     /// Returns true when it did work.
     fn embed_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
         if self.embedding.is_none() {
             return Ok(false);
         }
-        let Some(embedder) = self.embedder() else {
-            return Ok(false);
-        };
-        let _spec = embedder.spec();
-        let vector_id = embedder.vector_id().to_string();
-        let dims = embedder.spec().dims;
+        // Counting needs no model: progress is reported while the model loads, fails, or is
+        // busy with another shard.
+        let vector_id = self.models.default_vector_id();
+        let dims = self.models.default_model().dims;
         if self
             .last_measure
             .is_none_or(|at| at.elapsed() >= MEASURE_EVERY)
         {
             self.measure(&vector_id, dims);
         }
-        // Counting needs no model, so a shard waiting for the lease still reports progress.
+        let waiting = self.waiting_for_load()?;
+        self.stats.set_embedding_waiting(waiting);
+        if waiting {
+            return Ok(false);
+        }
+        let Some(embedder) = self.embedder() else {
+            return Ok(false);
+        };
         // Never wait for the model: another shard is embedding, and waiting here would stall
         // this shard's compaction.
         let Some(mut lease) = embedder.try_lease()? else {
@@ -193,9 +202,14 @@ impl BackgroundLoop {
         self.stats.set_activity(BackgroundActivity::Idle);
         drop(lease);
 
-        let did_work = match result? {
-            None => false,
-            Some(count) => {
+        let did_work = match result {
+            Err(e) => {
+                self.stats.set_embedding_error(Some(e.to_string()));
+                return Err(e);
+            }
+            Ok(None) => false,
+            Ok(Some(count)) => {
+                self.stats.set_embedding_error(None);
                 if count > 0 {
                     self.stats.add_embedded(count as u64, round_started);
                     info!(self.log, "embedded documents"; "count" => count);
@@ -209,13 +223,45 @@ impl BackgroundLoop {
         Ok(did_work)
     }
 
+    /// Whether embedding waits for a bulk load: the load is still settling into one segment
+    /// (`LsmIndex::settling`: documents arriving, being written, or about to be merged) and it
+    /// brings at least 1/`size_ratio` of this shard's documents, so the shard is embedded once,
+    /// from the merged segment. A trickle of new documents into an embedded shard never waits.
+    fn waiting_for_load(&self) -> io::Result<bool> {
+        let (Some(compaction), Some(job)) = (self.compaction, self.embedding.as_ref()) else {
+            return Ok(false);
+        };
+        if !job.waits_for_load() {
+            return Ok(false);
+        }
+        // Nothing counted yet (a new shard): whatever arrives is the load.
+        let (total, done) = self.measured.unwrap_or((0, 0));
+        let missing = total.saturating_sub(done);
+        if total > 0 && missing.saturating_mul(compaction.size_ratio.max(1)) < total {
+            return Ok(false);
+        }
+        let (reply, rx) = std::sync::mpsc::channel();
+        self.sender
+            .send(IndexCommand::Settling {
+                config: compaction,
+                reply,
+            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped"))?;
+        rx.recv().map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "index worker dropped settling reply")
+        })
+    }
+
     fn measure(&mut self, vector_id: &str, dims: usize) {
         let job = self
             .embedding
             .as_ref()
             .expect("measure is only called with a job");
         match job.measure(vector_id, dims) {
-            Ok((total, done)) => self.stats.set_vector_progress(total, done),
+            Ok((total, done)) => {
+                self.measured = Some((total, done));
+                self.stats.set_vector_progress(total, done);
+            }
             Err(e) => warn!(self.log, "measuring embedding progress failed"; "error" => %e),
         }
         self.last_measure = Some(Instant::now());
@@ -249,11 +295,13 @@ impl BackgroundLoop {
                     "device" => %embedder.device(),
                     "instances" => embedder.instances()),
                 }
+                self.stats.set_embedding_error(None);
                 self.embedder = Some(Arc::clone(&embedder));
                 Some(embedder)
             }
             Err(e) => {
                 warn!(self.log, "embedding model unavailable; retrying later"; "error" => %e);
+                self.stats.set_embedding_error(Some(format!("embedding model unavailable: {e}")));
                 None
             }
         }

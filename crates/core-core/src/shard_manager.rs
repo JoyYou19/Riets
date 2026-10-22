@@ -42,7 +42,7 @@ use crossbeam_channel::bounded;
 use parking_lot::{Mutex, RwLock};
 use simd_json::OwnedValue;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1405,7 +1405,7 @@ impl ShardManager {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
             if let Some(vectors) = vector_hits.as_deref() {
                 items.truncate(word_fetch);
-                items = fuse_rrf(items, vectors, true);
+                items = fuse_keeping_named(items, vectors, plan.named_tier_limit());
             }
         }
         if items.len() > fetch {
@@ -2112,7 +2112,9 @@ impl ShardManager {
             let embedding = self.db_stats.snapshot().background.embedding;
             let ready = match embedding.status {
                 EmbeddingStatus::Complete => true,
-                EmbeddingStatus::Embedding => embedding.progress >= SEMANTIC_MIN_PROGRESS,
+                EmbeddingStatus::Embedding
+                | EmbeddingStatus::Waiting
+                | EmbeddingStatus::Failing => embedding.progress >= SEMANTIC_MIN_PROGRESS,
                 EmbeddingStatus::Disabled => false,
             };
             if !ready {
@@ -2155,6 +2157,36 @@ impl ShardManager {
     }
 }
 //VECTOR
+/// Semantic fusion that keeps what the query names first. Hits of the name and exact tiers
+/// (numbered below `named_limit`) stay on top in their order; the others are fused with the
+/// vector hits by reciprocal rank and follow. Fusing everything would let a document that is
+/// only close in meaning (ranked well by both lists) pass the one whose title is the query.
+/// `items` must be sorted by `ShardManager::hits_cmp`.
+fn fuse_keeping_named(
+    mut items: Vec<(SearchHit, Vec<Option<f64>>)>,
+    vectors: &[VectorHit],
+    named_limit: u8,
+) -> Vec<(SearchHit, Vec<Option<f64>>)> {
+    let named = items.partition_point(|(hit, _)| hit.tier < named_limit);
+    let rest = items.split_off(named);
+    let kept: HashSet<DocId> = items.iter().map(|(hit, _)| hit.doc_id).collect();
+    let vectors: Vec<VectorHit> = vectors
+        .iter()
+        .filter(|hit| !kept.contains(&hit.doc_id))
+        .copied()
+        .collect();
+    items.extend(
+        fuse_rrf(rest, &vectors, true)
+            .into_iter()
+            .map(|(mut hit, keys)| {
+                // after every kept hit, whatever later step orders by tier
+                hit.tier = named_limit;
+                (hit, keys)
+            }),
+    );
+    items
+}
+
 /// Reciprocal Rank Fusion of the word ranking and the vector ranking: every document scores
 /// Σ 1 / (RRF_K + rank) over the lists it appears in. It only uses ranks, so BM25 and cosine
 /// scores never need to be on the same scale. `add_vector_only` adds documents only the vector
@@ -2204,4 +2236,69 @@ fn fuse_rrf(
         b.score.total_cmp(&a.score).then(a.doc_id.cmp(&b.doc_id))
     });
     out
+}
+#[cfg(test)]
+mod fusion_tests {
+    use super::*;
+    use core_query::planner::TIER_STEP;
+
+    fn word_hit(doc_id: DocId, tier: u8, score: f32) -> (SearchHit, Vec<Option<f64>>) {
+        let hit = SearchHit {
+            doc_id,
+            matched_terms: 2,
+            weight_sum: 0,
+            distance_factor: 1.0,
+            score,
+            tier,
+        };
+        (hit, Vec::new())
+    }
+
+    fn close_in_meaning(doc_id: DocId) -> VectorHit {
+        VectorHit { doc_id, score: 0.9 }
+    }
+
+    fn order(items: &[(SearchHit, Vec<Option<f64>>)]) -> Vec<DocId> {
+        items.iter().map(|(hit, _)| hit.doc_id).collect()
+    }
+
+    /// Tier numbers of a plan that starts with a name tier: its hits are numbered below 16,
+    /// the phrase tier's from 32.
+    const NAMED_LIMIT: u8 = 16;
+    const PHRASE_TIER: u8 = 32;
+
+    #[test]
+    fn the_named_document_stays_first_when_others_rank_well_in_both_lists() {
+        assert_eq!(usize::from(NAMED_LIMIT), TIER_STEP);
+        // 1 is the title the query names (name tier); 2 and 3 have the words and are close in
+        // meaning; 4 is found by meaning only
+        let words = vec![
+            word_hit(1, 0, 30.0),
+            word_hit(2, PHRASE_TIER, 12.0),
+            word_hit(3, PHRASE_TIER, 11.0),
+        ];
+        let vectors = [
+            close_in_meaning(3),
+            close_in_meaning(4),
+            close_in_meaning(2),
+            close_in_meaning(1),
+        ];
+
+        // fusing every hit ranks a document found by both lists above the named one
+        assert_eq!(order(&fuse_rrf(words.clone(), &vectors, true))[0], 3);
+
+        let fused = fuse_keeping_named(words, &vectors, NAMED_LIMIT);
+        assert_eq!(order(&fused), vec![1, 3, 2, 4]);
+        assert!(fused[1..].iter().all(|(hit, _)| hit.tier == NAMED_LIMIT));
+    }
+
+    #[test]
+    fn with_nothing_named_every_hit_is_fused() {
+        let words = vec![word_hit(2, 0, 12.0), word_hit(3, 0, 11.0)];
+        let vectors = [close_in_meaning(3), close_in_meaning(2)];
+        assert_eq!(
+            order(&fuse_keeping_named(words.clone(), &vectors, 0)),
+            order(&fuse_rrf(words, &vectors, true))
+        );
+    }
 }

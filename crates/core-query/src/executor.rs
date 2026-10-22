@@ -21,7 +21,7 @@ use crate::{
     ScoredPosting, SearchHit, TopHit,
     ast::{PhraseTerm, Query, SynonymAlternative},
     corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
-    planner::{DENSITY_BOOST, NAME_BONUS, RankPlan, Tier},
+    planner::{DENSITY_BOOST, NAME_BONUS, RankPlan, TIER_STEP, Tier},
     prepared::PreparedQuery,
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
     scorer::{fuzzy_decay, score_term_into},
@@ -46,9 +46,6 @@ const POOL_SIZE: usize = 200;
 // Closeness of words found in another order than typed (or not next to each other), see
 // `apply_density`.
 const OUT_OF_ORDER: f32 = 0.8;
-
-// Ordering values per cascade tier (see `rank_cascade`).
-const TIER_STEP: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct WordSuggestions {

@@ -49,10 +49,7 @@ impl Embedder {
             .first()
             .and_then(LoadedModel::cpu_fallback)
             .map(str::to_owned);
-        // Both backends give the same vectors for the same model and settings (the pooled one
-        // pools inside ONNX Runtime instead of in fastembed), so neither the backend nor the
-        // device is part of the id: switching between them never forces a re-embed.
-        let vector_id = format!("{}/t{}", spec.id, config.max_tokens);
+        let vector_id = vector_id(spec, config);
         Ok(Self {
             spec,
             cache_dir,
@@ -199,6 +196,14 @@ impl EmbedLease<'_> {
         }
         Ok(out)
     }
+}
+
+/// Identifies vectors made by `spec` with `config`; stored in every vector file. Both backends
+/// give the same vectors for the same model and settings (the pooled one pools inside ONNX
+/// Runtime instead of in fastembed), so neither the backend nor the device is part of the id:
+/// switching between them never forces a re-embed.
+pub(crate) fn vector_id(spec: &ModelSpec, config: &ModelConfig) -> String {
+    format!("{}/t{}", spec.id, config.max_tokens)
 }
 
 fn check_dims(spec: &ModelSpec, v: &[f32]) -> io::Result<()> {

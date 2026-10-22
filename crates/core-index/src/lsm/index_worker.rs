@@ -2,7 +2,7 @@ use arc_swap::ArcSwap;
 use core_timing::timed;
 use rayon::prelude::*;
 use std::{
-    collections::VecDeque, fs::read, io, panic::{self, AssertUnwindSafe}, path::PathBuf, sync::{
+    collections::VecDeque, io, panic::{self, AssertUnwindSafe}, path::PathBuf, sync::{
         Arc,
         Mutex,
         atomic::{ AtomicBool, AtomicU8, AtomicU64, Ordering },
@@ -64,6 +64,11 @@ pub enum IndexCommand {
         segment: PathBuf,
         xpath: XPathId,
         reply: InstallVectorsReply,
+    },
+    /// Whether a load is still settling into its final segment (`LsmIndex::settling`).
+    Settling {
+        config: CompactionConfig,
+        reply: Sender<bool>,
     },
 
     Shutdown,
@@ -488,6 +493,9 @@ fn run_index_worker(
                     .map_err(|_| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "stats receiver dropped")
                     })?;
+            }
+            IndexCommand::Settling { config, reply } => {
+                let _ = reply.send(index.settling(&config));
             }
             IndexCommand::DiskSegments { reply } => {
                 // A requester that stopped waiting must not stop the index worker.

@@ -44,6 +44,9 @@ pub struct EmbeddingConfig {
     /// Documents loaded and handed to the model per call; stop and time limits are checked
     /// between calls.
     pub embed_batch: usize,
+    /// While documents are being loaded in bulk, wait for the load to end (and for the shard
+    /// to be merged into one segment) before embedding. Off: embed while loading.
+    pub wait_for_load: bool,
 }
 
 impl Default for EmbeddingConfig {
@@ -52,6 +55,7 @@ impl Default for EmbeddingConfig {
             max_docs_per_round: 10000,
             round_time_budget: Duration::from_secs(120),
             embed_batch: 1024,
+            wait_for_load: true,
         }
     }
 }
@@ -73,6 +77,7 @@ impl EmbeddingConfig {
                 self.round_time_budget
             },
             embed_batch: self.embed_batch.clamp(1, max_docs_per_round),
+            wait_for_load: self.wait_for_load,
         }
     }
 }
@@ -135,6 +140,11 @@ impl EmbeddingJob {
             log,
             skipped: HashSet::new(),
         })
+    }
+
+    /// Whether embedding waits while documents are loaded in bulk (`wait_for_load`).
+    pub fn waits_for_load(&self) -> bool {
+        self.config.wait_for_load
     }
 
     /// One bounded round. Ok(None): nothing to embed. Ok(Some(n)): `n` documents embedded
@@ -227,6 +237,8 @@ impl EmbeddingJob {
     ) -> io::Result<usize> {
         let started = Instant::now();
         let mut new_rows: Vec<(DocId, Vec<i8>)> = Vec::with_capacity(task.missing.len());
+        // the error that ended the round early; the vectors made before it are still installed
+        let mut stopped_by: Option<io::Error> = None;
 
         for batch in task.missing.chunks(self.config.embed_batch) {
             if stop.load(Ordering::Relaxed) || started.elapsed() >= self.config.round_time_budget {
@@ -249,28 +261,52 @@ impl EmbeddingJob {
                 continue;
             }
             let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-            let vectors = lease.embed_documents(&refs)?;
-            new_rows.extend(doc_ids.into_iter().zip(vectors));
+            let mut failed: Vec<(DocId, io::Error)> = Vec::new();
+            let embedded = embed_isolating(
+                &doc_ids,
+                &refs,
+                &mut |part: &[&str]| lease.embed_documents(part),
+                &mut failed,
+            );
+            for (doc_id, error) in failed {
+                warn!(self.log, "document cannot be embedded; skipped until restart";
+                    "doc_id" => doc_id, "field" => &task.field.path, "error" => %error);
+                self.skipped.insert(doc_id);
+            }
+            match embedded {
+                Ok(rows) => new_rows.extend(rows),
+                Err(error) => {
+                    stopped_by = Some(error);
+                    break;
+                }
+            }
         }
 
-        if new_rows.is_empty() {
-            return Ok(0);
-        }
         let added = new_rows.len();
-        write_vectors(
-            &task.segment,
-            task.field.xpath,
-            task.existing.as_deref(),
-            &task.vector_id,
-            task.dims,
-            new_rows,
-        )?;
-        if !install_vectors(&self.sender, task.segment.clone(), task.field.xpath)? {
-            warn!(self.log, "segment disappeared before its vectors were installed";
-                "segment" => %task.segment.display());
-            return Ok(0);
+        if added > 0 {
+            write_vectors(
+                &task.segment,
+                task.field.xpath,
+                task.existing.as_deref(),
+                &task.vector_id,
+                task.dims,
+                new_rows,
+            )?;
+            if !install_vectors(&self.sender, task.segment.clone(), task.field.xpath)? {
+                warn!(self.log, "segment disappeared before its vectors were installed";
+                    "segment" => %task.segment.display());
+                return Ok(0);
+            }
         }
-        Ok(added)
+        match stopped_by {
+            Some(error) if added == 0 => Err(error),
+            Some(error) => {
+                warn!(self.log, "embedding round ended early; its vectors so far are kept";
+                    "embedded" => added, "error" => %error);
+                Ok(added)
+            }
+            None => Ok(added),
+        }
     }
 
     /// The field's text, or None when the document is gone, unparsable, or the field is empty.
@@ -284,6 +320,46 @@ impl EmbeddingJob {
         let mut leaves = BTreeMap::new();
         node.collect_leaf_values(&mut leaves);
         Ok(leaves.remove(path).filter(|text| !text.trim().is_empty()))
+    }
+}
+
+/// A text every working model embeds: a part that fails alone while this works is the part's
+/// own problem, not the model's.
+const PROBE_TEXT: &str = "ok";
+
+/// Embeds `texts` (one row per id). When the model fails on a group of texts, the group is
+/// split in two until the texts it fails on are alone. Such a text is reported in `failed` and
+/// left out, provided the model still embeds `PROBE_TEXT`; if it does not, the model itself is
+/// failing and its error is returned instead.
+fn embed_isolating<E>(
+    ids: &[DocId],
+    texts: &[&str],
+    embed: &mut E,
+    failed: &mut Vec<(DocId, io::Error)>,
+) -> io::Result<Vec<(DocId, Vec<i8>)>>
+where
+    E: FnMut(&[&str]) -> io::Result<Vec<Vec<i8>>>,
+{
+    match embed(texts) {
+        Ok(vectors) if vectors.len() == texts.len() => Ok(ids.iter().copied().zip(vectors).collect()),
+        Ok(vectors) => Err(io::Error::other(format!(
+            "model returned {} vectors for {} texts",
+            vectors.len(),
+            texts.len()
+        ))),
+        Err(error) if texts.len() == 1 => {
+            if embed(&[PROBE_TEXT]).is_err() {
+                return Err(error);
+            }
+            failed.push((ids[0], error));
+            Ok(Vec::new())
+        }
+        Err(_) => {
+            let middle = texts.len() / 2;
+            let mut rows = embed_isolating(&ids[..middle], &texts[..middle], embed, failed)?;
+            rows.extend(embed_isolating(&ids[middle..], &texts[middle..], embed, failed)?);
+            Ok(rows)
+        }
     }
 }
 
@@ -373,4 +449,47 @@ fn install_vectors(
 
 fn broken_pipe(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_vector(text: &str) -> Vec<i8> {
+        vec![i8::try_from(text.len() % 100).unwrap_or(0)]
+    }
+
+    #[test]
+    fn a_text_the_model_rejects_is_left_out_and_the_rest_embedded() {
+        let ids: Vec<DocId> = (0..9).collect();
+        let texts = ["a", "b", "c", "poison", "e", "f", "g", "h", "i"];
+        let mut calls = 0;
+        let mut embed = |part: &[&str]| -> io::Result<Vec<Vec<i8>>> {
+            calls += 1;
+            if part.contains(&"poison") {
+                return Err(io::Error::other("bad input"));
+            }
+            Ok(part.iter().map(|text| fake_vector(text)).collect())
+        };
+        let mut failed = Vec::new();
+        let rows = embed_isolating(&ids, &texts, &mut embed, &mut failed).unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, 3);
+        let embedded: Vec<DocId> = rows.iter().map(|(id, _)| *id).collect();
+        assert_eq!(embedded, vec![0, 1, 2, 4, 5, 6, 7, 8]);
+        assert!(calls < 2 * texts.len());
+    }
+
+    #[test]
+    fn a_failing_model_is_reported_not_blamed_on_the_texts() {
+        let ids: Vec<DocId> = (0..6).collect();
+        let texts = ["a", "b", "c", "d", "e", "f"];
+        let mut embed = |_: &[&str]| -> io::Result<Vec<Vec<i8>>> {
+            Err(io::Error::other("CUDA failure"))
+        };
+        let mut failed = Vec::new();
+        let error = embed_isolating(&ids, &texts, &mut embed, &mut failed).unwrap_err();
+        assert!(error.to_string().contains("CUDA failure"));
+        assert!(failed.is_empty(), "no document may be skipped for a model failure");
+    }
 }

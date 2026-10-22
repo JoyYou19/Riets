@@ -1,12 +1,12 @@
-//! The nodes added to the stock model: masked sum pooling over the transformer's per-token
-//! output, then L2 normalization, producing `[batch, dims]` sentence vectors.
+//! The nodes added to the stock model: pooling of the transformer's per-token output (masked
+//! sum, or the first token alone), then L2 normalization, producing `[batch, dims]` vectors.
 
 use ort::editor::{Graph, Model, Node, ONNX_DOMAIN, Opset};
 use ort::memory::Allocator;
 use ort::operator::Attribute;
 use ort::value::{Outlet, Shape, SymbolicDimensions, Tensor, TensorElementType, ValueType};
 
-use super::{ATTENTION_MASK, OUTPUT};
+use super::{ATTENTION_MASK, OUTPUT, Pooling};
 
 /// The per-token output of Hugging Face transformer exports.
 const HIDDEN_STATE: &str = "last_hidden_state";
@@ -52,13 +52,14 @@ pub(super) fn hidden_state_output(outputs: &[Outlet], dims: usize) -> ort::Resul
 /// `[batch, dims]` sentence vectors, keeping the model's own inputs.
 ///
 /// Built from operators whose form has not changed since opset 9 (`Cast`, `Reshape`,
-/// `MatMul`, `Transpose`, `Sqrt`, `Max`, `Div`), because added nodes must use the opset the
+/// `MatMul`, `Gather`, `Transpose`, `Sqrt`, `Max`, `Div`), because added nodes must use the opset the
 /// model was exported with. `ReduceSum` and `Unsqueeze` changed signature in opset 13.
 pub(super) fn pooling_model(
     inputs: Vec<(String, ValueType)>,
     hidden_state: &str,
     opset: u32,
     dims: usize,
+    pooling: Pooling,
 ) -> ort::Result<Model> {
     if opset < MIN_OPSET {
         return Err(ort::Error::new(format!(
@@ -82,34 +83,53 @@ pub(super) fn pooling_model(
         },
     )])?;
 
-    // attention mask [b, s] int64 -> [b, 1, s] float
-    graph.add_node(Node::new(
-        "Cast",
-        ONNX_DOMAIN,
-        name("mask_float"),
-        [ATTENTION_MASK.to_owned()],
-        [name("mask_float")],
-        [Attribute::new("to", ONNX_FLOAT)?],
-    )?)?;
-    graph.add_node(Node::new(
-        "Reshape",
-        ONNX_DOMAIN,
-        name("mask_row"),
-        [name("mask_float"), name("shape_b_1_s")],
-        [name("mask_row")],
-        [],
-    )?)?;
-    // Masked sum over the tokens: [b, 1, s] x [b, s, d] -> [b, 1, d]. Padding has mask 0.
-    // Dividing by the token count (mean pooling) is left out: the L2 normalization below
-    // removes any per-row scale, so the result is the normalized mean.
-    graph.add_node(Node::new(
-        "MatMul",
-        ONNX_DOMAIN,
-        name("sum"),
-        [name("mask_row"), hidden_state.to_owned()],
-        [name("sum")],
-        [],
-    )?)?;
+    match pooling {
+        Pooling::Mean => {
+            // attention mask [b, s] int64 -> [b, 1, s] float
+            graph.add_node(Node::new(
+                "Cast",
+                ONNX_DOMAIN,
+                name("mask_float"),
+                [ATTENTION_MASK.to_owned()],
+                [name("mask_float")],
+                [Attribute::new("to", ONNX_FLOAT)?],
+            )?)?;
+            graph.add_node(Node::new(
+                "Reshape",
+                ONNX_DOMAIN,
+                name("mask_row"),
+                [name("mask_float"), name("shape_b_1_s")],
+                [name("mask_row")],
+                [],
+            )?)?;
+            // Masked sum over the tokens: [b, 1, s] x [b, s, d] -> [b, 1, d]. Padding has
+            // mask 0. Dividing by the token count (mean pooling) is left out: the L2
+            // normalization below removes any per-row scale, so the result is the
+            // normalized mean.
+            graph.add_node(Node::new(
+                "MatMul",
+                ONNX_DOMAIN,
+                name("sum"),
+                [name("mask_row"), hidden_state.to_owned()],
+                [name("sum")],
+                [],
+            )?)?;
+            graph.add_initializer(name("shape_b_1_s"), i64_initializer(&[0, 1, -1])?, false)?;
+        }
+        Pooling::Cls => {
+            // The first token of every row: [b, s, d] -> [b, 1, d]. Runs are padded at the
+            // end, so position 0 is always the text's own [CLS].
+            graph.add_node(Node::new(
+                "Gather",
+                ONNX_DOMAIN,
+                name("sum"),
+                [hidden_state.to_owned(), name("first_token")],
+                [name("sum")],
+                [Attribute::new("axis", 1_i64)?],
+            )?)?;
+            graph.add_initializer(name("first_token"), i64_initializer(&[0])?, false)?;
+        }
+    }
     // Squared L2 norm: [b, 1, d] x [b, d, 1] -> [b, 1, 1]
     graph.add_node(Node::new(
         "Transpose",
@@ -163,7 +183,6 @@ pub(super) fn pooling_model(
     )?)?;
 
     // Reshape: 0 keeps that dimension, -1 takes the rest.
-    graph.add_initializer(name("shape_b_1_s"), i64_initializer(&[0, 1, -1])?, false)?;
     graph.add_initializer(name("shape_b_d"), i64_initializer(&[0, -1])?, false)?;
     graph.add_initializer(name("epsilon"), f32_initializer(&[1e-12])?, false)?;
 
