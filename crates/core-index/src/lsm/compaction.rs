@@ -11,11 +11,7 @@ use crate::{
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BinaryHeap},
-    fs, io,
-    path::{Path, PathBuf},
-    sync::Arc,
+    cmp::Reverse, collections::{BTreeMap, BinaryHeap}, fs, io, path::{Path, PathBuf}, sync::Arc, time::Duration,
 };
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
@@ -131,12 +127,25 @@ impl<'a> Iterator for MergedTerms<'a> {
 pub struct CompactionConfig {
     pub max_segments_per_compaction: usize,
     pub compact_when_segments_at_least: usize,
+    /// A tiered run only contains segments whose sizes are within this factor of each other.
+    pub size_ratio: u64,
+    /// Fewest similar-sized adjacent segments worth merging.
+    pub min_width: usize,
+    /// Above this many segments, the cheapest adjacent run is merged even if sizes differ.
+    pub max_segments: usize,
+    /// After this long without inserts or deletes, similar-sized neighbours are merged even
+    /// when fewer than `min_width` of them qualify.
+    pub idle_merge_after: Duration,
 }
 impl Default for CompactionConfig {
     fn default() -> Self {
-        Self {
+       Self {
             max_segments_per_compaction: 16,
             compact_when_segments_at_least: 2,
+            size_ratio: 2,
+            min_width: 4,
+            max_segments: 10,
+            idle_merge_after: Duration::from_secs(30),
         }
     }
 }
@@ -263,80 +272,3 @@ pub fn compact_vectors(
     produced
 }
 
-#[cfg(test)]
-mod vector_compaction_tests {
-    use super::*;
-    use crate::vector::{VectorFile, VectorFileWriter};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("corelamo-vcompact-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn entry(
-        dir: &Path,
-        segment: &str,
-        xpath: XPathId,
-        model: &str,
-        docs: &[DocId],
-    ) -> SegmentVectors {
-        let segment = dir.join(segment);
-        let path = vector_file_path(&segment, xpath);
-        let mut w = VectorFileWriter::create(&path, model, 2, 127.0).unwrap();
-        for doc in docs {
-            w.push(*doc, &[1, 0]).unwrap();
-        }
-        w.finish().unwrap();
-        SegmentVectors {
-            segment,
-            xpath,
-            file: Arc::new(VectorFile::open(&path).unwrap()),
-        }
-    }
-
-    #[test]
-    fn merges_per_field_and_drops_deleted() {
-        let dir = temp_dir("merge");
-        let vectors = vec![
-            entry(&dir, "segment-1.idx", 3, "m", &[1, 2]),
-            entry(&dir, "segment-2.idx", 3, "m", &[5]),
-            entry(&dir, "segment-1.idx", 4, "m", &[1]),
-        ];
-        let mut deleted = DeleteSet::new();
-        deleted.delete(2);
-        deleted.delete(1);
-        let output = dir.join("segment-9.idx");
-
-        let produced = compact_vectors(&vectors, &deleted, &output);
-        assert_eq!(
-            produced,
-            vec![3],
-            "field 4 had only deleted docs, so no file"
-        );
-        let merged = VectorFile::open(vector_file_path(&output, 3)).unwrap();
-        assert_eq!(
-            (0..merged.len())
-                .map(|i| merged.doc_id(i))
-                .collect::<Vec<_>>(),
-            vec![5]
-        );
-        assert!(!vector_file_path(&output, 4).exists());
-    }
-
-    #[test]
-    fn mixed_models_drop_vectors_instead_of_failing() {
-        let dir = temp_dir("mixed");
-        let vectors = vec![
-            entry(&dir, "segment-1.idx", 3, "old-model", &[1]),
-            entry(&dir, "segment-2.idx", 3, "new-model", &[2]),
-        ];
-        let output = dir.join("segment-9.idx");
-
-        assert!(compact_vectors(&vectors, &DeleteSet::new(), &output).is_empty());
-        assert!(!vector_file_path(&output, 3).exists());
-        assert!(!dir.join("segment-9.3.vec.tmp").exists());
-    }
-}

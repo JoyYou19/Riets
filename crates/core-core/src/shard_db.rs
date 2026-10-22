@@ -107,7 +107,7 @@ impl ShardDb {
         std::fs::create_dir_all(&root)?;
 
         let log = logger::shard_logger(&root, &name);
-        let wal = Wal::open(root.join("wal.log"), options.sync_mode).map_err(|e|
+               let wal = open_wal(&root, options.sync_mode).map_err(|e|
             CorelamoError::Internal(format!("failed to open WAL: {e}"))
         )?;
         let store_path = root.join("documents");
@@ -168,7 +168,7 @@ impl ShardDb {
 
         let log = logger::shard_logger(&root, &name);
         // load
-        let wal = Wal::open(root.join("wal.log"), options.sync_mode).map_err(|e|
+        let wal = open_wal(&root, options.sync_mode).map_err(|e|
             CorelamoError::Internal(format!("failed to open WAL: {e}"))
         )?;
         let backup_dir = db_root.as_ref().join("backups");
@@ -1237,15 +1237,18 @@ impl ShardDb {
 
 
 
-    ////NEW WAL 
-       /// Starts a checkpoint without waiting for it. New writes go to a fresh WAL segment from
-    /// here on; the older segments are deleted once the store and the index hold everything
-    /// in them. Waits only while the previous checkpoint is still running.
+  
+    /// Double-buffered: while the previous checkpoint is still writing its segment, this one
+    /// starts anyway, and the shard keeps inserting. Only a checkpoint older than that is
+    /// waited for, which bounds unflushed data to about three checkpoint intervals.
     fn start_checkpoint(&mut self) -> Result<(), CorelamoError> {
-        self.wait_checkpoints()?;
+        self.reap_checkpoints()?;
+        while self.pending_checkpoints.len() > 1 {
+            let oldest = self.pending_checkpoints.pop_front().expect("len checked");
+            let result = oldest.ticket.wait();
+            self.finish_checkpoint(oldest.through_segment, result)?;
+        }
         let result = (|| {
-            // Rotate first: every record before this point is in `through_segment` or older,
-            // and every document of those records was already sent for indexing.
             let through_segment = self.wal
                 .rotate()
                 .map_err(|e| CorelamoError::Internal(format!("wal rotate failed: {e}")))?;

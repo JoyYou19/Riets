@@ -1,4 +1,4 @@
-use std::{ collections::VecDeque, io, sync::Arc };
+use std::{ collections::VecDeque, io, panic::{self, AssertUnwindSafe}, sync::{Arc, mpsc} };
 
 use crate::{
     document_projections::{ id_path_to_strip, project_document },
@@ -468,7 +468,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         self.index_worker.shutdown()
     }
 
-    pub fn index_sender(&self) -> std::sync::mpsc::Sender<IndexCommand> {
+    pub fn index_sender(&self) -> mpsc::Sender<IndexCommand> {
         self.index_worker.sender()
     }
 
@@ -645,8 +645,18 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         self.db.error_return()?;
 
         let indexed = std::mem::take(&mut self.current_batch);
-        let docs = analyze_batch(&self.db.analyzer, &indexed);
-        let pending = self.db.index_worker.add_indexed_documents_deferred(docs)?;
+        let analyzer = self.db.analyzer.clone();
+        let (analyzed, documents) = mpsc::channel();
+        rayon::spawn(move || {
+            // A panic in rayon::spawn would abort the process. Caught, it drops the sender
+            // instead, and the index worker reports this batch as failed.
+            if let Ok(docs) =
+                panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &indexed)))
+            {
+                let _ = analyzed.send(docs);
+            }
+        });
+        let pending = self.db.index_worker.add_indexed_documents_deferred(documents)?;
         self.db.index_in_flight.push_back(pending);
 
         self.current_store_batch = Vec::with_capacity(self.batch_size);

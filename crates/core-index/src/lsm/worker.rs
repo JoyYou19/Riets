@@ -11,43 +11,17 @@ use std::{
 
 use core_timing::timed;
 
-use crate::lsm::{
+use crate::{background::background_pool, lsm::{
     compaction::{
         CompactionConfig, CompactionJob, CompletedCompaction, compact_segments_streaming,
         compact_vectors,
     },
     index_worker::IndexCommand,
-};
+}};
 
-const MAX_CONCURRENT_INDEX_COMPACTIONS: usize = 8;
+
 const STOP_POLL: Duration = Duration::from_millis(100);
 
-static INDEX_COMPACTION_SLOTS: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
-
-struct CompactionPermit;
-
-impl CompactionPermit {
-    fn acquire() -> Self {
-        let (lock, available) = &INDEX_COMPACTION_SLOTS;
-        let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        while *running >= MAX_CONCURRENT_INDEX_COMPACTIONS {
-            running = available
-                .wait(running)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-        *running += 1;
-        CompactionPermit
-    }
-}
-
-impl Drop for CompactionPermit {
-    fn drop(&mut self) {
-        let (lock, available) = &INDEX_COMPACTION_SLOTS;
-        let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *running -= 1;
-        available.notify_one();
-    }
-}
 
 /// Plans, runs and installs at most one compaction.
 /// Returns Ok(true) if a job was installed, Ok(false) if there was nothing to do.
@@ -69,23 +43,17 @@ pub fn run_compaction_cycle(
     };
     // slet shard_log=slog::Logger;
     let output_path = job.output_path.clone();
-    let completed = {
-        let _permit = CompactionPermit::acquire();
-        match run_compaction_job(job) {
-            Ok(completed) => completed,
-            Err(err) => {
-                if let Err(remove_err) = std::fs::remove_file(&output_path) {
-                    if remove_err.kind() != io::ErrorKind::NotFound {
-                        slog::warn!(log, "failed to remove partial compaction output";
-                     "path" => %output_path.display(),
-                     "error" => %remove_err);
-                    }
+    let completed = match background_pool().install(|| run_compaction_job(job)) {
+        Ok(completed) => completed,
+        Err(err) => {
+            if let Err(remove_err) = std::fs::remove_file(&output_path) {
+                if remove_err.kind() != io::ErrorKind::NotFound {
+                    slog::warn!(log, "failed to remove partial compaction output";
+                        "path" => %output_path.display(),
+                        "error" => %remove_err);
                 }
-                return Err(io::Error::new(
-                    err.kind(),
-                    format!("{}: {}", output_path.display(), err),
-                ));
             }
+            return Err(io::Error::new(err.kind(), format!("{}: {}", output_path.display(), err)));
         }
     };
 
