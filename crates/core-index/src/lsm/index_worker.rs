@@ -565,7 +565,7 @@ fn stage_and_merge(
 
         if staging.estimated_size_bytes() >= staging_cap {
             index.merge_into_memtable(std::mem::take(&mut staging));
-            if index.memtable_size() >= index.flush_threshold() {
+            if index.should_flush() {
                 if let Err(error) = index.queue_flush() {
                     return (added, Err(error));
                 }
@@ -575,7 +575,7 @@ fn stage_and_merge(
 
     if added > 0 {
         index.merge_into_memtable(staging);
-        if index.memtable_size() >= index.flush_threshold() {
+        if index.should_flush() {
             return (added, index.queue_flush());
         }
     }

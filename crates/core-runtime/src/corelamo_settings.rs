@@ -21,13 +21,13 @@ pub(crate) const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("auth", "true"),
     ("max_payload_size", "1024"),
     ("max_request_timeout", "240"),
-    ("embedding-model", "arctic-embed-m"),
+    ("embedding-model", "snowflake-arctic-embed-m"),
     ("embedding-device", "auto"),
     ("embedding-runtime", ""),
     ("embedding-instances", "1"),
     ("embedding-batch-size", "64"),
-    ("embedding-max-tokens", "256"),
-    ("embedding-max-chars", "2000"),
+    ("embedding-max-tokens", "512"),
+    ("embedding-max-chars", "4096"),
 ];
 
 pub(crate) const HELP: &str = "\

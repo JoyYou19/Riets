@@ -33,7 +33,7 @@ pub fn index_document(
     );
     index_arrays(
         &parsed.arrays,
-        doc_id,
+        // doc_id,
         None,
         &mut indexed.parts,
         &mut indexed.array_rows,
@@ -46,9 +46,9 @@ pub fn index_document(
 
 fn index_arrays(
     arrays: &[ArrayField],
-    doc_id: DocId,
+    // doc_id: DocId,
     parent_row: Option<ArrayRowId>,
-    parts: &mut Vec<DocumentPart>, // NEW: where flattened parts go (doc or current row)
+    parts: &mut Vec<DocumentPart>, 
     rows: &mut Vec<ArrayRow>,
     bool_points: &mut Vec<BoolPoint>,
     policy: &IndexPolicy,
@@ -83,7 +83,7 @@ fn index_arrays(
             );
             index_arrays(
                 &element.arrays,
-                doc_id,
+                // doc_id,
                 Some(row_id),
                 &mut row.parts,
                 rows,

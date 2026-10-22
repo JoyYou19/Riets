@@ -349,7 +349,7 @@ impl LsmIndex {
         self.generations.push(Arc::new(sealed));
     }
 
-    fn should_flush(&self) -> bool {
+    pub(crate) fn should_flush(&self) -> bool {
         self.memtable_size() >= self.flush_threshold
     }
 

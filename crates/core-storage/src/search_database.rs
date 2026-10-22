@@ -486,14 +486,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         &self.policy
     }
 
-    #[timed(reindex)]
-    pub fn reindex(&mut self) -> io::Result<()> {
-        let _docs = self.store.all_documents()?; // jauzliek _ ?
-
-        todo!("needs LsmINdex reset/clear before rebuilding")
-    }
-
-    #[timed(reindex)]
+      #[timed(reindex)]
     pub fn reindex_existing_documents(
         &mut self,
         batch_size: usize,
