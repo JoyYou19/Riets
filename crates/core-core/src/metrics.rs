@@ -2,7 +2,7 @@ use crate::shard_db::DatabaseStats;
 use core_backup::progress::{BackupPhase, BackupProgress};
 use core_index::lsm::index_worker::{IndexingStats, Phase, ReindexProgress};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,8 +42,13 @@ impl BackgroundActivity {
 pub enum EmbeddingStatus {
     /// No `$vector` fields in the policy.
     Disabled,
+    /// Documents are still being loaded in bulk; embedding starts once the load ends and the
+    /// shards are merged.
+    Waiting,
     /// Some documents still need vectors.
     Embedding,
+    /// No shard is embedding and at least one keeps failing; `EmbeddingStats::error` says why.
+    Failing,
     /// Every document with a vector field has one (or could not be embedded).
     Complete,
 }
@@ -52,7 +57,9 @@ impl EmbeddingStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
+            Self::Waiting => "waiting",
             Self::Embedding => "embedding",
+            Self::Failing => "failing",
             Self::Complete => "complete",
         }
     }
@@ -66,6 +73,8 @@ pub struct EmbeddingStats {
     pub vectors_done: u64,
     pub docs_per_second: Option<u64>,
     pub eta_seconds: Option<u64>,
+    /// The latest failure of a shard that has not embedded since (model load or a round).
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,9 +100,16 @@ pub struct DbStats {
     backup_outstanding: AtomicUsize,
     backup_failed: AtomicBool,
     restore: Arc<BackupProgress>,
-    /// When the first embedding round that embedded anything started; the database-wide rate
-    /// is measured from here because all shards share one model.
-    embedding_started: OnceLock<Instant>,
+    /// Where the database-wide embedding rate is measured from (all shards share one model);
+    /// reset when every shard has its vectors, so the next run measures its own rate.
+    embedding_rate: Mutex<Option<RateAnchor>>,
+}
+
+/// The first round of the current embedding run, and the vectors made before it.
+#[derive(Debug, Clone, Copy)]
+struct RateAnchor {
+    started: Instant,
+    embedded_before: u64,
 }
 
 /// Counters written by shard threads and the manager. Relaxed throughout:
@@ -131,6 +147,10 @@ struct ShardGauges {
     vectors_measured: AtomicBool,
     vectors_done: AtomicU64,
     embedded: AtomicU64,
+    /// Waiting for a bulk load to end before embedding.
+    embedding_waiting: AtomicBool,
+    /// The latest embedding failure; cleared by the next round that works.
+    embedding_error: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +187,7 @@ impl DbStats {
             backup_outstanding: AtomicUsize::new(0),
             backup_failed: AtomicBool::new(false),
             restore: BackupProgress::new(),
-            embedding_started: OnceLock::new(),
+            embedding_rate: Mutex::new(None),
         })
     }
 
@@ -334,7 +354,9 @@ impl DbStats {
         let mut embedding_enabled = false;
         let mut vectors_total = 0u64;
         let mut vectors_done = 0u64;
-        let embedded = 0u64;
+        let mut embedded = 0u64;
+        let mut waiting = 0usize;
+        let mut error: Option<String> = None;
         let mut all_measured = true;
         for g in &self.shards {
             let doc_gauge = g.documents.load(Relaxed) as u64;
@@ -369,6 +391,11 @@ impl DbStats {
             embedding_enabled |= g.embedding_enabled.load(Relaxed);
             vectors_total += g.vectors_total.load(Relaxed);
             vectors_done += g.vectors_done.load(Relaxed);
+            embedded += g.embedded.load(Relaxed);
+            waiting += usize::from(g.embedding_waiting.load(Relaxed));
+            if error.is_none() {
+                error.clone_from(&*lock(&g.embedding_error));
+            }
         }
 
         DatabaseStats {
@@ -394,30 +421,42 @@ impl DbStats {
                 shards_embedding: embedding_now,
                 compaction_failures,
                 last_compaction_ms: (last_compaction_ms > 0).then_some(last_compaction_ms),
-                embedding: self.embedding_stats(
-                    embedding_enabled,
-                    vectors_total,
-                    vectors_done,
+                embedding: self.embedding_stats(EmbeddingFigures {
+                    enabled: embedding_enabled,
+                    total: vectors_total,
+                    done: vectors_done,
                     embedded,
-                    all_measured,
-                ),
+                    measured: all_measured,
+                    shards_waiting: waiting,
+                    shards_embedding: embedding_now,
+                    error,
+                }),
             },
         }
     }
 
-    fn embedding_stats(
-        &self,
-        enabled: bool,
-        total: u64,
-        done: u64,
-        embedded: u64,
-        measured: bool,
-    ) -> EmbeddingStats {
+    fn embedding_stats(&self, figures: EmbeddingFigures) -> EmbeddingStats {
+        let EmbeddingFigures {
+            enabled,
+            total,
+            done,
+            embedded,
+            measured,
+            shards_waiting,
+            shards_embedding,
+            error,
+        } = figures;
         let done = done.min(total);
         let status = if !enabled {
             EmbeddingStatus::Disabled
         } else if measured && done >= total {
             EmbeddingStatus::Complete
+        } else if shards_embedding > 0 {
+            EmbeddingStatus::Embedding
+        } else if error.is_some() {
+            EmbeddingStatus::Failing
+        } else if shards_waiting > 0 {
+            EmbeddingStatus::Waiting
         } else {
             EmbeddingStatus::Embedding
         };
@@ -426,12 +465,19 @@ impl DbStats {
             _ if total == 0 => 100,
             _ => (done.saturating_mul(100) / total).min(100) as u8,
         };
-        let rate = self
-            .embedding_started
-            .get()
-            .map(|started| started.elapsed().as_secs_f64())
-            .filter(|secs| *secs >= 2.0)
-            .map(|secs| (embedded as f64) / secs)
+        let anchor = match status {
+            EmbeddingStatus::Complete | EmbeddingStatus::Disabled => None,
+            _ => *lock(&self.embedding_rate),
+        };
+        let rate = anchor
+            .map(|anchor| {
+                (
+                    anchor.started.elapsed().as_secs_f64(),
+                    embedded.saturating_sub(anchor.embedded_before),
+                )
+            })
+            .filter(|(secs, _)| *secs >= 2.0)
+            .map(|(secs, made)| (made as f64) / secs)
             .filter(|rate| rate.is_finite() && *rate > 0.0);
         let eta_seconds = match (status, rate) {
             (EmbeddingStatus::Embedding, Some(rate)) => {
@@ -446,8 +492,40 @@ impl DbStats {
             vectors_done: done,
             docs_per_second: rate.map(|rate| rate.round() as u64),
             eta_seconds,
+            error: match status {
+                EmbeddingStatus::Complete | EmbeddingStatus::Disabled => None,
+                _ => error,
+            },
         }
     }
+}
+
+impl DbStats {
+    /// Whether every shard that embeds has counted its documents and has all their vectors.
+    fn vectors_complete(&self) -> bool {
+        self.shards.iter().all(|g| {
+            !g.embedding_enabled.load(Relaxed)
+                || (g.vectors_measured.load(Relaxed)
+                    && g.vectors_done.load(Relaxed) >= g.vectors_total.load(Relaxed))
+        })
+    }
+}
+
+/// What `DbStats::embedding_stats` reports from, summed over the shards.
+struct EmbeddingFigures {
+    enabled: bool,
+    total: u64,
+    done: u64,
+    embedded: u64,
+    measured: bool,
+    shards_waiting: usize,
+    shards_embedding: usize,
+    error: Option<String>,
+}
+
+/// The value behind `mutex`, also after a panic while it was held: these are statistics.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl ShardStatsHandle {
@@ -517,14 +595,46 @@ impl ShardStatsHandle {
         g.vectors_total.store(total, Relaxed);
         g.vectors_done.store(done, Relaxed);
         g.vectors_measured.store(true, Relaxed);
+        // Reset here, by the shards, not when a status request sees the run complete: a run
+        // nobody watched would otherwise measure the next one from its own start.
+        if self.stats.vectors_complete() {
+            *lock(&self.stats.embedding_rate) = None;
+        }
     }
 
-    /// `round_started` anchors the database-wide rate at the first round that embedded anything.
+    /// `round_started` anchors the database-wide rate at the first round of an embedding run
+    /// that embedded anything.
     pub fn add_embedded(&self, count: u64, round_started: Instant) {
-        self.stats.embedding_started.get_or_init(|| round_started);
+        {
+            let mut anchor = lock(&self.stats.embedding_rate);
+            if anchor.is_none() {
+                let embedded_before = self
+                    .stats
+                    .shards
+                    .iter()
+                    .map(|g| g.embedded.load(Relaxed))
+                    .sum();
+                *anchor = Some(RateAnchor {
+                    started: round_started,
+                    embedded_before,
+                });
+            }
+        }
+        let g = &self.stats.shards[self.index];
+        g.embedded.fetch_add(count, Relaxed);
+        *lock(&g.embedding_error) = None;
+    }
+
+    /// Whether this shard waits for a bulk load to end before embedding.
+    pub fn set_embedding_waiting(&self, waiting: bool) {
         self.stats.shards[self.index]
-            .embedded
-            .fetch_add(count, Relaxed);
+            .embedding_waiting
+            .store(waiting, Relaxed);
+    }
+
+    /// The latest embedding failure of this shard, or None once embedding works again.
+    pub fn set_embedding_error(&self, error: Option<String>) {
+        *lock(&self.stats.shards[self.index].embedding_error) = error;
     }
 }
 
@@ -562,6 +672,83 @@ mod tests {
         assert_eq!(embedding.status, EmbeddingStatus::Complete);
         assert_eq!(embedding.progress, 100);
         assert_eq!(embedding.eta_seconds, None);
+    }
+
+    /// A round start far enough back for the rate to be reported (it needs 2 s of history).
+    fn ten_seconds_ago() -> Instant {
+        let now = Instant::now();
+        now.checked_sub(Duration::from_secs(10)).unwrap_or(now)
+    }
+
+    #[test]
+    fn rate_and_eta_count_the_vectors_of_this_run() {
+        let stats = DbStats::new(2);
+        let (a, b) = (stats.handle(0), stats.handle(1));
+        a.set_embedding_enabled(true);
+        b.set_embedding_enabled(true);
+        a.set_vector_progress(1_000, 250);
+        b.set_vector_progress(1_000, 250);
+        // the run's first round anchors the rate; the start of a later round does not move it
+        a.add_embedded(250, ten_seconds_ago());
+        b.add_embedded(250, Instant::now());
+
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Embedding);
+        // 500 vectors in 10 s, 1,500 to go
+        assert_eq!(embedding.docs_per_second, Some(50));
+        assert!(
+            matches!(embedding.eta_seconds, Some(30..=31)),
+            "{:?}",
+            embedding.eta_seconds
+        );
+
+        a.set_vector_progress(1_000, 1_000);
+        b.set_vector_progress(1_000, 1_000);
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Complete);
+        assert_eq!((embedding.docs_per_second, embedding.eta_seconds), (None, None));
+
+        // new documents start a second run, measured from its own first round
+        a.set_vector_progress(1_200, 1_000);
+        a.add_embedded(100, ten_seconds_ago());
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Embedding);
+        assert_eq!(embedding.docs_per_second, Some(10));
+    }
+
+    #[test]
+    fn waiting_and_failing_show_until_a_round_works() {
+        let stats = DbStats::new(2);
+        let (a, b) = (stats.handle(0), stats.handle(1));
+        a.set_embedding_enabled(true);
+        b.set_embedding_enabled(true);
+        a.set_vector_progress(100, 0);
+        b.set_vector_progress(100, 0);
+
+        a.set_embedding_waiting(true);
+        assert_eq!(
+            stats.snapshot().background.embedding.status,
+            EmbeddingStatus::Waiting
+        );
+
+        b.set_embedding_error(Some("out of memory".to_owned()));
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Failing);
+        assert_eq!(embedding.error.as_deref(), Some("out of memory"));
+
+        // a shard at work decides the status; the other shard's error stays visible
+        a.set_embedding_waiting(false);
+        a.set_activity(BackgroundActivity::Embedding);
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Embedding);
+        assert_eq!(embedding.error.as_deref(), Some("out of memory"));
+
+        // a round that works clears its shard's error
+        a.set_activity(BackgroundActivity::Idle);
+        b.add_embedded(10, Instant::now());
+        let embedding = stats.snapshot().background.embedding;
+        assert_eq!(embedding.status, EmbeddingStatus::Embedding);
+        assert_eq!(embedding.error, None);
     }
 
     #[test]

@@ -15,6 +15,9 @@ pub const DENSITY_BOOST: f32 = 0.5;
 /// 1 + NAME_BONUS × the share of the query's weight the run holds: ×2.5 for a run that holds the
 /// whole query, ×1.5 for one that holds a third of it.
 pub const NAME_BONUS: f32 = 1.5;
+/// Ordering values per cascade tier: hits of the plan's `n`-th tier are numbered from
+/// `n * TIER_STEP` (see `QueryExecutor::rank_cascade`).
+pub const TIER_STEP: usize = 16;
 /// Runs of named words are looked for in queries of at most this many words.
 const MAX_NAMED_QUERY_WORDS: usize = 32;
 
@@ -150,6 +153,19 @@ impl RankPlan {
             words,
         }
     }
+
+    /// Hits numbered below this come from the tiers that match the query as typed, as a whole
+    /// value or exact text (the name and exact tiers): what the query names. Semantic fusion
+    /// keeps them first.
+    pub fn named_tier_limit(&self) -> u8 {
+        let named = self
+            .tiers
+            .iter()
+            .take_while(|tier| matches!(tier, Tier::Name { .. } | Tier::Exact(_)))
+            .count();
+        u8::try_from(named * TIER_STEP).unwrap_or(u8::MAX)
+    }
+
     //this is same as the one below almost but this reads just back
     pub fn phrase_terms(&self) -> Option<&[PhraseTerm]> {
         self.tiers.iter().find_map(|tier| match tier {
@@ -287,4 +303,39 @@ fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
             text: token.text,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn all_of(words: &[&str]) -> Query {
+        Query::And(
+            words
+                .iter()
+                .map(|word| Query::Term((*word).to_owned()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn named_tiers_are_the_name_and_exact_tiers_in_front() {
+        let analyzer = Analyzer::new();
+        let resolved = all_of(&["lord", "ring"]);
+
+        // name, exact (the query has capitals), then the word tiers
+        let typed = RankPlan::cascade("Lord of the Rings", resolved.clone(), &analyzer, true);
+        assert!(matches!(
+            typed.tiers[..3],
+            [Tier::Name { .. }, Tier::Exact(_), Tier::Phrase { .. }]
+        ));
+        assert_eq!(usize::from(typed.named_tier_limit()), 2 * TIER_STEP);
+
+        let lowercase = RankPlan::cascade("lord of the rings", resolved.clone(), &analyzer, true);
+        assert_eq!(usize::from(lowercase.named_tier_limit()), TIER_STEP);
+
+        // without an exact field nothing is named: fusion takes every hit
+        let no_exact_field = RankPlan::cascade("Lord of the Rings", resolved, &analyzer, false);
+        assert_eq!(no_exact_field.named_tier_limit(), 0);
+    }
 }

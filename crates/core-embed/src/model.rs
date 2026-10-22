@@ -13,7 +13,7 @@ use hf_hub::api::sync::ApiBuilder;
 use crate::config::ModelConfig;
 use crate::device::Device;
 use crate::model_error;
-use crate::pooled::{ModelFiles, PooledModel};
+use crate::pooled::{ModelFiles, PooledModel, Pooling};
 use crate::runtime::ensure_runtime;
 
 /// How a model is loaded and run.
@@ -24,7 +24,7 @@ enum Backend {
     /// The same stock model file fastembed would download, extended at load time with
     /// pooling and normalization inside ONNX Runtime. Runs on CUDA when available, otherwise
     /// on the CPU, with the same vectors either way.
-    Pooled(fn() -> EmbeddingModel),
+    Pooled(fn() -> EmbeddingModel, Pooling),
 }
 
 /// A supported embedding model. `id` is what settings and vector file headers store.
@@ -96,9 +96,10 @@ pub(crate) fn load_model(
                 .map(LoadedModel::FastEmbed)
                 .map_err(model_error)
         }
-        Backend::Pooled(model) => PooledModel::load(
+        Backend::Pooled(model, pooling) => PooledModel::load(
             &fetch_model_files(&model(), &cache_dir)?,
             spec.dims,
+            pooling,
             config.max_tokens,
             config.device,
             cpu_threads_per_instance(config.instances),
@@ -160,6 +161,14 @@ fn multilingual_e5_small() -> EmbeddingModel {
     EmbeddingModel::MultilingualE5Small
 }
 
+fn snowflake_arctic_embed_s() -> EmbeddingModel {
+    EmbeddingModel::SnowflakeArcticEmbedS
+}
+
+fn snowflake_arctic_embed_m() -> EmbeddingModel {
+    EmbeddingModel::SnowflakeArcticEmbedM
+}
+
 fn bge_small_en() -> EmbeddingModel {
     EmbeddingModel::BGESmallENV15Q // EmbeddingModel::BGESmallENV15 
 }
@@ -175,9 +184,23 @@ pub static MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "multilingual-e5-small",
         dims: 384,
-        backend: Backend::Pooled(multilingual_e5_small),
+        backend: Backend::Pooled(multilingual_e5_small, Pooling::Mean),
         query_prefix: "query: ",
         document_prefix: "passage: ",
+    },
+    ModelSpec {
+        id: "snowflake-arctic-embed-s",
+        dims: 384,
+        backend: Backend::Pooled(snowflake_arctic_embed_s, Pooling::Cls),
+        query_prefix: "Represent this sentence for searching relevant passages: ",
+        document_prefix: "",
+    },
+    ModelSpec {
+        id: "snowflake-arctic-embed-m",
+        dims: 768,
+        backend: Backend::Pooled(snowflake_arctic_embed_m, Pooling::Cls),
+        query_prefix: "Represent this sentence for searching relevant passages: ",
+        document_prefix: "",
     },
 ];
 

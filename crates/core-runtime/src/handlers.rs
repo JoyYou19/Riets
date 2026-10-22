@@ -1450,6 +1450,7 @@ pub(crate) async fn stats_handler(
                     "vectors_done": background.embedding.vectors_done,
                     "docs_per_second": background.embedding.docs_per_second,
                     "eta_seconds": background.embedding.eta_seconds,
+                    "error": background.embedding.error,
                 },
             },
             "backup": {

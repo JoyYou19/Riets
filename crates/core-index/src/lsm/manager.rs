@@ -39,7 +39,8 @@ pub struct LsmIndex {
     next_doc_id: DocId,
     next_compaction_job_id: u64,
     max_array_row: ArrayRowId,
-    last_ingest: Instant,
+    /// When documents were last added or deleted; None since the index was opened.
+    last_ingest: Option<Instant>,
     vectors: Arc<Vec<SegmentVectors>>,
 
 }
@@ -247,7 +248,7 @@ impl LsmIndex {
             next_segment_id: 0,
             next_compaction_job_id: 0,
             max_array_row: 0,
-            last_ingest: Instant::now(),
+            last_ingest: None,
             vectors: Arc::new(Vec::new()),
         }
     }
@@ -320,7 +321,7 @@ impl LsmIndex {
             next_doc_id,
             next_compaction_job_id: 0,
             max_array_row,
-            last_ingest: Instant::now(),
+            last_ingest: None,
             vectors: Arc::new(vectors),
         })
     }
@@ -379,6 +380,7 @@ impl LsmIndex {
 
     
     pub fn merge_into_memtable(&mut self, other: MemIndex) {
+        self.last_ingest = Some(Instant::now());
         self.mem.merge_from(other);
     }
 
@@ -503,6 +505,7 @@ impl LsmIndex {
 
     #[timed(indexing_documents)]
     pub fn add_immutable_segment(&mut self, segments: Vec<ImmutableSegment>) -> io::Result<()> {
+        self.last_ingest = Some(Instant::now());
         for segment in segments {
             let segment = Arc::new(segment);
             let reader: Arc<dyn SearchReader + Send + Sync> = match &self.root {
@@ -552,16 +555,7 @@ impl LsmIndex {
             return Ok(None);
         };
 
-        let sizes: Vec<Option<u64>> = self.segment_handles
-            .iter()
-            .map(|handle| {
-                match handle {
-                    SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
-                    SegmentHandle::Memory(_) => None,
-                }
-            })
-            .collect();
-
+        let sizes = self.segment_sizes();
         let disk_segments = sizes
             .iter()
             .filter(|size| size.is_some())
@@ -570,14 +564,20 @@ impl LsmIndex {
             return Ok(None);
         }
 
-        let idle = self.last_ingest.elapsed() >= config.idle_merge_after;
+        // Documents stopped arriving: the load the segments came from is over.
+        let quiet = self.quiet_for(config.idle_merge_after);
         let all_disk = disk_segments == sizes.len();
         let max_width = config.max_segments_per_compaction.max(config.min_width);
 
-        let window = if idle && all_disk {
-            // Idle: merge similar-sized neighbours, even just two, but never rewrite a large
-            // segment to absorb a small one.
-            Self::tiered_window(&sizes, config.size_ratio, 2, max_width)
+        let window = if quiet && all_disk {
+            if Self::merge_all_due(&sizes, config.size_ratio) {
+                // After a load: one segment per shard, before embedding reads it.
+                Some((0, sizes.len()))
+            } else {
+                // A few small segments beside a large one: merge them among themselves and
+                // leave the large one, which would otherwise be rewritten for little data.
+                Self::tiered_window(&sizes, config.size_ratio, 2, max_width)
+            }
         } else if self.segment_count() >= config.compact_when_segments_at_least {
             Self::tiered_window(&sizes, config.size_ratio, config.min_width, max_width).or_else(|| {
                 (self.segment_count() > config.max_segments)
@@ -617,6 +617,53 @@ impl LsmIndex {
                 vectors,
             })
         )
+    }
+
+    /// Whether merging every segment into one is worth it: the segments besides the largest
+    /// hold at least 1/`ratio` of what it holds. After a load (segments of similar size) it is;
+    /// for a few small segments beside a large one it is not, until enough of them pile up.
+    /// Each byte is then rewritten at most about `ratio + 1` times by these merges.
+    fn merge_all_due(sizes: &[Option<u64>], ratio: u64) -> bool {
+        let disk: Vec<u64> = sizes.iter().flatten().copied().collect();
+        if disk.len() < 2 {
+            return false;
+        }
+        let largest = disk.iter().copied().max().unwrap_or(0);
+        let rest = disk.iter().sum::<u64>() - largest;
+        rest.saturating_mul(ratio.max(1)) >= largest
+    }
+
+    /// Whether a load is still settling into its final segment: documents arrived within
+    /// `idle_merge_after`, some are still only in memory, or the segments are due to be merged
+    /// into one (`plan_compaction` plans that merge next). Embedding waits for this to end, so
+    /// it reads the merged segment rather than the ones the load leaves behind.
+    pub fn settling(&self, config: &CompactionConfig) -> bool {
+        let in_memory = self.root.is_some()
+            && (self.mem.doc_id_range().is_some()
+                || !self.generations.is_empty()
+                || self
+                    .segment_handles
+                    .iter()
+                    .any(|handle| matches!(handle, SegmentHandle::Memory(_))));
+        !self.quiet_for(config.idle_merge_after)
+            || in_memory
+            || Self::merge_all_due(&self.segment_sizes(), config.size_ratio)
+    }
+
+    /// No document was added or deleted for `period` (or since the index opened).
+    fn quiet_for(&self, period: Duration) -> bool {
+        self.last_ingest.is_none_or(|at| at.elapsed() >= period)
+    }
+
+    /// Each segment's size in bytes, in segment order; None for one still in memory.
+    fn segment_sizes(&self) -> Vec<Option<u64>> {
+        self.segment_handles
+            .iter()
+            .map(|handle| match handle {
+                SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
+                SegmentHandle::Memory(_) => None,
+            })
+            .collect()
     }
 
     /// Cheapest contiguous run of disk segments whose sizes are within
@@ -749,6 +796,7 @@ impl LsmIndex {
 
     #[timed(modifying_documents)]
     pub fn delete_document(&mut self, doc_id: DocId) -> io::Result<()> {
+        self.last_ingest = Some(Instant::now());
         self.deleted.delete(doc_id);
         self.delete_generation += 1;
 
@@ -825,4 +873,131 @@ impl LsmIndex {
 #[timed(flushing)]
 fn drop_flushed_segment(segment: Arc<ImmutableSegment>) {
     drop(segment);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod compaction_rules {
+    use std::time::Duration;
+
+    use super::LsmIndex;
+    use crate::{
+        analyzer::Analyzer,
+        document::{DocumentPart, IndexedDocument, WeightInterval},
+        lsm::compaction::CompactionConfig,
+        mem::MemIndex,
+    };
+
+    fn config(idle_merge_after: Duration) -> CompactionConfig {
+        CompactionConfig {
+            max_segments_per_compaction: 16,
+            compact_when_segments_at_least: 2,
+            size_ratio: 4,
+            min_width: 4,
+            max_segments: 10,
+            idle_merge_after,
+        }
+    }
+
+    /// Adds `count` documents starting at `first` and flushes them into one segment.
+    fn add_segment(index: &mut LsmIndex, analyzer: &Analyzer, first: u64, count: u64) {
+        let mut mem = MemIndex::default();
+        for doc_id in first..first + count {
+            let mut doc = IndexedDocument::new(doc_id);
+            doc.parts.push(DocumentPart {
+                xpath: 0,
+                text: format!("document {doc_id} about rivers and cities and the sea"),
+                weight: WeightInterval::TEXT,
+                exact: false,
+                names: false,
+                gap: 0,
+                segments: Vec::new(),
+            });
+            mem.add_analyzed_document(doc.analyze(analyzer));
+        }
+        index.merge_into_memtable(mem);
+        index.flush().unwrap();
+    }
+
+    #[test]
+    fn a_finished_load_is_merged_into_one_segment() {
+        assert!(LsmIndex::merge_all_due(&[Some(225), Some(478)], 4));
+        assert!(LsmIndex::merge_all_due(&[Some(33), Some(187), Some(452)], 4));
+    }
+
+    #[test]
+    fn small_segments_beside_a_large_one_leave_it_alone() {
+        assert!(!LsmIndex::merge_all_due(&[Some(4_000), Some(8), Some(9)], 4));
+        // until together they hold a quarter of it
+        assert!(LsmIndex::merge_all_due(&[Some(4_000), Some(600), Some(400)], 4));
+        assert!(!LsmIndex::merge_all_due(&[Some(100)], 4));
+        assert!(!LsmIndex::merge_all_due(&[Some(100), None], 4));
+    }
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn segments_merge_into_one_once_documents_stop_arriving() {
+        let root = temp_root("compaction-rules");
+        let analyzer = Analyzer::new();
+        let mut index = LsmIndex::persistent(&root, usize::MAX).unwrap();
+        for part in 0..3 {
+            add_segment(&mut index, &analyzer, part * 50, 50);
+        }
+        assert_eq!(index.segment_count(), 3);
+        let loading = config(Duration::from_secs(3600));
+        let stopped = config(Duration::ZERO);
+
+        // still loading: three similar segments are fewer than a tiered merge needs
+        assert!(index.plan_compaction(loading).unwrap().is_none());
+        assert!(index.settling(&loading));
+        // loading stopped: all three into one, and embedding waits for that merge
+        assert!(index.settling(&stopped));
+        let job = index.plan_compaction(stopped).unwrap().unwrap();
+        assert_eq!(job.selected.len(), 3);
+
+        // reopened: nothing arrived since, so the load is over
+        drop(index);
+        let mut reopened = LsmIndex::persistent(&root, usize::MAX).unwrap();
+        let job = reopened.plan_compaction(loading).unwrap().unwrap();
+        assert_eq!(job.selected.len(), 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn documents_still_in_memory_keep_a_load_settling() {
+        let root = temp_root("compaction-settling");
+        let analyzer = Analyzer::new();
+        let mut index = LsmIndex::persistent(&root, usize::MAX).unwrap();
+        add_segment(&mut index, &analyzer, 0, 2_000);
+        let stopped = config(Duration::ZERO);
+        // one segment, nothing arriving: settled
+        assert!(!index.settling(&stopped));
+
+        // a few new documents not written yet
+        let mut mem = MemIndex::default();
+        let mut doc = IndexedDocument::new(5_000);
+        doc.parts.push(DocumentPart {
+            xpath: 0,
+            text: "a late document".to_owned(),
+            weight: WeightInterval::TEXT,
+            exact: false,
+            names: false,
+            gap: 0,
+            segments: Vec::new(),
+        });
+        mem.add_analyzed_document(doc.analyze(&analyzer));
+        index.merge_into_memtable(mem);
+        assert!(index.settling(&stopped));
+
+        // written: a small segment beside a large one is no reason to wait
+        index.flush().unwrap();
+        assert_eq!(index.segment_count(), 2);
+        assert!(!index.settling(&stopped));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

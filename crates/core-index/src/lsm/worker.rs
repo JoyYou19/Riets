@@ -1,7 +1,6 @@
 use std::{
     io,
     sync::{
-        Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },

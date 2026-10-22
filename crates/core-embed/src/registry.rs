@@ -7,7 +7,7 @@ use std::path::{ Path, PathBuf };
 use std::sync::{ Arc, Mutex };
 
 use crate::config::ModelConfig;
-use crate::embedder::Embedder;
+use crate::embedder::{Embedder, vector_id};
 use crate::model::{ ModelSpec, find_model, known_model_ids };
 
 /// Server-wide set of loaded models. Each model is loaded on first request and then shared.
@@ -72,6 +72,12 @@ impl ModelRegistry {
         let embedder = Arc::new(Embedder::load(spec, self.cache_dir.clone(), &self.config)?);
         loaded.insert(spec.id, Arc::clone(&embedder));
         Ok(embedder)
+    }
+
+    /// The id the default model's vectors carry (see `Embedder::vector_id`), known without
+    /// loading the model: progress can be measured while the model is unavailable.
+    pub fn default_vector_id(&self) -> String {
+        vector_id(self.default_model, &self.config)
     }
 
     pub fn default_embedder(&self) -> io::Result<Arc<Embedder>> {
