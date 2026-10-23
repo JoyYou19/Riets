@@ -12,7 +12,7 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
-use core_index::fuzzy::{ FuzzyExpansion, FuzzySpec };
+use core_index::fuzzy::{ FuzzyExpansion, FuzzySpec, select_expansions };
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ DocId, ShardId, XPathId, shard_of };
 use core_index::vector::{ VectorHit, merge_hits };
@@ -152,7 +152,7 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
         .into_iter()
         .filter(|field| {
             names.is_none_or(|names| {
-                names.iter().any(|name| *name == field.full_path || *name == field.name)
+                names.iter().any(|name| (*name == field.full_path || *name == field.name))
             })
         })
         .map(|field| field.xpath(policy))
@@ -1733,10 +1733,8 @@ impl ShardManager {
             .into_iter()
             .zip(merged)
             .map(|(word, by_term)| {
-                let mut expansions: Vec<FuzzyExpansion> = by_term.into_values().collect();
-
-                core_query::rank_and_cap(&mut expansions, size);
-
+                let candidates = by_term.into_values().map(|e| (e.term, e.edits, e.doc_freq));
+                let expansions = select_expansions(&word, candidates, size);
                 (
                     word,
                     expansions

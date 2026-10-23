@@ -1,12 +1,19 @@
-use ahash::{HashSet, HashSetExt};
-use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
+use ahash::{ HashSet, HashSetExt };
+use levenshtein_automata::{ Distance, LevenshteinAutomatonBuilder };
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions, candidates_within_one, split_prefix},
-    numeric_values::{NumericBound, NumericValue},
+    fuzzy::{
+        DEFAULT_MAX_CANDIDATES,
+        FuzzyExpansion,
+        FuzzyOptions,
+        LevenshteinAutomaton,
+        select_expansions,
+        split_prefix,
+    },
+    numeric_values::{ NumericBound, NumericValue },
     posting::PostingList,
-    types::{ArrayRowId, DocId, XPathId},
+    types::{ ArrayRowId, DocId, XPathId },
     wildcard::WildcardPattern,
 };
 
@@ -66,56 +73,34 @@ pub trait SearchIndex {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
-        //woodoo veids kaa defineet mazy funkkciju
-        let existing = |term: String, edits: u8| -> Option<FuzzyExpansion> {
-            let doc_freq = self.doc_freq(&term, xpath);
+        //one automaton for k = 0, 1 and 2, so all three use the same rules
+        //(transpositions, unicode, prefix lock)
+        let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
 
-            (doc_freq > 0).then(|| FuzzyExpansion::new(term, edits, doc_freq))
-        };
-
-        let mut out = Vec::new();
-
-        //theres a slight, minimal chance that our user wrote "batman" correctly
-        out.extend(existing(term.to_string(), 0));
-
-        if opts.max_edits == 0 {
-            return out;
-        }
-
-        //butman -> b   utman
-        let (prefix, suffix) = split_prefix(term, opts.prefix_length);
-
-        if suffix.is_empty() {
-            return out;
-        }
-
-        //randomly guessing by one character cheap since its like 26*(word_len+2) or sum
-        if opts.max_edits == 1 {
-            for candidate in candidates_within_one(suffix) {
-                out.extend(existing(format!("{prefix}{candidate}"), 1));
+        let mut candidates: Vec<(String, u8, u32)> = Vec::new();
+        for t in self.terms(xpath) {
+            let t: &str = &t;
+            let Some(edits) = aut.distance_to(t) else {
+                continue;
+            };
+            let doc_freq = self.doc_freq(t, xpath);
+            if doc_freq == 0 {
+                continue;
             }
-        } else {
-            //if distance>2 then we compare the already existing words and how far they are from
-            //"utman"
-            let builder = LevenshteinAutomatonBuilder::new(opts.max_edits, true);
-            let dfa = builder.build_dfa(suffix);
-
-            for t in self.terms(xpath) {
-                if let Some(rest) = t.strip_prefix(prefix)
-                    && let Distance::Exact(edits) = dfa.eval(rest)
-                {
-                    out.extend(existing(t, edits));
-                }
+            candidates.push((t.to_owned(), edits, doc_freq));
+            if candidates.len() >= DEFAULT_MAX_CANDIDATES {
+                break;
             }
         }
 
-        //sort correctly
-        out.sort_by(|a, b| a.term.cmp(&b.term).then_with(|| a.edits.cmp(&b.edits)));
-        out.dedup_by(|a, b| a.term == b.term);
-
-        out
+        //keeps the exact term if it exists, then the best corrections within
+        //SCORE_MARGIN of the top score, up to max_expansions
+        candidates
+            .into_iter()
+            .map(|(t, edits, doc_freq)| FuzzyExpansion::new(t, edits, doc_freq))
+            .collect()
     }
 
     //Docs whose indexed term is within `opts.max_edits` of `term`.
@@ -155,7 +140,7 @@ pub trait SearchNumeric {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> PostingList;
 
     //quick docid+xpath->numeric_value
