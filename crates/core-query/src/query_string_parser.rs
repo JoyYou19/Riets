@@ -15,6 +15,11 @@ use core_index::{
 //decide between prefix (dat*), a wildcard (da?ab*e), or just a word
 #[timed(search)]
 fn classify_word(word: &str) -> Query {
+    // a pattern is one word: text with spaces is a sentence, and its "[in Australia]" or
+    // "really?" are punctuation, not a pattern that has to match one whole indexed word
+    if word.trim().contains(char::is_whitespace) {
+        return Query::Term(word.to_string());
+    }
     let pattern = WildcardPattern::parse(word);
     if pattern.is_prefix_only() {
         Query::Prefix(pattern.prefix().to_string())
@@ -341,4 +346,30 @@ fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
                 .unwrap_or(DEFAULT_MAX_EXPANSIONS),
         },
     ))
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    #[test]
+    fn sentences_are_words_not_patterns() {
+        for text in [
+            "the bushfires [in Australia] were caused by arsonists",
+            "is it warming? yes it is",
+            "CO2 does not cause climate change, it RESPONDS to it [...]",
+            "five * five",
+        ] {
+            assert!(matches!(classify_word(text), Query::Term(_)), "{text}");
+        }
+    }
+
+    #[test]
+    fn single_words_keep_their_patterns() {
+        assert!(matches!(classify_word("dat*"), Query::Prefix(_)));
+        assert!(matches!(classify_word("ca[tb]"), Query::Wildcard(_)));
+        assert!(matches!(classify_word("c?t"), Query::Wildcard(_)));
+        // the last character never makes a word a pattern: "really?" is a question
+        assert!(matches!(classify_word("really?"), Query::Term(_)));
+    }
 }

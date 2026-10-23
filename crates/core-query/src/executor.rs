@@ -1678,9 +1678,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 });
             }
 
-            // within "any word", pages with more of the words come first
+            // within "any word", pages holding more of the query's weight come first
+            let mut missing_levels: HashMap<DocId, u8> = HashMap::new();
             if let (Tier::Any(_), Some(terms)) = (tier, plan.phrase_terms()) {
-                self.order_by_words_matched(&mut hits, terms, &plain_xpaths);
+                missing_levels = self.order_by_words_matched(&mut hits, terms, &plain_xpaths);
             }
 
             for mut hit in hits {
@@ -1688,9 +1689,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     continue;
                 }
                 hit.tier = match (tier, plan.phrase_terms()) {
-                    (Tier::Any(_), Some(terms)) => {
-                        let missing = terms.len().saturating_sub(hit.matched_terms);
-                        tier_number.saturating_add(missing.min(TIER_STEP - 1) as u8)
+                    (Tier::Any(_), Some(_)) => {
+                        let missing = missing_levels.get(&hit.doc_id).copied().unwrap_or(0);
+                        tier_number.saturating_add(missing)
                     }
                     // rank_retrieve leaves tier 0; the name tier sets its level (0 or 1)
                     _ => tier_number.saturating_add(hit.tier),
@@ -1930,45 +1931,67 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 .or_insert(hit);
         }
     }
-    //so fuzzy dont do bullshit if everything correct
-    /// Orders hits by how many different query words they contain (in any plain field), then by
-    /// score: a page with four of five words comes before a title that is one rare word.
+    /// Orders hits by how much of the query's weight they hold (each word weighed by its idf in
+    /// the plain field where it is most common, as the coverage pool weighs it), then by score:
+    /// a page missing only common words ("the year", "was") comes before one missing the rare
+    /// word the query is about. Returns each hit's level within the tier, 0 (holds everything)
+    /// to TIER_STEP - 1 (holds nothing), so merges across shards and pages keep the order.
     fn order_by_words_matched(
         &self,
         hits: &mut [SearchHit],
         terms: &[PhraseTerm],
         xpaths: &[XPathId]
-    ) {
-        // each word's list in each field, read once for all candidates
-        let words: Vec<Vec<Cow<'a, PostingList>>> = terms
+    ) -> HashMap<DocId, u8> {
+        let stats = self.stats();
+        // each word's list in each field, read once for all candidates, and its weight
+        let words: Vec<(Vec<Cow<'a, PostingList>>, f32)> = terms
             .iter()
             .map(|term| {
-                xpaths
-                    .iter()
-                    .map(|&xpath| self.fetch_term_list(&term.text, xpath).0)
-                    .collect()
+                let mut lists = Vec::with_capacity(xpaths.len());
+                let mut weight: Option<f32> = None;
+                for &xpath in xpaths {
+                    let (list, doc_freq) = self.fetch_term_list(&term.text, xpath);
+                    let docs = stats.doc_count(xpath) as f32;
+                    if doc_freq > 0 && docs > 0.0 {
+                        let df = (doc_freq as f32).min(docs);
+                        let idf = ((docs - df + 0.5) / (df + 0.5) + 1.0).ln();
+                        weight = Some(weight.map_or(idf, |known| known.min(idf)));
+                    }
+                    lists.push(list);
+                }
+                (lists, weight.unwrap_or(0.0))
             })
             .collect();
+        let total: f32 = words.iter().map(|(_, weight)| weight).sum();
 
+        let mut levels: HashMap<DocId, u8> = HashMap::with_capacity(hits.len());
         for hit in hits.iter_mut() {
-            hit.matched_terms = words
-                .iter()
-                .filter(|fields| {
-                    fields.iter().any(|list| {
-                        list.items()
-                            .binary_search_by_key(&hit.doc_id, |posting| posting.doc_id)
-                            .is_ok()
-                    })
-                })
-                .count();
+            let mut held = 0.0f32;
+            let mut count = 0usize;
+            for (lists, weight) in &words {
+                let present = lists.iter().any(|list| {
+                    list.items()
+                        .binary_search_by_key(&hit.doc_id, |posting| posting.doc_id)
+                        .is_ok()
+                });
+                if present {
+                    held += weight;
+                    count += 1;
+                }
+            }
+            hit.matched_terms = count;
+            let missing = if total > 0.0 { (1.0 - held / total).clamp(0.0, 1.0) } else { 0.0 };
+            let level = (missing * (TIER_STEP - 1) as f32).round() as u8;
+            levels.insert(hit.doc_id, level);
         }
 
         hits.sort_by(|a, b| {
-            b.matched_terms
-                .cmp(&a.matched_terms)
+            levels[&a.doc_id]
+                .cmp(&levels[&b.doc_id])
                 .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
                 .then_with(|| a.doc_id.cmp(&b.doc_id))
         });
+        levels
     }
 
     fn all_words_known(&self, raw: &str, xpaths: &[XPathId]) -> bool {
