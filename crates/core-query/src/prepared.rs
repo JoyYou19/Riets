@@ -1,10 +1,6 @@
 use std::collections::HashMap;
-
 use core_index::{posting::PostingList, types::XPathId};
-
-use core_index::fuzzy::FuzzyExpansion;
-
-use crate::corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey};
+use crate::corpus_stats::{CorpusStats, FieldTotals, LeafKey};
 
 /// What an index learned about a query while contributing to the statistics of a search: those
 /// statistics and the posting lists it read to get them. The lists are kept so that counting
@@ -31,14 +27,6 @@ impl PreparedQuery {
         self.lists.entry(xpath).or_default().insert(key, list);
     }
 
-    pub(crate) fn insert_fuzzy(
-        &mut self,
-        xpath: XPathId,
-        key: FuzzyKey,
-        expansions: Vec<FuzzyExpansion>,
-    ) {
-        self.stats.insert_fuzzy(xpath, key, expansions);
-    }
 
     pub(crate) fn list(&self, xpath: XPathId, key: &LeafKey) -> Option<&PostingList> {
         self.lists.get(&xpath).and_then(|keys| keys.get(key))

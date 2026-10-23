@@ -78,17 +78,7 @@ impl CorpusStats {
             .insert(key, doc_freq);
     }
 
-    pub(crate) fn insert_fuzzy(
-        &mut self,
-        xpath: XPathId,
-        key: FuzzyKey,
-        expansions: Vec<FuzzyExpansion>,
-    ) {
-        let words = self.fuzzy.entry(xpath).or_default().entry(key).or_default();
-        for expansion in expansions {
-            words.insert(expansion.term.clone(), expansion);
-        }
-    }
+  
 
     /// Adds another shard's statistics to these.
     pub fn merge(&mut self, other: &CorpusStats) {

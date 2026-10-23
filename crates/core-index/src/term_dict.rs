@@ -11,17 +11,14 @@
 //!    u16 max_weight) * term_count
 //! ```
 
-use std::{collections::BTreeMap, fmt, io};
+use std::{ collections::BTreeMap, fmt, io, sync::OnceLock };
 
 pub const TERM_META_LEN: usize = 8 + 4 + 4 + 2;
 
-use fst::{IntoStreamer, Map, MapBuilder, Streamer};
-use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
+use fst::{ IntoStreamer, Map, MapBuilder, Streamer };
+use levenshtein_automata::{ Distance, LevenshteinAutomatonBuilder };
 
-use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions, split_prefix},
-    types::XPathId,
-};
+use crate::{ fuzzy::{ FuzzyExpansion, FuzzyOptions, split_prefix }, types::XPathId };
 
 //Where a term's postings live inside the segment, plus how many docs it hits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -36,6 +33,11 @@ pub struct TermMeta {
 fn fst_err(err: fst::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
+fn builder(max_edits: u8) -> &'static LevenshteinAutomatonBuilder {
+       static BUILDERS: [OnceLock<LevenshteinAutomatonBuilder>; 4] = [const { OnceLock::new() }; 4];
+       let k = max_edits.min(3);
+       BUILDERS[k as usize].get_or_init(|| LevenshteinAutomatonBuilder::new(k, true))
+   }
 
 #[derive(Default)]
 pub struct TermDict {
@@ -62,18 +64,14 @@ impl TermDict {
     }
 
     pub fn build<K, I>(terms: I) -> io::Result<Self>
-    where
-        K: AsRef<[u8]>,
-        I: IntoIterator<Item = (K, TermMeta)>,
+        where K: AsRef<[u8]>, I: IntoIterator<Item = (K, TermMeta)>
     {
         let mut builder = MapBuilder::memory();
         let mut metas: Vec<TermMeta> = Vec::new();
 
         for (term, meta) in terms {
             // The ord is simply the position in sorted term order.
-            builder
-                .insert(term.as_ref(), metas.len() as u64)
-                .map_err(fst_err)?;
+            builder.insert(term.as_ref(), metas.len() as u64).map_err(fst_err)?;
             metas.push(meta);
         }
 
@@ -144,7 +142,10 @@ impl TermDict {
         let mut stream = map.stream();
 
         while let Some((term, ord)) = stream.next() {
-            let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+            let meta = self.metas
+                .get(ord as usize)
+                .copied()
+                .unwrap_or_default();
             out.push((String::from_utf8_lossy(term).into_owned(), meta));
         }
 
@@ -165,7 +166,10 @@ impl TermDict {
                 break;
             }
 
-            let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+            let meta = self.metas
+                .get(ord as usize)
+                .copied()
+                .unwrap_or_default();
             out.push((String::from_utf8_lossy(term).into_owned(), meta));
         }
 
@@ -194,7 +198,7 @@ impl TermDict {
     pub fn fuzzy_expansions(
         &self,
         term: &str,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<(FuzzyExpansion, TermMeta)> {
         let Some(map) = self.map.as_ref() else {
             return Vec::new();
@@ -220,8 +224,7 @@ impl TermDict {
         }
 
         // transposition = true keeps the current Damerau behaviour.
-        let builder = LevenshteinAutomatonBuilder::new(opts.max_edits, true);
-        let dfa = builder.build_dfa(suffix);
+       let dfa =builder(opts.max_edits).build_dfa(suffix); 
 
         let mut out = Vec::new();
 
@@ -238,7 +241,10 @@ impl TermDict {
                     continue;
                 };
 
-                let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+                let meta = self.metas
+                    .get(ord as usize)
+                    .copied()
+                    .unwrap_or_default();
                 let term = String::from_utf8_lossy(t).into_owned();
 
                 out.push((FuzzyExpansion::new(term, edits, meta.doc_freq), meta));
@@ -261,7 +267,10 @@ impl TermDict {
             };
 
             if let Distance::Exact(edits) = dfa.eval(rest) {
-                let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+                let meta = self.metas
+                    .get(ord as usize)
+                    .copied()
+                    .unwrap_or_default();
                 out.push((FuzzyExpansion::new(t, edits, meta.doc_freq), meta));
             }
         }

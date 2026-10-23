@@ -12,7 +12,7 @@ use core_index::analyzer::Analyzer;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
-use core_index::fuzzy::{ FuzzyExpansion, FuzzySpec };
+use core_index::fuzzy::{ FuzzyExpansion, FuzzySpec, select_expansions };
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{ DocId, ShardId, XPathId, shard_of };
 use core_index::vector::{ VectorHit, merge_hits };
@@ -1635,8 +1635,7 @@ impl ShardManager {
         Ok(merged)
     }
 
-    //INFO: bisk porno funkcija, no analyzer parvers kkadu running par run un piedaavaa fun/gun...
-    //tapec mums te ir max changes 1 prieks taa vai parbaudit analyzed/ne analyzed vardu
+   
     #[timed(search)]
     pub async fn did_you_mean(
         &self,
@@ -1724,19 +1723,14 @@ impl ShardManager {
         if let Some(e) = first_err {
             return Err(e);
         }
-
-        //WARN: bisk porniks saakas
-        const MAX_ANALYSIS_LOSS: usize = 1;
-
         //suggestions per analysed word, before we decide which ones to trust.
-        let mut by_word: HashMap<String, Vec<String>> = words
+
+        let by_word: HashMap<String, Vec<String>> = words
             .into_iter()
             .zip(merged)
             .map(|(word, by_term)| {
-                let mut expansions: Vec<FuzzyExpansion> = by_term.into_values().collect();
-
-                core_query::rank_and_cap(&mut expansions, size);
-
+                let candidates = by_term.into_values().map(|e| (e.term, e.edits, e.doc_freq));
+                let expansions = select_expansions(&word, candidates, size);
                 (
                     word,
                     expansions
@@ -1759,30 +1753,28 @@ impl ShardManager {
                 continue;
             };
 
-            //if a word from suggestions was changed too much we just keep the original
-            let lost = piece.chars().count().saturating_sub(token.text.chars().count());
-
-            if lost > MAX_ANALYSIS_LOSS {
-                pieces.push(piece.to_string());
-                continue;
-            }
-
-            let Some(found) = by_word.remove(&token.text) else {
+            // `get`, not `remove`: a typo typed twice is corrected both times
+            let Some(found) = by_word.get(&token.text) else {
                 pieces.push(piece.to_string());
                 continue;
             };
 
+            // its own term ranks first: the word is spelled right, keep it as typed
+            // ("running", not its stem "run") and suggest nothing
             match found.first() {
-                Some(top) => {
+                Some(top) if *top != token.text => {
                     changed = true;
                     pieces.push(top.clone());
                 }
-                None => pieces.push(piece.to_string()),
+                _ => {
+                    pieces.push(piece.to_string());
+                    continue;
+                }
             }
 
             reported.push(WordSuggestions {
                 word: token.text,
-                suggestions: found,
+                suggestions: found.clone(),
             });
         }
 

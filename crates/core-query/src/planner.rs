@@ -119,9 +119,6 @@ impl RankPlan {
                 });
             }
         }
-
-        tiers.push(Tier::All(resolved.clone()));
-
         tiers.push(Tier::Fuzzy(Query::Fuzzy(
             raw.trim().to_string(),
             Fuzziness::Auto,
@@ -130,6 +127,9 @@ impl RankPlan {
                 max_expansions: DEFAULT_MAX_EXPANSIONS,
             },
         )));
+        tiers.push(Tier::All(resolved.clone()));
+
+        
 
         if (3..=MAX_ALL_BUT_ONE_WORDS).contains(&parts.len()) {
             // the words; the executor keeps documents with all of them but at most one, in one
