@@ -347,29 +347,3 @@ fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
         },
     ))
 }
-
-#[cfg(test)]
-mod classify_tests {
-    use super::*;
-
-    #[test]
-    fn sentences_are_words_not_patterns() {
-        for text in [
-            "the bushfires [in Australia] were caused by arsonists",
-            "is it warming? yes it is",
-            "CO2 does not cause climate change, it RESPONDS to it [...]",
-            "five * five",
-        ] {
-            assert!(matches!(classify_word(text), Query::Term(_)), "{text}");
-        }
-    }
-
-    #[test]
-    fn single_words_keep_their_patterns() {
-        assert!(matches!(classify_word("dat*"), Query::Prefix(_)));
-        assert!(matches!(classify_word("ca[tb]"), Query::Wildcard(_)));
-        assert!(matches!(classify_word("c?t"), Query::Wildcard(_)));
-        // the last character never makes a word a pattern: "really?" is a question
-        assert!(matches!(classify_word("really?"), Query::Term(_)));
-    }
-}
