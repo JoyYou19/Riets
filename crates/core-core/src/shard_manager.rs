@@ -152,7 +152,7 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
         .into_iter()
         .filter(|field| {
             names.is_none_or(|names| {
-                names.iter().any(|name| (*name == field.full_path || *name == field.name))
+                names.iter().any(|name| *name == field.full_path || *name == field.name)
             })
         })
         .map(|field| field.xpath(policy))
@@ -1635,8 +1635,7 @@ impl ShardManager {
         Ok(merged)
     }
 
-    //INFO: bisk porno funkcija, no analyzer parvers kkadu running par run un piedaavaa fun/gun...
-    //tapec mums te ir max changes 1 prieks taa vai parbaudit analyzed/ne analyzed vardu
+   
     #[timed(search)]
     pub async fn did_you_mean(
         &self,
@@ -1724,12 +1723,9 @@ impl ShardManager {
         if let Some(e) = first_err {
             return Err(e);
         }
-
-        //WARN: bisk porniks saakas
-        const MAX_ANALYSIS_LOSS: usize = 1;
-
         //suggestions per analysed word, before we decide which ones to trust.
-        let mut by_word: HashMap<String, Vec<String>> = words
+
+        let by_word: HashMap<String, Vec<String>> = words
             .into_iter()
             .zip(merged)
             .map(|(word, by_term)| {
@@ -1757,30 +1753,28 @@ impl ShardManager {
                 continue;
             };
 
-            //if a word from suggestions was changed too much we just keep the original
-            let lost = piece.chars().count().saturating_sub(token.text.chars().count());
-
-            if lost > MAX_ANALYSIS_LOSS {
-                pieces.push(piece.to_string());
-                continue;
-            }
-
-            let Some(found) = by_word.remove(&token.text) else {
+            // `get`, not `remove`: a typo typed twice is corrected both times
+            let Some(found) = by_word.get(&token.text) else {
                 pieces.push(piece.to_string());
                 continue;
             };
 
+            // its own term ranks first: the word is spelled right, keep it as typed
+            // ("running", not its stem "run") and suggest nothing
             match found.first() {
-                Some(top) => {
+                Some(top) if *top != token.text => {
                     changed = true;
                     pieces.push(top.clone());
                 }
-                None => pieces.push(piece.to_string()),
+                _ => {
+                    pieces.push(piece.to_string());
+                    continue;
+                }
             }
 
             reported.push(WordSuggestions {
                 word: token.text,
-                suggestions: found,
+                suggestions: found.clone(),
             });
         }
 

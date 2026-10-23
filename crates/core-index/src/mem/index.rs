@@ -124,7 +124,10 @@ impl SearchIndex for MemIndex {
         }
     }
 
-    select_expansions(term, candidates, opts.max_expansions)
+    candidates
+       .into_iter()
+       .map(|(t, edits, doc_freq)| FuzzyExpansion::new(t, edits, doc_freq))
+       .collect()
 }
     // No TermMeta here — MemIndex stores full PostingLists directly, so
     // doc_freq is just the stored list's length. Uses the private lookup()

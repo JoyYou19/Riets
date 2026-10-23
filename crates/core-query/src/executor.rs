@@ -1,5 +1,5 @@
 use core_index::{
-    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingList, ops::intersection }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ DocId, XPathId, position_span, position_start },
+    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingList, ops::{intersection, union_many} }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ DocId, XPathId, position_span, position_start },
 };
 use std::{ borrow::Cow, cmp::Ordering, collections::{ BinaryHeap, HashMap, hash_map::Entry }, u32 };
 
@@ -513,7 +513,19 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
         let lists: Vec<PostingList> = words
             .iter()
-            .map(|w| { self.index.lookup_fuzzy(w, xpath, fuzzy_options(w, fuzziness, spec)) })
+            .map(|w| {
+                let opts = fuzzy_options(w, fuzziness, spec);
+                let candidates = self
+                    .fuzzy_candidates(w, xpath, opts)
+                    .into_iter()
+                    .map(|e| (e.term, e.edits, e.doc_freq));
+                let picks = select_expansions(w, candidates, spec.max_expansions);
+                let lists: Vec<PostingList> = picks
+                    .iter()
+                    .map(|p| self.index.lookup(&p.term, xpath))
+                    .collect();
+                union_many(lists.iter())
+            })
             .collect();
 
         let mut iter = lists.into_iter();
@@ -2210,8 +2222,6 @@ pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> Fuzzy
         max_expansions: spec.max_expansions,
     }
 }
-
-
 
 //fuzzable words for did_you_mean
 pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {

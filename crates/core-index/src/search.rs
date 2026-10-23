@@ -1,5 +1,4 @@
 use ahash::{ HashSet, HashSetExt };
-use levenshtein_automata::{ Distance, LevenshteinAutomatonBuilder };
 use roaring::RoaringTreemap;
 
 use crate::{
@@ -8,9 +7,7 @@ use crate::{
         FuzzyExpansion,
         FuzzyOptions,
         LevenshteinAutomaton,
-        select_expansions,
-        split_prefix,
-    },
+           },
     numeric_values::{ NumericBound, NumericValue },
     posting::PostingList,
     types::{ ArrayRowId, DocId, XPathId },
@@ -95,8 +92,7 @@ pub trait SearchIndex {
             }
         }
 
-        //keeps the exact term if it exists, then the best corrections within
-        //SCORE_MARGIN of the top score, up to max_expansions
+
         candidates
             .into_iter()
             .map(|(t, edits, doc_freq)| FuzzyExpansion::new(t, edits, doc_freq))
