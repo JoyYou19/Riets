@@ -710,7 +710,6 @@ dependencies = [
  "levenshtein_automata",
  "lz4_flex",
  "memmap2",
- "parking_lot",
  "rayon",
  "roaring",
  "rust-stemmers",

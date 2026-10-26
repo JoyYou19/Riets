@@ -10,7 +10,6 @@ pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;
 pub mod background_worker;
 pub mod embed;
-pub mod segment_compaction;
 pub mod shard_manager_helpers;
 /// Returns the shard that owns `external_id` in a database with `num_shards` shards.
 ///

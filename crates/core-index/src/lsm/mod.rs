@@ -5,7 +5,7 @@ pub mod index_worker;
 pub mod manager;
 mod manifest;
 pub mod snapshot;
-pub mod worker;
+
 
 //pub use compaction::compact_segments;
 pub use manager::LsmIndex;

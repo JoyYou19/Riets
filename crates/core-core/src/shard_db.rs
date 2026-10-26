@@ -13,11 +13,7 @@ use core_timing::timed;
 use std::{ collections::VecDeque, io, path::{ Path, PathBuf }, sync::Arc, time::{ Duration, Instant, SystemTime } };
 
 use crate::{
-    background_worker::BackgroundWorker,
-    metrics::{ BackgroundStats, DatabaseMetrics, ShardStatsHandle },
-    options::DatabaseOptions,
-    reindex::{ CompletedShardReindex, ReindexParams },
-    shared_state::SharedShardState,
+    background_worker::{BackgroundConfig, BackgroundWorker}, metrics::{ BackgroundActivity, BackgroundStats, DatabaseMetrics, DbStats, ShardStatsHandle }, options::DatabaseOptions, reindex::{ CompletedShardReindex, ReindexParams, ReindexTask }, shard_worker::ShardCmd, shared_state::SharedShardState,
 };
 use core_embed::ModelRegistry;
 use core_logs::logger;
@@ -71,6 +67,9 @@ pub struct ShardDb {
     failed: bool,
     /// Checkpoints started but not yet finished, oldest first. At most one is in flight.
     pending_checkpoints: VecDeque<PendingCheckpoint>,
+    command_tx:Option<crossbeam_channel::Sender<ShardCmd>>,
+    //inserts during reindex 
+    wal_reindex:Option<u64>
 }
 struct PendingCheckpoint{
     through_segment:u64,
@@ -93,7 +92,7 @@ impl ShardDb {
         options: DatabaseOptions,
         policy: IndexPolicy,
         stats: ShardStatsHandle,
-        models: Arc<ModelRegistry>
+        models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = format!("shard-{}", shard_id);
@@ -134,7 +133,9 @@ impl ShardDb {
             pending: 0,
             last_write: Instant::now(),
             failed: false,
-            pending_checkpoints:VecDeque::new()
+            pending_checkpoints:VecDeque::new(),
+            command_tx:None,
+            wal_reindex:None
         })
     }
 
@@ -192,7 +193,9 @@ impl ShardDb {
             backup,
             last_write: Instant::now(),
             failed: false,
-            pending_checkpoints:VecDeque::new()
+            pending_checkpoints:VecDeque::new(),
+            command_tx:None,
+            wal_reindex:None
         })
     }
 
@@ -207,6 +210,23 @@ impl ShardDb {
             )?;
         }
         self.failed=false;
+        // Decoded before anything is opened: a Clear in the WAL means a clear that crashed
+        // halfway, and it is finished first, so only what was written after it comes back.
+        let mut records = Vec::new();
+        for payload in self.wal
+            .replay_all()
+            .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))? {
+            let (record, _): (WalRecord, usize) = bincode
+                ::decode_from_slice(&payload, bincode::config::standard())
+                .map_err(|e| CorelamoError::Internal(format!("failed to decode WAL record: {e}")))?;
+            records.push(record);
+        }
+        if let Some(last_clear) = records.iter().rposition(|r| matches!(r, WalRecord::Clear)) {
+            info!(self.log, "WAL replay: finishing an interrupted clear";
+                "shard_id" => self.shard_id, "records_dropped" => last_clear + 1);
+            self.remove_data_files();
+            records.drain(..=last_clear);
+        }
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents");
         let analyzer = self.analyzer();
@@ -229,9 +249,7 @@ impl ShardDb {
         )?;
 
         self.pending_checkpoints.clear();
-        let records = self.wal
-            .replay_all()
-            .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
+        
         let replayed_any = !records.is_empty();
 
         info!(self.log, "WAL recovery started";
@@ -241,13 +259,7 @@ impl ShardDb {
             "records_to_replay" => records.len(),
         );
 
-        for payload in records {
-            let (record, _): (WalRecord, usize) = bincode
-                ::decode_from_slice(&payload, bincode::config::standard())
-                .map_err(|e| {
-                    CorelamoError::Internal(format!("failed to decode WAL record: {e}"))
-                })?;
-
+        for record in records {
             match record {
                 WalRecord::Create(inputs) => {
                     info!(self.log, "WAL replay: Create"; "shard_id" => self.shard_id, "documents" => inputs.len());
@@ -381,7 +393,10 @@ impl ShardDb {
         if let Some(worker) = self.background_worker.take() {
             worker.stop()?;
             info!(self.log, "background worker stopped"; "shard_id" => self.shard_id);
+
         }
+        self.stats.set_activity(BackgroundActivity::Idle);
+        self.wal_reindex=None;
         if let Err(e) = self.wait_checkpoints() {
             warn!(self.log, "checkpoint failed during stop; WAL kept for replay";
                 "shard_id" => self.shard_id, "error" => %e);
@@ -448,6 +463,9 @@ impl ShardDb {
     #[timed(database_lifecycle)]
     pub fn set_policy(&mut self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
         policy.validate()?;
+          if self.wal_reindex.is_some() {
+            return Err(CorelamoError::Busy("a reindex is running on this shard".into()));
+        }
         if let Some(db) = &mut self.db {
             db.set_policy(policy.clone())?;
         }
@@ -465,6 +483,9 @@ impl ShardDb {
         options: DatabaseOptions,
         user: String
     ) -> Result<(), CorelamoError> {
+          if self.wal_reindex.is_some() {
+            return Err(CorelamoError::Busy("a reindex is running on this shard".into()));
+        }
         info!(self.log, "Options set"; "User"=>user);
         self.options = options;
         Ok(())
@@ -736,27 +757,22 @@ impl ShardDb {
     }
 
     #[timed(reindex)]
-    pub fn prepare_reindex(&mut self) -> Result<ReindexParams, CorelamoError> {
+
+    pub fn prepare_reindex(
+        &mut self,
+        progress: Arc<ReindexProgress>,
+        stats: Arc<DbStats>,
+    ) -> Result<(), CorelamoError> {
         if !self.is_running() {
-            return Err(
-                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
-            );
+            return Err(CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id)));
         }
-
-        //let t0 = std::time::Instant::now();
+        if self.background_worker.is_none() {
+            return Err(CorelamoError::Internal(format!("shard {} has no background worker", self.shard_id)));
+        }
         self.flush()?;
-        //eprintln!("flush: {:?}", t0.elapsed());
-
-        //let t1 = std::time::Instant::now();
-        if let Some(worker) = self.background_worker.take() {
-            worker.stop_async();
-            self.stats.set_compaction_enabled(false);
-        }
-        //eprintln!("compaction stop: {:?}", t1.elapsed());
-
         self.generation += 1;
-
-        Ok(ReindexParams {
+        self.wal_reindex= Some(self.generation);
+        let params = ReindexParams {
             shard_id: self.shard_id,
             shard_root: self.root.clone(),
             policy: self.policy.clone(),
@@ -764,7 +780,15 @@ impl ShardDb {
             wal_watermark: self.wal.durable_offset(),
             doc_count: self.document_count(),
             generation: self.generation,
-        })
+        };
+        let submitted = match self.background_worker.as_ref() {
+            Some(worker) => worker.submit_reindex(ReindexTask { params, progress, stats }),
+            None => Err(CorelamoError::Internal(format!("shard {} has no background worker", self.shard_id))),
+        };
+        if submitted.is_err() {
+            self.wal_reindex = None;
+        }
+        submitted
     }
 
     #[timed(reindex)]
@@ -790,6 +814,8 @@ impl ShardDb {
 
         // reopen against the new index
         self.start()?;
+        self.wal_reindex=None;
+        self.flush()?;
         std::fs::remove_dir_all(&old_root).ok();
         self.publish_stats();
         self.last_write = Instant::now();
@@ -800,6 +826,17 @@ impl ShardDb {
         );
         Ok(())
     }
+    pub fn abondoned_reindex(&mut self, generation: u64) {
+        if generation != self.generation {
+            return;
+        }
+        self.wal_reindex = None;
+        let _ = std::fs::remove_dir_all(self.root.join("index.new"));
+        info!(self.log, "reindex abandoned"; "shard_id" => self.shard_id, "generation" => generation);
+        // the worker that built it may be parked waiting for a commit that failed
+        
+    }
+
     #[timed(modifying_database_documents)]
     pub fn replace(
         &mut self,
@@ -1030,6 +1067,7 @@ impl ShardDb {
             }
         }
         self.pending_checkpoints.clear();
+        self.wal_reindex=None;
         if let Some(db) = self.db.take() {
             if let Err(e) = db.shutdown() {
                 warn!(self.log, "clear: shutdown of old database failed";
@@ -1038,23 +1076,7 @@ impl ShardDb {
         }
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents");
-
-        if index_root.exists() {
-            let _ = std::fs::remove_dir_all(&index_root);
-        }
-        if store_path.exists() {
-            let _ = std::fs::remove_dir_all(&store_path);
-        }
-        if self.root.join("index.new").exists() {
-            let _ = std::fs::remove_dir_all(self.root.join("index.new"));
-        }
-        if self.root.join("index.old").exists() {
-            let _ = std::fs::remove_dir_all(self.root.join("index.old"));
-        }
-        if self.root.join("documents.maps.bin").exists() {
-            let _ = std::fs::remove_file(self.root.join("documents.maps.bin"));
-        }
-
+        self.remove_data_files();
         // outright WAL reset
        
         self.wal
@@ -1115,7 +1137,11 @@ impl ShardDb {
                 warn!(self.log, "background worker exited with error before backup"; "error" => %err);
             }
         }
-
+        // Stopping the worker would cancel the reindex it is building, and the index about to
+        // be copied is the one the reindex replaces: skip this backup, the next one runs.
+        if self.wal_reindex.is_some() {
+            return Err(CorelamoError::Busy("a reindex is running; full backup skipped".into()));
+        }
         let result = self.run_full_backup(&shard_backup_path, &backup_id);
         self.restart_background();
 
@@ -1153,15 +1179,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    pub fn abondoned_reindex(&mut self, generation: u64) {
-        if generation != self.generation {
-            return;
-        }
-        info!(self.log, "reindex abandoned, restarting background work";
-        "shard_id" => self.shard_id, "generation" => generation);
-        self.restart_background();
-    }
-
+   
     /// Starts the background worker again after a reindex or backup paused it.
     fn restart_background(&mut self) {
         if self.background_worker.is_some() {
@@ -1174,6 +1192,14 @@ impl ShardDb {
         }
         self.start_background();
     }
+    pub fn replace_background(&mut self) {
+        if self.db.is_some() {
+            self.start_background();
+        } else if let Some(worker) = self.background_worker.take() {
+            worker.stop_async();
+        }
+    }
+
 
     #[timed(backup)]
     pub fn backup_incremental(
@@ -1232,12 +1258,25 @@ impl ShardDb {
         self.backup.delete_backups_old(cutoff).map_err(|e| CorelamoError::Internal(e.to_string()))?;
         Ok(())
     }
-
-
-
-
-
-  
+     /// Deletes the index, the document store and the maps file, and any reindex leftovers.
+    fn remove_data_files(&self) {
+        for dir in ["index", "documents", "index.new", "index.old"] {
+            let path = self.root.join(dir);
+            if path.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    warn!(self.log, "could not remove {dir}"; "shard_id" => self.shard_id, "error" => %e);
+                }
+            }
+        }
+        let maps = self.root.join("documents.maps.bin");
+        if maps.exists() {
+            let _ = std::fs::remove_file(maps);
+        }
+    }
+   /// The shard's own command queue, for its background worker.
+    pub fn set_command_sender(&mut self, tx: crossbeam_channel::Sender<ShardCmd>) {
+        self.command_tx = Some(tx);
+    }
     /// Double-buffered: while the previous checkpoint is still writing its segment, this one
     /// starts anyway, and the shard keeps inserting. Only a checkpoint older than that is
     /// waited for, which bounds unflushed data to about three checkpoint intervals.
@@ -1304,6 +1343,10 @@ impl ShardDb {
         let outcome = result
             .map_err(|e| CorelamoError::Internal(format!("checkpoint flush failed: {e}")))
             .and_then(|()| {
+                 if self.wal_reindex.is_some() {
+                    // the reindex commit replays these
+                    return Ok(());
+                }
                 self.wal
                     .remove_through(through_segment)
                     .map_err(|e| CorelamoError::Internal(format!("wal cleanup failed: {e}")))
@@ -1335,16 +1378,26 @@ impl ShardDb {
         Ok(())
     } 
     /// Starts compaction and embedding for the live index, replacing any running worker.
+    /// Starts compaction, embedding and store compaction for the live index, replacing any
+    /// running worker.
     fn start_background(&mut self) {
         if let Some(worker) = self.background_worker.take() {
             worker.stop_async();
         }
+        self.stats.set_activity(BackgroundActivity::Idle);
+        self.stats.set_embedding_waiting(false);
+        self.stats.set_embedding_error(None);
         let Some(db) = self.db.as_ref() else {
             return;
         };
-        let compaction = self.options.enable_background_compaction.then_some(
-            self.options.runtime.compaction
-        );
+        let Some(shard_tx) = self.command_tx.clone() else {
+            warn!(self.log, "background worker not started: no command sender"; "shard_id" => self.shard_id);
+            self.stats.set_embedding_enabled(false);
+            self.stats.set_compaction_enabled(false);
+            return;
+        };
+        let compacting = self.options.enable_background_compaction;
+        let compaction = compacting.then_some(self.options.runtime.compaction);
         let embedding = EmbeddingJob::new(
             db.index_sender(),
             self.shared_state(),
@@ -1353,15 +1406,23 @@ impl ShardDb {
             self.log.new(slog::o!("component" => "embedding"))
         );
         self.stats.set_embedding_enabled(embedding.is_some());
-        self.background_worker = BackgroundWorker::start(
-            db.index_sender(),
+        if embedding.is_none() {
+            // no vector fields any more: this shard has nothing to embed
+            self.stats.set_vector_progress(0, 0);
+        }
+        self.stats.set_compaction_enabled(compacting);
+
+        self.background_worker = Some(BackgroundWorker::start(BackgroundConfig {
+            index: db.index_sender(),
+            shard_tx,
             compaction,
-            self.options.compaction_interval,
+            store_compaction: compacting.then_some(self.options.dead_file_treshold),
+            interval: self.options.compaction_interval,
+            
             embedding,
-            Arc::clone(&self.models),
-            self.stats.clone(),
-            self.log.new(slog::o!("component" => "background"))
-        );
-        self.stats.set_compaction_enabled(compaction.is_some() && self.background_worker.is_some());
+            models: Arc::clone(&self.models),
+            stats: self.stats.clone(),
+            log: self.log.new(slog::o!("component" => "background")),
+        }));
     }
 }

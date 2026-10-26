@@ -25,8 +25,8 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use crate::DatabaseOptions;
-use crate::reindex::{CompletedShardReindex, ReindexParams};
-use crate::segment_compaction::SegmentCompactionWorker;
+use crate::metrics::DbStats;
+use crate::reindex::CompletedShardReindex;
 use crate::shard_db::ShardDb;
 use crate::shared_state::SharedShardState;
 
@@ -99,11 +99,14 @@ pub enum ShardCmd {
         resp: oneshot::Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
-        resp: Sender<Result<ReindexParams, CorelamoError>>,
+        progress:Arc<ReindexProgress>,
+        stats:Arc<DbStats>,
+        resp: Sender<Result<(), CorelamoError>>,
     },
     CommitReindex {
         done: CompletedShardReindex,
-        resp: Sender<Result<(), CorelamoError>>,
+        stats: Arc<DbStats>,
+        started: std::time::Instant,
     },
     ReindexAbandoned {
         generation: u64,
@@ -150,11 +153,11 @@ pub enum ShardCmd {
     },
     PlanSegmentCompaction {
         dead_ratio_threshold: f64,
-        reply: std::sync::mpsc::Sender<io::Result<Option<SegmentCompactionJob>>>,
+        reply: Sender<io::Result<Option<SegmentCompactionJob>>>,
     },
     InstallSegmentCompaction {
         completed: CompletedSegmentCompaction,
-        ack: Option<std::sync::mpsc::Sender<io::Result<bool>>>,
+        ack: Option<Sender<io::Result<bool>>>,
     },
 }
 #[derive(Clone)]
@@ -797,10 +800,6 @@ impl ShardHandle {
         })
         .await?
     }
-    //reindex
-    pub(crate) fn command_sender(&self) -> Sender<ShardCmd> {
-        self.tx.clone()
-    }
 }
 
 struct AliveGuard(Arc<AtomicBool>);
@@ -830,16 +829,8 @@ pub fn spawn(
     let analyzer = Analyzer::new();
 
     let (tx, rx) = bounded(queue_depth.max(1));
+    shard.set_command_sender(tx.clone());
     let (boot_tx, boot_rx) = bounded(1);
-    let segment_compaction_worker = if shard.options().enable_background_compaction {
-        Some(SegmentCompactionWorker::start(
-            tx.clone(),
-            shard.options().dead_file_treshold,
-            shard.options().compaction_interval,
-        ))
-    } else {
-        None
-    };
     let alive_worker = alive.clone();
     let shared_worker = shared.clone();
     let join = thread::Builder::new()
@@ -848,7 +839,7 @@ pub fn spawn(
             let _guard = AliveGuard(alive_worker);
 
             let started = if bootable { shard.start() } else { Ok(()) };
-            let _segment_compaction_worker = segment_compaction_worker;
+            
             let ok = started.is_ok();
             shared_worker
                 .is_running
@@ -915,11 +906,20 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::Delete { ids, resp, user } => {
                 let _ = resp.send(shard.delete(ids, user));
             }
-            ShardCmd::PrepareReindex { resp } => {
-                let _ = resp.send(shard.prepare_reindex());
+             ShardCmd::PrepareReindex { progress, stats, resp } => {
+                let _ = resp.send(shard.prepare_reindex(progress, stats));
             }
-            ShardCmd::CommitReindex { done, resp } => {
-                let _ = resp.send(shard.commit_reindex(done));
+            ShardCmd::CommitReindex { done, stats, started } => {
+                let generation = done.generation;
+                let result = shard.commit_reindex(done);
+                if let Err(e) = &result {
+                    slog::warn!(slog_scope::logger(), "reindex commit failed";
+                        "shard" => %shard.shard_id(), "error" => %e);
+                    shard.abondoned_reindex(generation);
+                    // the worker that sent this is parked until it is replaced
+                    shard.replace_background();
+                }
+                stats.finish_shard_reindex(result.is_ok(), started.elapsed());
             }
             ShardCmd::ReindexAbandoned { generation } => {
                 shard.abondoned_reindex(generation);

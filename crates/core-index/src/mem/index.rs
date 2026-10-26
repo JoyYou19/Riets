@@ -5,7 +5,7 @@ use crate::analyzer::analyzer::Analyzer;
 use crate::array_rows::ArrayRowIndex;
 use crate::document::document:: BoolField  ;
 use crate::document:: IndexedDocument ;
-use crate::fuzzy::{ DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton, select_expansions, split_prefix };
+use crate::fuzzy::{ DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton,  };
 use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
 use crate::posting::{ Posting, PostingList };
 use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
