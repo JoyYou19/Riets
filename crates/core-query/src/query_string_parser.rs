@@ -15,6 +15,11 @@ use core_index::{
 //decide between prefix (dat*), a wildcard (da?ab*e), or just a word
 #[timed(search)]
 fn classify_word(word: &str) -> Query {
+    // a pattern is one word: text with spaces is a sentence, and its "[in Australia]" or
+    // "really?" are punctuation, not a pattern that has to match one whole indexed word
+    if word.trim().contains(char::is_whitespace) {
+        return Query::Term(word.to_string());
+    }
     let pattern = WildcardPattern::parse(word);
     if pattern.is_prefix_only() {
         Query::Prefix(pattern.prefix().to_string())

@@ -18,7 +18,7 @@ use core_index::{
             IndexingStats,
             PendingAck,
             ReindexProgress,
-            build_segments_parallel,
+
         },
         snapshot::SharedIndexSnapshot,
     },
@@ -490,25 +490,21 @@ impl<S: DocumentStore> SearchDatabase<S> {
     pub fn reindex_existing_documents(
         &mut self,
         batch_size: usize,
-        window_size: usize,
         progress: &ReindexProgress
     ) -> io::Result<()> {
-        // Shared borrows so the closure can publish while the store iterates.
         let store = &self.store;
         let analyzer = &self.analyzer;
         let policy = &self.policy;
         let worker = &self.index_worker;
         let allocator = &mut self.array_row_allocator;
+        let in_flight = &mut self.index_in_flight;
 
         let mut current: Vec<IndexedDocument> = Vec::with_capacity(batch_size);
-        let mut pending: Vec<Vec<IndexedDocument>> = Vec::with_capacity(window_size);
-
         store.for_each_document(
             &mut (|doc| {
                 if progress.is_cancelled() {
                     return Err(io::Error::other("reindex cancelled"));
                 }
-
                 let node = match parse_source_into_node(&doc.source, policy) {
                     Ok(n) => n,
                     Err(e) => {
@@ -517,21 +513,17 @@ impl<S: DocumentStore> SearchDatabase<S> {
                     }
                 };
                 current.push(index_document(doc.internal_id, &node, policy, allocator));
-
                 if current.len() >= batch_size {
-                    pending.push(std::mem::replace(&mut current, Vec::with_capacity(batch_size)));
-                    if pending.len() >= window_size {
-                        publish_window(worker, analyzer, &mut pending, progress)?;
-                    }
+                    let batch = std::mem::replace(&mut current, Vec::with_capacity(batch_size));
+                    send_reindex_batch(worker, analyzer, batch, in_flight, progress)?;
                 }
                 Ok(())
             })
         )?;
         if !current.is_empty() {
-            pending.push(current);
+            send_reindex_batch(worker, analyzer, current, in_flight, progress)?;
         }
-        publish_window(worker, analyzer, &mut pending, progress)?;
-
+        self.wait_index_in_flight()?;
         self.flush()
     }
 
@@ -599,29 +591,7 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
         })
     }
 
-    // Builds all pending batches into immutable segments in parallel
-    // publishes them to the index
-    //
-    //
-    // #[timed(inserting)]
-    // fn flush_window(&mut self) -> io::Result<()> {
-    //     if self.pending_batches.is_empty() {
-    //         return Ok(());
-    //     }
 
-    //     let batches = std::mem::take(&mut self.pending_batches);
-
-    //     let counts: u64 = batches.iter().map(|batch| batch.len() as u64).sum();
-    //     let segments = build_segments_parallel(self.db.analyzer.clone(), batches);
-
-    //     // for (segment, count) in segments.into_iter().zip(counts) {
-    //     self.db.index_worker.add_segment_wait(segments, counts)?;
-    //     // }
-
-    //     Ok(())
-    // }
-
-    // Flushes on completed document batch
     #[timed(inserting)]
     fn flush_batch(&mut self) -> io::Result<()> {
         if self.current_batch.is_empty() {
@@ -670,30 +640,26 @@ impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
             .collect()
     }
 #[timed(reindex)]
-fn publish_window(
+fn send_reindex_batch(
     worker: &IndexWorker,
     analyzer: &Analyzer,
-    pending: &mut Vec<Vec<IndexedDocument>>,
+    batch: Vec<IndexedDocument>,
+    in_flight: &mut VecDeque<PendingAck>,
     progress: &ReindexProgress
 ) -> io::Result<()> {
-    if pending.is_empty() {
-        return Ok(());
+    while in_flight.len() >= 2 {
+        in_flight.pop_front().expect("len checked").wait()?;
     }
-    if progress.is_cancelled() {
-        return Err(io::Error::other("reindex cancelled"));
-    }
-
-    let counts: Vec<u64> = pending
-        .iter()
-        .map(|b| b.len() as u64)
-        .collect();
-    let total: u64 = counts.iter().sum();
-    let batches = std::mem::take(pending);
-    let segments = build_segments_parallel(analyzer.clone(), batches);
-
-    worker.add_segment_wait(segments, total)?;
-    progress.add(total);
-
+    let count = batch.len() as u64;
+    let analyzer = analyzer.clone();
+    let (analyzed, documents) = mpsc::channel();
+    rayon::spawn(move || {
+        if let Ok(docs) = panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &batch))) {
+            let _ = analyzed.send(docs);
+        }
+    });
+    in_flight.push_back(worker.add_indexed_documents_deferred(documents)?);
+    progress.add(count);
     Ok(())
 }
 

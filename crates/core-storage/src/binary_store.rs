@@ -28,7 +28,12 @@ use moka::sync::Cache;
 
 //                  hihi haha part 2
 const MAGIC: &[u8; 8] = b"BANANA_E";
-
+/// The header of a segment written by store compaction. Until the maps file lists it, such a
+/// segment is an unfinished install: its documents are copies, and the old segments still hold them.
+const COMPACTED_MAGIC: &[u8; 8] = b"BANANA_C";
+/// The header of the maps file. A file without it is from before segment end offsets were
+/// recorded, and is ignored: the store is scanned instead.
+const MAPS_MAGIC: &[u8; 8] = b"CLMAPS02";
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
 
@@ -227,7 +232,9 @@ impl BinaryDocumentStore {
             internal_to_external,
             locations,
         };
-        if !try_load_maps(&store.path, &store.internal_to_external, &store.locations) {
+       if !store.load_from_maps()? {
+            store.internal_to_external.clear();
+            store.locations.clear();
             store.load()?;
         }
         Ok(store)
@@ -364,62 +371,133 @@ impl BinaryDocumentStore {
     }
 
     #[timed(database_lifecycle)]
+        /// Builds the maps by reading every segment, oldest first.
     fn load(&mut self) -> io::Result<()> {
-        for id in Self::list_segment_ids(&self.path)? {
-            let seg_path = self.path.join(Self::segment_filename(id));
-            let file = File::open(&seg_path)?;
-            let mut reader = CountingReader::new(BufReader::new(file));
-
-            let mut magic = [0u8; 8];
-            reader.read_exact(&mut magic)?;
-            if &magic != MAGIC {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "bad document store magic",
-                ));
-            }
-
-            loop {
-                match read_u8(&mut reader) {
-                    Ok(OP_PUT) => {
-                        let doc_offset = reader.position();
-                        let doc = read_document(&mut reader)?;
-                        let len = (reader.position() - doc_offset) as u32;
-                        self.internal_to_external
-                            .insert(doc.internal_id, doc.external_id.clone());
-                        self.locations.insert(
-                            doc.external_id.clone(),
-                            DocLocation {
-                                internal_id: doc.internal_id,
-                                offset: doc_offset,
-                                segment: id,
-                                len,
-                            },
-                        );
-                    }
-                    Ok(OP_DELETE) => {
-                        let external_id = read_string(&mut reader)?;
-                        if let Some((_, loc)) = self.locations.remove(&external_id) {
-                            self.internal_to_external.remove(&loc.internal_id);
-                        }
-                        self.docs.invalidate(&external_id);
-                    }
-                    Ok(other) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("unknown document op {other}"),
-                        ));
-                    }
-                    Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-                        break;
-                    }
-                    Err(err) => {
-                        return Err(err);
-                    }
-                }
-            }
+        let ids = Self::list_segment_ids(&self.path)?;
+        let last = ids.last().copied();
+        for id in ids {
+            self.scan_segment(id, None, Some(id) == last)?;
         }
         Ok(())
+    }
+
+    /// Applies one segment's records to the maps, from `from` (a byte offset just past a
+    /// record) or from the start. A record cut short by a crash at the end of the last segment
+    /// is cut off, so later appends start on a clean boundary; anywhere else it is an error.
+    fn scan_segment(&self, id: u32, from: Option<u64>, is_last: bool) -> io::Result<()> {
+        let seg_path = self.path.join(Self::segment_filename(id));
+        let mut file = File::open(&seg_path).map_err(|e| with_path(e, &seg_path))?;
+        let start = match from {
+            Some(offset) => {
+                file.seek(SeekFrom::Start(offset))?;
+                offset
+            }
+            None => {
+                let mut magic = [0u8; 8];
+                file.read_exact(&mut magic)?;
+                if &magic != MAGIC && &magic != COMPACTED_MAGIC {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{}: bad document store magic", seg_path.display()),
+                    ));
+                }
+                MAGIC.len() as u64
+            }
+        };
+        let mut reader = CountingReader::new(BufReader::new(file));
+        let mut record_start = start;
+        loop {
+            let op = match read_u8(&mut reader) {
+                Ok(op) => op,
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+                Err(err) => return Err(err),
+            };
+            let applied = match op {
+                OP_PUT => {
+                    let doc_offset = start + reader.position();
+                    read_document(&mut reader).map(|doc| {
+                        let len = (start + reader.position() - doc_offset) as u32;
+                        if let Some(old) = self.locations.insert(
+                            doc.external_id.clone(),
+                            DocLocation { internal_id: doc.internal_id, offset: doc_offset, segment: id, len },
+                        ) {
+                            if old.internal_id != doc.internal_id {
+                                self.internal_to_external.remove(&old.internal_id);
+                            }
+                        }
+                        self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
+                        self.docs.invalidate(&doc.external_id);
+                    })
+                }
+                OP_DELETE => read_string(&mut reader).map(|external_id| {
+                    if let Some((_, loc)) = self.locations.remove(&external_id) {
+                        self.internal_to_external.remove(&loc.internal_id);
+                    }
+                    self.docs.invalidate(&external_id);
+                }),
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{}: unknown document op {other} at {record_start}", seg_path.display()),
+                    ));
+                }
+            };
+            match applied {
+                Ok(()) => record_start = start + reader.position(),
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && is_last => {
+                    OpenOptions::new().write(true).open(&seg_path)?.set_len(record_start)?;
+                    return Ok(());
+                }
+                Err(err) => return Err(with_path(err, &seg_path)),
+            }
+        }
+    }
+
+    /// Loads the maps file and reads only what was written after it was saved. Returns false
+    /// when the file is missing, from an older version, or does not match the segments on disk;
+    /// the maps are then left empty for a full scan.
+    fn load_from_maps(&self) -> io::Result<bool> {
+        let Some(saved) = read_maps(&self.path) else {
+            return Ok(false);
+        };
+        let ids = Self::list_segment_ids(&self.path)?;
+        let mut tails: Vec<(u32, u64)> = Vec::new();
+        for &(id, end) in &saved.segment_ends {
+            let seg_path = self.path.join(Self::segment_filename(id));
+            match std::fs::metadata(&seg_path) {
+                Ok(meta) if meta.len() >= end => tails.push((id, end)),
+                // shorter than when the maps were saved, or gone: the file does not describe this store
+                _ => return Ok(false),
+            }
+        }
+        for (external_id, loc) in saved.entries {
+            self.internal_to_external.insert(loc.internal_id, external_id.clone());
+            self.locations.insert(external_id, loc);
+        }
+        let last = ids.last().copied();
+        // what was appended to the segments the file knows, then segments created since, in order
+        for (id, end) in tails {
+            self.scan_segment(id, Some(end), Some(id) == last)?;
+        }
+        for id in ids {
+            if saved.segment_ends.iter().any(|&(known, _)| known == id) {
+                continue;
+            }
+            let seg_path = self.path.join(Self::segment_filename(id));
+            if segment_magic(&seg_path)? == *COMPACTED_MAGIC {
+                // a compaction output whose install did not finish: the old segments still hold
+                // these documents, and the maps never pointed here
+                std::fs::remove_file(&seg_path).map_err(|e| with_path(e, &seg_path))?;
+                continue;
+            }
+            self.scan_segment(id, None, Some(id) == last)?;
+        }
+        let remaining = Self::list_segment_ids(&self.path)?;
+        if let Some(&newest) = remaining.last() {
+            self.current_segment.store(newest, Ordering::Relaxed);
+            self.unsynced_from.store(newest, Ordering::Relaxed);
+        }
+        Ok(true)
     }
 
     fn read_document_at(&self, segment_id: u32, offset: u64) -> io::Result<StoredDocument> {
@@ -573,7 +651,7 @@ impl DocumentStore for BinaryDocumentStore {
 
             let mut magic = [0u8; 8];
             reader.read_exact(&mut magic)?;
-            if &magic != MAGIC {
+            if &magic != MAGIC && &magic !=COMPACTED_MAGIC {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "bad document store magic",
@@ -742,7 +820,7 @@ pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<Completed
     ));
     let file = File::create(&tmp_path).map_err(|e| with_path(e, &tmp_path))?;
     let mut writer = CountingWriter::new(BufWriter::with_capacity(COMPACTION_IO_BUFFER, file), 0);
-    writer.write_all(MAGIC)?;
+    writer.write_all(COMPACTED_MAGIC)?;
 
     let mut new_locations = Vec::with_capacity(job.locations_snapshot.len());
     let mut record: Vec<u8> = Vec::new();
@@ -830,14 +908,27 @@ pub fn read_document_at_path(
     let mut reader = BufReader::new(file);
     read_document(&mut reader)
 }
-
+#[derive(bincode::Encode, bincode::Decode)]
+struct MapsFile {
+    /// Every segment's length when the maps were saved: anything past it was written later.
+    segment_ends: Vec<(u32, u64)>,
+    entries: Vec<(String, DocLocation)>,
+}
+/// Saves the id → location maps with each segment's current length. Call it only while no
+/// document is being written, so the lengths and the maps describe the same moment.
 #[timed(database_lifecycle)]
 pub fn save_maps(path: &Path, locations: &DashMap<String, DocLocation>) -> io::Result<()> {
-    let snapshot: Vec<(String, DocLocation)> = locations
-        .iter()
-        .map(|e| (e.key().clone(), *e.value()))
-        .collect();
-    let bytes = bincode::encode_to_vec(&snapshot, bincode::config::standard())
+    let mut segment_ends = Vec::new();
+    for id in BinaryDocumentStore::list_segment_ids(path)? {
+        let seg_path = path.join(BinaryDocumentStore::segment_filename(id));
+        segment_ends.push((id, std::fs::metadata(&seg_path).map_err(|e| with_path(e, &seg_path))?.len()));
+    }
+    let file_contents = MapsFile {
+        segment_ends,
+        entries: locations.iter().map(|e| (e.key().clone(), *e.value())).collect(),
+    };
+    let mut bytes = MAPS_MAGIC.to_vec();
+    bincode::encode_into_std_write(&file_contents, &mut bytes, bincode::config::standard())
         .map_err(|e| io::Error::other(format!("failed to encode maps: {e}")))?;
 
     let map_tmp = path.with_extension(MAPS_TMP_EXTENTION);
@@ -851,26 +942,19 @@ pub fn save_maps(path: &Path, locations: &DashMap<String, DocLocation>) -> io::R
     }
     Ok(())
 }
-#[timed(database_lifecycle)]
-fn try_load_maps(
-    path: &Path,
-    internal_to_external: &DashMap<DocId, String>,
-    locations: &DashMap<String, DocLocation>,
-) -> bool {
-    let map_path = path.with_extension(MAPS_EXTENTION);
-    let Ok(bytes) = std::fs::read(&map_path) else {
-        return false;
-    };
-    let Ok((entries, _)): Result<(Vec<(String, DocLocation)>, usize), _> =
-        bincode::decode_from_slice(&bytes, bincode::config::standard())
-    else {
-        return false;
-    };
-    for (external_id, loc) in entries {
-        internal_to_external.insert(loc.internal_id, external_id.clone());
-        locations.insert(external_id, loc);
-    }
-    true
+
+fn read_maps(path: &Path) -> Option<MapsFile> {
+    let bytes = std::fs::read(path.with_extension(MAPS_EXTENTION)).ok()?;
+    let body = bytes.strip_prefix(MAPS_MAGIC.as_slice())?;
+    bincode::decode_from_slice(body, bincode::config::standard()).ok().map(|(maps, _)| maps)
+}
+
+fn segment_magic(seg_path: &Path) -> io::Result<[u8; 8]> {
+    let mut magic = [0u8; 8];
+    File::open(seg_path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .map_err(|e| with_path(e, seg_path))?;
+    Ok(magic)
 }
 
 //helper 1

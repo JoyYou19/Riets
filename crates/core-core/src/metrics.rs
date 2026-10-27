@@ -26,6 +26,10 @@ pub enum BackgroundActivity {
     Idle = 0,
     Compacting = 1,
     Embedding = 2,
+    Reindexing = 3,
+    //document compaction
+    Cleanup =4
+
 }
 
 impl BackgroundActivity {
@@ -33,6 +37,8 @@ impl BackgroundActivity {
         match value {
             1 => Self::Compacting,
             2 => Self::Embedding,
+            3 => Self::Reindexing,
+            4 => Self::Cleanup,
             _ => Self::Idle,
         }
     }
@@ -81,6 +87,9 @@ pub struct EmbeddingStats {
 pub struct BackgroundStats {
     pub shards_compacting: usize,
     pub shards_embedding: usize,
+    pub shards_reindexing:usize,
+    pub shards_cleaning: usize,
+
     pub compaction_failures: u64,
     /// Duration of the longest most recent compaction across shards.
     pub last_compaction_ms: Option<u64>,
@@ -225,6 +234,9 @@ impl DbStats {
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.reindex
     }
+    pub fn reindex_running(&self) -> bool {
+        self.reindex_outstanding.load(Relaxed) > 0
+    }
 
     // ---- writes that are not shard-local ----
 
@@ -345,8 +357,9 @@ impl DbStats {
         let mut indexed = 0u64;
         let mut deleted = 0u64;
         let mut written = 0u64;
+        let mut reindexing = 0usize;
+        let mut cleaning = 0usize;
         let mut compactions = 0u64;
-
         let mut compacting = 0usize;
         let mut embedding_now = 0usize;
         let mut compaction_failures = 0u64;
@@ -384,6 +397,12 @@ impl DbStats {
                 BackgroundActivity::Embedding => {
                     embedding_now += 1;
                 }
+                BackgroundActivity::Reindexing =>{
+                    reindexing +=1;
+                }
+                BackgroundActivity::Cleanup =>{
+                    cleaning +=1;
+                }
                 BackgroundActivity::Idle => {}
             }
             compaction_failures += g.compaction_failures.load(Relaxed);
@@ -417,6 +436,8 @@ impl DbStats {
             restoring: false,
             reindexing: self.reindex.snapshot().into(),
             background: BackgroundStats {
+                shards_cleaning:cleaning,
+                shards_reindexing:reindexing,
                 shards_compacting: compacting,
                 shards_embedding: embedding_now,
                 compaction_failures,

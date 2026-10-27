@@ -52,7 +52,7 @@ impl ModelConfig {
         if self.instances == 0 || self.batch_size == 0 {
             return invalid("embedding instances and batch size must be at least 1".into());
         }
-        if !(16..=512).contains(&self.max_tokens) {
+        if !(16..=4096).contains(&self.max_tokens) {
             return invalid(format!(
                 "embedding max tokens must be 16..=512, got {}",
                 self.max_tokens

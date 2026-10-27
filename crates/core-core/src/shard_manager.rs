@@ -1,7 +1,7 @@
 //include ALL
 use crate::ShardDb;
 use crate::metrics::{ DbStats, EmbeddingStatus };
-use crate::reindex::{ PendingReindexJob, ReindexPool };
+
 use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{ self, PreparedShardSearch, ShardCmd, ShardHandle };
 use crate::{ DatabaseOptions, shard_for };
@@ -80,7 +80,7 @@ use core_embed::{ Embedder, ModelRegistry };
 /// moderately in both lists can still reach the top.
 const FUSION_DEPTH: usize = 100;
 /// The usual RRF constant: damps the difference between the very top ranks.
-const RRF_K: f32 = 60.0;
+const RRF_K: f32 = 10.0;
 /// Fewer words than this are usually names or codes, which word search already handles best.
 const SEMANTIC_MIN_WORDS: usize = 3;
 /// Automatic fusion needs at least this share of documents embedded (percent).
@@ -163,8 +163,7 @@ pub struct ShardManager {
     root: PathBuf,
     policy: RwLock<IndexPolicy>,
     options: RwLock<DatabaseOptions>,
-    analyzer: Analyzer,
-    reindex_pool: ReindexPool,
+    analyzer: Analyzer,  
     db_stats: Arc<DbStats>,
     backup_dir: PathBuf,
     all_fields: RwLock<AllFields>,
@@ -244,7 +243,6 @@ impl ShardManager {
             joins: Mutex::new(joins),
             shutdown_done: AtomicBool::new(false),
             analyzer: Analyzer::new(),
-            reindex_pool: ReindexPool::start(shard_count as usize),
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
@@ -382,7 +380,6 @@ impl ShardManager {
             policy: RwLock::new(policy),
             options: RwLock::new(options),
             analyzer: Analyzer::new(),
-            reindex_pool: ReindexPool::start(shard_count as usize),
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
@@ -859,6 +856,11 @@ impl ShardManager {
         user: String
     ) -> Result<(), CorelamoError> {
         policy.validate()?;
+          if self.db_stats.reindex_running() {
+            return Err(CorelamoError::Busy(
+                "a reindex is running; change the policy when it has finished".into(),
+            ));
+        }
         policy.resolve(&self.root)?;
 
         let mut set = JoinSet::new();
@@ -904,8 +906,14 @@ impl ShardManager {
         options: DatabaseOptions,
         user: String
     ) -> Result<(), CorelamoError> {
+        if self.db_stats.reindex_running() {
+            return Err(CorelamoError::Busy(
+                "a reindex is running; change the config when it has finished".into(),
+            ));
+        }
+        options.search.validate().map_err(CorelamoError::InvalidData)?;
         options.save_to_file(&self.root)?;
-        *self.options.write() = options;
+        *self.options.write() = options.clone();
 
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -952,32 +960,18 @@ impl ShardManager {
         for h in &self.shards {
             //nodod reindex  pool
             let (rtx, rrx) = bounded(1);
-            if let Err((e, _)) = h.send_raw(ShardCmd::PrepareReindex { resp: rtx }) {
-                first_err = Some(e);
-                break;
-            }
-
-            let job = PendingReindexJob {
-                rx: rrx,
-                shard_tx: h.command_sender(),
-                progress: Arc::clone(h.progress()),
-                stats: Arc::clone(&self.db_stats),
+            let sent = h.send_raw(ShardCmd::PrepareReindex { progress: Arc::clone(h.progress()), stats: Arc::clone(&self.db_stats), resp: rtx});
+             let result = match sent {
+                Err((e, _)) => Err(e),
+                Ok(()) => rrx.recv().unwrap_or_else(|_| Err(CorelamoError::Internal("shard stopped".into()))),
             };
-            match self.reindex_pool.submit(job) {
-                Ok(()) => {
-                    submitted += 1;
-                }
-                Err(e) => {
-                    first_err = Some(e);
-                    break;
-                }
+            match result {
+                Ok(()) => submitted += 1,
+                Err(e) => { first_err = Some(e); break; }
             }
         }
 
         if let Some(e) = first_err {
-            // the shards without a job never reach finish_shard_reindex; settle them as
-            // failed so the counter reaches zero and the phase ends at Failed, which lets
-            // the next reindex start
             for _ in submitted..self.shards.len() {
                 self.db_stats.finish_shard_reindex(false, Duration::ZERO);
             }
@@ -1205,6 +1199,7 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
+        let cascade_order=self.options.read().search.cascade_order();
         //if no search_fields we should search in the arrays
         let matchmode = command.match_mode;
         let dictionary = self.synonyms.snapshot();
@@ -1237,7 +1232,8 @@ impl ShardManager {
                     text,
                     resolved.clone(),
                     &self.analyzer,
-                    has_exact_field
+                    has_exact_field,
+                    &cascade_order 
                 ).stopping_after(if sorts.is_some() { window } else { word_fetch })
             }
             _ => RankPlan::default(),

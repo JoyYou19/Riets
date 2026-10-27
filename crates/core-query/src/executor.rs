@@ -41,6 +41,9 @@ const ANY_TIER_POOL: usize = 1000;
 // to cover to be in it, and how many candidates it ranks before ordering them by how close
 // together their words are.
 const MIN_COVERAGE: f32 = 0.5;
+/// In the merged word tiers, a hit's score is multiplied by the share of the query it holds to
+/// this power: 0 ignores coverage, higher values come closer to the old "fewer words, lower tier".
+const COVERAGE_POWER: f32 = 4.0;
 const POOL_SIZE: usize = 200;
 
 // Closeness of words found in another order than typed (or not next to each other), see
@@ -1347,6 +1350,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
     /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
     /// appears once, at the best tier that found it; within a tier, hits order by score.
+       /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
+    /// appears once, at the best tier that found it; within a tier, hits order by score.
     #[timed(search)]
     pub fn rank_cascade(
         &self,
@@ -1428,18 +1433,41 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 _ => self.rank_retrieve(Some(query), ctxs, fetch, allowed.or(restrict), match_mode),
             }
         };
+        // TEST: the word tiers (all, all but one, any) are one tier, ordered by score alone.
+        // Found by kind, not by "after Fuzzy": the fuzzy tier is only in the plan when a word
+        // is unknown
+        let merge_from = plan.tiers
+            .iter()
+            .position(|tier| matches!(tier, Tier::All(_) | Tier::AllButOne(_) | Tier::Any(_)))
+            .unwrap_or(plan.tiers.len());
+        let merged_tier = u8::try_from(merge_from * TIER_STEP).unwrap_or(u8::MAX);
+        // documents whose name is a run of the query's words (see the pool): their name is the
+        // evidence, so coverage does not weigh them
+        let mut named_shares: HashMap<DocId, f32> = HashMap::new();
+
         for (index, tier) in plan.tiers.iter().enumerate() {
-            if out.len() >= k {
+            let merging = index >= merge_from;
+            if !merging && out.len() >= k {
                 break;
             }
-            if plan.stop_after > 0 && out.len() >= plan.stop_after {
+            if !merging && plan.stop_after > 0 && out.len() >= plan.stop_after {
                 break;
             }
             // each tier owns TIER_STEP consecutive values: the "any word" tier spreads its hits over
-            // them by words missing, so every later merge (shards, pages) keeps that order too
-            let tier_number = u8::try_from(index * TIER_STEP).unwrap_or(u8::MAX);
-            // every hit already taken may come back from this tier too
-            let fetch = (k - out.len()).saturating_add(seen.len());
+            // them by words missing, so every later merge (shards, pages) keeps that order too.
+            // The merged tiers share one number.
+            let tier_number = if merging {
+                merged_tier
+            } else {
+                u8::try_from(index * TIER_STEP).unwrap_or(u8::MAX)
+            };
+            // every hit already taken may come back from this tier too; in the merged part every
+            // tier brings a full k, since they compete on score
+            let fetch = if merging {
+                k.saturating_add(seen.len())
+            } else {
+                (k - out.len()).saturating_add(seen.len())
+            };
 
             let hits = match tier {
                 // the pool ranks these (see `pool_parts`)
@@ -1448,6 +1476,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 }
                 Tier::All(_) if pool_parts.is_some() => {
                     let pool_query = Query::Wand(pool_parts.cloned().unwrap_or_default());
+                    // the pool admits partial matches only when the plan has a tier for them
+                    let partial_allowed = plan.tiers
+                        .iter()
+                        .any(|tier| matches!(tier, Tier::AllButOne(_) | Tier::Any(_)));
+                    let min_coverage = if partial_allowed { MIN_COVERAGE } else { 1.0 };
                     let mut hits = self
                         .execute_grouped_retrieval(
                             &pool_query,
@@ -1455,7 +1488,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             fetch.max(POOL_SIZE),
                             restrict,
                             true,
-                            Some(MIN_COVERAGE)
+                            Some(min_coverage)
                         )
                         .map(|hits| {
                             hits.into_iter().map(wand_hit_to_search_hit).collect::<Vec<_>>()
@@ -1564,6 +1597,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                     hit.score *= 1.0 + NAME_BONUS * share;
                                 }
                             }
+                            named_shares.extend(shares.iter().map(|(&doc, &share)| (doc, share)));
                             hits.sort_by(|a, b| {
                                 b.score
                                     .partial_cmp(&a.score)
@@ -1678,9 +1712,24 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 });
             }
 
-            // within "any word", pages with more of the words come first
-            if let (Tier::Any(_), Some(terms)) = (tier, plan.phrase_terms()) {
-                self.order_by_words_matched(&mut hits, terms, &plain_xpaths);
+            // within "any word", pages holding more of the query's weight come first
+            // (not in the merged part: there the score alone orders)
+            let mut missing_levels: HashMap<DocId, u8> = HashMap::new();
+            if let (false, Tier::Any(_), Some(terms)) = (merging, tier, plan.phrase_terms()) {
+                missing_levels = self.order_by_words_matched(&mut hits, terms, &plain_xpaths);
+            }
+            // merged part: a hit's score is weighed by the share of the query it holds, so the
+            // pool's hits and the "any word" hits compete on one scale
+            if merging {
+                if let Some(terms) = plan.phrase_terms() {
+                    let coverage = self.coverage_of(&mut hits, terms, &plain_xpaths);
+                    for hit in hits.iter_mut() {
+                        // a page named in the query keeps its score: its name is the evidence
+                        if !named_shares.contains_key(&hit.doc_id) {
+                            hit.score *= coverage[&hit.doc_id].powf(COVERAGE_POWER);
+                        }
+                    }
+                }
             }
 
             for mut hit in hits {
@@ -1688,19 +1737,27 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     continue;
                 }
                 hit.tier = match (tier, plan.phrase_terms()) {
-                    (Tier::Any(_), Some(terms)) => {
-                        let missing = terms.len().saturating_sub(hit.matched_terms);
-                        tier_number.saturating_add(missing.min(TIER_STEP - 1) as u8)
+                    (Tier::Any(_), Some(_)) => {
+                        let missing = missing_levels.get(&hit.doc_id).copied().unwrap_or(0);
+                        tier_number.saturating_add(missing)
                     }
                     // rank_retrieve leaves tier 0; the name tier sets its level (0 or 1)
                     _ => tier_number.saturating_add(hit.tier),
                 };
                 out.push(hit);
-                if out.len() == k {
+                if !merging && out.len() == k {
                     break;
                 }
             }
         }
+        // the merged tiers' hits share one tier number: order them by score, then cut to k
+        out.sort_by(|a, b| {
+            a.tier
+                .cmp(&b.tier)
+                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
+                .then_with(|| a.doc_id.cmp(&b.doc_id))
+        });
+        out.truncate(k);
         out
     }
 
@@ -1930,45 +1987,85 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 .or_insert(hit);
         }
     }
-    //so fuzzy dont do bullshit if everything correct
-    /// Orders hits by how many different query words they contain (in any plain field), then by
-    /// score: a page with four of five words comes before a title that is one rare word.
+    /// Orders hits by how much of the query's weight they hold (each word weighed by its idf in
+    /// the plain field where it is most common, as the coverage pool weighs it), then by score:
+    /// a page missing only common words ("the year", "was") comes before one missing the rare
+    /// word the query is about. Returns each hit's level within the tier, 0 (holds everything)
+    /// to TIER_STEP - 1 (holds nothing), so merges across shards and pages keep the order.
+    /// The share of the query's weight each hit holds, 0..=1: each word weighs its idf where it
+    /// is most common, so missing a rare word costs more than missing "the". Also sets
+    /// `matched_terms`.
+    fn coverage_of(
+        &self,
+        hits: &mut [SearchHit],
+        terms: &[PhraseTerm],
+        xpaths: &[XPathId]
+    ) -> HashMap<DocId, f32> {
+        let stats = self.stats();
+        // each word's list in each field, read once for all candidates, and its weight
+        let words: Vec<(Vec<Cow<'a, PostingList>>, f32)> = terms
+            .iter()
+            .map(|term| {
+                let mut lists = Vec::with_capacity(xpaths.len());
+                let mut weight: Option<f32> = None;
+                for &xpath in xpaths {
+                    let (list, doc_freq) = self.fetch_term_list(&term.text, xpath);
+                    let docs = stats.doc_count(xpath) as f32;
+                    if doc_freq > 0 && docs > 0.0 {
+                        let df = (doc_freq as f32).min(docs);
+                        let idf = ((docs - df + 0.5) / (df + 0.5) + 1.0).ln();
+                        weight = Some(weight.map_or(idf, |known| known.min(idf)));
+                    }
+                    lists.push(list);
+                }
+                (lists, weight.unwrap_or(0.0))
+            })
+            .collect();
+        let total: f32 = words.iter().map(|(_, weight)| weight).sum();
+
+        let mut coverage: HashMap<DocId, f32> = HashMap::with_capacity(hits.len());
+        for hit in hits.iter_mut() {
+            let mut held = 0.0f32;
+            let mut count = 0usize;
+            for (lists, weight) in &words {
+                let present = lists.iter().any(|list| {
+                    list.items()
+                        .binary_search_by_key(&hit.doc_id, |posting| posting.doc_id)
+                        .is_ok()
+                });
+                if present {
+                    held += weight;
+                    count += 1;
+                }
+            }
+            hit.matched_terms = count;
+            let share = if total > 0.0 { (held / total).clamp(0.0, 1.0) } else { 1.0 };
+            coverage.insert(hit.doc_id, share);
+        }
+        coverage
+    }
+
+    /// Each hit's level within the "any word" tier, 0 (holds everything) to TIER_STEP - 1 (holds
+    /// nothing), so merges across shards and pages keep the order; hits sorted by level, then
+    /// score.
     fn order_by_words_matched(
         &self,
         hits: &mut [SearchHit],
         terms: &[PhraseTerm],
         xpaths: &[XPathId]
-    ) {
-        // each word's list in each field, read once for all candidates
-        let words: Vec<Vec<Cow<'a, PostingList>>> = terms
+    ) -> HashMap<DocId, u8> {
+        let coverage = self.coverage_of(hits, terms, xpaths);
+        let levels: HashMap<DocId, u8> = coverage
             .iter()
-            .map(|term| {
-                xpaths
-                    .iter()
-                    .map(|&xpath| self.fetch_term_list(&term.text, xpath).0)
-                    .collect()
-            })
+            .map(|(&doc, &share)| (doc, ((1.0 - share) * ((TIER_STEP - 1) as f32)).round() as u8))
             .collect();
-
-        for hit in hits.iter_mut() {
-            hit.matched_terms = words
-                .iter()
-                .filter(|fields| {
-                    fields.iter().any(|list| {
-                        list.items()
-                            .binary_search_by_key(&hit.doc_id, |posting| posting.doc_id)
-                            .is_ok()
-                    })
-                })
-                .count();
-        }
-
         hits.sort_by(|a, b| {
-            b.matched_terms
-                .cmp(&a.matched_terms)
+            levels[&a.doc_id]
+                .cmp(&levels[&b.doc_id])
                 .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
                 .then_with(|| a.doc_id.cmp(&b.doc_id))
         });
+        levels
     }
 
     fn all_words_known(&self, raw: &str, xpaths: &[XPathId]) -> bool {

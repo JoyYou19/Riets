@@ -22,7 +22,7 @@ core-timing = { path = "../core-timing" }
 slog="2"
 
 # Concurrency helpers
-parking_lot = "0.12"
+
 arc-swap = "1.9.1"
 
 # Utilities

@@ -1,4 +1,6 @@
 use core_index::lsm::config::IndexRuntimeConfig;
+
+use core_query::planner::TierKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -6,7 +8,7 @@ use std::{fs, io};
 
 use crate::embed::EmbeddingConfig;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseOptions {
     pub runtime: IndexRuntimeConfig,
@@ -21,6 +23,9 @@ pub struct DatabaseOptions {
     pub sync_mode: core_storage::wal::SyncMode,
     #[serde(default)]
     pub embed: EmbeddingConfig,
+    #[serde(default)]
+    pub search: SearchOptions,
+
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -62,6 +67,45 @@ impl Default for DatabaseOptions {
             bootable: true,
             sync_mode: core_storage::wal::SyncMode::Manual,
             embed: EmbeddingConfig::default(),
+            search:SearchOptions::default()
         }
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SearchOptions {
+    /// Rank of each cascade tier, 1 first. A tier left out is off. Empty: the default order.
+    pub cascade: std::collections::BTreeMap<TierKind, u8>,
+}
+
+impl SearchOptions {
+
+
+    fn default() -> Self {
+        Self {
+            cascade: TierKind::DEFAULT_ORDER
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| (*kind, (index + 1) as u8))
+                .collect(),
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for (kind, rank) in &self.cascade {
+            if !seen.insert(*rank) {
+                return Err(format!("search.cascade: rank {rank} is given twice (at {kind:?})"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The tiers in the order they run.
+    pub fn cascade_order(&self) -> Vec<TierKind> {
+        if self.cascade.is_empty() {
+            return TierKind::DEFAULT_ORDER.to_vec();
+        }
+        let mut ranked: Vec<(u8, TierKind)> = self.cascade.iter().map(|(k, r)| (*r, *k)).collect();
+        ranked.sort_unstable();
+        ranked.into_iter().map(|(_, kind)| kind).collect()
     }
 }

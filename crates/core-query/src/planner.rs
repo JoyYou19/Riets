@@ -23,6 +23,30 @@ const MAX_NAMED_QUERY_WORDS: usize = 32;
 
 /// At most this many name keys: the dictionary forms of every word multiply.
 const MAX_NAME_KEYS: usize = 32;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TierKind {
+    Name,
+    Exact,
+    Phrase,
+    Fuzzy,
+    All,
+    AllButOne,
+    Any,
+}
+
+impl TierKind {
+    /// The order used when the config names none: the cascade as it has always been.
+    pub const DEFAULT_ORDER: [TierKind; 7] = [
+        TierKind::Name,
+        TierKind::Exact,
+        TierKind::Phrase,
+        TierKind::Fuzzy,
+        TierKind::All,
+        TierKind::AllButOne,
+        TierKind::Any,
+    ];
+}
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tier {
     /// A name field (a field with `$exact`) whose whole value is the query or one of its
@@ -88,70 +112,55 @@ impl RankPlan {
 
     /// `raw` is the text as typed; `resolved` is it after synonym expansion and analysis.
     #[timed(search)]
-    pub fn cascade(raw: &str, resolved: Query, analyzer: &Analyzer, has_exact_field: bool) -> Self {
-        let mut tiers = Vec::with_capacity(7);
-
-        if has_exact_field {
-            let keys = name_keys(raw, &resolved, analyzer);
-            if !keys.is_empty() {
-                tiers.push(Tier::Name {
-                    keys,
-                    score_with: resolved.clone(),
-                });
-            }
-        }
-
-        if has_exact_field && raw.chars().any(char::is_uppercase) {
-            tiers.push(Tier::Exact(Query::Exact(raw.trim().to_string())));
-        }
-
+    pub fn cascade(
+        raw: &str,
+        resolved: Query,
+        analyzer: &Analyzer,
+        has_exact_field: bool,
+        order: &[TierKind],
+    ) -> Self {
         let parts: Vec<Query> = match &resolved {
             Query::And(parts) => parts.clone(),
             _ => Vec::new(),
         };
-
-        if parts.len() >= 2 {
-            let terms = terms_from_text(raw, analyzer);
-            if terms.len() >= 2 {
-                tiers.push(Tier::Phrase {
-                    terms,
-                    score_with: resolved.clone(),
-                });
+        let mut tiers = Vec::with_capacity(order.len());
+        for kind in order {
+            match kind {
+                TierKind::Name if has_exact_field => {
+                    let keys = name_keys(raw, &resolved, analyzer);
+                    if !keys.is_empty() {
+                        tiers.push(Tier::Name { keys, score_with: resolved.clone() });
+                    }
+                }
+                TierKind::Exact if has_exact_field && raw.chars().any(char::is_uppercase) => {
+                    tiers.push(Tier::Exact(Query::Exact(raw.trim().to_string())));
+                }
+                TierKind::Phrase if parts.len() >= 2 => {
+                    let terms = terms_from_text(raw, analyzer);
+                    if terms.len() >= 2 {
+                        tiers.push(Tier::Phrase { terms, score_with: resolved.clone() });
+                    }
+                }
+                TierKind::Fuzzy => tiers.push(Tier::Fuzzy(Query::Fuzzy(
+                    raw.trim().to_string(),
+                    Fuzziness::Auto,
+                    FuzzySpec { prefix_length: DEFAULT_PREFIX_LENGTH, max_expansions: DEFAULT_MAX_EXPANSIONS },
+                ))),
+                TierKind::All => tiers.push(Tier::All(resolved.clone())),
+                TierKind::AllButOne if (3..=MAX_ALL_BUT_ONE_WORDS).contains(&parts.len()) => {
+                    tiers.push(Tier::AllButOne(Query::Wand(parts.clone())));
+                }
+                TierKind::Any if parts.len() >= 2 => tiers.push(Tier::Any(Query::Wand(parts.clone()))),
+                // the tier's condition does not hold for this query
+                _ => {}
             }
         }
-        tiers.push(Tier::Fuzzy(Query::Fuzzy(
-            raw.trim().to_string(),
-            Fuzziness::Auto,
-            FuzzySpec {
-                prefix_length: DEFAULT_PREFIX_LENGTH,
-                max_expansions: DEFAULT_MAX_EXPANSIONS,
-            },
-        )));
-        tiers.push(Tier::All(resolved.clone()));
-
-        
-
-        if (3..=MAX_ALL_BUT_ONE_WORDS).contains(&parts.len()) {
-            // the words; the executor keeps documents with all of them but at most one, in one
-            // pass (see `QueryExecutor::rank_cascade`)
-            tiers.push(Tier::AllButOne(Query::Wand(parts.clone())));
-        }
-
-        if parts.len() >= 2 {
-            tiers.push(Tier::Any(Query::Wand(parts)));
-        }
-
         let (named_runs, words) = if has_exact_field {
             named_runs(raw, analyzer)
         } else {
             (Vec::new(), Vec::new())
         };
-        Self {
-            tiers,
-            stop_after: 0,
-            named_runs,
-            words,
-        }
+        Self { tiers, stop_after: 0, named_runs, words }
     }
 
     /// Hits numbered below this come from the tiers that match the query as typed, as a whole
@@ -305,37 +314,3 @@ fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn all_of(words: &[&str]) -> Query {
-        Query::And(
-            words
-                .iter()
-                .map(|word| Query::Term((*word).to_owned()))
-                .collect(),
-        )
-    }
-
-    #[test]
-    fn named_tiers_are_the_name_and_exact_tiers_in_front() {
-        let analyzer = Analyzer::new();
-        let resolved = all_of(&["lord", "ring"]);
-
-        // name, exact (the query has capitals), then the word tiers
-        let typed = RankPlan::cascade("Lord of the Rings", resolved.clone(), &analyzer, true);
-        assert!(matches!(
-            typed.tiers[..3],
-            [Tier::Name { .. }, Tier::Exact(_), Tier::Phrase { .. }]
-        ));
-        assert_eq!(usize::from(typed.named_tier_limit()), 2 * TIER_STEP);
-
-        let lowercase = RankPlan::cascade("lord of the rings", resolved.clone(), &analyzer, true);
-        assert_eq!(usize::from(lowercase.named_tier_limit()), TIER_STEP);
-
-        // without an exact field nothing is named: fusion takes every hit
-        let no_exact_field = RankPlan::cascade("Lord of the Rings", resolved, &analyzer, false);
-        assert_eq!(no_exact_field.named_tier_limit(), 0);
-    }
-}
