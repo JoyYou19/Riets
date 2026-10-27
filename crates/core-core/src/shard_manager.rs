@@ -906,13 +906,14 @@ impl ShardManager {
         options: DatabaseOptions,
         user: String
     ) -> Result<(), CorelamoError> {
-        options.save_to_file(&self.root)?;
-          if self.db_stats.reindex_running() {
+        if self.db_stats.reindex_running() {
             return Err(CorelamoError::Busy(
-                "a reindex is running; change the policy when it has finished".into(),
+                "a reindex is running; change the config when it has finished".into(),
             ));
         }
-        *self.options.write() = options;
+        options.search.validate().map_err(CorelamoError::InvalidData)?;
+        options.save_to_file(&self.root)?;
+        *self.options.write() = options.clone();
 
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -1198,6 +1199,7 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
+        let cascade_order=self.options.read().search.cascade_order();
         //if no search_fields we should search in the arrays
         let matchmode = command.match_mode;
         let dictionary = self.synonyms.snapshot();
@@ -1230,7 +1232,8 @@ impl ShardManager {
                     text,
                     resolved.clone(),
                     &self.analyzer,
-                    has_exact_field
+                    has_exact_field,
+                    &cascade_order 
                 ).stopping_after(if sorts.is_some() { window } else { word_fetch })
             }
             _ => RankPlan::default(),
