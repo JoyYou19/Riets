@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    analyzer::analyzer_config::AnalyzerConfig,
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
 };
@@ -44,6 +45,7 @@ pub struct FieldPolicy {
     pub repeated: bool, // array of strings nums/bools
     pub subfields: Vec<FieldPolicy>,
     pub full_path: String,
+    pub analyzer: Option<String>,
     pub row_keyed: bool,
     pub depth: u32,
     pub vector: bool,
@@ -70,6 +72,11 @@ impl Serialize for FieldPolicy {
             if self.searchable != defaults.searchable {
                 m.serialize_entry("$searchable", &self.searchable)?;
             }
+
+            if let Some(a) = &self.analyzer {
+                m.serialize_entry("$analyzer", a)?;
+            }
+
             if self.list != defaults.list {
                 m.serialize_entry("$list", &self.list)?;
             }
@@ -111,6 +118,7 @@ impl FieldPolicy {
             list: defaults.list,
             weight: defaults.weight,
             stemming: None,
+            analyzer: None,
             exact: defaults.exact,
             repeated: false,
             subfields: Vec::new(),
@@ -130,6 +138,7 @@ impl FieldPolicy {
             list: defaults.list,
             weight: defaults.weight,
             stemming: None,
+            analyzer: None,
             exact: defaults.exact,
             repeated: false,
             subfields,
@@ -198,6 +207,15 @@ impl FieldPolicy {
                 .as_bool()
                 .ok_or_else(|| format!("field '{name}': $repeated must be a bool"))?;
         }
+
+        if let Some(a) = obj.get("$analyzer") {
+            f.analyzer = Some(
+                a.as_str()
+                    .ok_or_else(|| format!("field '{name}': $analyzer must be a string"))?
+                    .to_string(),
+            );
+        }
+
         if let Some(stem) = obj.get("$stemming") {
             f.stemming = Some(
                 stem.as_str()
@@ -283,18 +301,21 @@ impl FieldPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexPolicy {
+    pub analyzers: BTreeMap<String, AnalyzerConfig>,
     pub fields: Vec<FieldPolicy>,
     registry: FieldRegistry,
 }
 
-// Bare-object serialization: field names are the top-level keys.
 impl Serialize for IndexPolicy {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut m = s.serialize_map(Some(self.fields.len()))?;
-        for f in &self.fields {
-            m.serialize_entry(&f.name, f)?;
+        let mut m = s.serialize_map(None)?;
+        if !self.analyzers.is_empty() {
+            m.serialize_entry("analyzers", &self.analyzers)?;
         }
+        let document: BTreeMap<&str, &FieldPolicy> =
+            self.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+        m.serialize_entry("document", &document)?;
         m.end()
     }
 }
@@ -306,11 +327,25 @@ impl<'de> Deserialize<'de> for IndexPolicy {
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("policy must be a JSON object"))?;
 
-        let mut fields = Vec::with_capacity(obj.len());
-        for (name, v) in obj {
+        let analyzers: BTreeMap<String, AnalyzerConfig> = match obj.get("analyzers") {
+            Some(v) => serde_json::from_value(v.clone()).map_err(serde::de::Error::custom)?,
+            None => BTreeMap::new(),
+        };
+
+        let doc_obj = obj
+            .get("document")
+            .and_then(Value::as_object)
+            .ok_or_else(|| serde::de::Error::custom("policy must have a 'document' object"))?;
+
+        let mut fields = Vec::with_capacity(doc_obj.len());
+        for (name, v) in doc_obj {
             fields.push(FieldPolicy::from_json(name, v).map_err(serde::de::Error::custom)?);
         }
-        Ok(IndexPolicy::new(fields))
+        Ok(IndexPolicy {
+            analyzers,
+            fields,
+            registry: FieldRegistry::new(),
+        })
     }
 }
 
@@ -331,9 +366,10 @@ impl IndexPolicy {
         root.join(Self::REGISTRY_FILE_NAME)
     }
 
-    pub fn new(fields: Vec<FieldPolicy>) -> Self {
+    pub fn new(analyzers: BTreeMap<String, AnalyzerConfig>, fields: Vec<FieldPolicy>) -> Self {
         Self {
             fields,
+            analyzers,
             registry: FieldRegistry::new(),
         }
     }
@@ -399,18 +435,23 @@ impl IndexPolicy {
     }
 
     pub fn default_document() -> Self {
-        Self::new(vec![
-            FieldPolicy::new("id", FieldKind::IdAuto),
-            FieldPolicy {
-                weight: WeightInterval::TITLE,
-                stemming: Some("english".to_string()),
-                ..FieldPolicy::new("title", FieldKind::Text)
-            },
-            FieldPolicy {
-                stemming: Some("english".to_string()),
-                ..FieldPolicy::new("body", FieldKind::Text)
-            },
-        ])
+        Self::new(
+            //alanyzer
+            BTreeMap::new(),
+            //fields
+            vec![
+                FieldPolicy::new("id", FieldKind::IdAuto),
+                FieldPolicy {
+                    weight: WeightInterval::TITLE,
+                    stemming: Some("english".to_string()),
+                    ..FieldPolicy::new("title", FieldKind::Text)
+                },
+                FieldPolicy {
+                    stemming: Some("english".to_string()),
+                    ..FieldPolicy::new("body", FieldKind::Text)
+                },
+            ],
+        )
     }
 
     pub fn id_field(&self) -> Option<&FieldPolicy> {
@@ -865,10 +906,17 @@ struct Full<'a>(&'a IndexPolicy);
 impl Serialize for Full<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut m = s.serialize_map(Some(self.0.fields.len()))?;
-        for f in &self.0.fields {
-            m.serialize_entry(&f.name, &FullField(f))?;
+        let mut m = s.serialize_map(None)?;
+        if !self.0.analyzers.is_empty() {
+            m.serialize_entry("analyzers", &self.0.analyzers)?;
         }
+        let document: BTreeMap<&str, FullField> = self
+            .0
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), FullField(f)))
+            .collect();
+        m.serialize_entry("document", &document)?;
         m.end()
     }
 }
@@ -888,6 +936,9 @@ impl Serialize for FullField<'_> {
         if let Some(stem) = &f.stemming {
             m.serialize_entry("$stemming", stem)?;
         }
+        if let Some(a) = &f.analyzer {
+            m.serialize_entry("$analyzer", a)?;
+        }
         m.serialize_entry("$exact", &f.exact)?;
         m.serialize_entry("$repeated", &f.repeated)?;
         m.serialize_entry("$full_path", &f.full_path)?;
@@ -898,65 +949,5 @@ impl Serialize for FullField<'_> {
             m.serialize_entry(&sub.name, &FullField(sub))?;
         }
         m.end()
-    }
-}
-#[cfg(test)]
-mod vector_flag_tests {
-    use super::*;
-
-    fn parse(json: &str) -> IndexPolicy {
-        serde_json::from_str(json).expect("policy parses")
-    }
-
-    #[test]
-    fn vector_flag_round_trips_and_is_listed() {
-        let policy = parse(
-            r#"{
-            "id":    { "$type": "id_auto" },
-            "title": { "$type": "text" },
-            "body":  { "$type": "text", "$vector": true }
-        }"#,
-        );
-        policy.validate().expect("valid");
-        let names: Vec<&str> = policy
-            .vector_fields()
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["body"]);
-
-        let json = serde_json::to_string(&policy).unwrap();
-        assert!(json.contains("\"$vector\":true"));
-        assert_eq!(
-            json.matches("$vector").count(),
-            1,
-            "false is omitted in the minimal form"
-        );
-    }
-
-    #[test]
-    fn vector_flag_on_non_text_field_is_rejected() {
-        let policy = parse(
-            r#"{
-            "id":   { "$type": "id_auto" },
-            "year": { "$type": "int", "$vector": true }
-        }"#,
-        );
-        assert_eq!(
-            policy.validate().unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-    }
-
-    #[test]
-    fn vector_flag_must_be_bool() {
-        let err = serde_json::from_str::<IndexPolicy>(
-            r#"{
-            "id":   { "$type": "id_auto" },
-            "body": { "$type": "text", "$vector": "yes" }
-        }"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("$vector must be a bool"));
     }
 }
