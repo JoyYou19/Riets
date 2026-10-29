@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    analyzer::analyzer_config::AnalyzerConfig,
+    analyzer::analyzer_config::{AnalyzerConfig, Language},
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
 };
@@ -431,6 +431,42 @@ impl IndexPolicy {
             validate_field(field, 0)?;
         }
 
+        for field in self.indexed_fields() {
+            if let Some(name) = &field.analyzer {
+                if !self.analyzers.contains_key(name) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "field '{}' references unknown analyzer '{name}'",
+                            field.name
+                        ),
+                    ));
+                }
+            }
+            if let Some(stem) = &field.stemming {
+                if Language::from_name(stem).is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "field '{}' has unknown stemming language '{stem}'",
+                            field.name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        for (name, cfg) in &self.analyzers {
+            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length) {
+                if min > max {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("analyzer '{name}': min_length {min} > max_length {max}"),
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -458,6 +494,27 @@ impl IndexPolicy {
         self.fields
             .iter()
             .find(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
+    }
+
+    pub fn analyzer_for(&self, field: &FieldPolicy) -> AnalyzerConfig {
+        if let Some(name) = &field.analyzer {
+            if let Some(cfg) = self.analyzers.get(name) {
+                return cfg.clone();
+            }
+        }
+        if let Some(stem) = &field.stemming {
+            if let Some(lang) = Language::from_name(stem) {
+                let mut cfg = AnalyzerConfig::default();
+                cfg.stemming = Some(lang);
+                return cfg;
+            }
+        }
+
+        //either user defined $default or the hardcoded
+        self.analyzers
+            .get("$default")
+            .cloned()
+            .unwrap_or_else(AnalyzerConfig::builtin_default)
     }
 
     pub fn indexed_fields(&self) -> Vec<&FieldPolicy> {
