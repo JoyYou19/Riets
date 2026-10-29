@@ -20,6 +20,7 @@ pub enum Permission {
     DeleteDatabase,
     RenameDatabase,
     ListDatabases,
+    ListModels,
     StartDB,
     StopDB,
     RestartDB,

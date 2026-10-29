@@ -28,6 +28,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::CreateDatabase,
             Permission::DeleteDatabase,
             Permission::ListDatabases,
+            Permission::ListModels,
             Permission::RenameDatabase,
             Permission::StartDB,
             Permission::StopDB,

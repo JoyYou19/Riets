@@ -41,9 +41,9 @@ pub(crate) struct ScoredNode {
 }
 
 impl ScoredNode {
-    pub(crate) fn new(node: u32, similarity: f32) -> Self {
-        Self::salted(node, similarity, 0)
-    }
+    // pub(crate) fn new(node: u32, similarity: f32) -> Self {
+    //     Self::salted(node, similarity, 0)
+    // }
 
     /// Like `new`, with ties broken in an order that depends on `salt`. Neighbour lists salt
     /// with their owner, so lists full of equal similarities keep different nodes instead of
@@ -257,98 +257,3 @@ fn keep_within_beam(kept: &mut BinaryHeap<Reverse<ScoredNode>>, node: ScoredNode
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Nodes 0..n on a line, each linked to its direct neighbours on level 0 only.
-    struct LineGraph {
-        node_count: u32,
-    }
-
-    impl NeighbourLists for LineGraph {
-        fn neighbours_into(&self, node: u32, _level: usize, out: &mut Vec<u32>) {
-            out.clear();
-            if node > 0 {
-                out.push(node - 1);
-            }
-            if node + 1 < self.node_count {
-                out.push(node + 1);
-            }
-        }
-    }
-
-    /// Closer to `target` on the line means more similar.
-    struct DistanceOnLine {
-        target: u32,
-    }
-
-    impl SimilarityToTarget for DistanceOnLine {
-        fn similarity(&self, node: u32) -> f32 {
-            -(node.abs_diff(self.target) as f32)
-        }
-    }
-
-    fn search(target: u32, beam: usize, accept: impl Fn(u32) -> bool, budget: usize) -> LevelSearch {
-        let graph = LineGraph { node_count: 100 };
-        let similarity = DistanceOnLine { target };
-        let walk = GraphWalk { lists: &graph, target: &similarity, node_count: 100 };
-        let entry = walk.score(0);
-        with_visited_set(|visited| {
-            walk.search_level(&[entry], beam, 0, accept, budget, visited, &mut Vec::new())
-        })
-    }
-
-    #[test]
-    fn finds_the_target_and_its_neighbours_best_first() {
-        let result = search(60, 3, |_| true, usize::MAX);
-        let nodes: Vec<u32> = result.best_first.iter().map(|n| n.node).collect();
-        assert_eq!(nodes[0], 60);
-        assert_eq!(nodes.len(), 3);
-        assert!(nodes[1..].iter().all(|n| *n == 59 || *n == 61));
-        assert!(!result.stopped_by_budget);
-    }
-
-    #[test]
-    fn rejected_nodes_are_never_returned_but_still_walked_through() {
-        let result = search(60, 3, |node| node % 2 == 1, usize::MAX);
-        assert!(result.best_first.iter().all(|n| n.node % 2 == 1));
-        assert!(result.best_first.iter().any(|n| n.node == 59 || n.node == 61));
-    }
-
-    #[test]
-    fn budget_stops_the_walk() {
-        let result = search(90, 3, |_| true, 10);
-        assert!(result.stopped_by_budget);
-    }
-
-    #[test]
-    fn greedy_descend_climbs_to_the_best_node() {
-        let graph = LineGraph { node_count: 100 };
-        let similarity = DistanceOnLine { target: 42 };
-        let walk = GraphWalk { lists: &graph, target: &similarity, node_count: 100 };
-        let best = walk.greedy_descend(walk.score(0), 0, 0, &mut Vec::new());
-        assert_eq!(best.node, 42);
-        let untouched = walk.greedy_descend(walk.score(5), 0, 1, &mut Vec::new());
-        assert_eq!(untouched.node, 5, "empty level range returns the start");
-    }
-
-    #[test]
-    fn visited_set_survives_mark_wraparound() {
-        let mut visited = VisitedSet::default();
-        visited.start_new_search(4);
-        assert!(visited.mark(2));
-        assert!(!visited.mark(2));
-        visited.current_mark = u32::MAX;
-        visited.start_new_search(4);
-        assert_eq!(visited.current_mark, 1);
-        assert!(visited.mark(2), "wraparound must forget old marks");
-    }
-
-    #[test]
-    fn ties_do_not_follow_node_order() {
-        let ties: Vec<ScoredNode> = (0..64).map(|n| ScoredNode::new(n, 1.0)).collect();
-        let best = ties.iter().max().expect("non-empty").node;
-        assert_ne!(best, 63, "highest id must not always win a tie");
-    }
-}

@@ -11,7 +11,6 @@ mod layout;
 mod walk;
 
 pub use graph_builder::{GraphBuildParams, MIN_ROWS_FOR_GRAPH, build_graph_file};
-pub(crate) use graph_builder::build_and_write;
 use layout::{GraphHeader, GraphLayout, NO_UPPER_SLOTS, read_u32};
 use walk::{GraphWalk, NeighbourLists, SimilarityToTarget, with_visited_set};
 

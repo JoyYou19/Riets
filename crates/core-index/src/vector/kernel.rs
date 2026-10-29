@@ -51,26 +51,6 @@ impl QuantRange {
     }
 }
 
-/// Keeps finite values only, so NaN never reaches the quantile selection.
-trait RetainFinite {
-    fn retain_finite(&mut self) -> &mut [f32];
-}
-
-impl RetainFinite for &mut [f32] {
-    fn retain_finite(&mut self) -> &mut [f32] {
-        let mut kept = 0;
-        for i in 0..self.len() {
-            if self[i].is_finite() {
-                self.swap(kept, i);
-                kept += 1;
-            }
-        }
-        let slice = std::mem::take(self);
-        let (finite, _) = slice.split_at_mut(kept);
-        *self = finite;
-        self
-    }
-}
 
 /// A quantised query and its own scale.
 #[derive(Debug, Clone)]

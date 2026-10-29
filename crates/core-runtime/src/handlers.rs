@@ -18,13 +18,8 @@ use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
     command_reponse_definitions::{
-        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest,
-        InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand,
-        RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
-        TimingsRequest,
-    },
-    document_out::DocumentOut,
-    errors::CorelamoError,
+        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest, InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand, RenameDatabaseRequest, ResponseData, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, TimingsRequest,
+    }, document_out::DocumentOut, errors::CorelamoError,
 };
 use core_query::dictionary::DictionaryDocument;
 use core_storage::document_projections::id_path_to_strip;
@@ -35,7 +30,7 @@ use slog::{error, info, o};
 use std::{collections::HashMap, sync::Arc};
 
 //authorizations
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 struct LoginRequest {
     username: String,
@@ -1774,6 +1769,46 @@ pub(crate) async fn list_databases_handler(
         &ctx,
     )
     .into_response()
+}
+#[derive(Serialize)]
+struct EmbeddingModelInfo {
+    id: &'static str,
+    dims: usize,
+    /// The server's configured model (`embedding-model`); used by every database.
+    default: bool,
+    /// Already in memory; the first request to an unloaded model loads it.
+    loaded: bool,
+}
+#[derive(Serialize)]
+struct ListModelsResponse {
+    models: Vec<EmbeddingModelInfo>,
+}
+
+
+pub(crate) async fn list_models_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::ListModels) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    let registry = crate::corelamo_settings::model_registry();
+    let default_id = registry.default_model().id;
+    let loaded = registry.loaded_model_ids();
+
+    let models = core_embed::MODELS
+        .iter()
+        .map(|spec| EmbeddingModelInfo {
+            id: spec.id,
+            dims: spec.dims,
+            default: spec.id == default_id,
+            loaded: loaded.contains(&spec.id),
+        })
+        .collect();
+
+    HttpOk::with_data("Embedding models".to_string(), ListModelsResponse { models }, &ctx)
+        .into_response()
 }
 
 #[timed(backup)]
