@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_embed::{EmbedLease, QUANT_SCALE};
+use core_embed::EmbedLease;
 use core_index::{
     disk::reader::DiskSegment,
     document::IndexPolicy,
@@ -236,7 +236,7 @@ impl EmbeddingJob {
         stop: &AtomicBool,
     ) -> io::Result<usize> {
         let started = Instant::now();
-        let mut new_rows: Vec<(DocId, Vec<i8>)> = Vec::with_capacity(task.missing.len());
+        let mut new_rows: Vec<(DocId, Vec<f32>)> = Vec::with_capacity(task.missing.len());
         // the error that ended the round early; the vectors made before it are still installed
         let mut stopped_by: Option<io::Error> = None;
 
@@ -336,9 +336,9 @@ fn embed_isolating<E>(
     texts: &[&str],
     embed: &mut E,
     failed: &mut Vec<(DocId, io::Error)>,
-) -> io::Result<Vec<(DocId, Vec<i8>)>>
+) -> io::Result<Vec<(DocId, Vec<f32>)>>
 where
-    E: FnMut(&[&str]) -> io::Result<Vec<Vec<i8>>>,
+    E: FnMut(&[&str]) -> io::Result<Vec<Vec<f32>>>,
 {
     match embed(texts) {
         Ok(vectors) if vectors.len() == texts.len() => Ok(ids.iter().copied().zip(vectors).collect()),
@@ -388,20 +388,14 @@ fn write_vectors(
     existing: Option<&VectorFile>,
     vector_id: &str,
     dims: usize,
-    mut new_rows: Vec<(DocId, Vec<i8>)>,
+    mut new_rows: Vec<(DocId, Vec<f32>)>,
 ) -> io::Result<()> {
     new_rows.sort_unstable_by_key(|(doc_id, _)| *doc_id);
-    let mut writer = VectorFileWriter::create(
-        vector_file_path(segment, xpath),
-        vector_id,
-        dims,
-        QUANT_SCALE,
-    )?;
+    let mut writer = VectorFileWriter::create(vector_file_path(segment, xpath), vector_id, dims)?;
     let mut fresh = new_rows.into_iter().peekable();
 
     if let Some(existing) = existing {
-        for index in 0..existing.len() {
-            let doc_id = existing.doc_id(index);
+        for (index, &doc_id) in existing.doc_ids().iter().enumerate() {
             while let Some((next, _)) = fresh.peek() {
                 if *next >= doc_id {
                     break;
@@ -412,13 +406,14 @@ fn write_vectors(
             if fresh.peek().is_some_and(|(next, _)| *next == doc_id) {
                 continue;
             }
-            writer.push(doc_id, &existing.row(index))?;
+            writer.push(doc_id, existing.original(index))?;
         }
     }
     for (doc_id, row) in fresh {
         writer.push(doc_id, &row)?;
     }
-    writer.finish()
+    writer.finish()?;
+    Ok(())
 }
 
 fn disk_segments(sender: &Sender<IndexCommand>) -> io::Result<Vec<PathBuf>> {
@@ -455,8 +450,8 @@ fn broken_pipe(message: &'static str) -> io::Error {
 mod tests {
     use super::*;
 
-    fn fake_vector(text: &str) -> Vec<i8> {
-        vec![i8::try_from(text.len() % 100).unwrap_or(0)]
+    fn fake_vector(text: &str) -> Vec<f32> {
+        vec![(text.len() % 100) as f32]
     }
 
     #[test]
@@ -464,7 +459,7 @@ mod tests {
         let ids: Vec<DocId> = (0..9).collect();
         let texts = ["a", "b", "c", "poison", "e", "f", "g", "h", "i"];
         let mut calls = 0;
-        let mut embed = |part: &[&str]| -> io::Result<Vec<Vec<i8>>> {
+        let mut embed = |part: &[&str]| -> io::Result<Vec<Vec<f32>>> {
             calls += 1;
             if part.contains(&"poison") {
                 return Err(io::Error::other("bad input"));
@@ -484,7 +479,7 @@ mod tests {
     fn a_failing_model_is_reported_not_blamed_on_the_texts() {
         let ids: Vec<DocId> = (0..6).collect();
         let texts = ["a", "b", "c", "d", "e", "f"];
-        let mut embed = |_: &[&str]| -> io::Result<Vec<Vec<i8>>> {
+        let mut embed = |_: &[&str]| -> io::Result<Vec<Vec<f32>>> {
             Err(io::Error::other("CUDA failure"))
         };
         let mut failed = Vec::new();

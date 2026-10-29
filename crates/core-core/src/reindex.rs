@@ -119,15 +119,15 @@ fn carry_vectors(live_root: &Path, staging_root: &Path, xpaths: &[XPathId]) -> i
             .into_iter()
             .filter(|file| file.model_id() == model && !file.is_empty())
             .collect();
-        let (dims, scale) = (sources[0].dims(), sources[0].scale());
+        let dims = sources[0].dims();
         let mut rows: HashMap<DocId, (usize, usize)> = HashMap::new();
         for (source, file) in sources.iter().enumerate() {
-            for index in 0..file.len() {
-                rows.insert(file.doc_id(index), (source, index));
+            for (index, &doc_id) in file.doc_ids().iter().enumerate() {
+                rows.insert(doc_id, (source, index));
             }
         }
         for segment in &staging_segments {
-            carried += write_carried(segment, xpath, &model, dims, scale, &sources, &rows)?;
+            carried += write_carried(segment, xpath, &model, dims, &sources, &rows)?;
         }
     }
     Ok(carried)
@@ -151,7 +151,6 @@ fn write_carried(
     xpath: XPathId,
     model: &str,
     dims: usize,
-    scale: f32,
     sources: &[VectorFile],
     rows: &HashMap<DocId, (usize, usize)>,
 ) -> io::Result<usize> {
@@ -168,11 +167,10 @@ fn write_carried(
     if docs.is_empty() {
         return Ok(0);
     }
-    let mut writer =
-        VectorFileWriter::create(vector_file_path(segment, xpath), model, dims, scale)?;
+    let mut writer = VectorFileWriter::create(vector_file_path(segment, xpath), model, dims)?;
     for doc_id in &docs {
         let (source, index) = rows[doc_id];
-        writer.push(*doc_id, &sources[source].row(index))?;
+        writer.push(*doc_id, sources[source].original(index))?;
     }
     writer.finish()?;
     Ok(docs.len())
