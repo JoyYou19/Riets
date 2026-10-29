@@ -84,7 +84,10 @@ impl Analyzer {
             .filter(RemoveLongFilter::limit(40))
             .filter(LowerCaser)
             .filter(StopWordFilter::remove(stopwords))
-            .filter(CachedStemmer::new(STEM_CACHE_CAPACITY))
+            .filter(CachedStemmer::new(
+                rust_stemmers::Algorithm::English,
+                STEM_CACHE_CAPACITY,
+            ))
             .build();
         Self {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
@@ -315,7 +318,7 @@ mod cached_stemmer_equivalence {
         let mut cached = TextAnalyzer::builder(WordDelimiterTokenizer::new(symbols))
             .filter(RemoveLongFilter::limit(40))
             .filter(LowerCaser)
-            .filter(CachedStemmer::new(8)) // tiny capacity also exercises eviction
+            .filter(CachedStemmer::new(rust_stemmers::Algorithm::English, 8)) // tiny capacity also exercises eviction
             .build();
 
         let text = std::env::var("ANALYZER_SAMPLE")
