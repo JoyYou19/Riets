@@ -1,4 +1,5 @@
 pub mod analyzer;
+pub mod analyzer_config;
 pub mod cached_stemmer;
 pub mod token;
 pub mod tokenizer;
