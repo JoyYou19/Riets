@@ -16,3 +16,4 @@ pub mod types;
 pub mod vector;
 pub mod wildcard;
 pub mod background;
+pub mod hash;
