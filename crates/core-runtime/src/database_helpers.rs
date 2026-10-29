@@ -125,6 +125,7 @@ pub(crate) fn sweep_trash(databases_dir: &Path) {
     }
 }
 
+
 //bellow are functions for determining what takes up how much disk space for a database
 fn file_size_opt(path: &Path) -> Result<Option<u64>, CorelamoError> {
     if !path.exists() {

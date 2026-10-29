@@ -29,8 +29,8 @@ use crate::hash::{fmix64, stable_hash64};
 use crate::posting::DeleteSet;
 use crate::types::{DocId, XPathId};
 
-pub const MAGIC: [u8; 8] = *b"CLVECTOR";
-pub const VERSION: u32 = 2;
+pub(super) const MAGIC: [u8; 8] = *b"CLVECTOR";
+pub(super) const VERSION: u32 = 2;
 
 
 const ORIGINAL_F32: u8 = 1;

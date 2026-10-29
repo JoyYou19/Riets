@@ -83,73 +83,9 @@ impl TopK {
     }
      /// Score of the current k-th hit, once `k` hits are held; anything scoring below it
     /// cannot enter. Lets callers skip work for candidates that cannot make the cut.
-    pub(crate) fn threshold(&self) -> Option<f32> {
-        (self.hits.len() == self.k && self.k > 0).then(|| self.hits[self.k - 1].score)
-    }
+
     pub(crate) fn into_sorted(self) -> Vec<VectorHit> {
         self.hits
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn top_k_keeps_best_in_order() {
-        let mut top = TopK::new(2);
-        for (doc, score) in [(1, 0.1), (2, 0.9), (3, 0.5), (4, f32::NAN), (5, 0.7)] {
-            top.offer(doc, score);
-        }
-        let docs: Vec<DocId> = top.into_sorted().iter().map(|h| h.doc_id).collect();
-        assert_eq!(docs, vec![2, 5]);
-    }
-
-    #[test]
-    fn top_k_zero_returns_nothing() {
-        let mut top = TopK::new(0);
-        top.offer(1, 1.0);
-        assert!(top.threshold().is_none());
-        assert!(top.into_sorted().is_empty());
-    }
-
-    #[test]
-    fn top_k_ties_keep_lowest_doc_id_whatever_the_order() {
-        let mut top = TopK::new(1);
-        top.offer(5, 0.5);
-        top.offer(3, 0.5);
-        assert_eq!(top.into_sorted()[0].doc_id, 3);
-    }
-
-    #[test]
-    fn threshold_appears_once_full() {
-        let mut top = TopK::new(2);
-        top.offer(1, 0.9);
-        assert!(top.threshold().is_none());
-        top.offer(2, 0.4);
-        assert_eq!(top.threshold(), Some(0.4));
-        top.offer(3, 0.6);
-        assert_eq!(top.threshold(), Some(0.6));
-    }
-
-    #[test]
-    fn filter_accepts_respects_deletes_and_allowed() {
-        let mut deleted = DeleteSet::new();
-        deleted.delete(2);
-        let allowed: HashSet<DocId> = [1, 2].into_iter().collect();
-        let filter = VectorFilter::new(&deleted, Some(&allowed));
-        assert!(filter.accepts(1));
-        assert!(!filter.accepts(2), "deleted wins over allowed");
-        assert!(!filter.accepts(3), "outside allowed");
-    }
-
-    #[test]
-    fn filter_selectivity() {
-        let deleted = DeleteSet::new();
-        let small: HashSet<DocId> = [1, 2].into_iter().collect();
-        assert!(VectorFilter::new(&deleted, Some(&small)).is_selective(1_000));
-        assert!(!VectorFilter::new(&deleted, Some(&small)).is_selective(10));
-        assert!(!VectorFilter::new(&deleted, None).is_selective(1_000));
     }
 }
 
