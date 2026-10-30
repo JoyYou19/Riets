@@ -62,6 +62,10 @@ pub struct DidYouMeanReport {
     //best possible correction
     pub corrected: String,
     pub words: Vec<WordSuggestions>,
+    /// True when every corrected word is clearly the best spelling: no closer or equally close
+    /// word is anywhere near as common. Search replaces the query only then; otherwise the
+    /// correction is offered as a suggestion.
+    pub confident: bool,
 }
 
 impl DidYouMeanReport {
@@ -70,6 +74,7 @@ impl DidYouMeanReport {
             original: original.to_string(),
             corrected: "".to_string(),
             words: Vec::new(),
+            confident: false,
         }
     }
 }
@@ -1439,7 +1444,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         let merge_from = plan.tiers
             .iter()
             .position(|tier| matches!(tier, Tier::All(_) | Tier::AllButOne(_) | Tier::Any(_)))
-            .unwrap_or(plan.tiers.len());
+            .unwrap_or(plan.tiers.len());  
         let merged_tier = u8::try_from(merge_from * TIER_STEP).unwrap_or(u8::MAX);
         // documents whose name is a run of the query's words (see the pool): their name is the
         // evidence, so coverage does not weigh them
@@ -2067,7 +2072,29 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         });
         levels
     }
-
+    pub fn total_hit_count( 
+        &self,
+        query: Option<&Query>,
+        plan: &RankPlan,
+        ctxs: &[FieldCtx],
+        restrict: Option<&HashSet<DocId>>,
+    ) -> usize {
+        let queries: Vec<&Query> = if plan.tiers.is_empty() {
+            query.into_iter().collect()
+        } else {
+            plan.queries().collect()
+        };
+        let mut matched: HashSet<DocId> = HashSet::new();
+        for query in queries {
+            if let EvalOutcome::Docs(docs) = self.evaluate(query, ctxs, EvalMode::Filter) {
+                matched.extend(docs.into_iter().filter(|doc_id| {
+                    !self.index.is_deleted(*doc_id)
+                        && restrict.is_none_or(|allowed| allowed.contains(doc_id))
+                }));
+            }
+        }
+        matched.len()
+    }
     fn all_words_known(&self, raw: &str, xpaths: &[XPathId]) -> bool {
         self.fuzzy_words(raw)
             .iter()
@@ -2304,6 +2331,7 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
 
     hits
 }
+
 
 //derives how much a word can be fuzzed basically
 pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {

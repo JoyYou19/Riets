@@ -483,11 +483,16 @@ impl ShardDb {
         options: DatabaseOptions,
         user: String
     ) -> Result<(), CorelamoError> {
-          if self.wal_reindex.is_some() {
+        if self.wal_reindex.is_some() {
             return Err(CorelamoError::Busy("a reindex is running on this shard".into()));
         }
-        info!(self.log, "Options set"; "User"=>user);
+        // the WAL decides on every append whether to fsync, so a new mode applies at onc
         self.options = options;
+        // compaction, embedding and backup settings are read when the background worker starts
+        if self.db.is_some() {
+            self.start_background();
+        }
+        info!(self.log, "options set"; "shard_id" => self.shard_id, "user" => user);
         Ok(())
     }
 

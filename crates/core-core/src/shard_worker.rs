@@ -312,11 +312,9 @@ impl ShardHandle {
 
         //filters dont rank so we filter first then search+rank inside
         let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
-
-        //main entry point for query yes
         let hits = executor.rank(query, ctxs, k, restrict.as_ref(), mactmode, plan);
-
-        (hits.len(), hits)
+        let total = executor.total_hit_count(query, plan, ctxs, restrict.as_ref());
+        (total, hits)
     }
 
     #[timed(search)]
