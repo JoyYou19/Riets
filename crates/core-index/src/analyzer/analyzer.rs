@@ -1,12 +1,20 @@
+use crate::analyzer::analyzer_config::{
+    AnalyzerConfig, CorelamoTokenizer, LengthFilter, Stopwords,
+};
 use crate::analyzer::cached_stemmer::CachedStemmer;
+use crate::analyzer::filepath_tokenizer::FilepathTokenizer;
+use crate::analyzer::url_tokenizer::UrlTokenizer;
 use crate::analyzer::{token::Token, word_delimiter::WordDelimiterTokenizer};
 use core_timing::timed;
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
 };
-use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, StopWordFilter, TextAnalyzer, TokenStream};
+use tantivy::tokenizer::{
+    AsciiFoldingFilter, BoxTokenStream, LowerCaser, RawTokenizer, RemoveLongFilter,
+    SimpleTokenizer, StopWordFilter, TextAnalyzer, TokenStream, Tokenizer, WhitespaceTokenizer,
+};
 
 #[derive(Clone)]
 pub struct Analyzer {
@@ -14,9 +22,10 @@ pub struct Analyzer {
     analyzer: TextAnalyzer,
     literal_symbols: HashSet<char>,
 }
+
 /// Per-thread stem cache size; cleared when full.
 const STEM_CACHE_CAPACITY: usize = 100_000;
-//back to local analyzers
+// back to local analyzers
 const MAX_CACHED_ANALYZERS_PER_THREAD: usize = 64;
 static NEXT_ANALYZER_ID: AtomicU64 = AtomicU64::new(0);
 /// Index term that marks a whole field value (a title, one redirect name): its analyzed words
@@ -25,13 +34,76 @@ pub const NAME_KEY: char = '\u{1}';
 /// The same for a value without its qualifier: "Tom Holland (author)" and "Kansas City, Missouri"
 /// are also filed as `\u{2}tom holland` and `\u{2}kansa citi`.
 pub const QUALIFIED_NAME_KEY: char = '\u{2}';
+
 /// Only values this short are names; longer text (article bodies) gets no key.
 pub const MAX_NAME_WORDS: usize = 12;
 const MAX_NAME_BYTES: usize = 200;
+
 thread_local! {
     // tantivy's token_stream needs &mut TextAnalyzer, so each thread keeps its own
     // instance per analyzer configuration (keyed by Analyzer::id).
     static LOCAL_ANALYZERS: RefCell<HashMap<u64, TextAnalyzer>> = RefCell::new(HashMap::new());
+}
+
+// The tokenizer a config maps to. url/filepath fall back to word_delimiter
+// until Steps 11/12 build the real ones.
+#[derive(Clone)]
+enum ConfigTokenizer {
+    WordDelimiter(WordDelimiterTokenizer),
+    Keyword(RawTokenizer),
+    Whitespace(WhitespaceTokenizer),
+    Standard(SimpleTokenizer),
+    Url(UrlTokenizer),
+    Filepath(FilepathTokenizer),
+}
+
+impl Tokenizer for ConfigTokenizer {
+    type TokenStream<'a> = BoxTokenStream<'a>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> BoxTokenStream<'a> {
+        match self {
+            ConfigTokenizer::WordDelimiter(t) => t.token_stream(text),
+            ConfigTokenizer::Keyword(t) => BoxTokenStream::new(t.token_stream(text)),
+            ConfigTokenizer::Whitespace(t) => BoxTokenStream::new(t.token_stream(text)),
+            ConfigTokenizer::Standard(t) => BoxTokenStream::new(t.token_stream(text)),
+            ConfigTokenizer::Url(t) => t.token_stream(text),
+            ConfigTokenizer::Filepath(t) => t.token_stream(text),
+        }
+    }
+}
+
+// AnalyzerConfig -> tokenizer
+fn build_tokenizer(config: &AnalyzerConfig) -> ConfigTokenizer {
+    let symbols: HashSet<char> = config.literal_symbols.iter().copied().collect();
+    match config.tokenizer {
+        CorelamoTokenizer::WordDelimiter => ConfigTokenizer::WordDelimiter(
+            WordDelimiterTokenizer::with_options(symbols, false, false, config.preserve_original),
+        ),
+        CorelamoTokenizer::Code => ConfigTokenizer::WordDelimiter(
+            WordDelimiterTokenizer::with_options(symbols, true, true, config.preserve_original),
+        ),
+        CorelamoTokenizer::Keyword => ConfigTokenizer::Keyword(RawTokenizer::default()),
+        CorelamoTokenizer::Whitespace => {
+            ConfigTokenizer::Whitespace(WhitespaceTokenizer::default())
+        }
+        CorelamoTokenizer::Standard => ConfigTokenizer::Standard(SimpleTokenizer::default()),
+
+        CorelamoTokenizer::Filepath => {
+            ConfigTokenizer::Filepath(FilepathTokenizer::new(symbols, config.preserve_original))
+        }
+
+        CorelamoTokenizer::Url => {
+            ConfigTokenizer::Url(UrlTokenizer::new(symbols, config.preserve_original))
+        }
+    }
+}
+
+//either use the given or tantivy has built-in per-language stopwords too they have A LOT
+fn stopword_filter(stop: &Stopwords) -> Option<StopWordFilter> {
+    match stop {
+        Stopwords::LanguageDefaults(lang) => StopWordFilter::new(lang.0),
+        Stopwords::Words(words) => Some(StopWordFilter::remove(words.iter().cloned())),
+    }
 }
 
 impl std::fmt::Debug for Analyzer {
@@ -45,7 +117,9 @@ impl Default for Analyzer {
         Self::new()
     }
 }
-//eliminates problem with - or other signs that are not from ASCII like AI -
+
+//ok bro...
+// eliminates problem with - or other signs that are not from ASCII like AI -
 fn is_unicode_punctuation(c: char) -> bool {
     matches!(
         c,
@@ -55,25 +129,15 @@ fn is_unicode_punctuation(c: char) -> bool {
             | '\u{3000}'..='\u{303F}'
     )
 }
+
 impl Analyzer {
     pub fn new() -> Self {
-        //TODO: configurable
         Self::with_literal_symbols(['_'])
     }
+
     #[timed(indexing_documents)]
     pub fn with_literal_symbols(symbols: impl IntoIterator<Item = char>) -> Self {
         let literal_symbols: HashSet<char> = symbols.into_iter().collect();
-        //
-        //TODO: configurable
-        // let stopwords: HashSet<String> = [
-        //     "a", "an", "the", "and", "or", "of", "is", "it", "this", "that", "he", "she", "you",
-        //     "i", "am", "are", "was", "were", "be", "been", "being", "to", "in", "on", "for",
-        //     "with", "as", "by", "at", "from", "but", "not", "his", "her", "their", "they", "we",
-        //     "my", "your", "our", "who", "what", "when", "where", "why", "how",
-        // ]
-        // .into_iter()
-        // .map(str::to_string)
-        // .collect();
 
         let stopwords: HashSet<String> = ["the", "a", "of", "in", "to", "and", "is"]
             .into_iter()
@@ -96,6 +160,52 @@ impl Analyzer {
         }
     }
 
+    /// Build an analyzer from a config: tokenizer + ordered filter chain.
+    pub fn from_config(config: &AnalyzerConfig) -> Self {
+        let literal_symbols: HashSet<char> = config.literal_symbols.iter().copied().collect();
+
+        let mut builder = TextAnalyzer::builder(build_tokenizer(config)).dynamic();
+
+        //min max token length
+        if config.min_length.is_some() || config.max_length.is_some() {
+            builder = builder.filter_dynamic(LengthFilter {
+                min: config.min_length,
+                max: config.max_length,
+            });
+        }
+
+        //ABCda -> abcda
+        if config.lowercase {
+            builder = builder.filter_dynamic(LowerCaser);
+        }
+
+        //
+        if config.ascii_folding {
+            builder = builder.filter_dynamic(AsciiFoldingFilter);
+        }
+
+        //stopwordi
+        if let Some(stop) = &config.stopwords {
+            if let Some(filter) = stopword_filter(stop) {
+                builder = builder.filter_dynamic(filter);
+            }
+        }
+
+        //stemming
+        if let Some(lang) = &config.stemming {
+            builder =
+                builder.filter_dynamic(CachedStemmer::new(lang.algorithm(), STEM_CACHE_CAPACITY));
+        }
+
+        //final-final
+        let analyzer = builder.build();
+        Self {
+            id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
+            analyzer,
+            literal_symbols,
+        }
+    }
+
     fn with_text_analyzer<R>(&self, f: impl FnOnce(&mut TextAnalyzer) -> R) -> R {
         LOCAL_ANALYZERS.with(|cell| {
             let mut cache = cell.borrow_mut();
@@ -109,8 +219,7 @@ impl Analyzer {
         })
     }
 
-    /// Streams every token's text and position to `f` without allocating per token.
-    /// Returns the number of tokens produced (the field's document length).
+    //returns doc-lenght of a specified field
     #[timed(indexing_documents)]
     pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
         self.with_text_analyzer(|analyzer| {
@@ -131,6 +240,7 @@ impl Analyzer {
             count
         })
     }
+
     #[timed(indexing_documents)]
     pub fn analyze(&self, input: &str) -> Vec<Token> {
         self.with_text_analyzer(|analyzer| {
@@ -144,7 +254,6 @@ impl Analyzer {
                     end_byte: token.offset_to,
                 });
             }
-
             output
         })
     }
@@ -159,8 +268,6 @@ impl Analyzer {
     /// so does one at the start unless it is an article: "In New York" is not "New York". Only a
     /// word's parts are kept, not its joined form: "Spider-Man" gives "spider man".
     pub fn name_key(&self, text: &str) -> Option<String> {
-        // read like an indexed value: "Spider-Man" gives its parts "spider", "man" (one position
-        // each) and the joined forms (two positions), which are left out
         let mut words: Vec<(u32, String)> = Vec::new();
         self.for_each_token(text, |term, position, length| {
             if length == 1 && words.last().is_none_or(|(last, _)| *last < position) {
@@ -213,7 +320,7 @@ impl Analyzer {
         terms
     }
 
-    //For search same thing like spider-man spiderman the same thing is in index so it would match
+    // For search same thing like spider-man spiderman the same thing is in index so it would match
     #[timed(search)]
     pub fn analyze_query(&self, input: &str) -> Vec<Token> {
         let canonical: String = input
@@ -226,6 +333,35 @@ impl Analyzer {
             })
             .collect();
         self.analyze(&canonical)
+    }
+}
+
+/// Named analyzers + a default, built once from a policy's `analyzers` block.
+#[derive(Clone)]
+pub struct AnalyzerSet {
+    analyzers: HashMap<String, Analyzer>,
+    default: Analyzer,
+}
+
+impl AnalyzerSet {
+    pub fn from_configs(configs: &BTreeMap<String, AnalyzerConfig>) -> Self {
+        let mut analyzers = HashMap::new();
+        for (name, config) in configs {
+            analyzers.insert(name.clone(), Analyzer::from_config(config));
+        }
+        let default = configs
+            .get("$default")
+            .map(Analyzer::from_config)
+            .unwrap_or_else(|| Analyzer::from_config(&AnalyzerConfig::builtin_default()));
+        Self { analyzers, default }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Analyzer> {
+        self.analyzers.get(name)
+    }
+
+    pub fn default_analyzer(&self) -> &Analyzer {
+        &self.default
     }
 }
 
@@ -331,7 +467,6 @@ mod cached_stemmer_equivalence {
                     .to_string()
             });
 
-        // Two passes: the first fills the cache (misses), the second hits it.
         for pass in 0..2 {
             assert_eq!(
                 pipeline_tokens(&mut cached, &text),

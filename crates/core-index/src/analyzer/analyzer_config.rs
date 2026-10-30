@@ -1,10 +1,10 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
-use tantivy::tokenizer::Language as TantivyLanguage;
+use tantivy::tokenizer::{Language as TantivyLanguage, Token, TokenFilter, TokenStream, Tokenizer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Tokenizer {
+pub enum CorelamoTokenizer {
     WordDelimiter,
     Keyword,
     Whitespace,
@@ -66,6 +66,32 @@ impl Language {
             _ => return None,
         }))
     }
+
+    //porno funkcija
+    pub fn algorithm(self) -> rust_stemmers::Algorithm {
+        use rust_stemmers::Algorithm as A;
+        use tantivy::tokenizer::Language as L;
+        match self.0 {
+            L::Arabic => A::Arabic,
+            L::Danish => A::Danish,
+            L::Dutch => A::Dutch,
+            L::English => A::English,
+            L::Finnish => A::Finnish,
+            L::French => A::French,
+            L::German => A::German,
+            L::Greek => A::Greek,
+            L::Hungarian => A::Hungarian,
+            L::Italian => A::Italian,
+            L::Norwegian => A::Norwegian,
+            L::Portuguese => A::Portuguese,
+            L::Romanian => A::Romanian,
+            L::Russian => A::Russian,
+            L::Spanish => A::Spanish,
+            L::Swedish => A::Swedish,
+            L::Tamil => A::Tamil,
+            L::Turkish => A::Turkish,
+        }
+    }
 }
 
 impl Serialize for Language {
@@ -92,6 +118,9 @@ pub enum Stopwords {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HtmlStrip {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkdownStrip {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PatternReplace {
     pub pattern: String,
@@ -102,6 +131,7 @@ pub struct PatternReplace {
 #[serde(untagged)]
 pub enum CharFilter {
     HtmlStrip { html_strip: HtmlStrip },
+    MarkdownStrip { markdown_strip: MarkdownStrip },
     PatternReplace { pattern_replace: PatternReplace },
 }
 
@@ -109,13 +139,14 @@ pub enum CharFilter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnalyzerConfig {
-    pub tokenizer: Tokenizer,
+    pub tokenizer: CorelamoTokenizer,
     pub stemming: Option<Language>,
     pub lowercase: bool,
     pub ascii_folding: bool,
     pub stopwords: Option<Stopwords>,
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,
+    pub preserve_original: bool,
     pub literal_symbols: HashSet<char>,
     pub char_filters: Vec<CharFilter>,
 }
@@ -123,13 +154,14 @@ pub struct AnalyzerConfig {
 impl Default for AnalyzerConfig {
     fn default() -> Self {
         Self {
-            tokenizer: Tokenizer::WordDelimiter,
+            tokenizer: CorelamoTokenizer::WordDelimiter,
             stemming: None,
             lowercase: true,
             ascii_folding: false,
             stopwords: None,
-            min_length: None,
-            max_length: None,
+            min_length: Some(2),
+            max_length: Some(40),
+            preserve_original: true,
             literal_symbols: HashSet::from(['_']),
             char_filters: Vec::new(),
         }
@@ -143,5 +175,71 @@ impl AnalyzerConfig {
             stemming: Some(Language(TantivyLanguage::English)),
             ..Self::default()
         }
+    }
+}
+
+// Drops tokens whose byte length falls outside [min, max].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LengthFilter {
+    pub min: Option<usize>,
+    pub max: Option<usize>,
+}
+
+impl TokenFilter for LengthFilter {
+    type Tokenizer<T: Tokenizer> = LengthFilterWrapper<T>;
+
+    fn transform<T: Tokenizer>(self, tokenizer: T) -> LengthFilterWrapper<T> {
+        LengthFilterWrapper {
+            inner: tokenizer,
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LengthFilterWrapper<T> {
+    inner: T,
+    min: Option<usize>,
+    max: Option<usize>,
+}
+
+impl<T: Tokenizer> Tokenizer for LengthFilterWrapper<T> {
+    type TokenStream<'a> = LengthFilterStream<T::TokenStream<'a>>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
+        LengthFilterStream {
+            tail: self.inner.token_stream(text),
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+pub struct LengthFilterStream<S> {
+    tail: S,
+    min: Option<usize>,
+    max: Option<usize>,
+}
+
+impl<'a, S: TokenStream> TokenStream for LengthFilterStream<S> {
+    fn advance(&mut self) -> bool {
+        while self.tail.advance() {
+            let len = self.tail.token().text.len();
+            let too_short = self.min.map_or(false, |m| len < m);
+            let too_long = self.max.map_or(false, |m| len > m);
+            if !too_short && !too_long {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn token(&self) -> &Token {
+        self.tail.token()
+    }
+
+    fn token_mut(&mut self) -> &mut Token {
+        self.tail.token_mut()
     }
 }
