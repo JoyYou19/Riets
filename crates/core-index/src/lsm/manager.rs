@@ -329,7 +329,13 @@ impl LsmIndex {
     pub fn max_array_row(&self) -> ArrayRowId {
         self.max_array_row
     }
-
+    /// Highest document id this index still holds anything for: in a segment, or marked
+    /// deleted. A new document must get a higher id, or it would inherit those traces.
+    pub fn highest_known_doc_id(&self) -> DocId {
+        let in_segments = self.next_doc_id.saturating_sub(1);
+        let deleted = self.deleted.iter().max().unwrap_or(0);
+        in_segments.max(deleted)
+    }
 
     #[timed(indexing_documents)]
     fn seal(&mut self) {
@@ -377,8 +383,7 @@ impl LsmIndex {
             Arc::clone(&self.vectors)
         )
     }
-
-    
+ 
     pub fn merge_into_memtable(&mut self, other: MemIndex) {
         self.last_ingest = Some(Instant::now());
         self.mem.merge_from(other);

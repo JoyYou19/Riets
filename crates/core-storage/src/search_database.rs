@@ -218,7 +218,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         policy: IndexPolicy,
         shard_id: ShardId
     ) -> io::Result<Self> {
-        let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+        let next_local_id = next_local_id_for_shard(&store, &index,shard_id)?;
         let next_array_row = index.max_array_row().saturating_add(1);
 
         let snapshot = SharedIndexSnapshot::empty();
@@ -245,7 +245,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shard_id: ShardId,
         shared_snapshot: SharedIndexSnapshot
     ) -> io::Result<Self> {
-        let next_local_id = next_local_id_for_shard(&store, shard_id)?;
+        let next_local_id = next_local_id_for_shard(&store,&index, shard_id)?;
         let next_array_row = index.max_array_row().saturating_add(1);
 
         let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone());
@@ -666,9 +666,10 @@ fn send_reindex_batch(
 #[timed(database_lifecycle)]
 fn next_local_id_for_shard<S: DocumentStore>(
     store: &S,
+    index:&LsmIndex,
     shard_id: ShardId
 ) -> io::Result<LocalDocId> {
-    let max_global_id = store.max_internal_id();
+     let max_global_id = store.max_internal_id().max(index.highest_known_doc_id());
 
     if max_global_id == 0 {
         return Ok(1);

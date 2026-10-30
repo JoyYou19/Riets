@@ -412,38 +412,50 @@ impl ShardManager {
 
     //peak name ik
     #[timed(shard_manager_doc_modifying)]
-    fn update_all_fields_from_fields(
-        &self,
-        fields: &BTreeMap<String, String>
-    ) -> Result<(), CorelamoError> {
-        if fields.is_empty() {
-            return Ok(());
-        }
+     fn update_all_fields_from_fields(
+    &self,
+    fields: &BTreeMap<String, String>
+) -> Result<(), CorelamoError> {
+    if fields.is_empty() {
+        return Ok(());
+    }
 
-        let policy = self.policy.read().clone();
-        let mut all_fields = self.all_fields.write().clone();
-        let mut changed = false;
-
-        for (xpath, _) in fields {
+    let policy = self.policy.read().clone();
+    let wanted: Vec<(&String, FieldKind)> = fields
+        .keys()
+        .map(|xpath| {
             let kind = policy.fields
                 .iter()
                 .find(|f| f.name == *xpath)
                 .map(|f| f.kind.clone())
                 .unwrap_or(FieldKind::None);
+            (xpath, kind)
+        })
+        .collect();
 
-            if all_fields.get_fields().get(xpath) != Some(&kind) {
-                all_fields.get_fields_mut().insert(xpath.clone(), kind);
-                changed = true;
-            }
+    {
+        let current = self.all_fields.read();
+        if wanted.iter().all(|(xpath, kind)| current.get_fields().get(*xpath) == Some(kind)) {
+            return Ok(());
         }
-
-        if changed {
-            all_fields.save(&self.root)?;
-            *self.all_fields.write() = all_fields;
-        }
-
-        Ok(())
     }
+
+    // one writer at a time: the check, the save and the swap see the same map
+    let mut guard = self.all_fields.write();
+    let mut updated = guard.clone();
+    let mut changed = false;
+    for (xpath, kind) in wanted {
+        if updated.get_fields().get(xpath) != Some(&kind) {
+            updated.get_fields_mut().insert(xpath.clone(), kind);
+            changed = true;
+        }
+    }
+    if changed {
+        updated.save(&self.root)?;
+        *guard = updated;
+    }
+    Ok(())
+}
 
     pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
         let mut all_lines: Vec<String> = Vec::new();
