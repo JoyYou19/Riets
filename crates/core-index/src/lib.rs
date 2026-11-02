@@ -38,3 +38,4 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
     Ok(())
 }
+pub mod hash;

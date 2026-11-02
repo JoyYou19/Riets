@@ -11,8 +11,7 @@ use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use core_auth::{AuthService, UserDatabase};
 use core_index::{
-    analyzer::analyzer::Analyzer,
-    lsm::{LsmIndex, config::IndexRuntimeConfig},
+    analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig}, segment::handle,
 };
 
 use core_logs::logger;
@@ -308,6 +307,7 @@ async fn main() -> io::Result<()> {
             post(handlers::stop_database_handler),
         )
         .route("/api/list-databases", get(handlers::list_databases_handler))
+        .route("/api/list-models", get(handlers::list_models_handler))
         .route(
             "/api/databases/{db_name}/status",
             get(handlers::stats_handler),
