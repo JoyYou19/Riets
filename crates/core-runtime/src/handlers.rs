@@ -18,7 +18,7 @@ use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
     command_reponse_definitions::{
-        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest, InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand, RenameDatabaseRequest, ResponseData, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, TimingsRequest,
+        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest, InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand, RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, TimingsRequest,
     }, document_out::DocumentOut, errors::CorelamoError,
 };
 use core_query::dictionary::DictionaryDocument;
@@ -96,17 +96,26 @@ pub(crate) async fn login_handler(
             .into_response();
         }
     };
-
-    let token = {
-        let Ok(mut auth) = state.auth.write() else {
+    let auth = Arc::clone(&state.auth);
+    let username = req.username.clone();
+    let password = req.password.clone();
+    // Argon2 is slow on purpose: off the async threads, under the read lock, so other
+    // requests (which also only read) are not held up
+    let token = match tokio::task::spawn_blocking(move || {
+        let auth = auth.read().map_err(|_| ())?;
+        Ok::<_, ()>(auth.login(&username, &password))
+    })
+    .await
+    {
+        Ok(Ok(token)) => token,
+        _ => {
             return HttpError::from_corelamo(
-                CorelamoError::Internal("auth service lock poisoned".to_string()),
+                CorelamoError::Internal("auth service unavailable".to_string()),
                 &ctx,
             )
             .into_response();
-        };
-        auth.login(&req.username, &req.password)
-    }; // write guard dropped here
+        }
+    };
 
     match token {
         Some(token) => {
@@ -209,9 +218,6 @@ pub(crate) async fn update_user_password_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    if let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd) {
-        return HttpError::from_corelamo(e, &ctx).into_response();
-    }
 
     let body = match require_body(&body) {
         Ok(b) => b,

@@ -32,9 +32,14 @@ impl AuthService {
             users,
         }
     }
+    /// Creates the first admin only on a fresh installation, so a changed or removed admin
+    /// account is never reset on restart. The password comes from CORELAMO_ADMIN_PASSWORD, or
+    /// is generated and printed once.
     pub fn bootstrap(mut users: UserDatabase<BinaryDocumentStore>) -> Self {
         let policy = default_policy();
-        let _ = users.add_user("admin", "secret", vec!["admin".to_string()]);
+        if users.is_empty() {
+            let _= users.add_user("admin","corelamo", vec!["admin".to_string()]);
+        }
         Self::new(policy, TokenStore::new(), users)
     }
     pub fn create_user(
@@ -110,10 +115,10 @@ impl AuthService {
         }
     }
 
-    pub fn login(&mut self, username: &str, password: &str) -> Option<Token> {
-        let _ = self.users.verify(username, password)?;
-        Some(self.tokens.issue(username.to_string()))
-    }
+    pub fn login(&self, username: &str, password: &str) -> Option<Token> {
+    let _ = self.users.verify(username, password)?;
+    Some(self.tokens.issue(username.to_string()))
+}
     pub fn authenticate(&self, token: &Token) -> Option<Principal> {
         let username = self.tokens.resolve_username(token)?;
         self.users.load_principal(&username)

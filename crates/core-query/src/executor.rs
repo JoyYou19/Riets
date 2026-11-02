@@ -1,5 +1,9 @@
 use core_index::{
-    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingList, ops::{intersection, union_many} }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ DocId, XPathId, position_span, position_start },
+    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY },
+    fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions },
+    posting::{ Posting, PostingList, ops::{ intersection, union_many } },
+    search::{ SearchIndex, SearchNumeric, SearchStats },
+    types::{ DocId, XPathId, position_span, position_start },
 };
 use std::{ borrow::Cow, cmp::Ordering, collections::{ BinaryHeap, HashMap, hash_map::Entry }, u32 };
 
@@ -1085,6 +1089,22 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 let postings = self.fetch_leaf(query, xpath);
                 out.insert_leaf(xpath, key, postings);
             }
+            Query::Fuzzy(raw, fuzziness, spec) => {
+                let xpath = ctx.xpath;
+                out.insert_field(xpath, self.field_totals(xpath));
+                for word in self.fuzzy_words(raw) {
+                    let opts = fuzzy_options(&word, *fuzziness, *spec);
+                    let key = FuzzyKey::new(&word, opts);
+                    // the tiers of a plan share their words: collect each word's candidates once
+                    if out.has_fuzzy(xpath, &key) {
+                        continue;
+                    }
+                    // every candidate with this shard's document count; selection happens after the
+                    // manager has summed the counts of all shards
+                    let candidates = self.index.fuzzy_expansions(&word, xpath, opts);
+                    out.insert_fuzzy(xpath, key, candidates);
+                }
+            }
             _ => {
                 let Some((key, xpath)) = Self::leaf_key(query, ctx) else {
                     return;
@@ -1355,7 +1375,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
     /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
     /// appears once, at the best tier that found it; within a tier, hits order by score.
-       /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
+    /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
     /// appears once, at the best tier that found it; within a tier, hits order by score.
     #[timed(search)]
     pub fn rank_cascade(
@@ -1444,7 +1464,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         let merge_from = plan.tiers
             .iter()
             .position(|tier| matches!(tier, Tier::All(_) | Tier::AllButOne(_) | Tier::Any(_)))
-            .unwrap_or(plan.tiers.len());  
+            .unwrap_or(plan.tiers.len());
         let merged_tier = u8::try_from(merge_from * TIER_STEP).unwrap_or(u8::MAX);
         // documents whose name is a run of the query's words (see the pool): their name is the
         // evidence, so coverage does not weigh them
@@ -2026,7 +2046,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 (lists, weight.unwrap_or(0.0))
             })
             .collect();
-        let total: f32 = words.iter().map(|(_, weight)| weight).sum();
+        let total: f32 = words
+            .iter()
+            .map(|(_, weight)| weight)
+            .sum();
 
         let mut coverage: HashMap<DocId, f32> = HashMap::with_capacity(hits.len());
         for hit in hits.iter_mut() {
@@ -2072,12 +2095,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         });
         levels
     }
-    pub fn total_hit_count( 
+    pub fn total_hit_count(
         &self,
         query: Option<&Query>,
         plan: &RankPlan,
         ctxs: &[FieldCtx],
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&HashSet<DocId>>
     ) -> usize {
         let queries: Vec<&Query> = if plan.tiers.is_empty() {
             query.into_iter().collect()
@@ -2087,10 +2110,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         let mut matched: HashSet<DocId> = HashSet::new();
         for query in queries {
             if let EvalOutcome::Docs(docs) = self.evaluate(query, ctxs, EvalMode::Filter) {
-                matched.extend(docs.into_iter().filter(|doc_id| {
-                    !self.index.is_deleted(*doc_id)
-                        && restrict.is_none_or(|allowed| allowed.contains(doc_id))
-                }));
+                matched.extend(
+                    docs
+                        .into_iter()
+                        .filter(|doc_id| {
+                            !self.index.is_deleted(*doc_id) &&
+                                restrict.is_none_or(|allowed| allowed.contains(doc_id))
+                        })
+                );
             }
         }
         matched.len()
@@ -2331,7 +2358,6 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
 
     hits
 }
-
 
 //derives how much a word can be fuzzed basically
 pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {

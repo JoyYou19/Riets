@@ -18,6 +18,7 @@ use core_protocol::{
 use core_timing::timed;
 use std::{
     collections::VecDeque,
+    fs::File,
     io,
     path::{ Path, PathBuf },
     sync::{ Arc, mpsc },
@@ -250,7 +251,11 @@ impl ShardDb {
         if let Some(last_clear) = records.iter().rposition(|r| matches!(r, WalRecord::Clear)) {
             info!(self.log, "WAL replay: finishing an interrupted clear";
                 "shard_id" => self.shard_id, "records_dropped" => last_clear + 1);
-            self.remove_data_files();
+            self
+                .remove_data_files()
+                .map_err(|e|
+                    CorelamoError::Internal(format!("finishing an interrupted clear failed: {e}"))
+                )?;
             records.drain(..=last_clear);
         }
         let index_root = self.root.join("index");
@@ -1164,7 +1169,7 @@ impl ShardDb {
                 }
                 Err(e) =>
                     warn!(self.log, "background worker exited with error before clear";
-                "shard_id" => self.shard_id, "error" => %e),
+                    "shard_id" => self.shard_id, "error" => %e),
             }
         }
         self.pending_checkpoints.clear();
@@ -1175,17 +1180,23 @@ impl ShardDb {
                 "shard_id" => self.shard_id, "error" => %e);
             }
         }
-        let index_root = self.root.join("index");
-        let store_path = self.root.join("documents");
-        self.remove_data_files();
-        // outright WAL reset
 
+        // If this fails, the Clear record stays in the WAL and the next start finishes the clear.
+        self
+            .remove_data_files()
+            .map_err(|e|
+                CorelamoError::Internal(format!("clear: removing data files failed: {e}"))
+            )?;
         self.wal.reset().map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+
         if !was_running {
             self.shared.release();
             info!(self.log, "shard cleared while stopped; not reopening"; "shard_id" => self.shard_id);
             return Ok(());
         }
+
+        let index_root = self.root.join("index");
+        let store_path = self.root.join("documents");
         let analyzer = self.analyzer();
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         let store = BinaryDocumentStore::open_with_maps(
@@ -1202,17 +1213,6 @@ impl ShardDb {
             self.shard_id,
             self.shared.snapshot.clone()
         )?;
-
-        if let Some(worker) = self.background_worker.take() {
-            match worker.stop() {
-                Ok(()) => {
-                    info!(self.log, "background worker stopped for clear"; "shard_id" => self.shard_id);
-                }
-                Err(e) =>
-                    warn!(self.log, "background worker exited with error before clear";
-                "shard_id" => self.shard_id, "error" => %e),
-            }
-        }
 
         self.db = Some(db);
         self.start_background();
@@ -1356,19 +1356,25 @@ impl ShardDb {
         Ok(())
     }
     /// Deletes the index, the document store and the maps file, and any reindex leftovers.
-    fn remove_data_files(&self) {
+    fn remove_data_files(&self) -> io::Result<()> {
         for dir in ["index", "documents", "index.new", "index.old"] {
             let path = self.root.join(dir);
-            if path.exists() {
-                if let Err(e) = std::fs::remove_dir_all(&path) {
-                    warn!(self.log, "could not remove {dir}"; "shard_id" => self.shard_id, "error" => %e);
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(io::Error::new(e.kind(), format!("{}: {e}", path.display())));
                 }
             }
         }
-        let maps = self.root.join("documents.maps.bin");
-        if maps.exists() {
-            let _ = std::fs::remove_file(maps);
+        match std::fs::remove_file(self.root.join("documents.maps.bin")) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e);
+            }
         }
+        File::open(&self.root)?.sync_all()
     }
     /// The shard's own command queue, for its background worker.
     pub fn set_command_sender(&mut self, tx: crossbeam_channel::Sender<ShardCmd>) {
