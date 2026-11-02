@@ -143,7 +143,7 @@ pub struct ShardManager {
     root: PathBuf,
     policy: RwLock<IndexPolicy>,
     options: RwLock<DatabaseOptions>,
-    analyzer_set: AnalyzerSet,
+    analyzer_set: RwLock<AnalyzerSet>,
     db_stats: Arc<DbStats>,
     backup_dir: PathBuf,
     all_fields: RwLock<AllFields>,
@@ -221,7 +221,7 @@ impl ShardManager {
             options: RwLock::new(options),
             joins: Mutex::new(joins),
             shutdown_done: AtomicBool::new(false),
-            analyzer_set,
+            analyzer_set: RwLock::new(analyzer_set),
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
@@ -348,7 +348,7 @@ impl ShardManager {
             root,
             policy: RwLock::new(policy),
             options: RwLock::new(options),
-            analyzer_set,
+            analyzer_set: RwLock::new(analyzer_set),
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
@@ -879,6 +879,7 @@ impl ShardManager {
         };
 
         policy.save(&self.root)?;
+        *self.analyzer_set.write() = AnalyzerSet::from_policy(&policy.analyzers);
         *self.policy.write() = policy;
         self.update_all_fields_from_policy()?;
 
@@ -1213,11 +1214,11 @@ impl ShardManager {
         let query_groups = compile_query(
             &command.query,
             command.search_fields.as_deref(),
-            &self.analyzer_set,
+            &self.analyzer_set.read(),
             &policy,
             Some(&dictionary),
         )?;
-        let filters = compile_filters(&self.analyzer_set, command, &policy)?;
+        let filters = compile_filters(&self.analyzer_set.read(), command, &policy)?;
 
         let sorts = resolve_sorts(command, &policy)?;
         let strict_sort = sorts
@@ -1569,7 +1570,10 @@ impl ShardManager {
         }
 
         let xpaths = Arc::new(self.policy.read().searchable_xpaths());
-        let analyzers_map = self.policy.read().field_analyzers(&self.analyzer_set);
+        let analyzers_map = self
+            .policy
+            .read()
+            .field_analyzers(&self.analyzer_set.read());
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
@@ -1648,9 +1652,12 @@ impl ShardManager {
 
         //convert words to be fuzzable spider-man -> spiderman
         let words =
-            core_query::fuzzable_words(self.analyzer_set.default_analyzer(), &command.value);
+            core_query::fuzzable_words(self.analyzer_set.read().default_analyzer(), &command.value);
 
-        let analyzers_map = self.policy.read().field_analyzers(&self.analyzer_set);
+        let analyzers_map = self
+            .policy
+            .read()
+            .field_analyzers(&self.analyzer_set.read());
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
@@ -1728,6 +1735,7 @@ impl ShardManager {
         for piece in command.value.split_whitespace() {
             let Some(token) = self
                 .analyzer_set
+                .read()
                 .default_analyzer()
                 .analyze_query(piece)
                 .into_iter()
@@ -1863,7 +1871,7 @@ impl ShardManager {
             ));
         }
         let policy = self.policy.read().clone();
-        let filters = compile_filters(&self.analyzer_set, command, &policy)?;
+        let filters = compile_filters(&self.analyzer_set.read(), command, &policy)?;
         let names: Option<Vec<String>> = match request.field {
             Some(field) => Some(vec![field]),
             None => command.search_fields.clone(),
@@ -1982,7 +1990,7 @@ impl ShardManager {
         if let Some((fields, matchers)) = &highlight {
             let fields = fields.clone();
             let matchers = matchers.clone();
-            let analyzer = self.analyzer_set.default_analyzer().clone();
+            let analyzer = self.analyzer_set.read().default_analyzer().clone();
             resolved = tokio::task::spawn_blocking(move || {
                 for slot in &mut resolved {
                     let Some(hit) = slot else {

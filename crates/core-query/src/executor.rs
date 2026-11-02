@@ -2,7 +2,7 @@ use core_index::{
     analyzer::analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
     fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions},
     posting::{
-        Posting, PostingList,
+        PostingList,
         ops::{intersection, union_many},
     },
     search::{SearchIndex, SearchNumeric, SearchStats},
@@ -565,11 +565,13 @@ where
         fuzzable_words(self.analyzer, raw)
     }
 
+    //sitaa funkcija darija kipa exact bet kip arii phrase kas nu nav pareizi, sim jabut exact,
+    //jauana logika viss ko izdara ir nonem "xxx" -> xxx
     #[timed(search)]
     fn execute_exact(&self, raw: &str, xpath: XPathId) -> PostingList {
         let raw = raw.trim();
 
-        //incase someone did phrase + exact we can be forgiving and drop the ""
+        // incase someone did phrase + exact we can be forgiving and drop the ""
         let raw = raw
             .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))
@@ -583,72 +585,7 @@ where
             return self.index.lookup(words[0], xpath);
         }
 
-        // every word has to be in the field: the dictionary says so before any list is read, and
-        // the lists are read from the rarest up, stopping as soon as no document has them all
-        // (a sentence typed as a query is rarely a title: its rarest words already disagree)
-        let doc_freqs: Vec<u32> = words
-            .iter()
-            .map(|word| self.index.doc_freq(word, xpath))
-            .collect();
-        if doc_freqs.contains(&0) {
-            return PostingList::default();
-        }
-        let mut order: Vec<usize> = (0..words.len()).collect();
-        order.sort_by_key(|&i| doc_freqs[i]);
-        let mut lists: Vec<PostingList> = vec![PostingList::default(); words.len()];
-        let mut candidates: Vec<DocId> = Vec::new();
-        for (step, &i) in order.iter().enumerate() {
-            lists[i] = self.index.lookup(words[i], xpath);
-            let postings = lists[i].items();
-            if step == 0 {
-                candidates = postings.iter().map(|posting| posting.doc_id).collect();
-            } else {
-                candidates.retain(|doc| postings.binary_search_by_key(doc, |p| p.doc_id).is_ok());
-            }
-            if candidates.is_empty() {
-                return PostingList::default();
-            }
-        }
-        // the exact field keeps every word, stopwords too: the words are adjacent
-        let offsets: Vec<u32> = (0..words.len() as u32).collect();
-        let rarest = (0..lists.len())
-            .min_by_key(|&i| lists[i].len())
-            .unwrap_or(0);
-        let mut result = Vec::new();
-        //a bit smarter loop than before
-        'docs: for driver in lists[rarest].items() {
-            let doc_id = driver.doc_id;
-            // in the words' own order, so phrase_matches lines them up with their offsets
-            let mut position_lists: Vec<&[u32]> = Vec::with_capacity(lists.len());
-            let mut first = driver;
-
-            for (i, list) in lists.iter().enumerate() {
-                let posting = if i == rarest {
-                    driver
-                } else {
-                    match list.items().binary_search_by_key(&doc_id, |p| p.doc_id) {
-                        Ok(index) => &list.items()[index],
-                        Err(_) => {
-                            continue 'docs;
-                        }
-                    }
-                };
-                if i == 0 {
-                    first = posting;
-                }
-                position_lists.push(posting.positions.as_slice());
-            }
-
-            if phrase_matches(&position_lists, &offsets) {
-                // the first word's posting, as before, so exact scoring is unchanged
-                result.push(Posting::with_weight(
-                    doc_id,
-                    first.positions.clone(),
-                    first.weight,
-                ));
-            }
-        }
-        PostingList::from_items(result)
+        self.index.lookup(raw, xpath)
     }
 
     fn ascend(&self, rows: HashSet<DocId>, levels: u32) -> HashSet<DocId> {

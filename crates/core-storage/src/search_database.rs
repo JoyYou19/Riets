@@ -480,7 +480,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 
     pub fn set_policy(&mut self, policy: IndexPolicy) -> io::Result<()> {
-        policy.validate()?;
+        //shard_manager already validates policy.validate()?;
+        self.analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
         self.policy = policy;
         Ok(())
     }
