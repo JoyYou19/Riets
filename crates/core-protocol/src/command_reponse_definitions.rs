@@ -294,11 +294,19 @@ impl Default for TotalHits {
         }
     }
 }
-
+/// How a search used a spelling correction of its query.
+#[derive(Debug, Clone)]
+pub enum QueryCorrection {
+    /// The query was replaced: the results are for this text.
+    Applied(String),
+    /// The results are for the query as typed; this spelling is offered instead.
+    Suggested(String),
+}
 pub struct SearchResponse {
     docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
     strip_id: Option<String>,
     total_hits: TotalHits,
+    corrected_query:Option<QueryCorrection>
 }
 
 impl SearchResponse {
@@ -306,11 +314,13 @@ impl SearchResponse {
         docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
         strip_id: Option<String>,
         total_hits: TotalHits,
+        corrected_query:Option<QueryCorrection>
     ) -> Self {
         Self {
             docs,
             strip_id,
             total_hits,
+            corrected_query
         }
     }
 }
@@ -361,10 +371,20 @@ impl ResponseData for SearchResponse {
     }
 
     fn extra_fields(&self) -> Vec<(String, OwnedValue)> {
-        vec![(
+        let mut fields = vec![(
             "total_hits".to_string(),
             json!({ "value": self.total_hits.value, "more": self.total_hits.more }),
-        )]
+        )];
+        match &self.corrected_query {
+            Some(QueryCorrection::Applied(text)) => {
+                fields.push(("corrected_query".to_string(), json!(text)));
+            }
+            Some(QueryCorrection::Suggested(text)) => {
+                fields.push(("suggested_query".to_string(), json!(text)));
+            }
+            None => {}
+        }
+        fields
     }
 }
 
