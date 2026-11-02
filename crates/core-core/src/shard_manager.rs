@@ -5,10 +5,11 @@ use crate::metrics::{DbStats, EmbeddingStatus};
 use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
+use ahash::{HashMap, HashMapExt};
 use core_backup::backup::compress_file;
 use core_backup::backup::{BackupManifest, BackupType};
 use core_backup::progress::BackupProgress;
-use core_index::analyzer::Analyzer;
+use core_index::analyzer::analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
@@ -42,7 +43,7 @@ use crossbeam_channel::bounded;
 use parking_lot::{Mutex, RwLock};
 use simd_json::OwnedValue;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -142,7 +143,7 @@ pub struct ShardManager {
     root: PathBuf,
     policy: RwLock<IndexPolicy>,
     options: RwLock<DatabaseOptions>,
-    analyzer: Analyzer,
+    analyzer_set: AnalyzerSet,
     db_stats: Arc<DbStats>,
     backup_dir: PathBuf,
     all_fields: RwLock<AllFields>,
@@ -211,6 +212,8 @@ impl ShardManager {
                 CorelamoError::Internal(format!("shard {i} thread died during start"))
             })??;
         }
+
+        let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
         Ok(Self {
             shards,
             root,
@@ -218,7 +221,7 @@ impl ShardManager {
             options: RwLock::new(options),
             joins: Mutex::new(joins),
             shutdown_done: AtomicBool::new(false),
-            analyzer: Analyzer::new(),
+            analyzer_set,
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
@@ -337,7 +340,7 @@ impl ShardManager {
                 CorelamoError::Internal(format!("shard {i} thread died during start"))
             })??;
         }
-
+        let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
         Ok(Self {
             shards,
             joins: Mutex::new(joins),
@@ -345,7 +348,7 @@ impl ShardManager {
             root,
             policy: RwLock::new(policy),
             options: RwLock::new(options),
-            analyzer: Analyzer::new(),
+            analyzer_set,
             all_fields: RwLock::new(all_fields),
             db_stats,
             backup_dir,
@@ -831,7 +834,7 @@ impl ShardManager {
         &self,
         mut policy: IndexPolicy,
         user: String,
-    ) -> Result<(), CorelamoError> {
+    ) -> Result<Option<String>, CorelamoError> {
         policy.validate()?;
         if self.db_stats.reindex_running() {
             return Err(CorelamoError::Busy(
@@ -870,11 +873,17 @@ impl ShardManager {
             return Err(e);
         }
 
+        let changed = {
+            let old = self.policy.read();
+            old.analyzers != policy.analyzers || old.fields != policy.fields
+        };
+
         policy.save(&self.root)?;
         *self.policy.write() = policy;
         self.update_all_fields_from_policy()?;
 
-        Ok(())
+        Ok(changed
+            .then(|| "policy changed; reindex required to apply to existing documents".to_string()))
     }
 
     #[timed(database_lifecycle)]
@@ -1197,64 +1206,65 @@ impl ShardManager {
 
         let policy = self.policy.read().clone();
         let cascade_order = self.options.read().search.cascade_order();
-        //if no search_fields we should search in the arrays
         let matchmode = command.match_mode;
         let dictionary = self.synonyms.snapshot();
 
-        let (query, ctxs) = compile_query(
+        // CHANGED: compile_query returns per-analyzer groups now
+        let query_groups = compile_query(
             &command.query,
             command.search_fields.as_deref(),
-            &self.analyzer,
+            &self.analyzer_set,
             &policy,
             Some(&dictionary),
         )?;
-        let filters = compile_filters(&self.analyzer, command, &policy)?;
+        let filters = compile_filters(&self.analyzer_set, command, &policy)?;
+
         let sorts = resolve_sorts(command, &policy)?;
-        //vector search
         let strict_sort = sorts
             .as_ref()
             .is_some_and(|specs| matches!(specs.mode, SortMode::Strict));
         let semantic = self.semantic_fields(command, &policy, strict_sort);
-        // fusion ranks the top FUSION_DEPTH of each list, so the word side must fetch that deep
         let word_fetch = if semantic.is_some() {
             fetch.max(FUSION_DEPTH)
         } else {
             fetch
         };
-
-        //INFO:                page * multiplier    min    max
-        //WARN: results may change based on the "docs": x lol
         let window = fetch.saturating_mul(50).clamp(1000, 5_000);
 
-        let full_plan = match (&command.query, query.as_ref()) {
-            (OwnedValue::String(text), Some(resolved)) => {
-                let has_exact_field = ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
-                RankPlan::cascade(
-                    text,
-                    resolved.clone(),
-                    &self.analyzer,
-                    has_exact_field,
-                    &cascade_order,
-                )
-                .stopping_after(if sorts.is_some() { window } else { word_fetch })
-            }
-            _ => RankPlan::default(),
-        };
-        // Fuzzy expansions are the costly part of preparing (every close spelling of every word,
-        // in every field, on every shard). Prepare without them first; only when a word turns out
-        // to be in no document of the whole database is it worth preparing them.
-        let mut plan = Arc::new(full_plan.without_fuzzy());
-        let typed_words: Vec<String> = match &command.query {
-            OwnedValue::String(text) if plan.tiers.len() != full_plan.tiers.len() => {
-                core_query::fuzzable_words(&self.analyzer, text)
-            }
-            _ => Vec::new(),
-        };
-        let query = Arc::new(query);
+        //CHANGED: one RankPlan per group, built with that group's analyzer
+        //WARN: kristian piedod, tev te bija optimizacija kas checko vai vards vispar ir datubazee,
+        //es to nonemu sorry bracin sis japieliek atpakal :\ - valters nevis normunds
+        let plans: Arc<Vec<RankPlan>> = Arc::new(
+            query_groups
+                .iter()
+                .map(|group| match (&command.query, group.query.as_ref()) {
+                    (OwnedValue::String(text), Some(resolved)) => {
+                        let has_exact_field =
+                            group.ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
+                        RankPlan::cascade(
+                            text,
+                            resolved.clone(),
+                            &group.analyzer,
+                            has_exact_field,
+                            &cascade_order,
+                        )
+                        .stopping_after(if sorts.is_some() {
+                            window
+                        } else {
+                            word_fetch
+                        })
+                    }
+                    _ => RankPlan::default(),
+                })
+                .collect(),
+        );
+
+        // CHANGED: vector task unchanged (depends only on filters/semantic)
         let vector_task = semantic.map(|(text, xpaths)| {
             self.spawn_vector_search(text, xpaths, FUSION_DEPTH, filters.clone())
         });
-        // resolve highlight fields once + collect query matchers once
+
+        // CHANGED: highlight matchers collected per group with each group's analyzer
         let highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)> =
             match &command.highlight {
                 Some(cmd) => {
@@ -1265,10 +1275,12 @@ impl ShardManager {
                             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
                         fields.push((field.full_path.clone(), opts.clone()));
                     }
-                    let matchers = (*query)
-                        .as_ref()
-                        .map(|q| collect_highlight_matchers(q, &self.analyzer))
-                        .unwrap_or_default();
+                    let mut matchers = Vec::new();
+                    for group in query_groups.iter() {
+                        if let Some(q) = group.query.as_ref() {
+                            matchers.extend(collect_highlight_matchers(q, &group.analyzer));
+                        }
+                    }
                     Some((fields, matchers))
                 }
                 None => None,
@@ -1278,78 +1290,51 @@ impl ShardManager {
             .as_ref()
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
 
-        //Scores must not depend on which shard a document is in, so every shard scores with the
-        //statistics of all shards together: first every shard reads the query and reports its
-        //own statistics, then all of them rank
-        let mut passes = 0;
-        let (prepared, corpus) = loop {
-            passes += 1;
-            let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
-            let mut set = JoinSet::new();
-            for (index, handle) in self.shards.iter().enumerate() {
-                let handle = handle.clone();
-                let query = Arc::clone(&query);
-                let plan = Arc::clone(&plan);
-                let ctxs = Arc::clone(&ctxs);
-                set.spawn_blocking(move || {
-                    let shard = handle.prepare_search((*query).as_ref(), &plan, &ctxs);
-                    (index, shard)
-                });
-            }
-            let mut corpus = CorpusStats::new();
-            while let Some(res) = set.join_next().await {
-                match res {
-                    Ok((index, shard)) => {
-                        corpus.merge(shard.stats());
-                        prepared[index] = Some(Arc::new(shard));
-                    }
-                    Err(je) => {
-                        return Err(CorelamoError::Internal(format!(
-                            "shard prepare panicked: {je}"
-                        )));
-                    }
+        // CHANGED: single prepare pass over all groups (fuzzy two-phase dropped for now)
+        let mut prepared_search: Vec<Option<Arc<PreparedShardSearch>>> =
+            vec![None; self.shards.len()];
+        let mut set = JoinSet::new();
+        for (index, handle) in self.shards.iter().enumerate() {
+            let handle = handle.clone();
+            let query_groups = query_groups.clone();
+            let plans = plans.clone();
+            set.spawn_blocking(move || (index, handle.prepare_search(&query_groups, &plans)));
+        }
+        let mut corpus = CorpusStats::new();
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((index, shard)) => {
+                    corpus.merge(shard.stats());
+                    prepared_search[index] = Some(Arc::new(shard));
+                }
+                Err(je) => {
+                    return Err(CorelamoError::Internal(format!(
+                        "shard prepare panicked: {je}"
+                    )));
                 }
             }
-            // a word no document has: the typo tier is needed after all, prepare again with it
-            let plain_xpaths: Vec<XPathId> = ctxs
-                .iter()
-                .filter(|ctx| !ctx.row_keyed)
-                .map(|ctx| ctx.xpath)
-                .collect();
-            let unknown_word = typed_words.iter().any(|word| {
-                plain_xpaths
-                    .iter()
-                    .all(|&xpath| corpus.term_doc_freq(xpath, word) == 0)
-            });
-            if passes == 1 && unknown_word {
-                plan = Arc::new(full_plan.clone());
-                continue;
-            }
-            break (prepared, corpus);
-        };
+        }
         let corpus = Arc::new(corpus);
 
+        //rank per group, merge across groups inside the shard
         let mut set = JoinSet::new();
-        for (handle, prepared) in self.shards.iter().zip(prepared) {
+        for (handle, prepared) in self.shards.iter().zip(prepared_search) {
             let handle = handle.clone();
             let prepared = prepared.expect("every shard was prepared");
             let corpus = corpus.clone();
-            let query = Arc::clone(&query);
-            let plan = Arc::clone(&plan);
+            let query_groups = query_groups.clone();
+            let plans = plans.clone();
             let filters = filters.clone();
-            let ctxs = Arc::clone(&ctxs);
             let sort_xpaths = sort_xpaths.clone();
 
             set.spawn_blocking(move || {
-                //any sort mentioned? - we do smart sort, else just relevance
                 if let Some(sort_xpaths) = sort_xpaths.as_ref() {
                     handle.rank_sorted(
                         &prepared,
                         &corpus,
-                        (*query).as_ref(),
-                        &plan,
+                        &query_groups,
+                        &plans,
                         filters.as_deref(),
-                        &ctxs,
                         sort_xpaths,
                         window,
                         matchmode,
@@ -1358,11 +1343,9 @@ impl ShardManager {
                     handle.rank_top_k(
                         &prepared,
                         &corpus,
-                        (*query).as_ref(),
-                        &plan,
+                        &query_groups,
+                        &plans,
                         filters.as_deref(),
-                        &ctxs,
-                        // hits merge by (tier, score): each shard's top `fetch` covers the merged top `fetch`
                         word_fetch,
                         matchmode,
                     )
@@ -1370,7 +1353,6 @@ impl ShardManager {
             });
         }
 
-        //join results
         let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
         let mut per_shard_bounds: Vec<Vec<(Option<f64>, Option<f64>)>> = Vec::new();
         let mut total_hits: u64 = 0;
@@ -1400,14 +1382,12 @@ impl ShardManager {
             return Err(e);
         }
 
-        // Any failure on the vector side leaves the word ranking as it is.
         let vector_hits = match vector_task {
             Some(task) => task.await.ok().flatten(),
             None => None,
         };
         if let Some(specs) = sorts.as_ref() {
             if let Some(vectors) = vector_hits.as_deref() {
-                // blend: vector ranks feed the relevance part; only candidates with sort keys
                 items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
                 items = fuse_rrf(items, vectors, false);
             }
@@ -1420,7 +1400,12 @@ impl ShardManager {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
             if let Some(vectors) = vector_hits.as_deref() {
                 items.truncate(word_fetch);
-                items = fuse_keeping_named(items, vectors, plan.named_tier_limit());
+                let named_limit = plans
+                    .iter()
+                    .map(|p| p.named_tier_limit())
+                    .min()
+                    .unwrap_or(0);
+                items = fuse_keeping_named(items, vectors, named_limit);
             }
         }
         if items.len() > fetch {
@@ -1584,13 +1569,15 @@ impl ShardManager {
         }
 
         let xpaths = Arc::new(self.policy.read().searchable_xpaths());
+        let analyzers_map = self.policy.read().field_analyzers(&self.analyzer_set);
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
             let handle = handle.clone();
             let words = words.clone();
             let xpaths = Arc::clone(&xpaths);
-            set.spawn_blocking(move || handle.info_words_direct(&words, &xpaths));
+            let analyzers_map = analyzers_map.clone();
+            set.spawn_blocking(move || handle.info_words_direct(&words, &xpaths, &analyzers_map));
         }
 
         let mut merged: Vec<WordStats> = words
@@ -1660,15 +1647,21 @@ impl ShardManager {
         };
 
         //convert words to be fuzzable spider-man -> spiderman
-        let words = core_query::fuzzable_words(&self.analyzer, &command.value);
+        let words =
+            core_query::fuzzable_words(self.analyzer_set.default_analyzer(), &command.value);
+
+        let analyzers_map = self.policy.read().field_analyzers(&self.analyzer_set);
 
         let mut set = JoinSet::new();
         for handle in &self.shards {
             let handle = handle.clone();
             let value = command.value.clone();
             let xpaths = Arc::clone(&xpaths);
+            let analyzers_map = analyzers_map.clone();
 
-            set.spawn_blocking(move || handle.suggest_direct(&value, &xpaths, fuzziness, spec));
+            set.spawn_blocking(move || {
+                handle.suggest_direct(&value, &xpaths, fuzziness, spec, &analyzers_map)
+            });
         }
 
         // One merged map per word, so a term's document frequency is the sum
@@ -1733,7 +1726,13 @@ impl ShardManager {
         let mut changed = false;
 
         for piece in command.value.split_whitespace() {
-            let Some(token) = self.analyzer.analyze_query(piece).into_iter().next() else {
+            let Some(token) = self
+                .analyzer_set
+                .default_analyzer()
+                .analyze_query(piece)
+                .into_iter()
+                .next()
+            else {
                 //stopword: not searchable, keep it as typed.
                 pieces.push(piece.to_string());
                 continue;
@@ -1864,7 +1863,7 @@ impl ShardManager {
             ));
         }
         let policy = self.policy.read().clone();
-        let filters = compile_filters(&self.analyzer, command, &policy)?;
+        let filters = compile_filters(&self.analyzer_set, command, &policy)?;
         let names: Option<Vec<String>> = match request.field {
             Some(field) => Some(vec![field]),
             None => command.search_fields.clone(),
@@ -1983,7 +1982,7 @@ impl ShardManager {
         if let Some((fields, matchers)) = &highlight {
             let fields = fields.clone();
             let matchers = matchers.clone();
-            let analyzer = self.analyzer.clone();
+            let analyzer = self.analyzer_set.default_analyzer().clone();
             resolved = tokio::task::spawn_blocking(move || {
                 for slot in &mut resolved {
                     let Some(hit) = slot else {
@@ -2135,7 +2134,7 @@ impl ShardManager {
         text: String,
         xpaths: Vec<XPathId>,
         k: usize,
-        filters: Option<Arc<HashMap<String, FieldQuery>>>,
+        filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
     ) -> tokio::task::JoinHandle<Option<Vec<VectorHit>>> {
         let models = Arc::clone(&self.models);
         let shards = self.shards.clone();

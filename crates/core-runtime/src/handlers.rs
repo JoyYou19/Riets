@@ -1661,7 +1661,10 @@ pub(crate) async fn set_policy_handler(
     };
 
     match handle.set_policy_all(policy, principal.id.0.clone()).await {
-        Ok(()) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
+        Ok(Some(warning)) => {
+            HttpOk::new(format!("policy updated for '{db_name}' — {warning}"), &ctx).into_response()
+        }
+        Ok(None) => HttpOk::new(format!("policy updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }

@@ -2,6 +2,8 @@ pub mod analyzer;
 pub mod analyzer_config;
 pub mod cached_stemmer;
 pub mod filepath_tokenizer;
+pub mod stip_html;
+pub mod strip_markdown;
 pub mod token;
 pub mod tokenizer;
 pub mod url_tokenizer;

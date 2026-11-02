@@ -1,8 +1,10 @@
 use crate::analyzer::analyzer_config::{
-    AnalyzerConfig, CorelamoTokenizer, LengthFilter, Stopwords,
+    AnalyzerConfig, CharFilter, CorelamoTokenizer, LengthFilter, Stopwords,
 };
 use crate::analyzer::cached_stemmer::CachedStemmer;
 use crate::analyzer::filepath_tokenizer::FilepathTokenizer;
+use crate::analyzer::stip_html::strip_html;
+use crate::analyzer::strip_markdown::strip_markdown;
 use crate::analyzer::url_tokenizer::UrlTokenizer;
 use crate::analyzer::{token::Token, word_delimiter::WordDelimiterTokenizer};
 use core_timing::timed;
@@ -21,6 +23,29 @@ pub struct Analyzer {
     id: u64,
     analyzer: TextAnalyzer,
     literal_symbols: HashSet<char>,
+    char_filters: Vec<CompiledCharFilter>,
+}
+
+#[derive(Clone)]
+enum CompiledCharFilter {
+    StripHtml,
+    StripMarkdown,
+    PatternReplace {
+        regex: regex::Regex,
+        replacement: String,
+    },
+}
+
+impl CompiledCharFilter {
+    fn apply(&self, text: &str) -> String {
+        match self {
+            CompiledCharFilter::StripHtml => strip_html(text),
+            CompiledCharFilter::StripMarkdown => strip_markdown(text),
+            CompiledCharFilter::PatternReplace { regex, replacement } => {
+                regex.replace_all(text, replacement).into_owned()
+            }
+        }
+    }
 }
 
 /// Per-thread stem cache size; cleared when full.
@@ -157,6 +182,7 @@ impl Analyzer {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
             analyzer,
             literal_symbols,
+            char_filters: Vec::new(),
         }
     }
 
@@ -197,52 +223,42 @@ impl Analyzer {
                 builder.filter_dynamic(CachedStemmer::new(lang.algorithm(), STEM_CACHE_CAPACITY));
         }
 
+        let char_filters: Vec<CompiledCharFilter> = config
+            .char_filters
+            .iter()
+            .filter_map(|f| match f {
+                CharFilter::HtmlStrip { .. } => Some(CompiledCharFilter::StripHtml),
+                CharFilter::MarkdownStrip { .. } => Some(CompiledCharFilter::StripMarkdown),
+                CharFilter::PatternReplace { pattern_replace } => {
+                    regex::Regex::new(&pattern_replace.pattern)
+                        .ok()
+                        .map(|regex| CompiledCharFilter::PatternReplace {
+                            regex,
+                            replacement: pattern_replace.replacement.clone(),
+                        })
+                }
+            })
+            .collect();
+
         //final-final
         let analyzer = builder.build();
         Self {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
             analyzer,
             literal_symbols,
+            char_filters,
         }
     }
 
-    fn with_text_analyzer<R>(&self, f: impl FnOnce(&mut TextAnalyzer) -> R) -> R {
-        LOCAL_ANALYZERS.with(|cell| {
-            let mut cache = cell.borrow_mut();
-            if !cache.contains_key(&self.id) && cache.len() >= MAX_CACHED_ANALYZERS_PER_THREAD {
-                cache.clear();
-            }
-            let analyzer = cache
-                .entry(self.id)
-                .or_insert_with(|| self.analyzer.clone());
-            f(analyzer)
-        })
+    fn apply_char_filters(&self, input: &str) -> String {
+        let mut text = input.to_string();
+        for filter in &self.char_filters {
+            text = filter.apply(&text);
+        }
+        text
     }
 
-    //returns doc-lenght of a specified field
-    #[timed(indexing_documents)]
-    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
-        self.with_text_analyzer(|analyzer| {
-            let mut stream = analyzer.token_stream(input);
-            let mut count: u32 = 0;
-            let mut next_unseen: usize = 0;
-            while let Some(token) = stream.next() {
-                f(
-                    &token.text,
-                    token.position as u32,
-                    token.position_length.max(1) as u32,
-                );
-                if token.position >= next_unseen {
-                    count = count.saturating_add(1);
-                    next_unseen = token.position + 1;
-                }
-            }
-            count
-        })
-    }
-
-    #[timed(indexing_documents)]
-    pub fn analyze(&self, input: &str) -> Vec<Token> {
+    fn tokenize(&self, input: &str) -> Vec<Token> {
         self.with_text_analyzer(|analyzer| {
             let mut stream = analyzer.token_stream(input);
             let mut output = Vec::new();
@@ -255,6 +271,19 @@ impl Analyzer {
                 });
             }
             output
+        })
+    }
+
+    fn with_text_analyzer<R>(&self, f: impl FnOnce(&mut TextAnalyzer) -> R) -> R {
+        LOCAL_ANALYZERS.with(|cell| {
+            let mut cache = cell.borrow_mut();
+            if !cache.contains_key(&self.id) && cache.len() >= MAX_CACHED_ANALYZERS_PER_THREAD {
+                cache.clear();
+            }
+            let analyzer = cache
+                .entry(self.id)
+                .or_insert_with(|| self.analyzer.clone());
+            f(analyzer)
         })
     }
 
@@ -320,10 +349,37 @@ impl Analyzer {
         terms
     }
 
-    // For search same thing like spider-man spiderman the same thing is in index so it would match
+    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
+        let filtered = self.apply_char_filters(input);
+        self.with_text_analyzer(|analyzer| {
+            let mut stream = analyzer.token_stream(&filtered);
+            let mut count: u32 = 0;
+            let mut next_unseen: usize = 0;
+            while let Some(token) = stream.next() {
+                f(
+                    &token.text,
+                    token.position as u32,
+                    token.position_length.max(1) as u32,
+                );
+                if token.position >= next_unseen {
+                    count = count.saturating_add(1);
+                    next_unseen = token.position + 1;
+                }
+            }
+            count
+        })
+    }
+
+    #[timed(indexing_documents)]
+    pub fn analyze(&self, input: &str) -> Vec<Token> {
+        let filtered = self.apply_char_filters(input);
+        self.tokenize(&filtered)
+    }
+
     #[timed(search)]
     pub fn analyze_query(&self, input: &str) -> Vec<Token> {
-        let canonical: String = input
+        let filtered = self.apply_char_filters(input);
+        let canonical: String = filtered
             .chars()
             .filter(|c| {
                 c.is_alphanumeric()
@@ -332,7 +388,7 @@ impl Analyzer {
                     || !(c.is_ascii() || is_unicode_punctuation(*c))
             })
             .collect();
-        self.analyze(&canonical)
+        self.tokenize(&canonical)
     }
 }
 
@@ -343,8 +399,14 @@ pub struct AnalyzerSet {
     default: Analyzer,
 }
 
+impl Default for AnalyzerSet {
+    fn default() -> Self {
+        Self::from_policy(&BTreeMap::new())
+    }
+}
+
 impl AnalyzerSet {
-    pub fn from_configs(configs: &BTreeMap<String, AnalyzerConfig>) -> Self {
+    pub fn from_policy(configs: &BTreeMap<String, AnalyzerConfig>) -> Self {
         let mut analyzers = HashMap::new();
         for (name, config) in configs {
             analyzers.insert(name.clone(), Analyzer::from_config(config));

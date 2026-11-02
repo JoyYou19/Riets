@@ -1,4 +1,4 @@
-use core_index::analyzer::Analyzer;
+use core_index::analyzer::analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{
@@ -8,8 +8,9 @@ use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::sync::Arc;
+
+use std::collections::HashMap;
 
 pub struct SortField {
     pub xpath: XPathId,
@@ -93,15 +94,16 @@ pub fn fold_sort_bounds(
 }
 
 pub fn compile_filters(
-    analyzer: &Analyzer,
+    analyzers: &AnalyzerSet,
     command: &SearchCommand,
     policy: &IndexPolicy,
 ) -> Result<Option<Arc<HashMap<String, FieldQuery>>>, CorelamoError> {
     let Some(filters) = command.filters.as_ref() else {
         return Ok(None);
     };
-    Ok(Some(Arc::new(resolve_filters(filters, analyzer, policy)?)))
+    Ok(Some(Arc::new(resolve_filters(filters, analyzers, policy)?)))
 }
+
 pub fn order_blended(
     items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
     specs: &[SortField],

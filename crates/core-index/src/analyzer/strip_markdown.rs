@@ -3,7 +3,9 @@ pub fn strip_markdown(input: &str) -> String {
     let text = strip_links(input);
     text.chars()
         .filter(|c| !matches!(c, '#' | '*' | '_' | '`' | '~' | '>'))
-        .collect()
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 // "[text](url)" -> "text"

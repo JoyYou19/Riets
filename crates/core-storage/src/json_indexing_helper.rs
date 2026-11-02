@@ -48,7 +48,7 @@ fn index_arrays(
     arrays: &[ArrayField],
     // doc_id: DocId,
     parent_row: Option<ArrayRowId>,
-    parts: &mut Vec<DocumentPart>, 
+    parts: &mut Vec<DocumentPart>,
     rows: &mut Vec<ArrayRow>,
     bool_points: &mut Vec<BoolPoint>,
     policy: &IndexPolicy,
@@ -148,6 +148,7 @@ fn index_leaves(
                     weight: field.weight,
                     exact: false,
                     names: false,
+                    analyzer: field.analyzer.clone(),
                     gap: 0,
                     segments: Vec::new(),
                 });
@@ -156,6 +157,7 @@ fn index_leaves(
                         xpath: exact_xpath,
                         text: raw.clone(),
                         weight: field.weight,
+                        analyzer: field.analyzer.clone(),
                         exact: true,
                         names: true,
                         gap: 0,
@@ -169,6 +171,7 @@ fn index_leaves(
                     parts.push(DocumentPart {
                         xpath: field.xpath(policy),
                         text: raw.clone(),
+                        analyzer: field.analyzer.clone(),
                         weight: field.weight,
                         exact: false,
                         names: false,
@@ -180,6 +183,7 @@ fn index_leaves(
                         parts.push(DocumentPart {
                             xpath: exact_xpath,
                             text: raw.clone(),
+                            analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,
                             names: false,
@@ -199,6 +203,7 @@ fn index_leaves(
                         parts.push(DocumentPart {
                             xpath: field.xpath(policy),
                             text: raw.to_string(),
+                            analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,
                             names: false,
@@ -218,6 +223,7 @@ fn index_leaves(
                         parts.push(DocumentPart {
                             xpath: field.xpath(policy),
                             text: raw.to_string(),
+                            analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,
                             names: false,

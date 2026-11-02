@@ -5,11 +5,11 @@ use std::{
 };
 
 use crate::{
-    analyzer::analyzer_config::{AnalyzerConfig, Language},
+    analyzer::{Analyzer, analyzer::AnalyzerSet, analyzer_config::AnalyzerConfig},
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
 };
-use ahash::HashSet;
+use ahash::{HashMap, HashMapExt, HashSet};
 use core_timing::timed;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -40,7 +40,6 @@ pub struct FieldPolicy {
     pub searchable: bool,
     pub list: bool,
     pub weight: WeightInterval,
-    pub stemming: Option<String>,
     pub exact: bool,
     pub repeated: bool, // array of strings nums/bools
     pub subfields: Vec<FieldPolicy>,
@@ -83,9 +82,6 @@ impl Serialize for FieldPolicy {
             if self.weight != defaults.weight {
                 m.serialize_entry("$weight", &self.weight)?;
             }
-            if let Some(stem) = &self.stemming {
-                m.serialize_entry("$stemming", stem)?;
-            }
             if self.exact != defaults.exact {
                 m.serialize_entry("$exact", &self.exact)?;
             }
@@ -117,7 +113,6 @@ impl FieldPolicy {
             searchable: defaults.searchable,
             list: defaults.list,
             weight: defaults.weight,
-            stemming: None,
             analyzer: None,
             exact: defaults.exact,
             repeated: false,
@@ -137,7 +132,6 @@ impl FieldPolicy {
             searchable: defaults.searchable,
             list: defaults.list,
             weight: defaults.weight,
-            stemming: None,
             analyzer: None,
             exact: defaults.exact,
             repeated: false,
@@ -216,13 +210,6 @@ impl FieldPolicy {
             );
         }
 
-        if let Some(stem) = obj.get("$stemming") {
-            f.stemming = Some(
-                stem.as_str()
-                    .ok_or_else(|| format!("field '{name}': $stemming must be a string"))?
-                    .to_string(),
-            );
-        }
         if let Some(w) = obj.get("$weight") {
             f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
         }
@@ -443,17 +430,6 @@ impl IndexPolicy {
                     ));
                 }
             }
-            if let Some(stem) = &field.stemming {
-                if Language::from_name(stem).is_none() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "field '{}' has unknown stemming language '{stem}'",
-                            field.name
-                        ),
-                    ));
-                }
-            }
         }
 
         for (name, cfg) in &self.analyzers {
@@ -470,6 +446,20 @@ impl IndexPolicy {
         Ok(())
     }
 
+    pub fn field_analyzers(&self, analyzers: &AnalyzerSet) -> HashMap<XPathId, Analyzer> {
+        let mut map = HashMap::new();
+        for field in self.searchable_fields() {
+            let analyzer = field
+                .analyzer
+                .as_deref()
+                .and_then(|name| analyzers.get(name))
+                .unwrap_or_else(|| analyzers.default_analyzer())
+                .clone();
+            map.insert(field.xpath(self), analyzer);
+        }
+        map
+    }
+
     pub fn default_document() -> Self {
         Self::new(
             //alanyzer
@@ -479,11 +469,9 @@ impl IndexPolicy {
                 FieldPolicy::new("id", FieldKind::IdAuto),
                 FieldPolicy {
                     weight: WeightInterval::TITLE,
-                    stemming: Some("english".to_string()),
                     ..FieldPolicy::new("title", FieldKind::Text)
                 },
                 FieldPolicy {
-                    stemming: Some("english".to_string()),
                     ..FieldPolicy::new("body", FieldKind::Text)
                 },
             ],
@@ -500,13 +488,6 @@ impl IndexPolicy {
         if let Some(name) = &field.analyzer {
             if let Some(cfg) = self.analyzers.get(name) {
                 return cfg.clone();
-            }
-        }
-        if let Some(stem) = &field.stemming {
-            if let Some(lang) = Language::from_name(stem) {
-                let mut cfg = AnalyzerConfig::default();
-                cfg.stemming = Some(lang);
-                return cfg;
             }
         }
 
@@ -990,9 +971,6 @@ impl Serialize for FullField<'_> {
         m.serialize_entry("$searchable", &f.searchable)?;
         m.serialize_entry("$list", &f.list)?;
         m.serialize_entry("$weight", &f.weight)?;
-        if let Some(stem) = &f.stemming {
-            m.serialize_entry("$stemming", stem)?;
-        }
         if let Some(a) = &f.analyzer {
             m.serialize_entry("$analyzer", a)?;
         }

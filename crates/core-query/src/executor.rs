@@ -1,33 +1,36 @@
 use core_index::{
-    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingList, ops::{intersection, union_many} }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ DocId, XPathId, position_span, position_start },
+    analyzer::analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
+    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions},
+    posting::{
+        Posting, PostingList,
+        ops::{intersection, union_many},
+    },
+    search::{SearchIndex, SearchNumeric, SearchStats},
+    types::{DocId, XPathId, position_span, position_start},
 };
-use std::{ borrow::Cow, cmp::Ordering, collections::{ BinaryHeap, HashMap, hash_map::Entry }, u32 };
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, hash_map::Entry},
+    u32,
+};
 
-use ahash::{ HashSet, HashSetExt };
+use ahash::{HashSet, HashSetExt};
 
-use core_protocol::command_reponse_definitions::{ Fuzziness, MatchMode };
+use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting,
-    SearchHit,
-    TopHit,
-    ast::{ PhraseTerm, Query, SynonymAlternative },
-    corpus_stats::{ CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats },
-    planner::{ DENSITY_BOOST, NAME_BONUS, RankPlan, TIER_STEP, Tier },
+    ScoredPosting, SearchHit, TopHit,
+    ast::{PhraseTerm, Query, SynonymAlternative},
+    corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
+    planner::{DENSITY_BOOST, NAME_BONUS, RankPlan, TIER_STEP, Tier},
     prepared::PreparedQuery,
-    resolver::{ FieldCtx, FieldQuery, SameElementBinding },
-    scorer::{ fuzzy_decay, score_term_into },
+    resolver::{FieldCtx, FieldQuery, SameElementBinding},
+    scorer::{fuzzy_decay, score_term_into},
     wand::{
-        FieldClauses,
-        FieldTerms,
-        FormRef,
-        TermRef,
-        WandHit,
-        conjunctive_top_k_grouped,
-        conjunctive_top_k_multi_field,
-        wand_top_k_grouped,
-        wand_top_k_multi_field,
+        FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
+        conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_multi_field,
     },
 };
 
@@ -118,7 +121,8 @@ impl FormLists<'_> {
         FormRef {
             xpath: self.xpath,
             field,
-            lists: self.lists
+            lists: self
+                .lists
                 .iter()
                 .map(|(postings, doc_freq)| TermRef {
                     postings,
@@ -132,7 +136,10 @@ impl FormLists<'_> {
 }
 
 // Turns the AST into a PostingList or SearchHit
-pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
+pub struct QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats,
+{
     // Which index are we searching?
     index: &'a I,
 
@@ -148,7 +155,10 @@ pub struct QueryExecutor<'a, I> where I: SearchIndex + SearchStats {
     prepared: Option<&'a PreparedQuery>,
 }
 
-impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNumeric {
+impl<'a, I> QueryExecutor<'a, I>
+where
+    I: SearchIndex + SearchStats + SearchNumeric,
+{
     pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self {
             index,
@@ -179,7 +189,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
     //row-keyed postings are per element/row fold a hit onto its document
     fn fold_to_doc(&self, ctx: FieldCtx, id: DocId) -> Option<DocId> {
-        if ctx.row_keyed { self.index.doc_of_row(id) } else { Some(id) }
+        if ctx.row_keyed {
+            self.index.doc_of_row(id)
+        } else {
+            Some(id)
+        }
     }
 
     /// The words `word` can be changed into, with the number of documents each is in: from every
@@ -188,7 +202,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         &self,
         word: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
         self.corpus
             .and_then(|corpus| corpus.fuzzy(xpath, &FuzzyKey::new(word, opts)))
@@ -203,7 +217,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     }
 
     fn leaf_doc_freq(&self, xpath: XPathId, key: &LeafKey, local: usize) -> u32 {
-        self.corpus.and_then(|corpus| corpus.doc_freq(xpath, key)).unwrap_or(local as u32)
+        self.corpus
+            .and_then(|corpus| corpus.doc_freq(xpath, key))
+            .unwrap_or(local as u32)
     }
 
     fn fetch_field_lists(&self, terms: &[&str], xpaths: &[XPathId]) -> Vec<FieldLists<'a>> {
@@ -238,12 +254,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         query: &Query,
         xpaths: &[XPathId],
         k: usize,
-        restrict: Option<&HashSet<DocId>>
+        restrict: Option<&HashSet<DocId>>,
     ) -> Option<Vec<WandHit>> {
         //disjunctive flat-term cases (Term / Wand / Or) -> additive WAND
         if let Some(terms) = additive_terms(query) {
             let lists = self.fetch_field_lists(&terms, xpaths);
-            return Some(wand_top_k_multi_field(&self.stats(), &field_terms(&lists), k, restrict));
+            return Some(wand_top_k_multi_field(
+                &self.stats(),
+                &field_terms(&lists),
+                k,
+                restrict,
+            ));
         }
 
         //conjunctive flat-term case (And) -> conjunctive top-k
@@ -251,17 +272,18 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             if parts.iter().all(|p| matches!(p, Query::Term(_))) {
                 let terms: Vec<&str> = parts
                     .iter()
-                    .filter_map(|p| {
-                        match p {
-                            Query::Term(t) => Some(t.as_str()),
-                            _ => None,
-                        }
+                    .filter_map(|p| match p {
+                        Query::Term(t) => Some(t.as_str()),
+                        _ => None,
                     })
                     .collect();
                 let lists = self.fetch_field_lists(&terms, xpaths);
-                return Some(
-                    conjunctive_top_k_multi_field(&self.stats(), &field_terms(&lists), k, restrict)
-                );
+                return Some(conjunctive_top_k_multi_field(
+                    &self.stats(),
+                    &field_terms(&lists),
+                    k,
+                    restrict,
+                ));
             }
         }
 
@@ -284,7 +306,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         k: usize,
         restrict: Option<&HashSet<DocId>>,
         cross_fields: bool,
-        coverage: Option<f32>
+        coverage: Option<f32>,
     ) -> Option<Vec<WandHit>> {
         let (conjunctive, parts) = grouped_parts(query, !cross_fields)?;
         // the forms of every part, each with the field it counts for
@@ -303,7 +325,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             })
                             .collect()
                     })
-                    .collect()
+                    .collect(),
             ]
         } else {
             ctxs.iter()
@@ -336,13 +358,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             })
             .collect();
         let stats = self.stats();
-        Some(
-            if conjunctive {
-                conjunctive_top_k_grouped(&stats, &fields, k, restrict)
-            } else {
-                wand_top_k_grouped(&stats, &fields, k, coverage, restrict)
-            }
-        )
+        Some(if conjunctive {
+            conjunctive_top_k_grouped(&stats, &fields, k, restrict)
+        } else {
+            wand_top_k_grouped(&stats, &fields, k, coverage, restrict)
+        })
     }
 
     /// The forms of one part of a flat query in one field, read and weighted the way
@@ -366,11 +386,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         .iter()
                         .map(|word| {
                             let leaf = self.leaf(word, ctx)?;
-                            let doc_freq = self.leaf_doc_freq(
-                                leaf.xpath,
-                                &leaf.key,
-                                leaf.postings.len()
-                            );
+                            let doc_freq =
+                                self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
                             Some((leaf.postings, doc_freq))
                         })
                         .collect();
@@ -398,7 +415,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         query: &Query,
         ctx: FieldCtx,
         min_doc_freq: Option<u32>,
-        weight: u16
+        weight: u16,
     ) -> Option<FormLists<'a>> {
         let leaf = self.leaf(query, ctx)?;
         let own = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
@@ -457,12 +474,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             return PostingList::default();
         }
 
-        let offsets: Vec<u32> = terms
-            .iter()
-            .map(|term| term.offset)
-            .collect();
+        let offsets: Vec<u32> = terms.iter().map(|term| term.offset).collect();
         // walk the rarest word's documents: the cost is that of the rarest word, not the first
-        let rarest = (0..lists.len()).min_by_key(|&i| lists[i].len()).unwrap_or(0);
+        let rarest = (0..lists.len())
+            .min_by_key(|&i| lists[i].len())
+            .unwrap_or(0);
 
         let mut result = Vec::new();
 
@@ -491,7 +507,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
             if phrase_matches(&position_lists, &offsets) {
                 // the first word's posting, as before, so phrase scoring is unchanged
-                result.push(Posting::with_weight(doc_id, first.positions.clone(), first.weight));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first.positions.clone(),
+                    first.weight,
+                ));
             }
         }
 
@@ -505,7 +525,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         raw: &str,
         xpath: XPathId,
         fuzziness: Fuzziness,
-        spec: FuzzySpec
+        spec: FuzzySpec,
     ) -> PostingList {
         //"butman and robin" -> [butman, robin]
         let words = self.fuzzy_words(raw);
@@ -581,10 +601,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             lists[i] = self.index.lookup(words[i], xpath);
             let postings = lists[i].items();
             if step == 0 {
-                candidates = postings
-                    .iter()
-                    .map(|posting| posting.doc_id)
-                    .collect();
+                candidates = postings.iter().map(|posting| posting.doc_id).collect();
             } else {
                 candidates.retain(|doc| postings.binary_search_by_key(doc, |p| p.doc_id).is_ok());
             }
@@ -594,7 +611,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
         // the exact field keeps every word, stopwords too: the words are adjacent
         let offsets: Vec<u32> = (0..words.len() as u32).collect();
-        let rarest = (0..lists.len()).min_by_key(|&i| lists[i].len()).unwrap_or(0);
+        let rarest = (0..lists.len())
+            .min_by_key(|&i| lists[i].len())
+            .unwrap_or(0);
         let mut result = Vec::new();
         //a bit smarter loop than before
         'docs: for driver in lists[rarest].items() {
@@ -622,7 +641,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
             if phrase_matches(&position_lists, &offsets) {
                 // the first word's posting, as before, so exact scoring is unchanged
-                result.push(Posting::with_weight(doc_id, first.positions.clone(), first.weight));
+                result.push(Posting::with_weight(
+                    doc_id,
+                    first.positions.clone(),
+                    first.weight,
+                ));
             }
         }
         PostingList::from_items(result)
@@ -642,26 +665,23 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     #[timed(search)]
     pub fn evaluate(&self, query: &Query, ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match query {
-            | Query::Term(_)
+            Query::Term(_)
             | Query::Prefix(_)
             | Query::Wildcard(_)
             | Query::Phrase(_)
             | Query::Exact(_) => self.eval_leaf(query, ctxs, mode),
-            Query::Fuzzy(v, fz, spec) =>
-                match mode {
-                    EvalMode::Filter => {
-                        let mut out = HashSet::new();
-                        for &ctx in ctxs {
-                            out.extend(
-                                self.posting_ids(&self.execute_fuzzy(v, ctx.xpath, *fz, *spec))
-                            );
-                        }
-                        EvalOutcome::Docs(out)
+            Query::Fuzzy(v, fz, spec) => match mode {
+                EvalMode::Filter => {
+                    let mut out = HashSet::new();
+                    for &ctx in ctxs {
+                        out.extend(self.posting_ids(&self.execute_fuzzy(v, ctx.xpath, *fz, *spec)));
                     }
-                    EvalMode::Rank => {
-                        EvalOutcome::Scored(self.execute_scored_fuzzy(v, ctxs, *fz, *spec))
-                    }
+                    EvalOutcome::Docs(out)
                 }
+                EvalMode::Rank => {
+                    EvalOutcome::Scored(self.execute_scored_fuzzy(v, ctxs, *fz, *spec))
+                }
+            },
             Query::Range(r) => {
                 let mut out = HashSet::new();
                 for &ctx in ctxs {
@@ -688,12 +708,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             Query::SameElement(_) => EvalOutcome::Docs(HashSet::new()),
 
             // every live document (inside an AND, a NOT or a filter it means "no restriction")
-            Query::MatchAll =>
-                EvalOutcome::Docs(match self.index.doc_range() {
-                    Some((min, max)) =>
-                        (min..=max).filter(|id| !self.index.is_deleted(*id)).collect(),
-                    None => HashSet::new(),
-                }),
+            Query::MatchAll => EvalOutcome::Docs(match self.index.doc_range() {
+                Some((min, max)) => (min..=max)
+                    .filter(|id| !self.index.is_deleted(*id))
+                    .collect(),
+                None => HashSet::new(),
+            }),
         }
     }
 
@@ -706,7 +726,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             Query::Prefix(v) => (LeafKey::Prefix(v.clone()), ctx.xpath),
             Query::Wildcard(p) => (LeafKey::Wildcard(p.clone()), ctx.xpath),
             Query::Phrase(phrase) => (LeafKey::Phrase(phrase.clone()), ctx.xpath),
-            Query::Exact(v) => (LeafKey::Exact(v.clone()), ctx.exact_xpath.unwrap_or(ctx.xpath)),
+            Query::Exact(v) => (
+                LeafKey::Exact(v.clone()),
+                ctx.exact_xpath.unwrap_or(ctx.xpath),
+            ),
             _ => {
                 return None;
             }
@@ -758,7 +781,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         &self,
         query: &Query,
         ctxs: &[FieldCtx],
-        min_doc_freqs: &[Option<u32>]
+        min_doc_freqs: &[Option<u32>],
     ) -> Vec<ScoredPosting> {
         let stats = self.stats();
         let mut acc: HashMap<DocId, ScoredPosting> = HashMap::new();
@@ -787,7 +810,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 leaf.xpath,
                 doc_freq,
                 &mut doc_len,
-                &mut scored
+                &mut scored,
             );
 
             for mut hit in scored.drain(..) {
@@ -825,12 +848,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         &self,
         forms: &[SynonymAlternative],
         ctxs: &[FieldCtx],
-        mode: EvalMode
+        mode: EvalMode,
     ) -> EvalOutcome {
         if mode == EvalMode::Filter {
             let mut out = HashSet::new();
             for form in forms {
-                if let EvalOutcome::Docs(docs) = self.evaluate(&form.query, ctxs, EvalMode::Filter) {
+                if let EvalOutcome::Docs(docs) = self.evaluate(&form.query, ctxs, EvalMode::Filter)
+                {
                     out.extend(docs);
                 }
             }
@@ -838,19 +862,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
 
         let typed_doc_freqs: Vec<Option<u32>> = match forms.first().map(|form| &form.query) {
-            Some(typed @ Query::Term(_)) =>
-                ctxs
-                    .iter()
-                    .map(|&ctx| {
-                        let leaf = self.leaf(typed, ctx)?;
-                        let doc_freq = self.leaf_doc_freq(
-                            leaf.xpath,
-                            &leaf.key,
-                            leaf.postings.len()
-                        );
-                        (doc_freq > 0).then_some(doc_freq)
-                    })
-                    .collect(),
+            Some(typed @ Query::Term(_)) => ctxs
+                .iter()
+                .map(|&ctx| {
+                    let leaf = self.leaf(typed, ctx)?;
+                    let doc_freq = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+                    (doc_freq > 0).then_some(doc_freq)
+                })
+                .collect(),
             _ => Vec::new(),
         };
 
@@ -860,13 +879,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 Query::Term(_) => self.score_leaf(&form.query, ctxs, &typed_doc_freqs),
                 // scored like its words, so "world war ii" weighs as much as "world war 2" typed
                 Query::Phrase(terms) => self.score_phrase_as_words(terms, ctxs),
-                other =>
-                    match self.evaluate(other, ctxs, EvalMode::Rank) {
-                        EvalOutcome::Scored(scored) => scored,
-                        EvalOutcome::Docs(_) => {
-                            continue;
-                        }
+                other => match self.evaluate(other, ctxs, EvalMode::Rank) {
+                    EvalOutcome::Scored(scored) => scored,
+                    EvalOutcome::Docs(_) => {
+                        continue;
                     }
+                },
             };
             for mut hit in scored {
                 hit.score = hit.score.saturating_mul(u64::from(form.weight)) / 1000;
@@ -886,11 +904,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     }
 
     fn posting_ids(&self, postings: &PostingList) -> HashSet<DocId> {
-        postings
-            .items()
-            .iter()
-            .map(|p| p.doc_id)
-            .collect()
+        postings.items().iter().map(|p| p.doc_id).collect()
     }
 
     fn eval_union(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
@@ -963,10 +977,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 }
                 // smallest part first: the candidate set only shrinks from there
                 scored_parts.sort_by_key(Vec::len);
-                let mut candidates: HashSet<DocId> = scored_parts[0]
-                    .iter()
-                    .map(|p| p.doc_id)
-                    .collect();
+                let mut candidates: HashSet<DocId> =
+                    scored_parts[0].iter().map(|p| p.doc_id).collect();
                 for scored in &scored_parts[1..] {
                     let docs: HashSet<DocId> = scored
                         .iter()
@@ -979,9 +991,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     }
                 }
 
-                let mut by_doc: HashMap<DocId, ScoredPosting> = HashMap::with_capacity(
-                    candidates.len()
-                );
+                let mut by_doc: HashMap<DocId, ScoredPosting> =
+                    HashMap::with_capacity(candidates.len());
                 for scored in scored_parts {
                     for hit in scored {
                         if !candidates.contains(&hit.doc_id) {
@@ -994,9 +1005,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             Entry::Occupied(mut e) => {
                                 let cur = e.get_mut();
                                 cur.score = cur.score.saturating_add(hit.score);
-                                cur.matched_terms = cur.matched_terms.saturating_add(
-                                    hit.matched_terms
-                                );
+                                cur.matched_terms =
+                                    cur.matched_terms.saturating_add(hit.matched_terms);
                             }
                         }
                     }
@@ -1010,7 +1020,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     fn same_element_rows(
         &self,
         children: &[Query],
-        binding: &SameElementBinding
+        binding: &SameElementBinding,
     ) -> HashSet<DocId> {
         let mut rows: Option<HashSet<DocId>> = None;
         for (child, clause) in children.iter().zip(&binding.clauses) {
@@ -1021,11 +1031,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     };
                     self.same_element_rows(inner_children, nested)
                 }
-                None =>
-                    match self.evaluate(child, &[clause.ctx], EvalMode::Filter) {
-                        EvalOutcome::Docs(d) => d,
-                        _ => HashSet::new(),
-                    }
+                None => match self.evaluate(child, &[clause.ctx], EvalMode::Filter) {
+                    EvalOutcome::Docs(d) => d,
+                    _ => HashSet::new(),
+                },
             };
             let r = self.ascend(r, clause.depth.saturating_sub(binding.depth));
             rows = Some(match rows {
@@ -1041,7 +1050,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     pub fn prepare<'q>(
         &self,
         queries: impl IntoIterator<Item = &'q Query>,
-        ctxs: &[FieldCtx]
+        ctxs: &[FieldCtx],
     ) -> PreparedQuery {
         let mut prepared = PreparedQuery::default();
         for query in queries {
@@ -1105,16 +1114,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         for fq in filters.values() {
             let matched: HashSet<DocId> = match &fq.query {
                 Query::SameElement(children) => {
-                    let binding = fq.same_element.as_ref().expect("same_element binding missing");
+                    let binding = fq
+                        .same_element
+                        .as_ref()
+                        .expect("same_element binding missing");
                     let rows = self.same_element_rows(children, binding);
                     self.index.resolve_array_rows(&rows)
                 }
                 _ => {
-                    let EvalOutcome::Docs(raw) = self.evaluate(
-                        &fq.query,
-                        &[fq.ctx],
-                        EvalMode::Filter
-                    ) else {
+                    let EvalOutcome::Docs(raw) =
+                        self.evaluate(&fq.query, &[fq.ctx], EvalMode::Filter)
+                    else {
                         continue;
                     };
                     if fq.row_keyed {
@@ -1143,7 +1153,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         ctxs: &[FieldCtx],
         k: usize,
         restrict: Option<&HashSet<DocId>>,
-        match_mode: MatchMode // plan: RankPlan
+        match_mode: MatchMode, // plan: RankPlan
     ) -> Vec<SearchHit> {
         if k == 0 || restrict.is_some_and(|d| d.is_empty()) || self.index.doc_range().is_none() {
             return Vec::new();
@@ -1153,21 +1163,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         let Some(query) = query else {
             //filter-only search
             return match restrict {
-                Some(allowed) =>
-                    top_k_from_hits(
-                        allowed
-                            .iter()
-                            .copied()
-                            .map(|doc_id| SearchHit {
-                                doc_id,
-                                matched_terms: 0,
-                                weight_sum: 0,
-                                distance_factor: 1.0,
-                                score: 0.0,
-                                tier: 0,
-                            }),
-                        k
-                    ),
+                Some(allowed) => top_k_from_hits(
+                    allowed.iter().copied().map(|doc_id| SearchHit {
+                        doc_id,
+                        matched_terms: 0,
+                        weight_sum: 0,
+                        distance_factor: 1.0,
+                        score: 0.0,
+                        tier: 0,
+                    }),
+                    k,
+                ),
                 None => Vec::new(),
             };
         };
@@ -1175,11 +1181,21 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         //explicit match_all
         if let Query::MatchAll = query {
             return match restrict {
-                Some(allowed) =>
-                    top_k_from_hits(
-                        allowed
-                            .iter()
-                            .copied()
+                Some(allowed) => top_k_from_hits(
+                    allowed.iter().copied().map(|doc_id| SearchHit {
+                        doc_id,
+                        matched_terms: 0,
+                        weight_sum: 0,
+                        distance_factor: 1.0,
+                        score: 0.0,
+                        tier: 0,
+                    }),
+                    k,
+                ),
+                None => match self.index.doc_range() {
+                    Some((min, max)) => top_k_from_hits(
+                        (min..=max)
+                            .filter(|id| !self.index.is_deleted(*id))
                             .map(|doc_id| SearchHit {
                                 doc_id,
                                 matched_terms: 0,
@@ -1188,26 +1204,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                 score: 0.0,
                                 tier: 0,
                             }),
-                        k
+                        k,
                     ),
-                None =>
-                    match self.index.doc_range() {
-                        Some((min, max)) =>
-                            top_k_from_hits(
-                                (min..=max)
-                                    .filter(|id| !self.index.is_deleted(*id))
-                                    .map(|doc_id| SearchHit {
-                                        doc_id,
-                                        matched_terms: 0,
-                                        weight_sum: 0,
-                                        distance_factor: 1.0,
-                                        score: 0.0,
-                                        tier: 0,
-                                    }),
-                                k
-                            ),
-                        None => Vec::new(),
-                    }
+                    None => Vec::new(),
+                },
             };
         }
 
@@ -1226,14 +1226,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 let flat_hits = if plain_xpaths.is_empty() {
                     None
                 } else {
-                    self.execute_top_k_retrieval(query, &plain_xpaths, k, restrict).or_else(|| {
-                        let plain: Vec<FieldCtx> = ctxs
-                            .iter()
-                            .copied()
-                            .filter(|ctx| !ctx.row_keyed)
-                            .collect();
-                        self.execute_grouped_retrieval(query, &plain, k, restrict, false, None)
-                    })
+                    self.execute_top_k_retrieval(query, &plain_xpaths, k, restrict)
+                        .or_else(|| {
+                            let plain: Vec<FieldCtx> =
+                                ctxs.iter().copied().filter(|ctx| !ctx.row_keyed).collect();
+                            self.execute_grouped_retrieval(query, &plain, k, restrict, false, None)
+                        })
                 };
                 let ranked_flat = flat_hits.is_some();
                 for h in flat_hits.into_iter().flatten() {
@@ -1264,21 +1262,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         ctxs,
                         k,
                         restrict,
-                        MatchMode::BestFields
+                        MatchMode::BestFields,
                     );
                 }
                 // flat queries (words and synonym groups, all of them or any of them): one
                 // document at a time, instead of scoring every match and cutting to k after
                 if ctxs.iter().all(|ctx| !ctx.row_keyed) {
-                    if
-                        let Some(hits) = self.execute_grouped_retrieval(
-                            query,
-                            ctxs,
-                            k,
-                            restrict,
-                            true,
-                            None
-                        )
+                    if let Some(hits) =
+                        self.execute_grouped_retrieval(query, ctxs, k, restrict, true, None)
                     {
                         return hits.into_iter().map(wand_hit_to_search_hit).collect();
                     }
@@ -1296,7 +1287,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         &self,
         query: &Query,
         ctxs: &[FieldCtx],
-        restrict: Option<&HashSet<DocId>>
+        restrict: Option<&HashSet<DocId>>,
     ) -> Vec<SearchHit> {
         let EvalOutcome::Scored(scored) = self.evaluate(query, ctxs, EvalMode::Rank) else {
             return Vec::new();
@@ -1329,7 +1320,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     /// The documents whose whole value in a name field is one of `keys`: level 0 the value as
     /// written, level 1 the value without its qualifier ("Tom Holland (author)").
     fn name_docs(&self, keys: &[String], ctxs: &[FieldCtx], qualified: bool) -> HashSet<DocId> {
-        let marker = if qualified { QUALIFIED_NAME_KEY } else { NAME_KEY };
+        let marker = if qualified {
+            QUALIFIED_NAME_KEY
+        } else {
+            NAME_KEY
+        };
         let mut docs = HashSet::new();
         for ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed) {
             let Some(xpath) = ctx.exact_xpath else {
@@ -1337,12 +1332,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             };
             for key in keys {
                 let list = self.index.lookup(&format!("{marker}{key}"), xpath);
-                docs.extend(
-                    list
-                        .items()
-                        .iter()
-                        .map(|posting| posting.doc_id)
-                );
+                docs.extend(list.items().iter().map(|posting| posting.doc_id));
             }
         }
         docs
@@ -1350,7 +1340,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
     /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
     /// appears once, at the best tier that found it; within a tier, hits order by score.
-       /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
+    /// Runs the plan's tiers from most to least accurate until `k` hits are found. Each document
     /// appears once, at the best tier that found it; within a tier, hits order by score.
     #[timed(search)]
     pub fn rank_cascade(
@@ -1359,7 +1349,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         ctxs: &[FieldCtx],
         k: usize,
         restrict: Option<&HashSet<DocId>>,
-        match_mode: MatchMode
+        match_mode: MatchMode,
     ) -> Vec<SearchHit> {
         let mut out: Vec<SearchHit> = Vec::with_capacity(k);
         let mut seen: HashSet<DocId> = HashSet::new();
@@ -1374,18 +1364,15 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         // scoring every match even once
         let flat_fields = ctxs.iter().all(|ctx| !ctx.row_keyed);
         let shared_query: Option<&Query> = match match_mode {
-            MatchMode::CrossFields =>
-                plan.tiers.iter().find_map(|tier| {
-                    match tier {
-                        Tier::All(query) if
-                            !matches!(query, Query::Wand(_) | Query::Term(_)) &&
-                            !(flat_fields && grouped_parts(query, false).is_some())
-                        => {
-                            Some(query)
-                        }
-                        _ => None,
-                    }
-                }),
+            MatchMode::CrossFields => plan.tiers.iter().find_map(|tier| match tier {
+                Tier::All(query)
+                    if !matches!(query, Query::Wand(_) | Query::Term(_))
+                        && !(flat_fields && grouped_parts(query, false).is_some()) =>
+                {
+                    Some(query)
+                }
+                _ => None,
+            }),
             MatchMode::BestFields => None,
         };
         // The ranked pool. For a flat query of several words over plain fields (cross_fields),
@@ -1393,40 +1380,34 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
         let pool_parts: Option<&Vec<Query>> = match match_mode {
             MatchMode::CrossFields if flat_fields => {
-                plan.tiers.iter().find_map(|tier| {
-                    match tier {
-                        Tier::All(Query::And(parts)) if
-                            parts.len() >= 2 &&
-                            grouped_parts(&Query::Wand(parts.clone()), false).is_some()
-                        => {
-                            Some(parts)
-                        }
-                        _ => None,
+                plan.tiers.iter().find_map(|tier| match tier {
+                    Tier::All(Query::And(parts))
+                        if parts.len() >= 2
+                            && grouped_parts(&Query::Wand(parts.clone()), false).is_some() =>
+                    {
+                        Some(parts)
                     }
+                    _ => None,
                 })
             }
             _ => None,
         };
         let mut shared_hits: Option<Vec<SearchHit>> = None;
-        let mut ranked = |
-            query: &Query,
-            fetch: usize,
-            allowed: Option<&HashSet<DocId>>
-        | -> Vec<SearchHit> {
+        let mut ranked = |query: &Query,
+                          fetch: usize,
+                          allowed: Option<&HashSet<DocId>>|
+         -> Vec<SearchHit> {
             match shared_query {
                 Some(shared) if shared == query => {
-                    let all = shared_hits.get_or_insert_with(||
-                        self.cross_field_hits(shared, ctxs, restrict)
-                    );
+                    let all = shared_hits
+                        .get_or_insert_with(|| self.cross_field_hits(shared, ctxs, restrict));
                     match allowed {
-                        Some(allowed) =>
-                            top_k_from_hits(
-                                all
-                                    .iter()
-                                    .filter(|hit| allowed.contains(&hit.doc_id))
-                                    .cloned(),
-                                fetch
-                            ),
+                        Some(allowed) => top_k_from_hits(
+                            all.iter()
+                                .filter(|hit| allowed.contains(&hit.doc_id))
+                                .cloned(),
+                            fetch,
+                        ),
                         None => top_k_from_hits(all.iter().cloned(), fetch),
                     }
                 }
@@ -1436,7 +1417,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         // TEST: the word tiers (all, all but one, any) are one tier, ordered by score alone.
         // Found by kind, not by "after Fuzzy": the fuzzy tier is only in the plan when a word
         // is unknown
-        let merge_from = plan.tiers
+        let merge_from = plan
+            .tiers
             .iter()
             .position(|tier| matches!(tier, Tier::All(_) | Tier::AllButOne(_) | Tier::Any(_)))
             .unwrap_or(plan.tiers.len());
@@ -1477,7 +1459,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 Tier::All(_) if pool_parts.is_some() => {
                     let pool_query = Query::Wand(pool_parts.cloned().unwrap_or_default());
                     // the pool admits partial matches only when the plan has a tier for them
-                    let partial_allowed = plan.tiers
+                    let partial_allowed = plan
+                        .tiers
                         .iter()
                         .any(|tier| matches!(tier, Tier::AllButOne(_) | Tier::Any(_)));
                     let min_coverage = if partial_allowed { MIN_COVERAGE } else { 1.0 };
@@ -1488,10 +1471,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             fetch.max(POOL_SIZE),
                             restrict,
                             true,
-                            Some(min_coverage)
+                            Some(min_coverage),
                         )
                         .map(|hits| {
-                            hits.into_iter().map(wand_hit_to_search_hit).collect::<Vec<_>>()
+                            hits.into_iter()
+                                .map(wand_hit_to_search_hit)
+                                .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
 
@@ -1515,29 +1500,23 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                 .reduce(f32::min)
                                 .unwrap_or(0.0)
                         };
-                        let weights: HashMap<&str, f32> = plan.words
+                        let weights: HashMap<&str, f32> = plan
+                            .words
                             .iter()
                             .map(|word| (word.as_str(), weight_of(word)))
                             .collect();
-                        let total: f32 = plan.words
-                            .iter()
-                            .map(|word| weights[word.as_str()])
-                            .sum();
+                        let total: f32 = plan.words.iter().map(|word| weights[word.as_str()]).sum();
 
                         let mut shares: HashMap<DocId, f32> = HashMap::new();
                         if total > 0.0 {
                             for key in &plan.named_runs {
-                                let held: f32 = key
-                                    .split(' ')
-                                    .filter_map(|word| weights.get(word))
-                                    .sum();
+                                let held: f32 =
+                                    key.split(' ').filter_map(|word| weights.get(word)).sum();
                                 let share = (held / total).min(1.0);
                                 for qualified in [false, true] {
-                                    for doc in self.name_docs(
-                                        std::slice::from_ref(key),
-                                        ctxs,
-                                        qualified
-                                    ) {
+                                    for doc in
+                                        self.name_docs(std::slice::from_ref(key), ctxs, qualified)
+                                    {
                                         if restrict.is_none_or(|limit| limit.contains(&doc)) {
                                             let best = shares.entry(doc).or_insert(0.0);
                                             *best = best.max(share);
@@ -1549,8 +1528,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         if plan.words.len() >= 2 {
                             for ctx in ctxs
                                 .iter()
-                                .filter(|ctx| !ctx.row_keyed && ctx.exact_xpath.is_some()) {
-                                let lists: Vec<Cow<'a, PostingList>> = plan.words
+                                .filter(|ctx| !ctx.row_keyed && ctx.exact_xpath.is_some())
+                            {
+                                let lists: Vec<Cow<'a, PostingList>> = plan
+                                    .words
                                     .iter()
                                     .map(|word| self.fetch_term_list(word, ctx.xpath).0)
                                     .collect();
@@ -1569,26 +1550,22 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
                         if !shares.is_empty() {
                             // named documents the pool left out are scored the same way
-                            let pooled: HashSet<DocId> = hits
-                                .iter()
-                                .map(|hit| hit.doc_id)
-                                .collect();
+                            let pooled: HashSet<DocId> =
+                                hits.iter().map(|hit| hit.doc_id).collect();
                             let missing: HashSet<DocId> = shares
                                 .keys()
                                 .copied()
                                 .filter(|doc| !pooled.contains(doc))
                                 .collect();
                             if !missing.is_empty() {
-                                if
-                                    let Some(extra) = self.execute_grouped_retrieval(
-                                        &pool_query,
-                                        ctxs,
-                                        missing.len(),
-                                        Some(&missing),
-                                        true,
-                                        Some(0.0)
-                                    )
-                                {
+                                if let Some(extra) = self.execute_grouped_retrieval(
+                                    &pool_query,
+                                    ctxs,
+                                    missing.len(),
+                                    Some(&missing),
+                                    true,
+                                    Some(0.0),
+                                ) {
                                     hits.extend(extra.into_iter().map(wand_hit_to_search_hit));
                                 }
                             }
@@ -1611,15 +1588,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 Tier::Name { keys, score_with } => {
                     let mut hits = Vec::new();
                     let mut named: HashSet<DocId> = HashSet::new();
-                    for (level, qualified) in [
-                        (0u8, false),
-                        (1u8, true),
-                    ] {
+                    for (level, qualified) in [(0u8, false), (1u8, true)] {
                         let mut docs = self.name_docs(keys, ctxs, qualified);
                         docs.retain(|doc| {
-                            !named.contains(doc) &&
-                                !seen.contains(doc) &&
-                                restrict.is_none_or(|limit| limit.contains(doc))
+                            !named.contains(doc)
+                                && !seen.contains(doc)
+                                && restrict.is_none_or(|limit| limit.contains(doc))
                         });
                         if docs.is_empty() {
                             continue;
@@ -1629,26 +1603,22 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         // a name found only through its key (the query's words score nothing in
                         // this document) still belongs here, after the scored ones
                         if level_hits.len() < docs.len().min(fetch) {
-                            let scored: HashSet<DocId> = level_hits
-                                .iter()
-                                .map(|hit| hit.doc_id)
-                                .collect();
+                            let scored: HashSet<DocId> =
+                                level_hits.iter().map(|hit| hit.doc_id).collect();
                             let mut rest: Vec<DocId> = docs
                                 .iter()
                                 .copied()
                                 .filter(|doc| !scored.contains(doc))
                                 .collect();
                             rest.sort_unstable();
-                            level_hits.extend(
-                                rest.into_iter().map(|doc_id| SearchHit {
-                                    doc_id,
-                                    matched_terms: 0,
-                                    weight_sum: 0,
-                                    distance_factor: 1.0,
-                                    score: 0.0,
-                                    tier: 0,
-                                })
-                            );
+                            level_hits.extend(rest.into_iter().map(|doc_id| SearchHit {
+                                doc_id,
+                                matched_terms: 0,
+                                weight_sum: 0,
+                                distance_factor: 1.0,
+                                score: 0.0,
+                                tier: 0,
+                            }));
                         }
                         for hit in &mut level_hits {
                             hit.tier = level;
@@ -1658,10 +1628,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     hits
                 }
                 Tier::Phrase { terms, score_with } => {
-                    let matched: std::collections::HashSet<
-                        u64,
-                        ahash::RandomState
-                    > = self.phrase_docs(terms, ctxs);
+                    let matched: std::collections::HashSet<u64, ahash::RandomState> =
+                        self.phrase_docs(terms, ctxs);
                     let allowed: HashSet<DocId> = match restrict {
                         Some(limit) => matched.intersection(limit).copied().collect(),
                         None => matched,
@@ -1689,13 +1657,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                     .enumerate()
                                     .filter(|(index, _)| *index != left_out)
                                     .map(|(_, part)| part.clone())
-                                    .collect()
+                                    .collect(),
                             )
                         })
                         .collect();
                     ranked(&Query::Or(alternatives), fetch, None)
                 }
-                | Tier::Exact(query)
+                Tier::Exact(query)
                 | Tier::All(query)
                 | Tier::AllButOne(query)
                 | Tier::Fuzzy(query) => ranked(query, fetch, None),
@@ -1780,7 +1748,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 let (list, doc_freq) = self.fetch_term_list(&term.text, ctx.xpath);
                 let kept = postings_of(&list, &matched);
                 scored.clear();
-                score_term_into(&stats, &kept, ctx.xpath, doc_freq, &mut doc_len, &mut scored);
+                score_term_into(
+                    &stats,
+                    &kept,
+                    ctx.xpath,
+                    doc_freq,
+                    &mut doc_len,
+                    &mut scored,
+                );
                 for hit in scored.drain(..) {
                     match acc.entry(hit.doc_id) {
                         Entry::Vacant(e) => {
@@ -1805,14 +1780,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         phrase: &Query,
         terms: &[PhraseTerm],
         ctx: FieldCtx,
-        weight: u16
+        weight: u16,
     ) -> Option<FormLists<'a>> {
         let leaf = self.leaf(phrase, ctx)?;
-        let docs: Vec<DocId> = leaf.postings
-            .items()
-            .iter()
-            .map(|p| p.doc_id)
-            .collect();
+        let docs: Vec<DocId> = leaf.postings.items().iter().map(|p| p.doc_id).collect();
         let lists = terms
             .iter()
             .map(|term| {
@@ -1832,11 +1803,10 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         let mut docs = HashSet::new();
         for ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed) {
             docs.extend(
-                self
-                    .execute_phrase(terms, ctx.xpath)
+                self.execute_phrase(terms, ctx.xpath)
                     .items()
                     .iter()
-                    .map(|p| p.doc_id)
+                    .map(|p| p.doc_id),
             );
         }
         docs
@@ -1870,11 +1840,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 present.clear();
                 for (term, list) in terms.iter().zip(lists) {
                     let items = list.items();
-                    if
-                        let Ok(index) = items.binary_search_by_key(
-                            &hit.doc_id,
-                            |posting| posting.doc_id
-                        )
+                    if let Ok(index) =
+                        items.binary_search_by_key(&hit.doc_id, |posting| posting.doc_id)
                     {
                         present.push((term.offset, items[index].positions.as_slice()));
                     }
@@ -1882,32 +1849,19 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 if present.len() < 2 {
                     continue;
                 }
-                let positions: Vec<&[u32]> = present
-                    .iter()
-                    .map(|&(_, positions)| positions)
-                    .collect();
+                let positions: Vec<&[u32]> =
+                    present.iter().map(|&(_, positions)| positions).collect();
                 let Some(span) = min_cover_span(&positions) else {
                     continue;
                 };
                 // the span of these words as typed, stopword gaps included ("king of the hill" -> 4)
-                let first = present
-                    .iter()
-                    .map(|&(offset, _)| offset)
-                    .min()
-                    .unwrap_or(0);
-                let last = present
-                    .iter()
-                    .map(|&(offset, _)| offset)
-                    .max()
-                    .unwrap_or(0);
+                let first = present.iter().map(|&(offset, _)| offset).min().unwrap_or(0);
+                let last = present.iter().map(|&(offset, _)| offset).max().unwrap_or(0);
                 let ideal = (last - first).saturating_add(1);
                 let mut closeness = ((ideal as f32) / (span.max(1) as f32)).min(1.0);
                 // full credit only for the words in the order they were typed: "red balloon"
                 // before "balloon red"
-                let offsets: Vec<u32> = present
-                    .iter()
-                    .map(|&(offset, _)| offset)
-                    .collect();
+                let offsets: Vec<u32> = present.iter().map(|&(offset, _)| offset).collect();
                 if !phrase_matches(&positions, &offsets) {
                     closeness *= OUT_OF_ORDER;
                 }
@@ -1928,7 +1882,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         k: usize,
         restrict: Option<&HashSet<DocId>>,
         match_mode: MatchMode,
-        plan: &RankPlan
+        plan: &RankPlan,
     ) -> Vec<SearchHit> {
         if plan.tiers.is_empty() {
             return self.rank_retrieve(query, ctxs, k, restrict, match_mode);
@@ -1942,7 +1896,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         ctx: FieldCtx,
         k: usize,
         restrict: Option<&HashSet<DocId>>,
-        by_doc: &mut HashMap<DocId, SearchHit>
+        by_doc: &mut HashMap<DocId, SearchHit>,
     ) {
         if !ctx.row_keyed {
             if let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
@@ -1999,7 +1953,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         &self,
         hits: &mut [SearchHit],
         terms: &[PhraseTerm],
-        xpaths: &[XPathId]
+        xpaths: &[XPathId],
     ) -> HashMap<DocId, f32> {
         let stats = self.stats();
         // each word's list in each field, read once for all candidates, and its weight
@@ -2039,7 +1993,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 }
             }
             hit.matched_terms = count;
-            let share = if total > 0.0 { (held / total).clamp(0.0, 1.0) } else { 1.0 };
+            let share = if total > 0.0 {
+                (held / total).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
             coverage.insert(hit.doc_id, share);
         }
         coverage
@@ -2052,12 +2010,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         &self,
         hits: &mut [SearchHit],
         terms: &[PhraseTerm],
-        xpaths: &[XPathId]
+        xpaths: &[XPathId],
     ) -> HashMap<DocId, u8> {
         let coverage = self.coverage_of(hits, terms, xpaths);
         let levels: HashMap<DocId, u8> = coverage
             .iter()
-            .map(|(&doc, &share)| (doc, ((1.0 - share) * ((TIER_STEP - 1) as f32)).round() as u8))
+            .map(|(&doc, &share)| {
+                (
+                    doc,
+                    ((1.0 - share) * ((TIER_STEP - 1) as f32)).round() as u8,
+                )
+            })
             .collect();
         hits.sort_by(|a, b| {
             levels[&a.doc_id]
@@ -2069,9 +2032,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     }
 
     fn all_words_known(&self, raw: &str, xpaths: &[XPathId]) -> bool {
-        self.fuzzy_words(raw)
-            .iter()
-            .all(|word| { xpaths.iter().any(|&xpath| self.fetch_term_list(word, xpath).1 > 0) })
+        self.fuzzy_words(raw).iter().all(|word| {
+            xpaths
+                .iter()
+                .any(|&xpath| self.fetch_term_list(word, xpath).1 > 0)
+        })
     }
     #[timed(search)]
     fn execute_scored_fuzzy(
@@ -2079,7 +2044,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         raw: &str,
         ctxs: &[FieldCtx],
         fuzziness: Fuzziness,
-        spec: FuzzySpec
+        spec: FuzzySpec,
     ) -> Vec<ScoredPosting> {
         //"butman and robin" -> "butman" "robin"
         let words = self.fuzzy_words(raw);
@@ -2135,7 +2100,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         ctx.xpath,
                         true_df,
                         &mut doc_len,
-                        &mut scored_buf
+                        &mut scored_buf,
                     );
 
                     let decay = fuzzy_decay(expansion.edits);
@@ -2198,15 +2163,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 fn postings_of(list: &PostingList, docs: &[DocId]) -> PostingList {
     let items = list.items();
     PostingList::from_sorted(
-        docs
-            .iter()
+        docs.iter()
             .filter_map(|doc| {
                 items
                     .binary_search_by_key(doc, |posting| posting.doc_id)
                     .ok()
                     .map(|index| items[index].clone())
             })
-            .collect()
+            .collect(),
     )
 }
 
@@ -2247,7 +2211,9 @@ fn min_cover_span(lists: &[&[u32]]) -> Option<u32> {
         .iter()
         .enumerate()
         .flat_map(|(word, positions)| {
-            positions.iter().map(move |&position| (position_start(position), word))
+            positions
+                .iter()
+                .map(move |&position| (position_start(position), word))
         })
         .collect();
     events.sort_unstable();
@@ -2290,10 +2256,7 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
         }
     }
 
-    let mut hits: Vec<SearchHit> = heap
-        .into_iter()
-        .map(|hit| hit.0)
-        .collect();
+    let mut hits: Vec<SearchHit> = heap.into_iter().map(|hit| hit.0).collect();
 
     hits.sort_by(|a, b| {
         a.tier
@@ -2323,13 +2286,7 @@ pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> Fuzzy
 //fuzzable words for did_you_mean
 pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
     raw.split_whitespace()
-        .filter_map(|w|
-            analyzer
-                .analyze_query(w)
-                .into_iter()
-                .next()
-                .map(|t| t.text)
-        )
+        .filter_map(|w| analyzer.analyze_query(w).into_iter().next().map(|t| t.text))
         .collect()
 }
 
@@ -2349,7 +2306,8 @@ fn field_terms<'l>(lists: &'l [FieldLists<'_>]) -> Vec<FieldTerms<'l>> {
         .iter()
         .map(|field| FieldTerms {
             xpath: field.xpath,
-            terms: field.terms
+            terms: field
+                .terms
                 .iter()
                 .map(|(postings, doc_freq)| TermRef {
                     postings,
@@ -2374,19 +2332,15 @@ fn grouped_parts(query: &Query, needs_group: bool) -> Option<(bool, Vec<&Query>)
             return None;
         }
     };
-    let form_fits = |form: &Query| {
-        match form {
-            Query::Term(_) | Query::Phrase(_) | Query::Exact(_) => true,
-            Query::And(words) => words.iter().all(|word| matches!(word, Query::Term(_))),
-            _ => false,
-        }
+    let form_fits = |form: &Query| match form {
+        Query::Term(_) | Query::Phrase(_) | Query::Exact(_) => true,
+        Query::And(words) => words.iter().all(|word| matches!(word, Query::Term(_))),
+        _ => false,
     };
-    let fits = parts.iter().all(|part| {
-        match part {
-            Query::Term(_) => true,
-            Query::Synonym(forms) => forms.iter().all(|form| form_fits(&form.query)),
-            _ => false,
-        }
+    let fits = parts.iter().all(|part| match part {
+        Query::Term(_) => true,
+        Query::Synonym(forms) => forms.iter().all(|form| form_fits(&form.query)),
+        _ => false,
     });
     let has_group = parts.iter().any(|part| matches!(part, Query::Synonym(_)));
     (fits && (has_group || !needs_group)).then_some((conjunctive, parts))
@@ -2395,18 +2349,15 @@ fn grouped_parts(query: &Query, needs_group: bool) -> Option<(bool, Vec<&Query>)
 fn additive_terms(query: &Query) -> Option<Vec<&str>> {
     match query {
         Query::Term(term) => Some(vec![term.as_str()]),
-        Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) =>
-            Some(
-                parts
-                    .iter()
-                    .filter_map(|part| {
-                        match part {
-                            Query::Term(term) => Some(term.as_str()),
-                            _ => None,
-                        }
-                    })
-                    .collect()
-            ),
+        Query::Wand(parts) if parts.iter().all(|part| matches!(part, Query::Term(_))) => Some(
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    Query::Term(term) => Some(term.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        ),
         _ => None,
     }
 }

@@ -76,6 +76,7 @@ pub struct DocumentPart {
     /// The values are names (a text field's exact copy): each one is also filed whole, see
     /// `Analyzer::name_terms`.
     pub names: bool,
+    pub analyzer: Option<String>,
     pub gap: u32,              // gap of joined arr elements
     pub segments: Vec<String>, // element texts for flattened repeated fields
 }
@@ -92,11 +93,17 @@ impl DocumentPart {
             xpath,
             text: String::new(),
             weight,
+            analyzer: None,
             exact,
             names: false,
             segments,
             gap,
         }
+    }
+
+    pub fn with_analyzer(mut self, analyzer: Option<String>) -> Self {
+        self.analyzer = analyzer;
+        self
     }
 
     /// Marks the values as names (see `names`).

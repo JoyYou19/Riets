@@ -55,7 +55,7 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
         Query::And(subs) => combine(subs, analyzer, Query::And),
         Query::Or(subs) => combine(subs, analyzer, Query::Or),
 
-        Query::Exact(term) => Some(Query::Exact(term)),
+        Query::Exact(term) => Some(Query::Exact(term.to_lowercase())),
         Query::Fuzzy(term, fuzziness, spec) => Some(Query::Fuzzy(term, fuzziness, spec)),
         Query::Synonym(forms) => analyze_synonym(forms, analyzer),
 
