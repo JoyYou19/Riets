@@ -65,6 +65,10 @@ pub struct DidYouMeanReport {
     //best possible correction
     pub corrected: String,
     pub words: Vec<WordSuggestions>,
+    /// True when every corrected word is clearly the best spelling: no closer or equally close
+    /// word is anywhere near as common. Search replaces the query only then; otherwise the
+    /// correction is offered as a suggestion.
+    pub confident: bool,
 }
 
 impl DidYouMeanReport {
@@ -73,6 +77,7 @@ impl DidYouMeanReport {
             original: original.to_string(),
             corrected: "".to_string(),
             words: Vec::new(),
+            confident: false,
         }
     }
 }
@@ -1026,6 +1031,22 @@ where
                 let postings = self.fetch_leaf(query, xpath);
                 out.insert_leaf(xpath, key, postings);
             }
+            Query::Fuzzy(raw, fuzziness, spec) => {
+                let xpath = ctx.xpath;
+                out.insert_field(xpath, self.field_totals(xpath));
+                for word in self.fuzzy_words(raw) {
+                    let opts = fuzzy_options(&word, *fuzziness, *spec);
+                    let key = FuzzyKey::new(&word, opts);
+                    // the tiers of a plan share their words: collect each word's candidates once
+                    if out.has_fuzzy(xpath, &key) {
+                        continue;
+                    }
+                    // every candidate with this shard's document count; selection happens after the
+                    // manager has summed the counts of all shards
+                    let candidates = self.index.fuzzy_expansions(&word, xpath, opts);
+                    out.insert_fuzzy(xpath, key, candidates);
+                }
+            }
             _ => {
                 let Some((key, xpath)) = Self::leaf_key(query, ctx) else {
                     return;
@@ -1912,7 +1933,10 @@ where
                 (lists, weight.unwrap_or(0.0))
             })
             .collect();
-        let total: f32 = words.iter().map(|(_, weight)| weight).sum();
+        let total: f32 = words
+            .iter()
+            .map(|(_, weight)| weight)
+            .sum();
 
         let mut coverage: HashMap<DocId, f32> = HashMap::with_capacity(hits.len());
         for hit in hits.iter_mut() {
@@ -1967,7 +1991,33 @@ where
         });
         levels
     }
-
+    pub fn total_hit_count(
+        &self,
+        query: Option<&Query>,
+        plan: &RankPlan,
+        ctxs: &[FieldCtx],
+        restrict: Option<&HashSet<DocId>>
+    ) -> usize {
+        let queries: Vec<&Query> = if plan.tiers.is_empty() {
+            query.into_iter().collect()
+        } else {
+            plan.queries().collect()
+        };
+        let mut matched: HashSet<DocId> = HashSet::new();
+        for query in queries {
+            if let EvalOutcome::Docs(docs) = self.evaluate(query, ctxs, EvalMode::Filter) {
+                matched.extend(
+                    docs
+                        .into_iter()
+                        .filter(|doc_id| {
+                            !self.index.is_deleted(*doc_id) &&
+                                restrict.is_none_or(|allowed| allowed.contains(doc_id))
+                        })
+                );
+            }
+        }
+        matched.len()
+    }
     fn all_words_known(&self, raw: &str, xpaths: &[XPathId]) -> bool {
         self.fuzzy_words(raw).iter().all(|word| {
             xpaths

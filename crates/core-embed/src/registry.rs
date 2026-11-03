@@ -83,4 +83,11 @@ impl ModelRegistry {
     pub fn default_embedder(&self) -> io::Result<Arc<Embedder>> {
         self.get(self.default_model.id)
     }
+     /// Ids of the models loaded so far, sorted.
+    pub fn loaded_model_ids(&self) -> Vec<&'static str> {
+        let loaded = self.loaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ids: Vec<&'static str> = loaded.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
 }

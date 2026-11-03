@@ -37,19 +37,11 @@ impl TokenStore {
     }
     pub fn issue(&self, username: String) -> Token {
         let token = Token::generate();
-        let hashed = hash_token(&token);
-        let entry = TokenEntry {
-            username,
-            issued_at: SystemTime::now(),
-        };
-        self.tokens
-            .write()
-            .unwrap_or_else(
-                |e: std::sync::PoisonError<
-                    std::sync::RwLockWriteGuard<'_, HashMap<String, TokenEntry>>,
-                >| e.into_inner(),
-            )
-            .insert(hashed, entry);
+        let hashed = hash_token(&token); 
+       let mut store = self.tokens.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // expired tokens are never used again: drop them here, so the map holds only live ones
+        store.retain(|_, entry| entry.issued_at.elapsed().is_ok_and(|age| age <= TOKEN_LIFETIME));
+        store.insert(hashed, TokenEntry { username, issued_at: SystemTime::now() });
         token
     }
     pub fn resolve_username(&self, token: &Token) -> Option<String> {

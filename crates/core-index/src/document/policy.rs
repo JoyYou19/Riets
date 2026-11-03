@@ -607,15 +607,16 @@ impl IndexPolicy {
         self.validate()?;
         self.resolve(root)?;
 
+        // full resolved (defaults + stamps) first: the loader reads policy.json, so it must be
+        // the last file to change
+        let full = serde_json::to_string_pretty(&Full(self))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        write_atomically(&Self::full_path(root), full.as_bytes())?;
+
         // minimal (hide defaults) -> policy.json
         let minimal = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        fs::write(Self::policy_path(root), minimal)?;
-
-        // full resolved (defaults + stamps) -> policy.json.full
-        let full = serde_json::to_string_pretty(&Full(self))
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        fs::write(Self::full_path(root), full)
+        write_atomically(&Self::policy_path(root), minimal.as_bytes())
     }
 }
 

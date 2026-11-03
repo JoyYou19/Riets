@@ -24,10 +24,8 @@ use crossbeam_channel::{ Receiver, RecvTimeoutError, SendTimeoutError, bounded, 
 use slog::{ Logger, error, info, warn };
 
 use crate::{
-    embed::EmbeddingJob,
-    metrics::{ BackgroundActivity, ShardStatsHandle },
-    reindex::{ ReindexTask, build_staging_index },
-    shard_worker::ShardCmd,
+
+    embed::EmbeddingJob, metrics::{ BackgroundActivity, ShardStatsHandle }, reindex::{ ReindexTask, build_staging_index }, shard_worker::ShardCmd,
 };
 
 const MODEL_RETRY: Duration = Duration::from_secs(60);

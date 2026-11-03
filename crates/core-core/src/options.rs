@@ -1,5 +1,6 @@
 use core_index::lsm::config::IndexRuntimeConfig;
 
+use core_index::write_atomically;
 use core_query::planner::TierKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -34,9 +35,9 @@ impl DatabaseOptions {
         root.join(Self::CONFIG_FILE_NAME)
     }
 
-    pub fn save_to_file(&self, root: impl AsRef<Path>) -> io::Result<()> {
+     pub fn save_to_file(&self, root: impl AsRef<Path>) -> io::Result<()> {
         let toml_string = toml::to_string_pretty(self).map_err(io::Error::other)?;
-        fs::write(Self::config_path(root.as_ref()), toml_string)
+        write_atomically(&Self::config_path(root.as_ref()), toml_string.as_bytes())
     }
     pub fn load_from_file(root: impl AsRef<Path>) -> io::Result<Self> {
         let path = Self::config_path(root.as_ref());

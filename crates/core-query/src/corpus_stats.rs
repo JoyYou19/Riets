@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{ BTreeMap, HashMap };
 
 use core_index::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions },
     search::SearchStats,
-    types::{DocId, XPathId},
+    types::{ DocId, XPathId },
 };
 
 use crate::ast::PhraseTerm;
@@ -72,13 +72,23 @@ impl CorpusStats {
     }
 
     pub(crate) fn insert_doc_freq(&mut self, xpath: XPathId, key: LeafKey, doc_freq: u64) {
-        self.doc_freqs
-            .entry(xpath)
-            .or_default()
-            .insert(key, doc_freq);
+        self.doc_freqs.entry(xpath).or_default().insert(key, doc_freq);
+    }
+    pub(crate) fn insert_fuzzy(
+        &mut self,
+        xpath: XPathId,
+        key: FuzzyKey,
+        candidates: Vec<FuzzyExpansion>
+    ) {
+        let words = self.fuzzy.entry(xpath).or_default().entry(key).or_default();
+        for candidate in candidates {
+            words.insert(candidate.term.clone(), candidate);
+        }
     }
 
-  
+    pub(crate) fn has_fuzzy(&self, xpath: XPathId, key: &FuzzyKey) -> bool {
+        self.fuzzy.get(&xpath).is_some_and(|keys| keys.contains_key(key))
+    }
 
     /// Adds another shard's statistics to these.
     pub fn merge(&mut self, other: &CorpusStats) {
@@ -102,8 +112,9 @@ impl CorpusStats {
                     match words.get_mut(&expansion.term) {
                         Some(existing) => {
                             existing.edits = existing.edits.min(expansion.edits);
-                            existing.doc_freq =
-                                existing.doc_freq.saturating_add(expansion.doc_freq);
+                            existing.doc_freq = existing.doc_freq.saturating_add(
+                                expansion.doc_freq
+                            );
                         }
                         None => {
                             words.insert(expansion.term.clone(), expansion.clone());
@@ -124,8 +135,7 @@ impl CorpusStats {
     /// Documents containing `term` in `xpath`, summed over every shard. Every term of the query
     /// is prepared, so a term with no entry is in no document.
     pub fn term_doc_freq(&self, xpath: XPathId, term: &str) -> u32 {
-        self.doc_freq(xpath, &LeafKey::Term(term.to_string()))
-            .unwrap_or(0)
+        self.doc_freq(xpath, &LeafKey::Term(term.to_string())).unwrap_or(0)
     }
 
     pub fn field(&self, xpath: XPathId) -> Option<FieldTotals> {

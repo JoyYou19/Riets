@@ -5,6 +5,7 @@ mod shard_db;
 pub mod shard_manager;
 pub mod shard_worker;
 pub mod shared_state;
+use core_index::hash::stable_hash64;
 use core_timing::timed;
 pub use options::DatabaseOptions;
 pub use shard_db::ShardDb;
@@ -37,32 +38,9 @@ pub(crate) fn shard_for_untimed(external_id: &str, num_shards: u16) -> u16 {
     jump_consistent_hash(stable_hash64(external_id.as_bytes()), num_shards)
 }
 
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// Platform-independent 64-bit hash: FNV-1a followed by the MurmurHash3 finaliser, so every
-/// input bit affects every output bit.
-pub fn stable_hash64(bytes: &[u8]) -> u64 {
-    fmix64(fnv1a64(bytes))
-}
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET_BASIS;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
 
-fn fmix64(mut value: u64) -> u64 {
-    value ^= value >> 33;
-    value = value.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    value ^= value >> 33;
-    value = value.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
-    value ^= value >> 33;
-    value
-}
 
 /// Lamping & Veach, "A Fast, Minimal Memory, Consistent Hash Algorithm" (2014).
 /// Only IEEE-754 operations with defined rounding are used, so the result is the same on

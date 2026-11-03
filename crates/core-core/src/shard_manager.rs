@@ -69,7 +69,21 @@ const SEMANTIC_MIN_WORDS: usize = 3;
 const SEMANTIC_MIN_PROGRESS: u8 = 95;
 /// Largest result count a vector-only query returns (matches the total-hits cap).
 const MAX_VECTOR_RESULTS: usize = 1000;
+/// Most documents a search can page through (offset + docs). The total hit count is not
+/// limited by it.
+const MAX_RESULTS_SIZE: usize = 1000;
 /// A query that is only `{"vector": "text"}` or `{"vector": {"text": "...", "field": "..."}}`.
+/// How many times as common a correction must be than every equally close or closer word to
+/// replace the query on its own ("batmna" -> "batman"); below that it is only suggested.
+const CORRECTION_DOMINANCE: u32 = 20;
+/// True when `best` is clearly what was meant: every other candidate at the same or a smaller
+/// edit distance is in at most 1/CORRECTION_DOMINANCE as many documents.
+fn is_confident_correction(best: &FuzzyExpansion, candidates: &[FuzzyExpansion]) -> bool {
+    candidates
+        .iter()
+        .filter(|other| other.term != best.term && other.edits <= best.edits)
+        .all(|other| best.doc_freq >= other.doc_freq.saturating_mul(CORRECTION_DOMINANCE))
+}
 struct VectorRequest {
     text: String,
     field: Option<String>,
@@ -155,7 +169,10 @@ pub struct ShardManager {
     // main, delete and rename all reach shutdown(), so it has to be safe twice
     shutdown_done: AtomicBool,
 }
-
+struct WordCorrection {
+    suggestions: Vec<String>,
+    confident: bool,
+}
 impl ShardManager {
     const DEFAULT_QUEUE_DEPTH: usize = 256;
 
@@ -381,20 +398,33 @@ impl ShardManager {
                 .find(|f| f.name == *xpath)
                 .map(|f| f.kind.clone())
                 .unwrap_or(FieldKind::None);
+            (xpath, kind)
+        })
+        .collect();
 
-            if all_fields.get_fields().get(xpath) != Some(&kind) {
-                all_fields.get_fields_mut().insert(xpath.clone(), kind);
-                changed = true;
-            }
+    {
+        let current = self.all_fields.read();
+        if wanted.iter().all(|(xpath, kind)| current.get_fields().get(*xpath) == Some(kind)) {
+            return Ok(());
         }
-
-        if changed {
-            all_fields.save(&self.root)?;
-            *self.all_fields.write() = all_fields;
-        }
-
-        Ok(())
     }
+
+    // one writer at a time: the check, the save and the swap see the same map
+    let mut guard = self.all_fields.write();
+    let mut updated = guard.clone();
+    let mut changed = false;
+    for (xpath, kind) in wanted {
+        if updated.get_fields().get(xpath) != Some(&kind) {
+            updated.get_fields_mut().insert(xpath.clone(), kind);
+            changed = true;
+        }
+    }
+    if changed {
+        updated.save(&self.root)?;
+        *guard = updated;
+    }
+    Ok(())
+}
 
     pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
         let mut all_lines: Vec<String> = Vec::new();
@@ -829,6 +859,7 @@ impl ShardManager {
             .map_err(CorelamoError::from)
     }
 
+
     #[timed(database_lifecycle)]
     pub async fn set_policy_all(
         &self,
@@ -842,6 +873,7 @@ impl ShardManager {
             ));
         }
         policy.resolve(&self.root)?;
+        let previous = self.policy.read().clone();
 
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -869,7 +901,14 @@ impl ShardManager {
                 Ok(Ok(())) => {}
             }
         }
-        if let Some(e) = first_err {
+        let failure = match first_err {
+            Some(e) => Some(e),
+            None => policy.save(&self.root).err().map(CorelamoError::from),
+        };
+        if let Some(e) = failure {
+            for handle in &self.shards {
+                let _ = handle.set_policy(previous.clone(), user.clone()).await;
+            }
             return Err(e);
         }
 
@@ -886,7 +925,6 @@ impl ShardManager {
         Ok(changed
             .then(|| "policy changed; reindex required to apply to existing documents".to_string()))
     }
-
     #[timed(database_lifecycle)]
     pub async fn set_options_all(
         &self,
@@ -931,12 +969,21 @@ impl ShardManager {
                 Ok(Ok(())) => {}
             }
         }
-        if let Some(e) = first_err {
+        let failure = match first_err {
+            Some(e) => Some(e),
+            None => options.save_to_file(&self.root).err().map(CorelamoError::from),
+        };
+        if let Some(e) = failure {
+            for handle in &self.shards {
+                let _ = handle.set_config(previous.clone(), user.clone()).await;
+            }
             return Err(e);
         }
 
+        *self.options.write() = options;
         Ok(())
     }
+    
 
     #[timed(reindex)]
     pub fn reindex(&self) -> Result<(), CorelamoError> {
@@ -957,12 +1004,15 @@ impl ShardManager {
             });
             let result = match sent {
                 Err((e, _)) => Err(e),
-                Ok(()) => rrx
-                    .recv()
-                    .unwrap_or_else(|_| Err(CorelamoError::Internal("shard stopped".into()))),
+                Ok(()) =>
+                    rrx
+                        .recv()
+                        .unwrap_or_else(|_| Err(CorelamoError::Internal("shard stopped".into()))),
             };
             match result {
-                Ok(()) => submitted += 1,
+                Ok(()) => {
+                    submitted += 1;
+                }
                 Err(e) => {
                     first_err = Some(e);
                     break;
@@ -1296,10 +1346,17 @@ impl ShardManager {
         command: &SearchCommand,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
         let limit = command.docs.unwrap_or(10);
+        if limit > MAX_RESULTS_SIZE {
+            return Err(
+                CorelamoError::InvalidData(
+                    format!("docs may be at most {MAX_RESULTS_SIZE}, got {limit}")
+                )
+            );
+        }
         let offset = command.offset.unwrap_or(0);
         let fetch = offset.saturating_add(limit);
         if fetch == 0 {
-            return Ok((Vec::new(), TotalHits::default()));
+            return Ok((Vec::new(), TotalHits::default(), None));
         }
         if let Some(request) = vector_request(&command.query)? {
             return self
@@ -1362,6 +1419,86 @@ impl ShardManager {
                             .field_by_path(name)
                             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
                         fields.push((field.full_path.clone(), opts.clone()));
+        
+
+       
+        // Fuzzy expansions are the costly part of preparing (every close spelling of every word,
+        // in every field, on every shard). Prepare without them first; only when a word turns out
+        // to be in no document of the whole database is it worth preparing them.
+        let mut plan = Arc::new(full_plan.without_fuzzy());
+        let typed_words: Vec<String> = match &query_value {
+            OwnedValue::String(text) if plan.tiers.len() != full_plan.tiers.len() => {
+                core_query::fuzzable_words(&self.analyzer, text)
+            }
+            _ => Vec::new(),
+        };
+        let query = Arc::new(query);
+        let vector_task = semantic
+            .as_ref()
+            .map(|(text, xpaths)| {
+                self.spawn_vector_search(
+                    text.clone(),
+                    xpaths.clone(),
+                    FUSION_DEPTH,
+                    filters.clone()
+                )
+            });
+        // resolve highlight fields once + collect query matchers once
+        let highlight: Option<
+            (Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)
+        > = match &command.highlight {
+            Some(cmd) => {
+                let mut fields = Vec::with_capacity(cmd.fields.len());
+                for (name, opts) in &cmd.fields {
+                    let field = policy
+                        .field_by_path(name)
+                        .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
+                    fields.push((field.full_path.clone(), opts.clone()));
+                }
+                let matchers = (*query)
+                    .as_ref()
+                    .map(|q| collect_highlight_matchers(q, &self.analyzer))
+                    .unwrap_or_default();
+                Some((fields, matchers))
+            }
+            None => None,
+        };
+
+        let sort_xpaths: Option<Arc<Vec<XPathId>>> = sorts.as_ref().map(|s|
+            Arc::new(
+                s.fields
+                    .iter()
+                    .map(|f| f.xpath)
+                    .collect()
+            )
+        );
+
+        //Scores must not depend on which shard a document is in, so every shard scores with the
+        //statistics of all shards together: first every shard reads the query and reports its
+        //own statistics, then all of them rank
+        let mut passes = 0;
+        // a spelling offered but not applied (see the unknown-word step below)
+        let mut suggestion: Option<QueryCorrection> = None;
+        let (prepared, corpus) = loop {
+            passes += 1;
+            let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
+            let mut set = JoinSet::new();
+            for (index, handle) in self.shards.iter().enumerate() {
+                let handle = handle.clone();
+                let query = Arc::clone(&query);
+                let plan = Arc::clone(&plan);
+                let ctxs = Arc::clone(&ctxs);
+                set.spawn_blocking(move || {
+                    let shard = handle.prepare_search((*query).as_ref(), &plan, &ctxs);
+                    (index, shard)
+                });
+            }
+            let mut corpus = CorpusStats::new();
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Ok((index, shard)) => {
+                        corpus.merge(shard.stats());
+                        prepared[index] = Some(Arc::new(shard));
                     }
                     let mut matchers = Vec::new();
                     for group in query_groups.iter() {
@@ -1371,12 +1508,49 @@ impl ShardManager {
                     }
                     Some((fields, matchers))
                 }
-                None => None,
-            };
-
-        let sort_xpaths: Option<Arc<Vec<XPathId>>> = sorts
-            .as_ref()
-            .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
+            }
+            // a word no document has: the typo tier is needed after all, prepare again with it
+            let plain_xpaths: Vec<XPathId> = ctxs
+                .iter()
+                .filter(|ctx| !ctx.row_keyed)
+                .map(|ctx| ctx.xpath)
+                .collect();
+            let unknown_word = typed_words
+                .iter()
+                .any(|word| {
+                    plain_xpaths.iter().all(|&xpath| corpus.term_doc_freq(xpath, word) == 0)
+                });
+            if passes == 1 && unknown_word {
+                // A typed word is in no document. When its correction is clearly what was meant,
+                // search that instead, on both sides: fuzzy expansion favours rare close words
+                // and the embedding model cannot read a typo at all. When it is not clear, keep
+                // the typed query (fuzzy matches) and offer the spelling as a suggestion.
+                if
+                    corrected.is_none() &&
+                    let OwnedValue::String(text) = &query_value &&
+                    let Ok(report) = self.suggest_corrections(
+                        text,
+                        command.search_fields.as_deref(),
+                        Fuzziness::Auto,
+                        1
+                    ).await &&
+                    !report.corrected.is_empty() &&
+                    report.corrected != *text
+                {
+                    if report.confident {
+                        let (hits, total, _) = Box::pin(
+                            self.search_with(command, Some(&report.corrected))
+                        ).await?;
+                        return Ok((hits, total, Some(QueryCorrection::Applied(report.corrected))));
+                    }
+                    suggestion = Some(QueryCorrection::Suggested(report.corrected));
+                }
+                plan = Arc::new(full_plan.clone());
+                continue;
+            }
+            break (prepared, corpus);
+        };
+        let corpus = Arc::new(corpus);
 
         // CHANGED: two-phase prepare, then rank
         let (corpus, prepared_search) = self
@@ -1420,15 +1594,16 @@ impl ShardManager {
             });
         }
 
+        let shard_request = if sorts.is_some() { window } else { word_fetch };
         let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
         let mut per_shard_bounds: Vec<Vec<(Option<f64>, Option<f64>)>> = Vec::new();
-        let mut total_hits: u64 = 0;
+        let mut some_shard_full = false;
         let mut first_err = None;
 
         while let Some(res) = set.join_next().await {
             match res {
                 Ok(Ok(r)) => {
-                    total_hits += r.total as u64;
+                    some_shard_full |= r.total >= shard_request;
                     items.extend(r.items);
                     if !r.bounds.is_empty() {
                         per_shard_bounds.push(r.bounds);
@@ -1475,14 +1650,24 @@ impl ShardManager {
                 items = fuse_keeping_named(items, vectors, named_limit);
             }
         }
+        let more = some_shard_full || items.len() > fetch;
         if items.len() > fetch {
             items.truncate(fetch);
         }
-        let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
-        self.resolve_page(
-            just_hits, offset, limit, total_hits, command, &policy, highlight,
-        )
-        .await
+        let just_hits: Vec<SearchHit> = items
+            .into_iter()
+            .map(|(hit, _)| hit)
+            .collect();
+        let (hits, total) = self.resolve_page(
+            just_hits,
+            offset,
+            limit,
+            more,
+            command,
+            &policy,
+            highlight
+        ).await?;
+        Ok((hits, total, suggestion))
     }
 
     pub fn record_search(&self, failed: bool, elapsed: Duration) {
@@ -1688,29 +1873,25 @@ impl ShardManager {
     }
 
     #[timed(search)]
-    pub async fn did_you_mean(
+    async fn suggest_corrections(
         &self,
         command: &DidYouMeanRequest,
+        value: &str,
+        search_fields: Option<&[String]>,
+        fuzziness: Fuzziness,
+        size: usize
     ) -> Result<DidYouMeanReport, CorelamoError> {
-        let size = command.did_you_mean_count.unwrap_or(3);
-
-        if command.value.trim().is_empty() || size == 0 {
-            return Ok(DidYouMeanReport::empty(&command.value));
+        if value.trim().is_empty() || size == 0 {
+            return Ok(DidYouMeanReport::empty(value));
         }
 
         let policy = self.policy.read().clone();
 
-        //in which xpaths to search in
-        //WARN: manskiet te bij jauna logika bet man bail no merge conflikta
-        let xpaths: Arc<Vec<XPathId>> = match &command.search_fields {
+        let xpaths: Arc<Vec<XPathId>> = match search_fields {
             Some(names) => Arc::new(resolve_suggest_xpaths(names, &policy)?),
             None => Arc::new(policy.searchable_xpaths()),
         };
 
-        let fuzziness = parse_fuzziness(command.fuzziness.as_deref())?;
-
-        //in this did_you_mean command we allow the prefix to be 0 since no seach ranking happens
-        //its just the best fuzzed words
         let spec = FuzzySpec {
             prefix_length: 0,
             max_expansions: 0,
@@ -1728,7 +1909,7 @@ impl ShardManager {
         let mut set = JoinSet::new();
         for handle in &self.shards {
             let handle = handle.clone();
-            let value = command.value.clone();
+            let value = value.to_string();
             let xpaths = Arc::clone(&xpaths);
             let analyzers_map = analyzers_map.clone();
 
@@ -1783,16 +1964,28 @@ impl ShardManager {
         }
         //suggestions per analysed word, before we decide which ones to trust.
 
-        let by_word: HashMap<String, Vec<String>> = words
+        let by_word: HashMap<String, WordCorrection> = words
             .into_iter()
             .zip(merged)
             .map(|(word, by_term)| {
-                let candidates = by_term.into_values().map(|e| (e.term, e.edits, e.doc_freq));
-                let expansions = select_expansions(&word, candidates, size);
-                (word, expansions.into_iter().map(|e| e.term).collect())
+                let candidates: Vec<FuzzyExpansion> = by_term.into_values().collect();
+                let expansions = select_expansions(
+                    &word,
+                    candidates.iter().map(|e| (e.term.clone(), e.edits, e.doc_freq)),
+                    size
+                );
+                let confident = expansions
+                    .first()
+                    .is_some_and(
+                        |best| best.term != word && is_confident_correction(best, &candidates)
+                    );
+                let suggestions = expansions
+                    .into_iter()
+                    .map(|e| e.term)
+                    .collect();
+                (word, WordCorrection { suggestions, confident })
             })
             .collect();
-
         //we need to construct the original sentence (keeping stopwords/no running -> run)
         let mut pieces: Vec<String> = Vec::new();
         let mut reported: Vec<WordSuggestions> = Vec::new();
@@ -1818,11 +2011,10 @@ impl ShardManager {
                 continue;
             };
 
-            // its own term ranks first: the word is spelled right, keep it as typed
-            // ("running", not its stem "run") and suggest nothing
-            match found.first() {
+            match found.suggestions.first() {
                 Some(top) if *top != token.text => {
                     changed = true;
+                    all_confident &= found.confident;
                     pieces.push(top.clone());
                 }
                 _ => {
@@ -1833,23 +2025,33 @@ impl ShardManager {
 
             reported.push(WordSuggestions {
                 word: token.text,
-                suggestions: found.clone(),
+                suggestions: found.suggestions.clone(),
             });
         }
 
-        let corrected = if changed {
-            pieces.join(" ")
-        } else {
-            command.value.clone()
-        };
+        let corrected = if changed { pieces.join(" ") } else { value.to_string() };
 
         Ok(DidYouMeanReport {
-            original: command.value.clone(),
+            original: value.to_string(),
             corrected,
             words: reported,
+            confident: changed && all_confident,
         })
     }
 
+    pub async fn did_you_mean(
+        &self,
+        command: &DidYouMeanRequest
+    ) -> Result<DidYouMeanReport, CorelamoError> {
+        let fuzziness = parse_fuzziness(command.fuzziness.as_deref())?;
+        let size = command.did_you_mean_count.unwrap_or(3);
+        self.suggest_corrections(
+            &command.value,
+            command.search_fields.as_deref(),
+            fuzziness,
+            size
+        ).await
+    }
     #[timed(restore)]
     pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let mut failures = Vec::new();
@@ -1959,8 +2161,9 @@ impl ShardManager {
                     "vector search unavailable: the embedding model could not be loaded".into(),
                 )
             })?;
-
-        let total = hits.len() as u64;
+        // one source: more exist if the vector search filled what it was asked for, or
+        // returned more than this page needs
+        let more = hits.len() >= k || hits.len() > fetch;
         let just_hits: Vec<SearchHit> = hits
             .into_iter()
             .map(|hit| SearchHit {
@@ -1972,8 +2175,7 @@ impl ShardManager {
                 tier: 0,
             })
             .collect();
-        self.resolve_page(just_hits, offset, limit, total, command, &policy, None)
-            .await
+        self.resolve_page(just_hits, offset, limit, more, command, &policy, None).await
     }
     /// Loads the requested page of ranked hits as documents, with highlights when asked.
     /// Loads the requested page of ranked hits as documents, with highlights when asked.
@@ -1983,13 +2185,13 @@ impl ShardManager {
         just_hits: Vec<SearchHit>,
         offset: usize,
         limit: usize,
-        total_hits: u64,
+        more: bool,
         command: &SearchCommand,
         policy: &IndexPolicy,
         highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)>,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
         if offset >= just_hits.len() {
-            return Ok((Vec::new(), TotalHits::default()));
+            return Ok((Vec::new(), TotalHits { value: 0, more: false }));
         }
 
         //for the resolve hit to save position
@@ -2081,12 +2283,12 @@ impl ShardManager {
             .map_err(|e| CorelamoError::Internal(format!("highlight task panicked: {e}")))?;
         }
 
-        let total_hits = TotalHits {
-            value: total_hits.min(1000),
-            more: total_hits >= 1000,
+        let resolved: Vec<SearchDocumentHit> = resolved.into_iter().flatten().collect();
+        let total = TotalHits {
+            value: resolved.len() as u64,
+            more,
         };
-
-        Ok((resolved.into_iter().flatten().collect(), total_hits))
+        Ok((resolved, total))
     }
     #[timed(backup)]
     pub fn delete_backups_old(&self, lifetime: Duration) -> Result<(), CorelamoError> {
@@ -2166,11 +2368,12 @@ impl ShardManager {
     /// VECTOR PRIKOLI
     fn semantic_fields(
         &self,
+        query_value: &OwnedValue,
         command: &SearchCommand,
         policy: &IndexPolicy,
         strict_sort: bool,
     ) -> Option<(String, Vec<XPathId>)> {
-        let OwnedValue::String(text) = &command.query else {
+        let OwnedValue::String(text) = query_value else {
             return None;
         };
         if text.trim().is_empty() {
@@ -2313,6 +2516,7 @@ fn fuse_rrf(
     });
     out
 }
+
 #[cfg(test)]
 mod fusion_tests {
     use super::*;
