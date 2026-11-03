@@ -18,8 +18,13 @@ use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
     command_reponse_definitions::{
-        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest, InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand, RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse, TimingsRequest,
-    }, document_out::DocumentOut, errors::CorelamoError,
+        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest,
+        InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand,
+        RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
+        TimingsRequest,
+    },
+    document_out::DocumentOut,
+    errors::CorelamoError,
 };
 use core_query::dictionary::DictionaryDocument;
 use core_storage::document_projections::id_path_to_strip;
@@ -218,7 +223,6 @@ pub(crate) async fn update_user_password_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-
     let body = match require_body(&body) {
         Ok(b) => b,
         Err(e) => {
@@ -1793,7 +1797,6 @@ struct ListModelsResponse {
     models: Vec<EmbeddingModelInfo>,
 }
 
-
 pub(crate) async fn list_models_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
@@ -1816,8 +1819,12 @@ pub(crate) async fn list_models_handler(
         })
         .collect();
 
-    HttpOk::with_data("Embedding models".to_string(), ListModelsResponse { models }, &ctx)
-        .into_response()
+    HttpOk::with_data(
+        "Embedding models".to_string(),
+        ListModelsResponse { models },
+        &ctx,
+    )
+    .into_response()
 }
 
 #[timed(backup)]

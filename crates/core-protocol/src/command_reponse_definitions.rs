@@ -102,7 +102,7 @@ pub trait ResponseData {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SearchCommand {
     pub query: OwnedValue,
@@ -306,7 +306,7 @@ pub struct SearchResponse {
     docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
     strip_id: Option<String>,
     total_hits: TotalHits,
-    corrected_query:Option<QueryCorrection>
+    corrected_query: Option<QueryCorrection>,
 }
 
 impl SearchResponse {
@@ -314,13 +314,13 @@ impl SearchResponse {
         docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
         strip_id: Option<String>,
         total_hits: TotalHits,
-        corrected_query:Option<QueryCorrection>
+        corrected_query: Option<QueryCorrection>,
     ) -> Self {
         Self {
             docs,
             strip_id,
             total_hits,
-            corrected_query
+            corrected_query,
         }
     }
 }

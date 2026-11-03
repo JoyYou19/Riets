@@ -8,6 +8,7 @@ use crate::{
     analyzer::{Analyzer, analyzer::AnalyzerSet, analyzer_config::AnalyzerConfig},
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
+    write_atomically,
 };
 use ahash::{HashMap, HashMapExt, HashSet};
 use core_timing::timed;
