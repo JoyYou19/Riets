@@ -83,8 +83,18 @@ pub fn compile_query(
     synonyms: Option<&Synonyms>,
 ) -> Result<Arc<Vec<QueryGroup>>, CorelamoError> {
     if is_blank_query(raw) {
-        return Ok(Arc::new(Vec::new()));
+        let fields: Vec<&FieldPolicy> = match search_fields {
+            Some(names) => resolve_search_fields(names, false, policy)?,
+            None => policy.searchable_fields(),
+        };
+        let ctxs: Vec<FieldCtx> = fields.iter().map(|f| field_ctx(f, policy)).collect();
+        return Ok(Arc::new(vec![QueryGroup {
+            analyzer: analyzers.default_analyzer().clone(),
+            query: Some(Query::MatchAll),
+            ctxs,
+        }]));
     }
+
     reject_filter_only_operators(raw)?;
 
     let raw_query = parse_json_query(raw)?;

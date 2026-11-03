@@ -1,16 +1,11 @@
-use ahash::{ HashSet, HashSetExt };
+use ahash::{HashSet, HashSetExt};
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{
-        DEFAULT_MAX_CANDIDATES,
-        FuzzyExpansion,
-        FuzzyOptions,
-        LevenshteinAutomaton,
-           },
-    numeric_values::{ NumericBound, NumericValue },
+    fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton},
+    numeric_values::{NumericBound, NumericValue},
     posting::PostingList,
-    types::{ ArrayRowId, DocId, XPathId },
+    types::{ArrayRowId, DocId, XPathId},
     wildcard::WildcardPattern,
 };
 
@@ -70,7 +65,7 @@ pub trait SearchIndex {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
         //one automaton for k = 0, 1 and 2, so all three use the same rules
         //(transpositions, unicode, prefix lock)
@@ -91,7 +86,6 @@ pub trait SearchIndex {
                 break;
             }
         }
-
 
         candidates
             .into_iter()
@@ -136,7 +130,7 @@ pub trait SearchNumeric {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> PostingList;
 
     //quick docid+xpath->numeric_value
