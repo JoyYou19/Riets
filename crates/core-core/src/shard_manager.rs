@@ -29,9 +29,9 @@ use core_query::executor::{DidYouMeanReport, WordSuggestions};
 use core_query::highlight::{
     HighlightMatcher, collect_highlight_matchers, field_texts, highlight_text,
 };
-use core_query::planner::RankPlan;
+use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
-    FieldQuery, compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
+    FieldQuery, QueryGroup, compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
 };
 use core_query::{CorpusStats, SearchHit};
 use core_storage::document_projections::id_path_to_strip;
@@ -1183,6 +1183,113 @@ impl ShardManager {
             .then_with(|| a.doc_id.cmp(&b.doc_id))
     }
 
+    fn build_plans(
+        command: &SearchCommand,
+        query_groups: &[QueryGroup],
+        cascade_order: &[TierKind],
+        has_sort: bool,
+        window: usize,
+        word_fetch: usize,
+    ) -> (Arc<Vec<RankPlan>>, Arc<Vec<RankPlan>>) {
+        let full: Arc<Vec<RankPlan>> = Arc::new(
+            query_groups
+                .iter()
+                .map(|group| match (&command.query, group.query.as_ref()) {
+                    (OwnedValue::String(text), Some(resolved)) => {
+                        let has_exact = group.ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
+                        RankPlan::cascade(
+                            text,
+                            resolved.clone(),
+                            &group.analyzer,
+                            has_exact,
+                            cascade_order,
+                        )
+                        .stopping_after(if has_sort {
+                            window
+                        } else {
+                            word_fetch
+                        })
+                    }
+                    _ => RankPlan::default(),
+                })
+                .collect(),
+        );
+        let no_fuzzy = Arc::new(full.iter().map(|p| p.without_fuzzy()).collect());
+        (full, no_fuzzy)
+    }
+
+    async fn prepare_shards(
+        &self,
+        query_groups: &Arc<Vec<QueryGroup>>,
+        plans_no_fuzzy: &Arc<Vec<RankPlan>>,
+        plans_full: &Arc<Vec<RankPlan>>,
+        raw: &OwnedValue,
+    ) -> Result<(Arc<CorpusStats>, Vec<Arc<PreparedShardSearch>>), CorelamoError> {
+        let plain_xpaths: Vec<XPathId> = query_groups
+            .iter()
+            .flat_map(|g| g.ctxs.iter())
+            .filter(|ctx| !ctx.row_keyed)
+            .map(|ctx| ctx.xpath)
+            .collect();
+        let raw_words: Vec<String> = match raw {
+            OwnedValue::String(text) => text.split_whitespace().map(str::to_lowercase).collect(),
+            _ => Vec::new(),
+        };
+        let has_fuzzy = plans_full
+            .iter()
+            .zip(plans_no_fuzzy.iter())
+            .any(|(f, n)| f.tiers.len() != n.tiers.len());
+
+        let mut current = plans_no_fuzzy.clone();
+        let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
+        let mut corpus = CorpusStats::new();
+
+        for pass in 0..2 {
+            let mut set = JoinSet::new();
+            for (index, handle) in self.shards.iter().enumerate() {
+                let handle = handle.clone();
+                let query_groups = query_groups.clone();
+                let current = current.clone();
+                set.spawn_blocking(move || (index, handle.prepare_search(&query_groups, &current)));
+            }
+            corpus = CorpusStats::new();
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Ok((index, shard)) => {
+                        corpus.merge(shard.stats());
+                        prepared[index] = Some(Arc::new(shard));
+                    }
+                    Err(je) => {
+                        return Err(CorelamoError::Internal(format!(
+                            "shard prepare panicked: {je}"
+                        )));
+                    }
+                }
+            }
+
+            if !has_fuzzy || pass == 1 {
+                break;
+            }
+            let unknown = raw_words.iter().any(|word| {
+                self.shards
+                    .iter()
+                    .all(|handle| handle.word_missing(word, &plain_xpaths))
+            });
+            if !unknown {
+                break;
+            }
+            current = plans_full.clone();
+        }
+
+        Ok((
+            Arc::new(corpus),
+            prepared
+                .into_iter()
+                .map(|p| p.expect("shard prepared"))
+                .collect(),
+        ))
+    }
+
     #[timed(search)]
     pub async fn search(
         &self,
@@ -1232,40 +1339,20 @@ impl ShardManager {
         };
         let window = fetch.saturating_mul(50).clamp(1000, 5_000);
 
-        //CHANGED: one RankPlan per group, built with that group's analyzer
-        //WARN: kristian piedod, tev te bija optimizacija kas checko vai vards vispar ir datubazee,
-        //es to nonemu sorry bracin sis japieliek atpakal :\ - valters nevis normunds
-        let plans: Arc<Vec<RankPlan>> = Arc::new(
-            query_groups
-                .iter()
-                .map(|group| match (&command.query, group.query.as_ref()) {
-                    (OwnedValue::String(text), Some(resolved)) => {
-                        let has_exact_field =
-                            group.ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
-                        RankPlan::cascade(
-                            text,
-                            resolved.clone(),
-                            &group.analyzer,
-                            has_exact_field,
-                            &cascade_order,
-                        )
-                        .stopping_after(if sorts.is_some() {
-                            window
-                        } else {
-                            word_fetch
-                        })
-                    }
-                    _ => RankPlan::default(),
-                })
-                .collect(),
+        let (plans_full, plans_no_fuzzy) = Self::build_plans(
+            command,
+            &query_groups,
+            &cascade_order,
+            sorts.is_some(),
+            window,
+            word_fetch,
         );
 
-        // CHANGED: vector task unchanged (depends only on filters/semantic)
         let vector_task = semantic.map(|(text, xpaths)| {
             self.spawn_vector_search(text, xpaths, FUSION_DEPTH, filters.clone())
         });
 
-        // CHANGED: highlight matchers collected per group with each group's analyzer
+        //CHANGED: highlight matchers collected per group with each group's analyzer
         let highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)> =
             match &command.highlight {
                 Some(cmd) => {
@@ -1291,40 +1378,19 @@ impl ShardManager {
             .as_ref()
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
 
-        // CHANGED: single prepare pass over all groups (fuzzy two-phase dropped for now)
-        let mut prepared_search: Vec<Option<Arc<PreparedShardSearch>>> =
-            vec![None; self.shards.len()];
-        let mut set = JoinSet::new();
-        for (index, handle) in self.shards.iter().enumerate() {
-            let handle = handle.clone();
-            let query_groups = query_groups.clone();
-            let plans = plans.clone();
-            set.spawn_blocking(move || (index, handle.prepare_search(&query_groups, &plans)));
-        }
-        let mut corpus = CorpusStats::new();
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok((index, shard)) => {
-                    corpus.merge(shard.stats());
-                    prepared_search[index] = Some(Arc::new(shard));
-                }
-                Err(je) => {
-                    return Err(CorelamoError::Internal(format!(
-                        "shard prepare panicked: {je}"
-                    )));
-                }
-            }
-        }
-        let corpus = Arc::new(corpus);
+        // CHANGED: two-phase prepare, then rank
+        let (corpus, prepared_search) = self
+            .prepare_shards(&query_groups, &plans_no_fuzzy, &plans_full, &command.query)
+            .await?;
 
         //rank per group, merge across groups inside the shard
         let mut set = JoinSet::new();
         for (handle, prepared) in self.shards.iter().zip(prepared_search) {
             let handle = handle.clone();
-            let prepared = prepared.expect("every shard was prepared");
+            let prepared = prepared;
             let corpus = corpus.clone();
             let query_groups = query_groups.clone();
-            let plans = plans.clone();
+            let plans_full = plans_full.clone();
             let filters = filters.clone();
             let sort_xpaths = sort_xpaths.clone();
 
@@ -1334,7 +1400,7 @@ impl ShardManager {
                         &prepared,
                         &corpus,
                         &query_groups,
-                        &plans,
+                        &plans_full,
                         filters.as_deref(),
                         sort_xpaths,
                         window,
@@ -1345,7 +1411,7 @@ impl ShardManager {
                         &prepared,
                         &corpus,
                         &query_groups,
-                        &plans,
+                        &plans_full,
                         filters.as_deref(),
                         word_fetch,
                         matchmode,
@@ -1401,7 +1467,7 @@ impl ShardManager {
             items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
             if let Some(vectors) = vector_hits.as_deref() {
                 items.truncate(word_fetch);
-                let named_limit = plans
+                let named_limit = plans_full
                     .iter()
                     .map(|p| p.named_tier_limit())
                     .min()

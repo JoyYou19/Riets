@@ -35,7 +35,7 @@ POLICY = """\
     "year": {
       "$type": "int",
       "$searchable": true,
-      "$weight": { "min": 1, "max": 40 }
+      "$weight": { "min": 90, "max": 100}
     },
 
     "cast": [

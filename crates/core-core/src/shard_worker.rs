@@ -219,6 +219,18 @@ impl ShardHandle {
         self.shared.is_clearing.load(Ordering::Acquire)
     }
 
+    pub fn word_missing(&self, word: &str, xpaths: &[XPathId]) -> bool {
+        let snapshot = self.shared.snapshot.get();
+        xpaths.iter().all(|&xpath| {
+            snapshot
+                .lookup(word, xpath)
+                .items()
+                .into_iter()
+                .next()
+                .is_none()
+        })
+    }
+
     // CHANGED: analyzes each word with each field's own analyzer, not one shared default.
     pub fn info_words_direct(
         &self,
@@ -473,6 +485,17 @@ impl ShardHandle {
                 (min.map(|v| v.as_f64()), max.map(|v| v.as_f64()))
             })
             .collect();
+
+        // debug:
+        // println!(
+        //     "bounds: {:?}, sample_doc: {:?}, sample_year: {:?}",
+        //     bounds,
+        //     candidates.first().map(|h| h.doc_id),
+        //     candidates
+        //         .first()
+        //         .and_then(|_| sort_xpaths.first())
+        //         .and_then(|&x| snapshot.numeric_value(x, candidates.first().unwrap().doc_id))
+        // );
 
         let items: Vec<(SearchHit, Vec<Option<f64>>)> = candidates
             .into_iter()
