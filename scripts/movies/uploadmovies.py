@@ -65,7 +65,8 @@ POLICY = """\
 
     "extract": {
       "$type": "text",
-      "$weight": { "min": 1, "max": 70 }
+      "$weight": { "min": 1, "max": 70 },
+      "$vector": true
     },
 
     "is_cool": "bool",
