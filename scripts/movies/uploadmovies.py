@@ -15,75 +15,88 @@ IN_FLIGHT = 1   # insert requests running at the same time
 
 POLICY = """\
 {
-  "id": "id_auto",
-
-  "title": {
-    "$type": "text",
-    "$exact": true,
-    "$weight": { "min": 90, "max": 100 }
+  "analyzers": {
+    "$default": { "stemming": "english" },
+    "title":     { "lowercase": true },
+    "name":      { "ascii_folding": true },
+    "url":       { "tokenizer": "url", "ascii_folding": true }
   },
 
-  "year": {
-    "$type": "int",
-    "$searchable": true,
-    "$weight": { "min": 1, "max": 40 }
-  },
+  "document": {
+    "id": "id_auto",
 
-  "cast": [
-    {
-      "name": {
-        "$type": "text",
-        "$exact": true,
-        "$weight": { "min": 20, "max": 60 }
-      },
-      "surname": {
-        "$type": "text",
-        "$exact": true,
-        "$weight": { "min": 20, "max": 60 }
-      }
-    }
-  ],
-
-  "genres": [
-    {
+    "title": {
       "$type": "text",
+      "$analyzer": "title",
       "$exact": true,
-      "$weight": { "min": 1, "max": 40 }
-    }
-  ],
+      "$weight": { "min": 90, "max": 100 }
+    },
 
-  "extract": {
-    "$type": "text",
-    "$stemming": "english",
-    "$weight": { "min": 1, "max": 70 }
-  },
+    "year": {
+      "$type": "int",
+      "$searchable": true,
+      "$weight": { "min": 90, "max": 100}
+    },
 
-  "is_cool": "bool",
+    "cast": [
+      {
+        "name": {
+          "$type": "text",
+          "$analyzer": "name",
+          "$exact": true,
+          "$weight": { "min": 20, "max": 60 }
+        },
+        "surname": {
+          "$type": "text",
+          "$analyzer": "name",
+          "$exact": true,
+          "$weight": { "min": 20, "max": 60 }
+        }
+      }
+    ],
 
-  "href": {
-    "$type": "text",
-    "$exact": true,
-    "$weight": { "min": 0, "max": 0 }
-  },
+    "genres": [
+      {
+        "$type": "text",
+        "$exact": true,
+        "$weight": { "min": 1, "max": 40 }
+      }
+    ],
 
-  "thumbnail": "none",
+    "extract": {
+      "$type": "text",
+      "$weight": { "min": 1, "max": 70 },
+      "$vector": true
+    },
 
-  "thumbnail_width": {
-    "$type": "int",
-    "$weight": { "min": 0, "max": 0 }
-  },
+    "is_cool": "bool",
 
-  "thumbnail_height": {
-    "$type": "int",
-    "$weight": { "min": 0, "max": 0 }
-  },
+    "href": {
+      "$type": "text",
+      "$analyzer": "url",
+      "$exact": true,
+      "$weight": { "min": 0, "max": 0 }
+    },
 
-  "random_nums": [
-    {
-      "num1": { "$type": "int", "$searchable": true },
-      "num2": { "$type": "int", "$searchable": true }
-    }
-  ]
+    "thumbnail": { "$type": "text", "$analyzer": "url" },
+
+    "thumbnail_width": {
+      "$type": "int",
+      "$weight": { "min": 0, "max": 0 }
+    },
+
+    "thumbnail_height": {
+      "$type": "int",
+      "$weight": { "min": 0, "max": 0 }
+    },
+
+    "random_nums": [
+      {
+        "num1": { "$type": "int", "$searchable": true },
+        "num2": { "$type": "int", "$searchable": true }
+      }
+    ]
+  }
 }
 """
 

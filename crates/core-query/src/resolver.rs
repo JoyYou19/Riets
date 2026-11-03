@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use core_index::{
-    analyzer::Analyzer,
+    analyzer::{Analyzer, analyzer::AnalyzerSet},
     document::{
         IndexPolicy,
         policy::{FieldKind, FieldPolicy},
@@ -20,6 +20,15 @@ use crate::{
     synonyms::{Synonyms, expand_synonyms},
 };
 
+//for each query we construct analyzer + compiled query + the fields that are searched for with this
+//analyzer
+#[derive(Clone)]
+pub struct QueryGroup {
+    pub analyzer: Analyzer,
+    pub query: Option<Query>,
+    pub ctxs: Vec<FieldCtx>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FieldCtx {
     pub xpath: XPathId,
@@ -27,6 +36,7 @@ pub struct FieldCtx {
     pub row_keyed: bool,
 }
 
+//hujna prieks arrays nezinu vai vispar vel stradaa lol
 #[derive(Debug, Clone)]
 pub struct SameElementBinding {
     pub depth: u32, //inside how many arrays is this in
@@ -57,37 +67,71 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
     }
 }
 
+fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
+    field
+        .analyzer
+        .as_deref()
+        .and_then(|name| analyzers.get(name))
+        .unwrap_or_else(|| analyzers.default_analyzer())
+}
+
 pub fn compile_query(
     raw: &OwnedValue,
     search_fields: Option<&[String]>,
-    analyzer: &Analyzer,
+    analyzers: &AnalyzerSet,
     policy: &IndexPolicy,
     synonyms: Option<&Synonyms>,
-) -> Result<(Option<Query>, Arc<Vec<FieldCtx>>), CorelamoError> {
+) -> Result<Arc<Vec<QueryGroup>>, CorelamoError> {
     if is_blank_query(raw) {
-        return Ok((None, Arc::new(Vec::new())));
+        let fields: Vec<&FieldPolicy> = match search_fields {
+            Some(names) => resolve_search_fields(names, false, policy)?,
+            None => policy.searchable_fields(),
+        };
+        let ctxs: Vec<FieldCtx> = fields.iter().map(|f| field_ctx(f, policy)).collect();
+        return Ok(Arc::new(vec![QueryGroup {
+            analyzer: analyzers.default_analyzer().clone(),
+            query: Some(Query::MatchAll),
+            ctxs,
+        }]));
     }
 
-    //query shouldnt have range like >2000 or same_element
     reject_filter_only_operators(raw)?;
 
     let raw_query = parse_json_query(raw)?;
-    let raw_query = match synonyms {
-        Some(dictionary) => expand_synonyms(raw_query, dictionary, analyzer),
-        None => raw_query,
-    };
-    let query = analyze_query(raw_query, analyzer);
+    let needs_exact = tree_has_exact(&raw_query);
 
-    let ctxs: Vec<FieldCtx> = match search_fields {
-        Some(names) => resolve_search_fields(names, query.as_ref(), policy)?,
-        None => policy
-            .searchable_fields()
+    let fields: Vec<&FieldPolicy> = match search_fields {
+        Some(names) => resolve_search_fields(names, needs_exact, policy)?,
+        None => policy.searchable_fields(),
+    };
+
+    // group fields by analyzer name; analyze once per analyzer, then reuse
+    let mut by_name: HashMap<Option<String>, (Analyzer, Option<Query>, Vec<FieldCtx>)> =
+        HashMap::new();
+    for field in fields {
+        let key = field.analyzer.clone();
+        let entry = by_name.entry(key).or_insert_with(|| {
+            let analyzer = field_analyzer(field, analyzers).clone();
+            let expanded = match synonyms {
+                Some(dictionary) => expand_synonyms(raw_query.clone(), dictionary, &analyzer),
+                None => raw_query.clone(),
+            };
+            let query = analyze_query(expanded, &analyzer);
+            (analyzer, query, Vec::new())
+        });
+        entry.2.push(field_ctx(field, policy));
+    }
+
+    Ok(Arc::new(
+        by_name
             .into_iter()
-            .map(|f| field_ctx(f, policy))
+            .map(|(_, (analyzer, query, ctxs))| QueryGroup {
+                analyzer,
+                query,
+                ctxs,
+            })
             .collect(),
-    };
-
-    Ok((query, Arc::new(ctxs)))
+    ))
 }
 
 pub fn is_blank_query(v: &OwnedValue) -> bool {
@@ -99,13 +143,11 @@ pub fn is_blank_query(v: &OwnedValue) -> bool {
 }
 
 //determining which xpaths to look into either from search_fields or searchable ones
-fn resolve_search_fields(
+fn resolve_search_fields<'a>(
     names: &[String],
-    query: Option<&Query>,
-    policy: &IndexPolicy,
-) -> Result<Vec<FieldCtx>, CorelamoError> {
-    let needs_exact = query.is_some_and(tree_has_exact);
-
+    needs_exact: bool,
+    policy: &'a IndexPolicy,
+) -> Result<Vec<&'a FieldPolicy>, CorelamoError> {
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         let field = policy
@@ -126,10 +168,9 @@ fn resolve_search_fields(
                     "field '{name}' has no exact index ..."
                 )));
             }
-            out.push(field_ctx(leaf, policy));
+            out.push(leaf);
         }
     }
-
     Ok(out)
 }
 
@@ -175,7 +216,7 @@ fn tree_has_exact(q: &Query) -> bool {
 
 pub fn compile_filters(
     filters: &IndexMap<String, OwnedValue>,
-    analyzer: &Analyzer,
+    analyzers: &AnalyzerSet,
     policy: &IndexPolicy,
 ) -> Result<HashMap<String, FieldQuery>, CorelamoError> {
     let mut out = HashMap::with_capacity(filters.len());
@@ -194,11 +235,11 @@ pub fn compile_filters(
                 unreachable!()
             };
             let inner = obj.get("same_element").unwrap();
-            let (q, b) = resolve_same_element(field, inner, analyzer, policy)?
+            let (q, b) = resolve_same_element(field, inner, analyzers, policy)?
                 .ok_or_else(|| CorelamoError::InvalidData(format!("blank filter '{name}'")))?;
             (q, Some(b))
         } else {
-            match build_node(raw, field, analyzer)? {
+            match build_node(raw, field, analyzers)? {
                 Some(q) => (q, None),
                 None => continue,
             }
@@ -238,7 +279,7 @@ pub fn compile_filters(
 fn build_node(
     v: &OwnedValue,
     field: &FieldPolicy,
-    analyzer: &Analyzer,
+    analyzers: &AnalyzerSet,
 ) -> Result<Option<Query>, CorelamoError> {
     if let OwnedValue::Object(obj) = v {
         if let Some(inner) = obj.get("range") {
@@ -259,7 +300,7 @@ fn build_node(
     }
 
     let node = parse_json_query(v)?;
-    Ok(analyze_query(node, analyzer))
+    Ok(analyze_query(node, field_analyzer(field, analyzers)))
 }
 
 fn resolve_range(field: &FieldPolicy, inner: &OwnedValue) -> Result<Option<Query>, CorelamoError> {
@@ -288,7 +329,7 @@ fn resolve_range(field: &FieldPolicy, inner: &OwnedValue) -> Result<Option<Query
 fn resolve_same_element(
     field: &FieldPolicy,
     inner: &OwnedValue,
-    analyzer: &Analyzer,
+    analyzers: &AnalyzerSet,
     policy: &IndexPolicy,
 ) -> Result<Option<(Query, SameElementBinding)>, CorelamoError> {
     if field.kind != FieldKind::Struct {
@@ -320,7 +361,7 @@ fn resolve_same_element(
                 let (sub_query, sub_binding) = resolve_same_element(
                     sub_field,
                     o.get("same_element").unwrap(),
-                    analyzer,
+                    analyzers,
                     policy,
                 )?
                 .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
@@ -339,7 +380,7 @@ fn resolve_same_element(
             }
         }
 
-        let sub = build_node(sub_v, sub_field, analyzer)?
+        let sub = build_node(sub_v, sub_field, analyzers)?
             .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
 
         if tree_has_exact(&sub) && sub_field.exact_xpath(policy).is_none() {

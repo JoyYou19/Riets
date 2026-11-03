@@ -3,7 +3,7 @@
 
 use ahash::AHashMap;
 
-use crate::analyzer::analyzer::Analyzer;
+use crate::analyzer::analyzer::AnalyzerSet;
 use crate::document::document::{BoolPoint, NumericPoint};
 use crate::document::{DocumentPart, IndexedDocument};
 use crate::types::{ArrayRowId, DocId, XPathId, encode_position};
@@ -45,11 +45,11 @@ pub struct AnalyzedDocument {
 impl IndexedDocument {
     /// Runs the analyzer over every text part. Pure: no index state is touched,
     /// so this can run on any thread.
-    pub fn analyze(&self, analyzer: &Analyzer) -> AnalyzedDocument {
+    pub fn analyze(&self, analyzers: &AnalyzerSet) -> AnalyzedDocument {
         AnalyzedDocument {
             doc_id: self.doc_id,
             main: analyze_target(
-                analyzer,
+                analyzers,
                 &self.parts,
                 &self.numeric_points,
                 &self.bool_points,
@@ -61,7 +61,7 @@ impl IndexedDocument {
                     array_row_id: row.array_row_id,
                     parent: row.parent,
                     target: analyze_target(
-                        analyzer,
+                        analyzers,
                         &row.parts,
                         &row.numeric_points,
                         &row.bool_points,
@@ -73,27 +73,34 @@ impl IndexedDocument {
 }
 
 fn analyze_target(
-    analyzer: &Analyzer,
+    analyzers: &AnalyzerSet,
     parts: &[DocumentPart],
     numeric_points: &[NumericPoint],
     bool_points: &[BoolPoint],
 ) -> AnalyzedTarget {
     AnalyzedTarget {
-        fields: parts.iter().map(|part| add_weighted(analyzer, part)).collect(),
+        fields: parts
+            .iter()
+            .map(|part| add_weighted(analyzers, part))
+            .collect(),
         numeric_points: numeric_points.to_vec(),
         bool_points: bool_points.to_vec(),
     }
 }
 
 /// Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
-fn add_weighted(analyzer: &Analyzer, part: &DocumentPart) -> AnalyzedField {
-    // if this part has several strings (array of string), use them else one string
+fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
+    let field_analyzer = part
+        .analyzer
+        .as_deref()
+        .and_then(|name| analyzers.get(name))
+        .unwrap_or_else(|| analyzers.default_analyzer());
+
     let segments: Vec<&str> = if part.is_flattened() {
         part.segments.iter().map(String::as_str).collect()
     } else {
         vec![part.text.as_str()]
     };
-    // flattened parts skip positions between strings; normal parts don't
     let gap = if part.is_flattened() { part.gap } else { 0 };
 
     let mut token_positions: AHashMap<String, Vec<u32>> = AHashMap::new();
@@ -101,32 +108,26 @@ fn add_weighted(analyzer: &Analyzer, part: &DocumentPart) -> AnalyzedField {
     let mut cur_position = 0u32;
 
     for seg in &segments {
-        // words: the document length this segment adds. span: the positions it uses, so the
-        // next array element starts after its last word (stopwords leave gaps in positions)
         let (words, span) = if part.exact {
-            let words: Vec<&str> = seg.split_whitespace().collect();
-            for (i, word) in words.iter().enumerate() {
-                token_positions
-                    .entry((*word).to_string())
-                    .or_default()
-                    .push(encode_position(cur_position + (i as u32), 1));
-            }
-            // the whole value as one term too (see Analyzer::name_terms)
+            // whole value, lowercased, one term (nothing split/removed)
+            token_positions
+                .entry(seg.to_lowercase())
+                .or_default()
+                .push(encode_position(cur_position, 1));
             if part.names {
-                for term in analyzer.name_terms(seg) {
+                for term in field_analyzer.name_terms(seg) {
                     token_positions
                         .entry(term)
                         .or_default()
                         .push(encode_position(cur_position, 1));
                 }
             }
-            (words.len() as u32, words.len() as u32)
+            (1, 1)
         } else {
             let mut span = 0u32;
-            let words = analyzer.for_each_token(seg, |term, position, length| {
+            let words = field_analyzer.for_each_token(seg, |term, position, length| {
                 let encoded = encode_position(cur_position + position, length);
                 let positions = token_positions.entry(term.to_owned()).or_default();
-                // two forms of one word can analyze to the same term ("king's", "kings" -> king)
                 if positions.last() != Some(&encoded) {
                     positions.push(encoded);
                 }
@@ -145,7 +146,11 @@ fn add_weighted(analyzer: &Analyzer, part: &DocumentPart) -> AnalyzedField {
             let weight = usize::from(part.weight.min)
                 .saturating_add(extra_hits)
                 .min(usize::from(part.weight.max)) as u16;
-            AnalyzedTerm { term, positions, weight }
+            AnalyzedTerm {
+                term,
+                positions,
+                weight,
+            }
         })
         .collect();
 
@@ -155,3 +160,4 @@ fn add_weighted(analyzer: &Analyzer, part: &DocumentPart) -> AnalyzedField {
         terms,
     }
 }
+

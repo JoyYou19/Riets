@@ -1,4 +1,4 @@
-use core_index::analyzer::Analyzer;
+use core_index::analyzer::analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{
@@ -8,9 +8,11 @@ use core_protocol::errors::CorelamoError;
 use core_query::SearchHit;
 use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
+#[derive(Debug)]
 pub struct SortField {
     pub xpath: XPathId,
     pub order: SortOrderRequest,
@@ -92,16 +94,6 @@ pub fn fold_sort_bounds(
     bounds
 }
 
-pub fn compile_filters(
-    analyzer: &Analyzer,
-    command: &SearchCommand,
-    policy: &IndexPolicy,
-) -> Result<Option<Arc<HashMap<String, FieldQuery>>>, CorelamoError> {
-    let Some(filters) = command.filters.as_ref() else {
-        return Ok(None);
-    };
-    Ok(Some(Arc::new(resolve_filters(filters, analyzer, policy)?)))
-}
 pub fn order_blended(
     items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
     specs: &[SortField],
@@ -111,27 +103,32 @@ pub fn order_blended(
         return;
     }
 
-    // See the comment above: relevance keeps the points the fields don't take.
     let total_ratio: f32 = specs.iter().map(|s| s.ratio as f32).sum::<f32>().min(100.0);
     let relevance_weight = 100.0 - total_ratio;
 
-    // Normalize relevance against the best score on this page so it's on the
-    // same 0..1 scale as the fields.
     let max_score = items
         .iter()
         .map(|(h, _)| h.score)
         .fold(0.0f32, f32::max)
         .max(1.0);
 
+    //normalize the tier and relevance_final is relevance_norm + (1 - rank_norm)
+    let max_tier = items.iter().map(|(h, _)| h.tier).max().unwrap_or(0).max(1) as f32;
+
     let blends: Vec<f32> = items
         .iter()
         .map(|(hit, keys)| {
-            let relevance = (hit.score / max_score) * relevance_weight;
+            //relevance is now rank (tier) + score, both on 0..1
+            let rank_norm = 1.0 - (hit.tier as f32 / max_tier); // 1.0 best tier, 0.0 worst
+            let score_norm = hit.score / max_score; // 0..1
+
+            //we do / 2 so that final relevance is [0...1] not [0....2]
+            let relevance = ((rank_norm + score_norm) / 2.0) * relevance_weight;
 
             let mut field = 0.0f32;
             for (index, spec) in specs.iter().enumerate() {
                 let component = match keys.get(index).copied().flatten() {
-                    None => 0.0, // doc has no value for this field: rank it last
+                    None => 0.0,
                     Some(v) => match bounds[index] {
                         (Some(min), Some(max)) => {
                             let min = apply_modifier(min, spec.modifier);
@@ -147,7 +144,7 @@ pub fn order_blended(
                                 1.0
                             }
                         }
-                        _ => 1.0, // field has no data anywhere: neutral, no effect
+                        _ => 1.0,
                     },
                 };
                 field += spec.ratio as f32 * component;
@@ -157,7 +154,6 @@ pub fn order_blended(
         })
         .collect();
 
-    // --- unchanged from here down ---
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_unstable_by(|&a, &b| {
         blends[b]
@@ -176,6 +172,18 @@ pub fn order_blended(
         .collect();
     *items = reordered;
 }
+
+pub fn compile_filters(
+    analyzers: &AnalyzerSet,
+    command: &SearchCommand,
+    policy: &IndexPolicy,
+) -> Result<Option<Arc<HashMap<String, FieldQuery>>>, CorelamoError> {
+    let Some(filters) = command.filters.as_ref() else {
+        return Ok(None);
+    };
+    Ok(Some(Arc::new(resolve_filters(filters, analyzers, policy)?)))
+}
+
 pub fn resolve_sorts(
     command: &SearchCommand,
     policy: &IndexPolicy,
@@ -203,20 +211,14 @@ pub fn resolve_sorts(
             )));
         }
 
-        // ratio is only meaningful in blend mode; strict ignores it
         let ratio = match sort_cmd.mode {
             SortMode::Strict => 0,
             SortMode::Blend => {
-                let r = if field_count == 1 && spec.ratio.is_none() {
-                    100
-                } else {
-                    spec.ratio.ok_or_else(||
-                        CorelamoError::InvalidData(
-                            format!(
-                                "'ratio' is required for sort field '{name}' when sorting by more than one field"
-                            )
-                        )
-                    )?
+                //sort optional
+                let r = match spec.ratio {
+                    Some(r) => r,
+                    None if field_count == 1 => 40,
+                    None => (100 / (field_count + 1)) as u8,
                 };
                 if r > 100 {
                     return Err(CorelamoError::InvalidData(format!(

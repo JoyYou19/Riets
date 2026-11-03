@@ -1,4 +1,6 @@
+use ahash::HashMap as AHashMap;
 use std::collections::HashMap;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +16,7 @@ use core_index::search::{SearchIndex, SearchNumeric};
 use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse, MatchMode};
 use core_query::planner::RankPlan;
-use core_query::resolver::{FieldCtx, FieldQuery};
+use core_query::resolver::{FieldQuery, QueryGroup};
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
 use core_storage::document_projections::{id_path_to_strip, project_document};
 use core_storage::document_store::StoredDocument;
@@ -32,9 +34,9 @@ use crate::shared_state::SharedShardState;
 
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
-use core_index::types::{ShardId, XPathId};
+use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_query::{CorpusStats, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words};
+use core_query::{CorpusStats, PreparedQuery, QueryExecutor, SearchHit, fuzzable_words};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
@@ -48,15 +50,17 @@ pub struct ShardRankedResult {
 
 /// A shard's side of one search: the snapshot every step of the search reads, so the statistics
 /// and the ranking cannot see different writes, and what the shard read from it for the query.
+/// added Vec<PreparedQuerty>
 pub struct PreparedShardSearch {
-    snapshot: Arc<IndexSnapshot>,
-    prepared: PreparedQuery,
+    pub snapshot: Arc<IndexSnapshot>,
+    pub prepared: Vec<PreparedQuery>,
+    stats: CorpusStats,
 }
 
 impl PreparedShardSearch {
     /// What this shard adds to the statistics every shard scores the query with.
     pub fn stats(&self) -> &CorpusStats {
-        self.prepared.stats()
+        &self.stats
     }
 }
 
@@ -99,8 +103,8 @@ pub enum ShardCmd {
         resp: oneshot::Sender<Result<DeleteReport, CorelamoError>>,
     },
     PrepareReindex {
-        progress:Arc<ReindexProgress>,
-        stats:Arc<DbStats>,
+        progress: Arc<ReindexProgress>,
+        stats: Arc<DbStats>,
         resp: Sender<Result<(), CorelamoError>>,
     },
     CommitReindex {
@@ -215,10 +219,24 @@ impl ShardHandle {
         self.shared.is_clearing.load(Ordering::Acquire)
     }
 
+    pub fn word_missing(&self, word: &str, xpaths: &[XPathId]) -> bool {
+        let snapshot = self.shared.snapshot.get();
+        xpaths.iter().all(|&xpath| {
+            snapshot
+                .lookup(word, xpath)
+                .items()
+                .into_iter()
+                .next()
+                .is_none()
+        })
+    }
+
+    // CHANGED: analyzes each word with each field's own analyzer, not one shared default.
     pub fn info_words_direct(
         &self,
         words: &[String],
         xpaths: &[XPathId],
+        analyzers: &AHashMap<XPathId, Analyzer>,
     ) -> Result<Vec<WordStats>, CorelamoError> {
         self.ensure_readable()?;
         let snapshot = self.shared.snapshot.get();
@@ -227,16 +245,15 @@ impl ShardHandle {
         for word in words {
             let mut occurrences: u64 = 0;
             let mut docs = std::collections::HashSet::new();
-
-            for token in self.analyzer.analyze(word) {
-                for &xpath in xpaths {
+            for &xpath in xpaths {
+                let analyzer = analyzers.get(&xpath).unwrap_or(&self.analyzer);
+                for token in analyzer.analyze(word) {
                     for posting in snapshot.lookup(&token.text, xpath).items() {
                         docs.insert(posting.doc_id);
                         occurrences += posting.positions.len() as u64;
                     }
                 }
             }
-
             out.push(WordStats {
                 word: word.clone(),
                 occurrences,
@@ -252,68 +269,115 @@ impl ShardHandle {
         xpaths: &[XPathId],
         fuzziness: Fuzziness,
         spec: FuzzySpec,
+        analyzers: &AHashMap<XPathId, Analyzer>,
     ) -> Result<Vec<Vec<FuzzyExpansion>>, CorelamoError> {
         self.ensure_readable()?;
-
         let snapshot = self.shared.snapshot.get();
 
-        Ok(fuzzable_words(&self.analyzer, raw)
-            .into_iter()
-            .map(|word| {
+        let mut per_field = Vec::with_capacity(xpaths.len());
+        for &xpath in xpaths {
+            let analyzer = analyzers.get(&xpath).unwrap_or_else(|| &self.analyzer);
+            let mut expansions = Vec::new();
+            for word in fuzzable_words(analyzer, raw) {
                 let opts = core_query::fuzzy_options(&word, fuzziness, spec);
-
-                xpaths
-                    .iter()
-                    .flat_map(|&xpath| snapshot.fuzzy_expansions(&word, xpath, opts))
-                    .collect()
-            })
-            .collect())
+                expansions.extend(snapshot.fuzzy_expansions(&word, xpath, opts));
+            }
+            per_field.push(expansions);
+        }
+        Ok(per_field)
     }
 
     /// Pins the snapshot the search reads and reads the query from it once: the posting lists
     /// ranking needs, and from them what this shard adds to the statistics of the search.
+    //INFO:  changed to &[querygroup]
     #[timed(search)]
-    pub fn prepare_search(
-        &self,
-        query: Option<&Query>,
-        plan: &RankPlan,
-        ctxs: &[FieldCtx],
-    ) -> PreparedShardSearch {
+    pub fn prepare_search(&self, groups: &[QueryGroup], plans: &[RankPlan]) -> PreparedShardSearch {
         let snapshot = self.shared.snapshot.get();
-        // a tier identical to the query (the "all words" tier) would only be read twice
-        let queries = query.into_iter().chain(
-            plan.queries()
-                .filter(|tier_query| Some(*tier_query) != query),
-        );
-        let prepared = QueryExecutor::new(&*snapshot, &self.analyzer).prepare(queries, ctxs);
-        PreparedShardSearch { snapshot, prepared }
+        let mut prepared = Vec::with_capacity(groups.len());
+        for (group, plan) in groups.iter().zip(plans) {
+            let Some(query) = group.query.as_ref() else {
+                continue;
+            };
+            let queries = std::iter::once(query).chain(
+                plan.queries()
+                    .filter(|tier| Some(*tier) != group.query.as_ref()),
+            );
+            let p = QueryExecutor::new(&*snapshot, &group.analyzer).prepare(queries, &group.ctxs);
+            prepared.push(p);
+        }
+
+        let mut stats = CorpusStats::new();
+        for p in &prepared {
+            stats.merge(p.stats());
+        }
+
+        PreparedShardSearch {
+            snapshot,
+            prepared,
+            stats,
+        }
     }
 
     //helper for the ranking
+    //INFO: changed so that it ranks every group with its own executor/analyzer, then merges hits by doc_id.
     fn rank_candidates(
         &self,
         snapshot: &IndexSnapshot,
-        prepared: &PreparedQuery,
+        prepared: &[PreparedQuery],
         corpus: &CorpusStats,
-        query: Option<&Query>,
-        plan: &RankPlan,
+        groups: &[QueryGroup],
+        plans: &[RankPlan],
         filters: Option<&HashMap<String, FieldQuery>>,
-        ctxs: &[FieldCtx],
         k: usize,
         mactmode: MatchMode,
     ) -> (usize, Vec<SearchHit>) {
         if k == 0 {
             return (0, Vec::new());
         }
-
-        let executor = QueryExecutor::new(snapshot, &self.analyzer)
-            .with_corpus(corpus)
-            .with_prepared(prepared);
-
-        //filters dont rank so we filter first then search+rank inside
-        let restrict = filters.and_then(|filters| executor.filter_doc_ids(filters));
-        let hits = executor.rank(query, ctxs, k, restrict.as_ref(), mactmode, plan);
-        let total = executor.total_hit_count(query, plan, ctxs, restrict.as_ref());
+        let mut merged: HashMap<DocId, SearchHit> = HashMap::new();
+        //WARN: this is done sequencially for each query group we might need to do some par_iter()
+        //bs if slow
+        for ((group, plan), prepared_group) in groups.iter().zip(plans).zip(prepared) {
+            let Some(query) = group.query.as_ref() else {
+                continue;
+            };
+            let executor = QueryExecutor::new(snapshot, &group.analyzer)
+                .with_corpus(corpus)
+                .with_prepared(prepared_group);
+            let restrict = filters.and_then(|f| executor.filter_doc_ids(f));
+            for hit in executor.rank(
+                Some(query),
+                &group.ctxs,
+                k,
+                restrict.as_ref(),
+                mactmode,
+                plan,
+            ) {
+                merged
+                    .entry(hit.doc_id)
+                    .and_modify(|e| {
+                        e.score += hit.score;
+                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                        e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
+                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                        e.tier = e.tier.min(hit.tier);
+                    })
+                    .or_insert(hit);
+            }
+        }
+        let mut hits: Vec<SearchHit> = merged.into_values().collect();
+        hits.sort_by(|a, b| {
+            b.tier
+                .cmp(&a.tier)
+                .then(
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(a.doc_id.cmp(&b.doc_id))
+        });
+        hits.truncate(k);
+        let total = hits.len();
         (total, hits)
     }
 
@@ -322,10 +386,9 @@ impl ShardHandle {
         &self,
         prepared: &PreparedShardSearch,
         corpus: &CorpusStats,
-        query: Option<&Query>,
-        plan: &RankPlan,
+        groups: &[QueryGroup],
+        plans: &[RankPlan],
         filters: Option<&HashMap<String, FieldQuery>>,
-        ctxs: &[FieldCtx],
         k: usize,
         mactmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
@@ -334,17 +397,15 @@ impl ShardHandle {
             snapshot,
             &prepared.prepared,
             corpus,
-            query,
-            plan,
+            groups,
+            plans,
             filters,
-            ctxs,
             k,
             mactmode,
         );
         Ok(ShardRankedResult {
             total,
             items: hits.into_iter().map(|hit| (hit, Vec::new())).collect(),
-            //empty placeholder
             bounds: Vec::new(),
         })
     }
@@ -382,10 +443,9 @@ impl ShardHandle {
         &self,
         prepared: &PreparedShardSearch,
         corpus: &CorpusStats,
-        query: Option<&Query>,
-        plan: &RankPlan,
+        query_groups: &[QueryGroup],
+        plans: &[RankPlan],
         filters: Option<&HashMap<String, FieldQuery>>,
-        ctxs: &[FieldCtx],
         sort_xpaths: &[XPathId],
         window: usize,
         matchmode: MatchMode,
@@ -403,10 +463,9 @@ impl ShardHandle {
             snapshot,
             &prepared.prepared,
             corpus,
-            query,
-            plan,
+            query_groups,
+            plans,
             filters,
-            ctxs,
             window,
             matchmode,
         );
@@ -426,6 +485,17 @@ impl ShardHandle {
                 (min.map(|v| v.as_f64()), max.map(|v| v.as_f64()))
             })
             .collect();
+
+        // debug:
+        // println!(
+        //     "bounds: {:?}, sample_doc: {:?}, sample_year: {:?}",
+        //     bounds,
+        //     candidates.first().map(|h| h.doc_id),
+        //     candidates
+        //         .first()
+        //         .and_then(|_| sort_xpaths.first())
+        //         .and_then(|&x| snapshot.numeric_value(x, candidates.first().unwrap().doc_id))
+        // );
 
         let items: Vec<(SearchHit, Vec<Option<f64>>)> = candidates
             .into_iter()
@@ -837,7 +907,7 @@ pub fn spawn(
             let _guard = AliveGuard(alive_worker);
 
             let started = if bootable { shard.start() } else { Ok(()) };
-            
+
             let ok = started.is_ok();
             shared_worker
                 .is_running
@@ -904,10 +974,18 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::Delete { ids, resp, user } => {
                 let _ = resp.send(shard.delete(ids, user));
             }
-             ShardCmd::PrepareReindex { progress, stats, resp } => {
+            ShardCmd::PrepareReindex {
+                progress,
+                stats,
+                resp,
+            } => {
                 let _ = resp.send(shard.prepare_reindex(progress, stats));
             }
-            ShardCmd::CommitReindex { done, stats, started } => {
+            ShardCmd::CommitReindex {
+                done,
+                stats,
+                started,
+            } => {
                 let generation = done.generation;
                 let result = shard.commit_reindex(done);
                 if let Err(e) = &result {

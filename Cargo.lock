@@ -711,6 +711,7 @@ dependencies = [
  "lz4_flex",
  "memmap2",
  "rayon",
+ "regex",
  "roaring",
  "rust-stemmers",
  "serde",

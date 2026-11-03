@@ -40,7 +40,8 @@ pub(crate) fn bm25_score(
 
     let tf_component = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);
 
-    weight as f32 * idf * (tf_component + 1.0)
+    //INFO: noneemu + 1.0
+    weight as f32 * idf * (tf_component)
 }
 
 // I just put this function here so we automatically multiply, I can already see ways of me messing
@@ -72,7 +73,8 @@ pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u
 
     let max_tf_component = BM25_K1 + 1.0;
 
-    let max_score = max_weight as f32 * idf * (max_tf_component + 1.0);
+    //INFO: nonemu + 1.0
+    let max_score = max_weight as f32 * idf * (max_tf_component);
 
     (max_score * SCORE_SCALE).ceil() as u64
 }

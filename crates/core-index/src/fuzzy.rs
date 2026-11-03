@@ -1,5 +1,5 @@
 use ahash::HashMap;
-use fst::{ Automaton, IntoStreamer, Streamer };
+use fst::{Automaton, IntoStreamer, Streamer};
 
 pub const DEFAULT_PREFIX_LENGTH: usize = 0;
 //now max terms that the query expand to
@@ -61,7 +61,11 @@ impl FuzzyExpansion {
     }
     /// Multiplier the executor applies to this term's BM25 contribution.
     pub fn boost(&self) -> f32 {
-        if self.edits == 0 { 1.0 } else { CORRECTED_TERM_BOOST }
+        if self.edits == 0 {
+            1.0
+        } else {
+            CORRECTED_TERM_BOOST
+        }
     }
 }
 
@@ -197,7 +201,11 @@ impl LevenshteinAutomaton {
                 continue;
             };
             // Same column in the previous row sits one slot to the right.
-            let mut v = if t + 1 < width { old[t + 1].saturating_add(1) } else { cap };
+            let mut v = if t + 1 < width {
+                old[t + 1].saturating_add(1)
+            } else {
+                cap
+            };
             if j > 0 {
                 if t > 0 {
                     v = v.min(next[t - 1].saturating_add(1));
@@ -271,7 +279,11 @@ impl Automaton for LevenshteinAutomaton {
     type State = LevState;
 
     fn start(&self) -> LevState {
-        if self.exact.is_empty() { self.initial_fuzzy() } else { LevState::Exact(0) }
+        if self.exact.is_empty() {
+            self.initial_fuzzy()
+        } else {
+            LevState::Exact(0)
+        }
     }
 
     fn is_match(&self, state: &LevState) -> bool {
@@ -318,11 +330,9 @@ impl Automaton for LevenshteinAutomaton {
                         return LevState::Fuzzy(pending);
                     }
                     let bytes = &pending.utf8[..pending.utf8_len as usize];
-                    match
-                        std::str
-                            ::from_utf8(bytes)
-                            .ok()
-                            .and_then(|s| s.chars().next())
+                    match std::str::from_utf8(bytes)
+                        .ok()
+                        .and_then(|s| s.chars().next())
                     {
                         Some(c) => self.step_char(&pending, c),
                         None => LevState::Dead,
@@ -346,7 +356,7 @@ pub fn collect_fst_candidates<D: AsRef<[u8]>>(
     map: &fst::Map<D>,
     automaton: &LevenshteinAutomaton,
     limit: usize,
-    out: &mut HashMap<String, u8>
+    out: &mut HashMap<String, u8>,
 ) -> bool {
     let strip = automaton.key_prefix_len();
     let mut stream = map.search_with_state(automaton).into_stream();
@@ -375,9 +385,10 @@ pub fn collect_iter_candidates<'a, I>(
     terms: I,
     automaton: &LevenshteinAutomaton,
     limit: usize,
-    out: &mut HashMap<String, u8>
+    out: &mut HashMap<String, u8>,
 ) -> bool
-    where I: IntoIterator<Item = &'a str>
+where
+    I: IntoIterator<Item = &'a str>,
 {
     for term in terms {
         let Some(edits) = automaton.distance_to(term) else {
@@ -400,18 +411,12 @@ pub fn collect_iter_candidates<'a, I>(
 // ---------------------------------------------------------------------------
 
 fn keyboard_position(c: char) -> Option<(f64, f64)> {
-    const ROWS: [(&str, f64); 3] = [
-        ("qwertyuiop", 0.0),
-        ("asdfghjkl", 0.25),
-        ("zxcvbnm", 0.75),
-    ];
-    ROWS.iter()
-        .enumerate()
-        .find_map(|(y, (keys, offset))| {
-            keys.chars()
-                .position(|k| k == c)
-                .map(|x| ((x as f64) + offset, y as f64))
-        })
+    const ROWS: [(&str, f64); 3] = [("qwertyuiop", 0.0), ("asdfghjkl", 0.25), ("zxcvbnm", 0.75)];
+    ROWS.iter().enumerate().find_map(|(y, (keys, offset))| {
+        keys.chars()
+            .position(|k| k == c)
+            .map(|x| ((x as f64) + offset, y as f64))
+    })
 }
 
 fn keyboard_neighbors(a: char, b: char) -> bool {
@@ -478,14 +483,12 @@ pub fn weighted_distance(query: &str, candidate: &str) -> f64 {
             let mut v = (d[i - 1][j] + indel(i, n))
                 .min(d[i][j - 1] + indel(j, m))
                 .min(d[i - 1][j - 1] + sub);
-            if
-                i >= 2 &&
-                j >= 2 &&
-                q[i - 1] == c[j - 2] &&
-                q[i - 2] == c[j - 1] &&
-                q[i - 1] != q[i - 2]
+            if i >= 2
+                && j >= 2
+                && q[i - 1] == c[j - 2]
+                && q[i - 2] == c[j - 1]
+                && q[i - 1] != q[i - 2]
             {
-               
                 v = v.min(d[i - 2][j - 2] + COST_TRANSPOSE);
             }
             d[i][j] = v;
@@ -505,7 +508,8 @@ pub fn expansion_score(query: &str, candidate: &str, doc_freq: u32) -> f64 {
 /// should be the database-wide value so every shard picks the same terms.
 /// Ties break on the term string, keeping the choice deterministic.
 pub fn select_expansions<I>(term: &str, candidates: I, max_expansions: usize) -> Vec<FuzzyExpansion>
-    where I: IntoIterator<Item = (String, u8, u32)>
+where
+    I: IntoIterator<Item = (String, u8, u32)>,
 {
     if max_expansions == 0 {
         return Vec::new();
@@ -514,7 +518,12 @@ pub fn select_expansions<I>(term: &str, candidates: I, max_expansions: usize) ->
     let mut scored: Vec<(f64, FuzzyExpansion)> = candidates
         .into_iter()
         .filter(|(_, _, df)| *df > 0)
-        .map(|(t, edits, df)| (expansion_score(&query, &t, df), FuzzyExpansion::new(t, edits, df)))
+        .map(|(t, edits, df)| {
+            (
+                expansion_score(&query, &t, df),
+                FuzzyExpansion::new(t, edits, df),
+            )
+        })
         .collect();
     if scored.is_empty() {
         return Vec::new();
@@ -540,8 +549,10 @@ pub fn select_expansions<I>(term: &str, candidates: I, max_expansions: usize) ->
     // the typed word is always kept, but in score order: "wass" (in 3 documents) comes after
     // "was", so did-you-mean suggests "was" first
     selected.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.term.cmp(&b.1.term)));
-    selected.into_iter().map(|(_, expansion)| expansion).collect()
-
+    selected
+        .into_iter()
+        .map(|(_, expansion)| expansion)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +571,7 @@ impl FuzzyMatcher {
                 &[],
                 &term.to_lowercase(),
                 max_edits,
-                prefix_length
+                prefix_length,
             ),
         }
     }
@@ -593,7 +604,9 @@ mod tests {
         for i in 1..=a.len() {
             for j in 1..=b.len() {
                 let cost = (a[i - 1] != b[j - 1]) as usize;
-                d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+                d[i][j] = (d[i - 1][j] + 1)
+                    .min(d[i][j - 1] + 1)
+                    .min(d[i - 1][j - 1] + cost);
                 if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                     d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
                 }
@@ -653,19 +666,27 @@ mod tests {
     #[test]
     fn prefix_lock_and_key_prefix() {
         let aut = LevenshteinAutomaton::new(b"title\0", "serach", 2, 1);
-        let map = fst::Map
-            ::from_iter(
-                ["body\0search", "title\0rearch", "title\0search", "title\0serac", "title\0zzz"]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, k)| (*k, i as u64))
-            )
-            .unwrap();
+        let map = fst::Map::from_iter(
+            [
+                "body\0search",
+                "title\0rearch",
+                "title\0search",
+                "title\0serac",
+                "title\0zzz",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (*k, i as u64)),
+        )
+        .unwrap();
         let mut out = HashMap::new();
         assert!(!collect_fst_candidates(&map, &aut, 100, &mut out));
         let mut got: Vec<_> = out.into_iter().collect();
         got.sort();
-        assert_eq!(got, vec![("search".to_string(), 1), ("serac".to_string(), 1)]);
+        assert_eq!(
+            got,
+            vec![("search".to_string(), 1), ("serac".to_string(), 1)]
+        );
     }
 
     #[test]
@@ -680,7 +701,9 @@ mod tests {
     #[test]
     fn ranking_examples() {
         let pick = |q: &str, c: &[(&str, u32)]| {
-            let cands = c.iter().map(|(t, df)| (t.to_string(), osa(q, t) as u8, *df));
+            let cands = c
+                .iter()
+                .map(|(t, df)| (t.to_string(), osa(q, t) as u8, *df));
             select_expansions(q, cands, 3)
                 .into_iter()
                 .map(|e| e.term)
@@ -710,15 +733,12 @@ mod tests {
             ),
             vec!["search"]
         );
-        assert_eq!(pick("shakespire", &[("shakespeare", 8_000)]), vec!["shakespeare"]);
-        // A real word the user typed is always kept, first.
-        let kept = pick(
-            "serac",
-            &[
-                ("serac", 30),
-                ("search", 120_000),
-            ]
+        assert_eq!(
+            pick("shakespire", &[("shakespeare", 8_000)]),
+            vec!["shakespeare"]
         );
+        // A real word the user typed is always kept, first.
+        let kept = pick("serac", &[("serac", 30), ("search", 120_000)]);
         assert_eq!(kept[0], "serac");
     }
 

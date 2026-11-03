@@ -23,7 +23,9 @@ const MAX_NAMED_QUERY_WORDS: usize = 32;
 
 /// At most this many name keys: the dictionary forms of every word multiply.
 const MAX_NAME_KEYS: usize = 32;
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TierKind {
     Name,
@@ -119,6 +121,11 @@ impl RankPlan {
         has_exact_field: bool,
         order: &[TierKind],
     ) -> Self {
+        //optimization for match_all
+        if matches!(resolved, Query::MatchAll) {
+            return Self::default();
+        }
+
         let parts: Vec<Query> = match &resolved {
             Query::And(parts) => parts.clone(),
             _ => Vec::new(),
@@ -129,7 +136,10 @@ impl RankPlan {
                 TierKind::Name if has_exact_field => {
                     let keys = name_keys(raw, &resolved, analyzer);
                     if !keys.is_empty() {
-                        tiers.push(Tier::Name { keys, score_with: resolved.clone() });
+                        tiers.push(Tier::Name {
+                            keys,
+                            score_with: resolved.clone(),
+                        });
                     }
                 }
                 TierKind::Exact if has_exact_field && raw.chars().any(char::is_uppercase) => {
@@ -138,19 +148,27 @@ impl RankPlan {
                 TierKind::Phrase if parts.len() >= 2 => {
                     let terms = terms_from_text(raw, analyzer);
                     if terms.len() >= 2 {
-                        tiers.push(Tier::Phrase { terms, score_with: resolved.clone() });
+                        tiers.push(Tier::Phrase {
+                            terms,
+                            score_with: resolved.clone(),
+                        });
                     }
                 }
                 TierKind::Fuzzy => tiers.push(Tier::Fuzzy(Query::Fuzzy(
                     raw.trim().to_string(),
                     Fuzziness::Auto,
-                    FuzzySpec { prefix_length: DEFAULT_PREFIX_LENGTH, max_expansions: DEFAULT_MAX_EXPANSIONS },
+                    FuzzySpec {
+                        prefix_length: DEFAULT_PREFIX_LENGTH,
+                        max_expansions: DEFAULT_MAX_EXPANSIONS,
+                    },
                 ))),
                 TierKind::All => tiers.push(Tier::All(resolved.clone())),
                 TierKind::AllButOne if (3..=MAX_ALL_BUT_ONE_WORDS).contains(&parts.len()) => {
                     tiers.push(Tier::AllButOne(Query::Wand(parts.clone())));
                 }
-                TierKind::Any if parts.len() >= 2 => tiers.push(Tier::Any(Query::Wand(parts.clone()))),
+                TierKind::Any if parts.len() >= 2 => {
+                    tiers.push(Tier::Any(Query::Wand(parts.clone())))
+                }
                 // the tier's condition does not hold for this query
                 _ => {}
             }
@@ -160,7 +178,12 @@ impl RankPlan {
         } else {
             (Vec::new(), Vec::new())
         };
-        Self { tiers, stop_after: 0, named_runs, words }
+        Self {
+            tiers,
+            stop_after: 0,
+            named_runs,
+            words,
+        }
     }
 
     /// Hits numbered below this come from the tiers that match the query as typed, as a whole
@@ -313,4 +336,3 @@ fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
         })
         .collect()
 }
-
