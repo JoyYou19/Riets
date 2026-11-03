@@ -461,10 +461,11 @@ impl IndexPolicy {
     }
 
     pub fn default_document() -> Self {
+        let mut analyzers = BTreeMap::new();
+        analyzers.insert("$default".to_string(), AnalyzerConfig::builtin_default());
+
         Self::new(
-            //alanyzer
-            BTreeMap::new(),
-            //fields
+            analyzers,
             vec![
                 FieldPolicy::new("id", FieldKind::IdAuto),
                 FieldPolicy {
@@ -474,10 +475,13 @@ impl IndexPolicy {
                 FieldPolicy {
                     ..FieldPolicy::new("body", FieldKind::Text)
                 },
+                FieldPolicy {
+                    searchable: true,
+                    ..FieldPolicy::new("year", FieldKind::Integer)
+                },
             ],
         )
     }
-
     pub fn id_field(&self) -> Option<&FieldPolicy> {
         self.fields
             .iter()
