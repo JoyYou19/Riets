@@ -287,6 +287,10 @@ impl Analyzer {
         })
     }
 
+    pub fn has_char_filters(&self) -> bool {
+        !self.char_filters.is_empty()
+    }
+
     pub fn is_word_char(&self, c: char) -> bool {
         c.is_alphanumeric() || self.literal_symbols.contains(&c)
     }
@@ -349,7 +353,12 @@ impl Analyzer {
         terms
     }
 
-    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
+    //now with byte offsets, //WARN: only words when !has_char_filters() cause it removes like <title> Hello </title> -> Hello
+    pub fn for_each_token_with_offsets(
+        &self,
+        input: &str,
+        mut f: impl FnMut(&str, u32, u32, u32, u32),
+    ) -> u32 {
         let filtered = self.apply_char_filters(input);
         self.with_text_analyzer(|analyzer| {
             let mut stream = analyzer.token_stream(&filtered);
@@ -360,6 +369,8 @@ impl Analyzer {
                     &token.text,
                     token.position as u32,
                     token.position_length.max(1) as u32,
+                    token.offset_from as u32,
+                    token.offset_to as u32,
                 );
                 if token.position >= next_unseen {
                     count = count.saturating_add(1);
@@ -368,6 +379,11 @@ impl Analyzer {
             }
             count
         })
+    }
+
+    //es godigi sakot hujpis kapec sis helper ir vajadzigs, bet nu nevajag renamot pusi codebase
+    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
+        self.for_each_token_with_offsets(input, |term, pos, len, _start, _end| f(term, pos, len))
     }
 
     #[timed(indexing_documents)]

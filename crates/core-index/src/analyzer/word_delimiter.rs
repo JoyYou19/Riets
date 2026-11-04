@@ -212,10 +212,7 @@ impl WordDelimiterTokenizer {
         );
 
         let parts_to_emit: Vec<&(String, usize, usize)> = if parts.len() > 1 {
-            parts
-                .iter()
-                .filter(|(p, _, _)| p.chars().count() > 1)
-                .collect()
+            parts.iter().collect()
         } else {
             Vec::new()
         };

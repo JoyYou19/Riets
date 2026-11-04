@@ -3,7 +3,9 @@
 
 use ahash::AHashMap;
 
+use crate::analyzer::Analyzer;
 use crate::analyzer::analyzer::AnalyzerSet;
+use crate::analyzer::analyzer_config::{AnalyzerConfig, CorelamoTokenizer};
 use crate::document::document::{BoolPoint, NumericPoint};
 use crate::document::{DocumentPart, IndexedDocument};
 use crate::types::{ArrayRowId, DocId, XPathId, encode_position};
@@ -12,6 +14,7 @@ use crate::types::{ArrayRowId, DocId, XPathId, encode_position};
 pub struct AnalyzedTerm {
     pub term: String,
     pub positions: Vec<u32>,
+    pub offsets: Vec<(u32, u32)>,
     pub weight: u16,
 }
 
@@ -88,7 +91,7 @@ fn analyze_target(
     }
 }
 
-/// Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
+//Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
 fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
     let field_analyzer = part
         .analyzer
@@ -103,45 +106,58 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
     };
     let gap = if part.is_flattened() { part.gap } else { 0 };
 
-    let mut token_positions: AHashMap<String, Vec<u32>> = AHashMap::new();
+    //when no char filters
+    let store_offsets = !field_analyzer.has_char_filters();
+
+    let mut occurrences: AHashMap<String, (Vec<u32>, Vec<(u32, u32)>)> = AHashMap::new();
     let mut total_words_len = 0u32;
     let mut cur_position = 0u32;
+
+    let mut push = |term: &str, encoded: u32, offset: (u32, u32)| {
+        let slot = occurrences.entry(term.to_owned()).or_default();
+        if slot.0.last() != Some(&encoded) {
+            slot.0.push(encoded);
+            if store_offsets {
+                slot.1.push(offset);
+            }
+        }
+    };
 
     for seg in &segments {
         let (words, span) = if part.exact {
             // whole value, lowercased, one term (nothing split/removed)
-            token_positions
-                .entry(seg.to_lowercase())
-                .or_default()
-                .push(encode_position(cur_position, 1));
+            //WARN: might not be the best way to store/analyze exact field, might change later :)
+            let offset = (0u32, seg.len() as u32);
+            push(
+                &seg.to_lowercase(),
+                encode_position(cur_position, 1),
+                offset,
+            );
             if part.names {
                 for term in field_analyzer.name_terms(seg) {
-                    token_positions
-                        .entry(term)
-                        .or_default()
-                        .push(encode_position(cur_position, 1));
+                    push(&term, encode_position(cur_position, 1), offset);
                 }
             }
             (1, 1)
         } else {
             let mut span = 0u32;
-            let words = field_analyzer.for_each_token(seg, |term, position, length| {
-                let encoded = encode_position(cur_position + position, length);
-                let positions = token_positions.entry(term.to_owned()).or_default();
-                if positions.last() != Some(&encoded) {
-                    positions.push(encoded);
-                }
-                span = span.max(position + length);
-            });
+            let words = field_analyzer.for_each_token_with_offsets(
+                seg,
+                |term, position, length, start, end| {
+                    let encoded = encode_position(cur_position + position, length);
+                    push(term, encoded, (start, end));
+                    span = span.max(position + length);
+                },
+            );
             (words, span)
         };
         total_words_len += words;
         cur_position += span + gap;
     }
 
-    let terms = token_positions
+    let terms = occurrences
         .into_iter()
-        .map(|(term, positions)| {
+        .map(|(term, (positions, offsets))| {
             let extra_hits = positions.len().saturating_sub(1);
             let weight = usize::from(part.weight.min)
                 .saturating_add(extra_hits)
@@ -149,6 +165,7 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
             AnalyzedTerm {
                 term,
                 positions,
+                offsets,
                 weight,
             }
         })
@@ -160,3 +177,33 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
         terms,
     }
 }
+<<<<<<< HEAD
+=======
+
+#[test]
+fn for_each_token_with_offsets_reports_byte_spans() {
+    let config = AnalyzerConfig {
+        tokenizer: CorelamoTokenizer::WordDelimiter,
+        stemming: None,
+        lowercase: false,
+        ascii_folding: false,
+        stopwords: None,
+        min_length: None,
+        max_length: None,
+        preserve_original: true,
+        literal_symbols: ['_'].into_iter().collect(),
+        char_filters: Vec::new(),
+    };
+    let a = Analyzer::from_config(&config);
+    let mut parts = Vec::new();
+    a.for_each_token_with_offsets("Brown-Fox", |term, pos, _len, start, end| {
+        if term == "Brown" || term == "Fox" {
+            parts.push((term.to_string(), pos, start, end));
+        }
+    });
+    assert_eq!(
+        parts,
+        vec![("Brown".to_string(), 0, 0, 5), ("Fox".to_string(), 1, 6, 9),]
+    );
+}
+>>>>>>> 1aa19a3 (more minor fixes + add_wieghted consumes byte offsetrs)
