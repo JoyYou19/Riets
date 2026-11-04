@@ -341,7 +341,9 @@ where
     E: FnMut(&[&str]) -> io::Result<Vec<Vec<f32>>>,
 {
     match embed(texts) {
-        Ok(vectors) if vectors.len() == texts.len() => Ok(ids.iter().copied().zip(vectors).collect()),
+        Ok(vectors) if vectors.len() == texts.len() => {
+            Ok(ids.iter().copied().zip(vectors).collect())
+        }
         Ok(vectors) => Err(io::Error::other(format!(
             "model returned {} vectors for {} texts",
             vectors.len(),
@@ -357,7 +359,12 @@ where
         Err(_) => {
             let middle = texts.len() / 2;
             let mut rows = embed_isolating(&ids[..middle], &texts[..middle], embed, failed)?;
-            rows.extend(embed_isolating(&ids[middle..], &texts[middle..], embed, failed)?);
+            rows.extend(embed_isolating(
+                &ids[middle..],
+                &texts[middle..],
+                embed,
+                failed,
+            )?);
             Ok(rows)
         }
     }
@@ -479,12 +486,14 @@ mod tests {
     fn a_failing_model_is_reported_not_blamed_on_the_texts() {
         let ids: Vec<DocId> = (0..6).collect();
         let texts = ["a", "b", "c", "d", "e", "f"];
-        let mut embed = |_: &[&str]| -> io::Result<Vec<Vec<f32>>> {
-            Err(io::Error::other("CUDA failure"))
-        };
+        let mut embed =
+            |_: &[&str]| -> io::Result<Vec<Vec<f32>>> { Err(io::Error::other("CUDA failure")) };
         let mut failed = Vec::new();
         let error = embed_isolating(&ids, &texts, &mut embed, &mut failed).unwrap_err();
         assert!(error.to_string().contains("CUDA failure"));
-        assert!(failed.is_empty(), "no document may be skipped for a model failure");
+        assert!(
+            failed.is_empty(),
+            "no document may be skipped for a model failure"
+        );
     }
 }

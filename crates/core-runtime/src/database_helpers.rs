@@ -125,7 +125,6 @@ pub(crate) fn sweep_trash(databases_dir: &Path) {
     }
 }
 
-
 //bellow are functions for determining what takes up how much disk space for a database
 fn file_size_opt(path: &Path) -> Result<Option<u64>, CorelamoError> {
     if !path.exists() {
@@ -258,8 +257,7 @@ pub(crate) fn compute_disk_usage(
         documents_total += doc_size;
         documents_per_shard.insert(shard_name.clone(), json!(format_size(doc_size)));
 
-       
-                let wal_shard_total = dir_total_size_opt(&shard_root.join("wal"))?.unwrap_or(0);
+        let wal_shard_total = dir_total_size_opt(&shard_root.join("wal"))?.unwrap_or(0);
         wal_total += wal_shard_total;
         wal_per_shard.insert(shard_name.clone(), json!(format_size(wal_shard_total)));
         let logs_size = dir_total_size_opt(&shard_root.join("logs"))?.unwrap_or(0);

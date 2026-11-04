@@ -15,6 +15,7 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
+use std::sync::Arc;
 
 // Memory inverted index, the core of the index
 #[derive(Debug, Clone)]
@@ -237,6 +238,51 @@ impl MemIndex {
             self.numeric_points.build(),
             bool_fields,
             self.array_row_index,
+        )
+    }
+    /// One segment from memtable generations, oldest first (their doc ids ascend), read in
+    /// place: a published snapshot may still hold them, so nothing is unwrapped or cloned
+    /// whole. Each posting list is copied once, into the segment.
+    #[timed(indexing_documents)]
+    pub(crate) fn freeze_shared(generations: &[Arc<MemIndex>]) -> crate::segment::ImmutableSegment {
+        let mut terms: BTreeMap<TermKey, PostingList> = BTreeMap::new();
+        let mut doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
+        let mut field_stats: BTreeMap<XPathId, FieldStats> = BTreeMap::new();
+        let mut numeric_points = NumericPoints::default();
+        let mut bool_fields: BTreeMap<XPathId, BoolField> = BTreeMap::new();
+        let mut array_row_index = ArrayRowIndex::default();
+
+        for generation in generations {
+            for (key, list) in &generation.terms {
+                match terms.entry(key.clone()) {
+                    std::collections::btree_map::Entry::Occupied(mut slot) => {
+                        slot.get_mut().append(list.clone());
+                    }
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(list.clone());
+                    }
+                }
+            }
+            doc_lengths.extend(generation.doc_lengths.iter().map(|(&key, &len)| (key, len)));
+            for (&xpath, stats) in &generation.field_stats {
+                field_stats.entry(xpath).or_default().add(stats);
+            }
+            numeric_points.merge(generation.numeric_points.clone());
+            for (&xpath, field) in &generation.bool_fields {
+                let slot = bool_fields.entry(xpath).or_default();
+                slot.true_ids |= &field.true_ids;
+                slot.false_ids |= &field.false_ids;
+            }
+            array_row_index.merge_from(&generation.array_row_index);
+        }
+
+        crate::segment::ImmutableSegment::new(
+            terms,
+            doc_lengths,
+            field_stats,
+            numeric_points.build(),
+            bool_fields,
+            array_row_index,
         )
     }
     //tracks min and max doc id in this segment

@@ -10,14 +10,17 @@
 //+ check what happens on movies * 10000 + status + search something off about searching
 
 use std::{
-    fs::{ File, OpenOptions },
-    io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write },
-    path::{ Path, PathBuf },
-    sync::{ Arc, atomic::{ AtomicU32, AtomicU64, Ordering } },
+    fs::{File, OpenOptions},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
 };
 
-use crate::document_store::{ DocumentStore, StoredDocument };
-use ahash::{ HashMap, HashMapExt, HashSet };
+use crate::document_store::{DocumentStore, StoredDocument};
+use ahash::{HashMap, HashMapExt, HashSet};
 use core_index::types::DocId;
 use core_protocol::format::Format;
 use core_timing::timed;
@@ -46,10 +49,8 @@ const COMPACTION_IO_BUFFER: usize = 1 << 20;
 const COMPACTION_MAX_BYTES_PER_SEC: u64 = 64 * 1024 * 1024;
 const MAX_CONCURRENT_COMPACTIONS: usize = 2;
 
-static COMPACTION_SLOTS: (std::sync::Mutex<usize>, std::sync::Condvar) = (
-    std::sync::Mutex::new(0),
-    std::sync::Condvar::new(),
-);
+static COMPACTION_SLOTS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
 struct CompactionPermit;
 
 impl CompactionPermit {
@@ -57,7 +58,9 @@ impl CompactionPermit {
         let (lock, available) = &COMPACTION_SLOTS;
         let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while *running >= MAX_CONCURRENT_COMPACTIONS {
-            running = available.wait(running).unwrap_or_else(|poisoned| poisoned.into_inner());
+            running = available
+                .wait(running)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         *running += 1;
         CompactionPermit
@@ -90,9 +93,8 @@ impl Throttle {
 
     fn consume(&mut self, bytes: u64) {
         self.bytes += bytes;
-        let due = std::time::Duration::from_secs_f64(
-            (self.bytes as f64) / (self.bytes_per_sec as f64)
-        );
+        let due =
+            std::time::Duration::from_secs_f64((self.bytes as f64) / (self.bytes_per_sec as f64));
         let elapsed = self.started.elapsed();
         if due > elapsed {
             std::thread::sleep(due - elapsed);
@@ -158,7 +160,9 @@ impl BinaryDocumentStore {
         let mut store = Self {
             path,
             current_segment: AtomicU32::new(current_segment),
-            docs: Cache::builder().max_capacity(DEFAULT_DOC_CACHE_CAPACITY).build(),
+            docs: Cache::builder()
+                .max_capacity(DEFAULT_DOC_CACHE_CAPACITY)
+                .build(),
             internal_to_external: Arc::new(DashMap::new()),
             locations: Arc::new(DashMap::new()),
             next_segment_id: AtomicU32::new(next_segment_id),
@@ -171,8 +175,9 @@ impl BinaryDocumentStore {
         // New writes go to the newest append segment, never into a compaction output.
         let newest = Self::list_segment_ids(&store.path)?.last().copied();
         let append_to = match newest {
-            Some(id) if segment_magic(&store.path.join(Self::segment_filename(id)))? == *MAGIC =>
-                id,
+            Some(id) if segment_magic(&store.path.join(Self::segment_filename(id)))? == *MAGIC => {
+                id
+            }
             _ => {
                 let id = store.next_segment_id.fetch_add(1, Ordering::AcqRel);
                 let seg_path = store.path.join(Self::segment_filename(id));
@@ -198,7 +203,10 @@ impl BinaryDocumentStore {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if let Some(rest) = name.strip_prefix("seg_").and_then(|r| r.strip_suffix(".bin")) {
+            if let Some(rest) = name
+                .strip_prefix("seg_")
+                .and_then(|r| r.strip_suffix(".bin"))
+            {
                 if let Ok(id) = rest.parse::<u32>() {
                     ids.push(id);
                 }
@@ -216,7 +224,7 @@ impl BinaryDocumentStore {
         path: impl AsRef<Path>,
         docs: Cache<String, StoredDocument>,
         internal_to_external: Arc<DashMap<DocId, String>>,
-        locations: Arc<DashMap<String, DocLocation>>
+        locations: Arc<DashMap<String, DocLocation>>,
     ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&path)?;
@@ -257,8 +265,9 @@ impl BinaryDocumentStore {
         // (BANANA_D), writes must not go into it: start a fresh append segment after it.
         let newest = Self::list_segment_ids(&store.path)?.last().copied();
         let append_to = match newest {
-            Some(id) if segment_magic(&store.path.join(Self::segment_filename(id)))? == *MAGIC =>
-                id,
+            Some(id) if segment_magic(&store.path.join(Self::segment_filename(id)))? == *MAGIC => {
+                id
+            }
             _ => {
                 let id = store.next_segment_id.fetch_add(1, Ordering::AcqRel);
                 let seg_path = store.path.join(Self::segment_filename(id));
@@ -277,8 +286,7 @@ impl BinaryDocumentStore {
 
     fn maybe_rotate_segment(&self) -> io::Result<()> {
         let seg_path = self.current_segment_path();
-        let size = std::fs
-            ::metadata(&seg_path)
+        let size = std::fs::metadata(&seg_path)
             .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", seg_path.display(), e)))?
             .len();
         if size < DEFAULT_SEGMENT_SIZE {
@@ -286,9 +294,8 @@ impl BinaryDocumentStore {
         }
         let next_id = self.next_segment_id.fetch_add(1, Ordering::Relaxed);
         let next_path = self.path.join(Self::segment_filename(next_id));
-        let mut file = File::create(&next_path).map_err(|e|
-            io::Error::new(e.kind(), format!("{}: {}", next_path.display(), e))
-        )?;
+        let mut file = File::create(&next_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", next_path.display(), e)))?;
         file.write_all(MAGIC)?;
         self.current_segment.store(next_id, Ordering::Relaxed);
         Ok(())
@@ -297,7 +304,7 @@ impl BinaryDocumentStore {
     pub fn plan_compaction(
         &self,
         dead_ratio_threshold: f64,
-        target_size: u64
+        target_size: u64,
     ) -> io::Result<Option<SegmentCompactionJob>> {
         let current = self.current_segment.load(Ordering::Acquire);
 
@@ -329,7 +336,11 @@ impl BinaryDocumentStore {
             if total == 0 {
                 continue;
             }
-            let live = live_bytes_by_segment.get(&id).copied().unwrap_or(0).min(total);
+            let live = live_bytes_by_segment
+                .get(&id)
+                .copied()
+                .unwrap_or(0)
+                .min(total);
             let dead_ratio = 1.0 - (live as f64) / (total as f64);
             if dead_ratio >= dead_ratio_threshold {
                 candidates.push((id, live));
@@ -355,7 +366,8 @@ impl BinaryDocumentStore {
         }
 
         let selected: ahash::AHashSet<u32> = selected_ids.iter().copied().collect();
-        let mut entries: Vec<(String, DocLocation)> = self.locations
+        let mut entries: Vec<(String, DocLocation)> = self
+            .locations
             .iter()
             .filter(|entry| selected.contains(&entry.value().segment))
             .map(|entry| (entry.key().clone(), *entry.value()))
@@ -363,21 +375,21 @@ impl BinaryDocumentStore {
         entries.sort_unstable_by_key(|(_, location)| (location.segment, location.offset));
 
         let new_segment_id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
-        Ok(
-            Some(SegmentCompactionJob {
-                segment_ids: selected_ids,
-                next_segment_id: new_segment_id,
-                store_dir: self.path.clone(),
-                locations_snapshot: entries,
-            })
-        )
+        Ok(Some(SegmentCompactionJob {
+            segment_ids: selected_ids,
+            next_segment_id: new_segment_id,
+            store_dir: self.path.clone(),
+            locations_snapshot: entries,
+        }))
     }
 
     pub fn install_segment_compaction(
         &mut self,
-        completed: CompletedSegmentCompaction
+        completed: CompletedSegmentCompaction,
     ) -> io::Result<bool> {
-        let final_path = self.path.join(Self::segment_filename(completed.new_segment_id));
+        let final_path = self
+            .path
+            .join(Self::segment_filename(completed.new_segment_id));
         std::fs::rename(&completed.tmp_path, &final_path).map_err(|e| with_path(e, &final_path))?;
         File::open(&self.path)?.sync_all()?;
 
@@ -392,7 +404,11 @@ impl BinaryDocumentStore {
         }
 
         // The persisted map must stop referencing the old segments before they are deleted.
-        save_maps(&self.path, &self.locations, self.highest_id.load(Ordering::Relaxed))?;
+        save_maps(
+            &self.path,
+            &self.locations,
+            self.highest_id.load(Ordering::Relaxed),
+        )?;
         for old_id in &completed.old_segment_ids {
             let old_path = self.path.join(Self::segment_filename(*old_id));
             if let Err(err) = std::fs::remove_file(&old_path) {
@@ -401,7 +417,11 @@ impl BinaryDocumentStore {
                 }
             }
         }
-        save_maps(&self.path, &self.locations, self.highest_id.load(Ordering::Relaxed))?;
+        save_maps(
+            &self.path,
+            &self.locations,
+            self.highest_id.load(Ordering::Relaxed),
+        )?;
         Ok(installed > 0)
     }
 
@@ -422,7 +442,7 @@ impl BinaryDocumentStore {
         &self,
         id: u32,
         from: Option<u64>,
-        deleted_versions: &mut HashMap<String, DocId>
+        deleted_versions: &mut HashMap<String, DocId>,
     ) -> io::Result<()> {
         let seg_path = self.path.join(Self::segment_filename(id));
         // only append segments can end in a record cut off by a crash; compaction outputs are
@@ -438,12 +458,10 @@ impl BinaryDocumentStore {
                 let mut magic = [0u8; 8];
                 file.read_exact(&mut magic)?;
                 if &magic != MAGIC && &magic != COMPACTED_MAGIC {
-                    return Err(
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("{}: bad document store magic", seg_path.display())
-                        )
-                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{}: bad document store magic", seg_path.display()),
+                    ));
                 }
                 MAGIC.len() as u64
             }
@@ -464,54 +482,54 @@ impl BinaryDocumentStore {
                 OP_PUT => {
                     let doc_offset = start + reader.position();
                     read_document(&mut reader).map(|doc| {
-                        self.highest_id.fetch_max(doc.internal_id, Ordering::Relaxed);
+                        self.highest_id
+                            .fetch_max(doc.internal_id, Ordering::Relaxed);
                         let len = (start + reader.position() - doc_offset) as u32;
-                        if
-                            let Some(old) = self.locations.insert(
-                                doc.external_id.clone(),
-                                DocLocation {
-                                    internal_id: doc.internal_id,
-                                    offset: doc_offset,
-                                    segment: id,
-                                    len,
-                                }
-                            )
-                        {
+                        if let Some(old) = self.locations.insert(
+                            doc.external_id.clone(),
+                            DocLocation {
+                                internal_id: doc.internal_id,
+                                offset: doc_offset,
+                                segment: id,
+                                len,
+                            },
+                        ) {
                             if old.internal_id != doc.internal_id {
                                 self.internal_to_external.remove(&old.internal_id);
                             }
                         }
-                        self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
+                        self.internal_to_external
+                            .insert(doc.internal_id, doc.external_id.clone());
                         self.docs.invalidate(&doc.external_id);
                     })
                 }
-                OP_DELETE =>
-                    read_string(&mut reader).and_then(|external_id| {
-                        let deleted = read_u64(&mut reader)?;
-                        self.highest_id.fetch_max(deleted, Ordering::Relaxed);
-                        let is_current = self.locations
-                            .get(&external_id)
-                            .is_some_and(|current| current.internal_id <= deleted);
-                        if is_current {
-                            if let Some((_, loc)) = self.locations.remove(&external_id) {
-                                self.internal_to_external.remove(&loc.internal_id);
-                            }
+                OP_DELETE => read_string(&mut reader).and_then(|external_id| {
+                    let deleted = read_u64(&mut reader)?;
+                    self.highest_id.fetch_max(deleted, Ordering::Relaxed);
+                    let is_current = self
+                        .locations
+                        .get(&external_id)
+                        .is_some_and(|current| current.internal_id <= deleted);
+                    if is_current {
+                        if let Some((_, loc)) = self.locations.remove(&external_id) {
+                            self.internal_to_external.remove(&loc.internal_id);
                         }
-                        let entry = deleted_versions.entry(external_id.clone()).or_insert(deleted);
-                        *entry = (*entry).max(deleted);
-                        self.docs.invalidate(&external_id);
-                        Ok(())
-                    }),
+                    }
+                    let entry = deleted_versions
+                        .entry(external_id.clone())
+                        .or_insert(deleted);
+                    *entry = (*entry).max(deleted);
+                    self.docs.invalidate(&external_id);
+                    Ok(())
+                }),
                 other => {
-                    return Err(
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "{}: unknown document op {other} at {record_start}",
-                                seg_path.display()
-                            )
-                        )
-                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "{}: unknown document op {other} at {record_start}",
+                            seg_path.display()
+                        ),
+                    ));
                 }
             };
             match applied {
@@ -519,7 +537,10 @@ impl BinaryDocumentStore {
                     record_start = start + reader.position();
                 }
                 Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && may_end_torn => {
-                    OpenOptions::new().write(true).open(&seg_path)?.set_len(record_start)?;
+                    OpenOptions::new()
+                        .write(true)
+                        .open(&seg_path)?
+                        .set_len(record_start)?;
                     return Ok(());
                 }
                 Err(err) => {
@@ -539,10 +560,7 @@ impl BinaryDocumentStore {
         let ids = Self::list_segment_ids(&self.path)?;
 
         // 2. the snapshot must still describe the segments on disk
-        let in_use: HashSet<u32> = saved.entries
-            .iter()
-            .map(|(_, loc)| loc.segment)
-            .collect();
+        let in_use: HashSet<u32> = saved.entries.iter().map(|(_, loc)| loc.segment).collect();
         let mut tails: Vec<(u32, u64)> = Vec::new();
         for &(id, end) in &saved.segment_ends {
             let seg_path = self.path.join(Self::segment_filename(id));
@@ -557,10 +575,13 @@ impl BinaryDocumentStore {
         }
 
         // 3. load the snapshot
-        self.highest_id.fetch_max(saved.highest_id, Ordering::Relaxed);
+        self.highest_id
+            .fetch_max(saved.highest_id, Ordering::Relaxed);
         for (external_id, loc) in saved.entries {
-            self.highest_id.fetch_max(loc.internal_id, Ordering::Relaxed);
-            self.internal_to_external.insert(loc.internal_id, external_id.clone());
+            self.highest_id
+                .fetch_max(loc.internal_id, Ordering::Relaxed);
+            self.internal_to_external
+                .insert(loc.internal_id, external_id.clone());
             self.locations.insert(external_id, loc);
         }
 
@@ -617,7 +638,9 @@ impl BinaryDocumentStore {
 
     #[timed(writing_files)]
     fn append_delete(&self, external_id: &str, internal_id: DocId) -> io::Result<()> {
-        let file = OpenOptions::new().append(true).open(&self.current_segment_path())?;
+        let file = OpenOptions::new()
+            .append(true)
+            .open(&self.current_segment_path())?;
         let mut writer = BufWriter::new(file);
 
         write_u8(&mut writer, OP_DELETE)?;
@@ -633,8 +656,10 @@ impl DocumentStore for BinaryDocumentStore {
     #[timed(inserting)]
     fn put(&mut self, doc: StoredDocument) -> io::Result<()> {
         let location = self.append_put(&doc)?;
-        self.highest_id.fetch_max(doc.internal_id, Ordering::Relaxed);
-        self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
+        self.highest_id
+            .fetch_max(doc.internal_id, Ordering::Relaxed);
+        self.internal_to_external
+            .insert(doc.internal_id, doc.external_id.clone());
         self.locations.insert(doc.external_id.clone(), location);
         self.docs.insert(doc.external_id.clone(), doc);
         Ok(())
@@ -656,13 +681,17 @@ impl DocumentStore for BinaryDocumentStore {
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
             let len = (writer.position() - doc_offset) as u32;
-            self.internal_to_external.insert(doc.internal_id, doc.external_id.clone());
-            self.locations.insert(doc.external_id.clone(), DocLocation {
-                internal_id: doc.internal_id,
-                offset: doc_offset,
-                segment: current_segment,
-                len,
-            });
+            self.internal_to_external
+                .insert(doc.internal_id, doc.external_id.clone());
+            self.locations.insert(
+                doc.external_id.clone(),
+                DocLocation {
+                    internal_id: doc.internal_id,
+                    offset: doc_offset,
+                    segment: current_segment,
+                    len,
+                },
+            );
 
             self.docs.insert(doc.external_id.clone(), doc);
         }
@@ -718,7 +747,7 @@ impl DocumentStore for BinaryDocumentStore {
     #[timed(reindex)]
     fn for_each_document(
         &self,
-        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>
+        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
     ) -> io::Result<()> {
         for id in Self::list_segment_ids(&self.path)? {
             let seg_path = self.path.join(Self::segment_filename(id));
@@ -728,7 +757,10 @@ impl DocumentStore for BinaryDocumentStore {
             let mut magic = [0u8; 8];
             reader.read_exact(&mut magic)?;
             if &magic != MAGIC && &magic != COMPACTED_MAGIC {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "bad document store magic"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "bad document store magic",
+                ));
             }
 
             loop {
@@ -736,7 +768,8 @@ impl DocumentStore for BinaryDocumentStore {
                     Ok(OP_PUT) => {
                         let doc_offset = reader.position();
                         let doc = read_document(&mut reader)?;
-                        let is_current = self.locations
+                        let is_current = self
+                            .locations
                             .get(&doc.external_id)
                             .map(|loc| loc.segment == id && loc.offset == doc_offset)
                             .unwrap_or(false);
@@ -748,12 +781,10 @@ impl DocumentStore for BinaryDocumentStore {
                         let _external_id = read_string(&mut reader)?;
                     }
                     Ok(other) => {
-                        return Err(
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("unknown document op {other}")
-                            )
-                        );
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown document op {other}"),
+                        ));
                     }
                     Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                         break;
@@ -776,7 +807,7 @@ impl DocumentStore for BinaryDocumentStore {
             &mut (|doc| {
                 docs.push(doc.clone());
                 Ok(())
-            })
+            }),
         )?;
 
         Ok(docs)
@@ -852,9 +883,8 @@ fn read_string(reader: &mut impl Read) -> io::Result<String> {
     let mut bytes = vec![0u8; len];
     reader.read_exact(&mut bytes)?;
 
-    String::from_utf8(bytes).map_err(|_|
-        io::Error::new(io::ErrorKind::InvalidData, "invalid utf8 string")
-    )
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8 string"))
 }
 
 fn write_u8(writer: &mut impl Write, value: u8) -> io::Result<()> {
@@ -891,9 +921,10 @@ pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<Completed
     let _permit = CompactionPermit::acquire();
     let mut throttle = Throttle::new(COMPACTION_MAX_BYTES_PER_SEC);
 
-    let tmp_path = job.store_dir.join(
-        format!("{}.tmp", BinaryDocumentStore::segment_filename(job.next_segment_id))
-    );
+    let tmp_path = job.store_dir.join(format!(
+        "{}.tmp",
+        BinaryDocumentStore::segment_filename(job.next_segment_id)
+    ));
     let file = File::create(&tmp_path).map_err(|e| with_path(e, &tmp_path))?;
     let mut writer = CountingWriter::new(BufWriter::with_capacity(COMPACTION_IO_BUFFER, file), 0);
     writer.write_all(COMPACTED_MAGIC)?;
@@ -905,9 +936,9 @@ pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<Completed
     for (external_id, location) in &job.locations_snapshot {
         let reuse = matches!(&source, Some((segment, _, _)) if *segment == location.segment);
         if !reuse {
-            let seg_path = job.store_dir.join(
-                BinaryDocumentStore::segment_filename(location.segment)
-            );
+            let seg_path = job
+                .store_dir
+                .join(BinaryDocumentStore::segment_filename(location.segment));
             let file = File::open(&seg_path).map_err(|e| with_path(e, &seg_path))?;
             source = Some((
                 location.segment,
@@ -929,21 +960,16 @@ pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<Completed
         let stored_id_len = record
             .get(0..4)
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
-        if
-            stored_id_len != Some(id_bytes.len()) ||
-            record.get(4..4 + id_bytes.len()) != Some(id_bytes)
+        if stored_id_len != Some(id_bytes.len())
+            || record.get(4..4 + id_bytes.len()) != Some(id_bytes)
         {
-            return Err(
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "segment {} offset {}: record does not belong to '{}'",
-                        location.segment,
-                        location.offset,
-                        external_id
-                    )
-                )
-            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "segment {} offset {}: record does not belong to '{}'",
+                    location.segment, location.offset, external_id
+                ),
+            ));
         }
 
         write_u8(&mut writer, OP_PUT)?;
@@ -981,7 +1007,7 @@ pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<Completed
 pub fn read_document_at_path(
     dir: &Path,
     segment_id: u32,
-    offset: u64
+    offset: u64,
 ) -> io::Result<StoredDocument> {
     let seg_path = dir.join(format!("seg_{segment_id:05}.bin"));
     let mut file = File::open(seg_path)?;
@@ -1002,15 +1028,14 @@ struct MapsFile {
 pub fn save_maps(
     path: &Path,
     locations: &DashMap<String, DocLocation>,
-    highest_id: DocId
+    highest_id: DocId,
 ) -> io::Result<()> {
     let mut segment_ends = Vec::new();
     for id in BinaryDocumentStore::list_segment_ids(path)? {
         let seg_path = path.join(BinaryDocumentStore::segment_filename(id));
         segment_ends.push((
             id,
-            std::fs
-                ::metadata(&seg_path)
+            std::fs::metadata(&seg_path)
                 .map_err(|e| with_path(e, &seg_path))?
                 .len(),
         ));
@@ -1024,8 +1049,7 @@ pub fn save_maps(
         highest_id,
     };
     let mut bytes = MAPS_MAGIC.to_vec();
-    bincode
-        ::encode_into_std_write(&file_contents, &mut bytes, bincode::config::standard())
+    bincode::encode_into_std_write(&file_contents, &mut bytes, bincode::config::standard())
         .map_err(|e| io::Error::other(format!("failed to encode maps: {e}")))?;
 
     let map_tmp = path.with_extension(MAPS_TMP_EXTENTION);
@@ -1043,8 +1067,7 @@ pub fn save_maps(
 fn read_maps(path: &Path) -> Option<MapsFile> {
     let bytes = std::fs::read(path.with_extension(MAPS_EXTENTION)).ok()?;
     let body = bytes.strip_prefix(MAPS_MAGIC.as_slice())?;
-    bincode
-        ::decode_from_slice(body, bincode::config::standard())
+    bincode::decode_from_slice(body, bincode::config::standard())
         .ok()
         .map(|(maps, _)| maps)
 }

@@ -5,15 +5,15 @@
 //! inside ONNX Runtime, so it runs entirely on CUDA when available, otherwise on the CPU).
 
 use std::io;
-use std::path::{ Path, PathBuf };
+use std::path::{Path, PathBuf};
 
-use fastembed::{ EmbeddingModel, InitOptions, TextEmbedding };
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use hf_hub::api::sync::ApiBuilder;
 
 use crate::config::ModelConfig;
 use crate::device::Device;
 use crate::model_error;
-use crate::pooled::{ ModelFiles, PooledModel, Pooling };
+use crate::pooled::{ModelFiles, PooledModel, Pooling};
 use crate::runtime::ensure_runtime;
 
 /// How a model is loaded and run.
@@ -46,7 +46,7 @@ impl LoadedModel {
     pub(crate) fn embed(
         &mut self,
         texts: Vec<String>,
-        batch_size: usize
+        batch_size: usize,
     ) -> io::Result<Vec<Vec<f32>>> {
         match self {
             LoadedModel::FastEmbed(model) => run_model(model, texts, batch_size),
@@ -54,11 +54,10 @@ impl LoadedModel {
                 let count = texts.len();
                 let vectors = model.embed(&texts, batch_size)?;
                 if vectors.len() != count {
-                    return Err(
-                        io::Error::other(
-                            format!("model returned {} vectors for {count} texts", vectors.len())
-                        )
-                    );
+                    return Err(io::Error::other(format!(
+                        "model returned {} vectors for {count} texts",
+                        vectors.len()
+                    )));
                 }
                 Ok(vectors)
             }
@@ -84,7 +83,7 @@ impl LoadedModel {
 pub(crate) fn load_model(
     spec: &'static ModelSpec,
     cache_dir: PathBuf,
-    config: &ModelConfig
+    config: &ModelConfig,
 ) -> io::Result<LoadedModel> {
     ensure_runtime(&config.runtime_library, config.install_runtime)?;
     match spec.backend {
@@ -93,17 +92,19 @@ pub(crate) fn load_model(
                 .with_max_length(config.max_tokens)
                 .with_cache_dir(cache_dir)
                 .with_show_download_progress(false);
-            TextEmbedding::try_new(options).map(LoadedModel::FastEmbed).map_err(model_error)
+            TextEmbedding::try_new(options)
+                .map(LoadedModel::FastEmbed)
+                .map_err(model_error)
         }
-        Backend::Pooled(model, pooling) =>
-            PooledModel::load(
-                &fetch_model_files(&model(), &cache_dir)?,
-                spec.dims,
-                pooling,
-                config.max_tokens,
-                config.device,
-                cpu_threads_per_instance(config.instances)
-            ).map(LoadedModel::Pooled),
+        Backend::Pooled(model, pooling) => PooledModel::load(
+            &fetch_model_files(&model(), &cache_dir)?,
+            spec.dims,
+            pooling,
+            config.max_tokens,
+            config.device,
+            cpu_threads_per_instance(config.instances),
+        )
+        .map(LoadedModel::Pooled),
     }
 }
 
@@ -112,12 +113,10 @@ pub(crate) fn load_model(
 /// other's downloads.
 fn fetch_model_files(model: &EmbeddingModel, cache_dir: &Path) -> io::Result<ModelFiles> {
     let info = TextEmbedding::get_model_info(model).map_err(model_error)?;
-    let cache_dir = std::env
-        ::var_os("HF_HOME")
-        .map_or_else(|| cache_dir.to_path_buf(), PathBuf::from);
-    let endpoint = std::env
-        ::var("HF_ENDPOINT")
-        .unwrap_or_else(|_| "https://huggingface.co".to_string());
+    let cache_dir =
+        std::env::var_os("HF_HOME").map_or_else(|| cache_dir.to_path_buf(), PathBuf::from);
+    let endpoint =
+        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
     let repo = ApiBuilder::new()
         .with_cache_dir(cache_dir)
         .with_endpoint(endpoint)
@@ -126,7 +125,8 @@ fn fetch_model_files(model: &EmbeddingModel, cache_dir: &Path) -> io::Result<Mod
         .map_err(model_error)?
         .model(info.model_code.clone());
     let get = |file: &str| {
-        repo.get(file).map_err(|e| model_error(format!("{}/{file}: {e}", info.model_code)))
+        repo.get(file)
+            .map_err(|e| model_error(format!("{}/{file}: {e}", info.model_code)))
     };
     // large models keep their weights outside the graph (model.onnx_data); ONNX Runtime
     // loads them from the model file's folder, where hf-hub puts every file of the repo
@@ -150,14 +150,15 @@ fn cpu_threads_per_instance(instances: usize) -> usize {
 fn run_model(
     model: &mut TextEmbedding,
     texts: Vec<String>,
-    batch_size: usize
+    batch_size: usize,
 ) -> io::Result<Vec<Vec<f32>>> {
     let count = texts.len();
     let vectors = model.embed(texts, Some(batch_size)).map_err(model_error)?;
     if vectors.len() != count {
-        return Err(
-            io::Error::other(format!("model returned {} vectors for {count} texts", vectors.len()))
-        );
+        return Err(io::Error::other(format!(
+            "model returned {} vectors for {count} texts",
+            vectors.len()
+        )));
     }
     Ok(vectors)
 }
@@ -223,7 +224,8 @@ pub fn find_model(id: &str) -> Option<&'static ModelSpec> {
 }
 
 pub(crate) fn known_model_ids() -> String {
-    MODELS.iter()
+    MODELS
+        .iter()
         .map(|spec| spec.id)
         .collect::<Vec<_>>()
         .join(", ")

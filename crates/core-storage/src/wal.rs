@@ -118,7 +118,10 @@ impl Wal {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty entry"));
         }
         if (payload.len() as u64) > u64::from(MAX_ENTRY_SIZE) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "entry too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "entry too large",
+            ));
         }
         let mut inner = self.lock();
         if inner.poisoned {
@@ -277,18 +280,27 @@ fn parse_records(raw: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     let mut pos = 0usize;
     while pos < raw.len() {
         if pos + header > raw.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated replay"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated replay",
+            ));
         }
         let len = u32::from_le_bytes(raw[pos..pos + 4].try_into().expect("4 bytes"));
         let crc = u32::from_le_bytes(raw[pos + 4..pos + 8].try_into().expect("4 bytes"));
         let start = pos + header;
         let stop = start + (len as usize);
         if len == 0 || len > MAX_ENTRY_SIZE || stop > raw.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated replay"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated replay",
+            ));
         }
         let payload = &raw[start..stop];
         if record_crc(pos as u64, len, payload) != crc {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "crc mismatch in replay"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "crc mismatch in replay",
+            ));
         }
         out.push(payload.to_vec());
         pos = stop;
@@ -369,7 +381,11 @@ fn list_segments(dir: &Path) -> io::Result<Vec<u64>> {
         if path.extension().and_then(|e| e.to_str()) != Some(SEGMENT_EXTENSION) {
             continue;
         }
-        if let Some(id) = path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse().ok()) {
+        if let Some(id) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse().ok())
+        {
             segments.push(id);
         }
     }
@@ -468,7 +484,10 @@ mod tests {
         wal.append(b"y").unwrap();
         wal.reset().unwrap();
         assert!(wal.replay_all().unwrap().is_empty());
-        assert_eq!(list_segments(&dir.join("wal")).unwrap(), vec![wal.current_segment()]);
+        assert_eq!(
+            list_segments(&dir.join("wal")).unwrap(),
+            vec![wal.current_segment()]
+        );
         wal.append(b"z").unwrap();
         assert_eq!(wal.replay_all().unwrap(), vec![b"z".to_vec()]);
         fs::remove_dir_all(&dir).unwrap();

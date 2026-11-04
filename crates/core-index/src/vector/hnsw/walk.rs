@@ -22,7 +22,7 @@ pub(crate) trait NeighbourLists: Sync {
 /// How close a node is to the walk's target. Must be finite.
 pub(crate) trait SimilarityToTarget {
     fn similarity(&self, node: u32) -> f32;
-     fn tie_salt(&self) -> u64 {
+    fn tie_salt(&self) -> u64 {
         0
     }
 }
@@ -147,7 +147,7 @@ where
     L: NeighbourLists + ?Sized,
     S: SimilarityToTarget + ?Sized,
 {
-     pub(crate) fn score(&self, node: u32) -> ScoredNode {
+    pub(crate) fn score(&self, node: u32) -> ScoredNode {
         ScoredNode::salted(node, self.target.similarity(node), self.target.tie_salt())
     }
 
@@ -242,7 +242,11 @@ where
         }
 
         // Sorting Reverse ascending gives similarity descending: best first.
-        let best_first = kept.into_sorted_vec().into_iter().map(|Reverse(n)| n).collect();
+        let best_first = kept
+            .into_sorted_vec()
+            .into_iter()
+            .map(|Reverse(n)| n)
+            .collect();
         LevelSearch {
             best_first,
             stopped_by_budget,
@@ -250,10 +254,13 @@ where
     }
 }
 
-fn keep_within_beam(kept: &mut BinaryHeap<Reverse<ScoredNode>>, node: ScoredNode, beam_width: usize) {
+fn keep_within_beam(
+    kept: &mut BinaryHeap<Reverse<ScoredNode>>,
+    node: ScoredNode,
+    beam_width: usize,
+) {
     kept.push(Reverse(node));
     if kept.len() > beam_width {
         kept.pop();
     }
 }
-

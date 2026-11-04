@@ -13,9 +13,9 @@ use std::sync::Arc;
 use ahash::HashSet;
 
 use super::file::VectorFile;
-use super::vector_hit::{TopK, VectorFilter, VectorHit, hit_order};
 use super::hnsw::{HnswGraph, RESCORE_OVERSAMPLING};
 use super::kernel::{approx_cosine, dot_f32, dot_i8, quantize_query};
+use super::vector_hit::{TopK, VectorFilter, VectorHit, hit_order};
 use crate::types::{DocId, XPathId};
 
 /// The vectors of one vector field for one live segment, and its graph if one is built.
@@ -84,7 +84,10 @@ pub(crate) fn exact_scan(
     for (row, &doc_id) in file.doc_ids().iter().enumerate() {
         if filter.accepts(doc_id) {
             let similarity = dot_i8(file.codes(row), &query_codes.codes);
-            candidates.offer(doc_id, approx_cosine(similarity, row_scale, query_codes.scale));
+            candidates.offer(
+                doc_id,
+                approx_cosine(similarity, row_scale, query_codes.scale),
+            );
         }
     }
     rescore(file, query, k, &candidates.into_sorted())
@@ -150,4 +153,3 @@ pub fn merge_hits(lists: Vec<Vec<VectorHit>>, k: usize) -> Vec<VectorHit> {
     all.truncate(k);
     all
 }
-

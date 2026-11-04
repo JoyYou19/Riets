@@ -100,8 +100,14 @@ impl PooledModel {
             .map_err(|e| model_error(format!("{} on the CPU: {e}", files.model.display())))
         };
         let on_cuda = |device_id| {
-            Pipeline::build(&files.model, opset, dims, pooling, Target::Cuda { device_id })
-                .map_err(|e| e.to_string())
+            Pipeline::build(
+                &files.model,
+                opset,
+                dims,
+                pooling,
+                Target::Cuda { device_id },
+            )
+            .map_err(|e| e.to_string())
         };
 
         let (pipeline, device, cpu_fallback) = match preference {
@@ -186,7 +192,12 @@ impl PooledModel {
         let mut start = 0;
         while start < order.len() {
             // Planned one run at a time: a run that did not fit lowers the budget of the next.
-            let count = next_run(&lengths[start..], batch_size, self.max_tokens, self.halvings);
+            let count = next_run(
+                &lengths[start..],
+                batch_size,
+                self.max_tokens,
+                self.halvings,
+            );
             self.run_splitting(&order[start..start + count], &encodings, &mut vectors)?;
             start += count;
         }
@@ -358,7 +369,13 @@ impl Pipeline {
         let token_type_ids = inputs.iter().any(|(name, _)| name == TOKEN_TYPE_IDS);
         let hidden_state = graph::hidden_state_output(editable.outputs(), dims)?;
 
-        editable.apply_model(&graph::pooling_model(inputs, &hidden_state, opset, dims, pooling)?)?;
+        editable.apply_model(&graph::pooling_model(
+            inputs,
+            &hidden_state,
+            opset,
+            dims,
+            pooling,
+        )?)?;
         Ok(Self {
             session: editable.into_session()?,
             token_type_ids,

@@ -1,6 +1,10 @@
 use core_timing::timed;
-use serde::{ Deserialize, Serialize };
-use std::{ collections::BTreeMap, fs, io, path::{ Path, PathBuf } };
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use super::policy::FieldKind;
 
@@ -34,8 +38,7 @@ impl AllFields {
 
     #[timed(writing_files)]
     pub fn save(&self, root: impl AsRef<Path>) -> io::Result<()> {
-        let contents = serde_json
-            ::to_string_pretty(self)
+        let contents = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         crate::write_atomically(&Self::path(root.as_ref()), contents.as_bytes())
     }

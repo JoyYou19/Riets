@@ -1,19 +1,20 @@
 use std::time::Instant;
 //Auth
-use crate::{ AppState, http_response::HttpError };
+use crate::{AppState, http_response::HttpError};
 use axum::{
-    extract::{ Request, State },
-    http::{header, HeaderValue, StatusCode },
+    extract::{Request, State},
+    http::{HeaderValue, StatusCode, header},
     middleware::Next,
-    response::{ IntoResponse, Response },
-
+    response::{IntoResponse, Response},
 };
-use core_auth::{ Principal, Token };
+use core_auth::{Principal, Token};
 //use core_auth::{Principal, Token};
-use core_protocol::{ errors::CorelamoError::{ self }, format::Format };
+use core_protocol::{
+    errors::CorelamoError::{self},
+    format::Format,
+};
 
-
-use slog::{ error, o, warn };
+use slog::{error, o, warn};
 use uuid::Uuid;
 
 //INFO: everything later will need these two to return
@@ -37,10 +38,9 @@ fn resolve_accept(state: &AppState, request: &Request) -> Result<(Format, Option
         for media_range in accept.split(',') {
             let mut parts = media_range.split(';');
             let media = parts.next().unwrap_or("").trim();
-            if
-                !media.eq_ignore_ascii_case("application/json") &&
-                media != "*/*" &&
-                media != "application/*"
+            if !media.eq_ignore_ascii_case("application/json")
+                && media != "*/*"
+                && media != "application/*"
             {
                 continue;
             }
@@ -68,7 +68,7 @@ fn resolve_accept(state: &AppState, request: &Request) -> Result<(Format, Option
 pub(crate) async fn request_context_middleware(
     State(state): State<AppState>,
     mut request: Request,
-    next: Next
+    next: Next,
 ) -> Response {
     let request_id = Uuid::new_v4();
     let start = Instant::now();
@@ -88,8 +88,9 @@ pub(crate) async fn request_context_middleware(
                 warn!(log, "The format is unsupported"; "format" => %subtype);
                 HttpError::from_corelamo(
                     CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
-                    &ctx
-                ).into_response()
+                    &ctx,
+                )
+                .into_response()
             };
         }
     };
@@ -108,7 +109,7 @@ pub(crate) async fn request_context_middleware(
 pub(crate) async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
-    next: Next
+    next: Next,
 ) -> Response {
     let log = slog_scope::logger().new(o!("component"=> "middleware"));
     let Some(ctx) = request.extensions().get::<RequestContext>().cloned() else {
@@ -127,11 +128,13 @@ pub(crate) async fn auth_middleware(
         "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
         let mut response = HttpError::from_corelamo(
             CorelamoError::Unauthorized("missing X-Corelamo-Key header".to_string()),
-            &ctx
-        ).into_response();
-        response
-            .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Corelamo-Key"));
+            &ctx,
+        )
+        .into_response();
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Corelamo-Key"),
+        );
         return response;
     };
 
@@ -141,8 +144,9 @@ pub(crate) async fn auth_middleware(
                 "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
             return HttpError::from_corelamo(
                 CorelamoError::Internal("authentication is unavailable".to_string()),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         };
         auth.authenticate(&Token(token))
     }; // <- auth (the lock guard) is dropped here, before any .await
@@ -158,11 +162,13 @@ pub(crate) async fn auth_middleware(
         "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
             let mut response = HttpError::from_corelamo(
                 CorelamoError::Unauthorized("invalid or expired token".to_string()),
-                &ctx
-            ).into_response();
-            response
-                .headers_mut()
-                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Corelamo-Key"));
+                &ctx,
+            )
+            .into_response();
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Corelamo-Key"),
+            );
             response
         }
     }

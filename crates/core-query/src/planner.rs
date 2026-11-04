@@ -15,9 +15,7 @@ pub const DENSITY_BOOST: f32 = 0.5;
 /// 1 + NAME_BONUS × the share of the query's weight the run holds: ×2.5 for a run that holds the
 /// whole query, ×1.5 for one that holds a third of it.
 pub const NAME_BONUS: f32 = 1.5;
-/// Ordering values per cascade tier: hits of the plan's `n`-th tier are numbered from
-/// `n * TIER_STEP` (see `QueryExecutor::rank_cascade`).
-pub const TIER_STEP: usize = 16;
+
 /// Runs of named words are looked for in queries of at most this many words.
 const MAX_NAMED_QUERY_WORDS: usize = 32;
 
@@ -39,6 +37,11 @@ pub enum TierKind {
 
 impl TierKind {
     /// The order used when the config names none: the cascade as it has always been.
+    /// Kinds that feed the one relevance tier instead of being a tier of their own.
+    pub fn is_relevance_source(self) -> bool {
+        !matches!(self, TierKind::Name | TierKind::Exact)
+    }
+
     pub const DEFAULT_ORDER: [TierKind; 7] = [
         TierKind::Name,
         TierKind::Exact,
@@ -57,7 +60,7 @@ pub enum Tier {
         keys: Vec<String>,
         score_with: Query,
     },
-    /// The exact (case-preserving) field, text as typed.
+    /// The exact field (the whole value, lowercased) equal to the text as typed.
     Exact(Query),
     /// Every typed word in order. Matches are scored with `score_with`.
     Phrase {
@@ -74,6 +77,34 @@ pub enum Tier {
     Fuzzy(Query),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TierRanks {
+    pub name: u8,
+    pub exact: u8,
+    /// Phrase, fuzzy, all, all-but-one and any: one tier, at the place of the first of them.
+    pub relevance: u8,
+}
+impl Default for TierRanks {
+    fn default() -> Self {
+        Self::from_order(&TierKind::DEFAULT_ORDER)
+    }
+}
+
+impl TierRanks {
+    pub fn from_order(order: &[TierKind]) -> Self {
+        // a kind missing from the order gets the last possible place
+        let rank = |position: Option<usize>| {
+            position
+                .and_then(|position| u8::try_from(position).ok())
+                .unwrap_or(u8::MAX)
+        };
+        Self {
+            name: rank(order.iter().position(|kind| *kind == TierKind::Name)),
+            exact: rank(order.iter().position(|kind| *kind == TierKind::Exact)),
+            relevance: rank(order.iter().position(|kind| kind.is_relevance_source())),
+        }
+    }
+}
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RankPlan {
     pub tiers: Vec<Tier>,
@@ -82,8 +113,12 @@ pub struct RankPlan {
     pub named_runs: Vec<String>,
     /// The query's words, as name keys write them.
     pub words: Vec<String>,
+    pub ranks: TierRanks,
+    /// The parts of the resolved query, one per word or synonym group: what coverage counts.
+    pub clauses: Vec<Query>,
+    /// The typed words, analyzed, with their offsets: what density measures.
+    pub terms: Vec<PhraseTerm>,
 }
-
 impl RankPlan {
     /// The same plan without its fuzzy tier.
     pub fn without_fuzzy(&self) -> Self {
@@ -97,6 +132,9 @@ impl RankPlan {
             stop_after: self.stop_after,
             named_runs: self.named_runs.clone(),
             words: self.words.clone(),
+            ranks: self.ranks,
+            clauses: self.clauses.clone(),
+            terms: self.terms.clone(),
         }
     }
 
@@ -142,8 +180,8 @@ impl RankPlan {
                         });
                     }
                 }
-                TierKind::Exact if has_exact_field && raw.chars().any(char::is_uppercase) => {
-                    tiers.push(Tier::Exact(Query::Exact(raw.trim().to_string())));
+                TierKind::Exact if has_exact_field && !raw.trim().is_empty() => {
+                    tiers.push(Tier::Exact(Query::Exact(raw.trim().to_lowercase())));
                 }
                 TierKind::Phrase if parts.len() >= 2 => {
                     let terms = terms_from_text(raw, analyzer);
@@ -178,11 +216,21 @@ impl RankPlan {
         } else {
             (Vec::new(), Vec::new())
         };
+        let clauses = match resolved {
+            Query::And(parts) | Query::Wand(parts) | Query::Or(parts) => parts,
+            Query::Term(_) | Query::Phrase(_) | Query::Synonym(_) | Query::Exact(_) => {
+                vec![resolved]
+            }
+            _ => Vec::new(),
+        };
         Self {
             tiers,
             stop_after: 0,
             named_runs,
             words,
+            ranks: TierRanks::from_order(order),
+            clauses,
+            terms: terms_from_text(raw, analyzer),
         }
     }
 
@@ -190,20 +238,12 @@ impl RankPlan {
     /// value or exact text (the name and exact tiers): what the query names. Semantic fusion
     /// keeps them first.
     pub fn named_tier_limit(&self) -> u8 {
-        let named = self
-            .tiers
-            .iter()
-            .take_while(|tier| matches!(tier, Tier::Name { .. } | Tier::Exact(_)))
-            .count();
-        u8::try_from(named * TIER_STEP).unwrap_or(u8::MAX)
-    }
-
-    //this is same as the one below almost but this reads just back
-    pub fn phrase_terms(&self) -> Option<&[PhraseTerm]> {
-        self.tiers.iter().find_map(|tier| match tier {
-            Tier::Phrase { terms, .. } => Some(terms.as_slice()),
-            _ => None,
-        })
+        let named_first = self.tiers.iter().all(|tier| match tier {
+            Tier::Name { .. } => self.ranks.name < self.ranks.relevance,
+            Tier::Exact(_) => self.ranks.exact < self.ranks.relevance,
+            _ => true,
+        });
+        if named_first { self.ranks.relevance } else { 0 }
     }
 }
 

@@ -1,9 +1,9 @@
 //! The process-wide pool for long background work: segment writes and compaction. Shared by
 //! every shard, so concurrent background work never exceeds the cores, however many shards
-//! there are. 
+//! there are.
 use std::sync::OnceLock;
 
-use rayon::{ ThreadPool, ThreadPoolBuilder };
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
 static POOL: OnceLock<ThreadPool> = OnceLock::new();
 
