@@ -123,15 +123,16 @@ pub(crate) async fn login_handler(
     };
 
     match token {
-        Some(token) => {
+        Ok(Some(token)) => {
             let resp = LoginResponse { token: token.0 };
             HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
         }
-        None => HttpError::from_corelamo(
+        Ok(None) => HttpError::from_corelamo(
             CorelamoError::Unauthorized("invalid username or password".to_string()),
             &ctx,
         )
         .into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 

@@ -115,7 +115,7 @@ impl BackupProgress {
     pub fn try_begin(&self) -> bool {
         let won = self
             .phase
-            .fetch_update(Relaxed, Relaxed, |current| {
+            .try_update(Relaxed, Relaxed, |current| {
                 if current == (BackupPhase::Running as u8) {
                     None
                 } else {

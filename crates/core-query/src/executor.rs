@@ -10,8 +10,8 @@ use core_index::{
 };
 use std::{
     borrow::Cow,
-    collections::{BinaryHeap, HashMap, hash_map::Entry},
-    u32,
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, hash_map::Entry}
 };
 
 use ahash::{HashSet, HashSetExt};

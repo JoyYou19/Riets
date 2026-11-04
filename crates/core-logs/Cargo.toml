@@ -6,11 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-crc32fast="1"
+
 slog ="2"
 slog-async="2"
 slog-term="2"
-slog-envlogger="2"
+
 chrono= "0.4"
 [lints] 
 workspace = true

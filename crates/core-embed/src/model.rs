@@ -7,8 +7,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{ EmbeddingModel, TextInitOptions, TextEmbedding };
 use hf_hub::api::sync::ApiBuilder;
+
 
 use crate::config::ModelConfig;
 use crate::device::Device;
@@ -88,7 +89,7 @@ pub(crate) fn load_model(
     ensure_runtime(&config.runtime_library, config.install_runtime)?;
     match spec.backend {
         Backend::FastEmbed(model) => {
-            let options = InitOptions::new(model())
+            let options = TextInitOptions::new(model())
                 .with_max_length(config.max_tokens)
                 .with_cache_dir(cache_dir)
                 .with_show_download_progress(false);

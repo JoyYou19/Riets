@@ -115,9 +115,12 @@ impl AuthService {
         }
     }
 
-    pub fn login(&self, username: &str, password: &str) -> Option<Token> {
-        let _ = self.users.verify(username, password)?;
-        Some(self.tokens.issue(username.to_string()))
+    /// `Ok(None)` means wrong credentials; `Err` means the token could not be issued.
+    pub fn login(&self, username: &str, password: &str) -> Result<Option<Token>, CorelamoError> {
+        if self.users.verify(username, password).is_none() {
+            return Ok(None);
+        }
+        self.tokens.issue(username.to_string()).map(Some)
     }
     pub fn authenticate(&self, token: &Token) -> Option<Principal> {
         let username = self.tokens.resolve_username(token)?;

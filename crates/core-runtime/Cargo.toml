@@ -31,26 +31,26 @@ core-logs ={path ="../core-logs"}
 core-timing={path ="../core-timing"}
 core-backup ={path="../core-backup"}
 core-embed = { path = "../core-embed" }
-uuid = { version = "1.23.4", features = ["v4"] }
+uuid = { version = "1.29.0", features = ["v4"] }
 serde = { workspace = true,}
 tokio = { workspace = true }
 slog ="2"
 slog-async="2"
 slog-term="2"
-slog-envlogger="2"
+
 slog-scope="4"
 thiserror = "2"
-toml = "1.1.2"
+toml = "1.2.0"
 axum = { version = "0.8.9", features = ["macros"] }
-reqwest = "0.13.4"
-indexmap = { version = "2.14.0", features = ["serde"] }
+reqwest = "0.13.5"
+indexmap = { version = "2.14.2", features = ["serde"] }
 rayon = "1.12.0"
-crossbeam-channel = "0.5.16"
-parking_lot = "0.12.5"
-tower-http = { version = "0.6", features = ["cors", "decompression-gzip", "compression-full", "trace", "timeout"] }
+crossbeam-channel = "0.5.17"
+parking_lot = "0.13.0"
+tower-http = { version = "0.7", features = ["cors", "decompression-gzip", "compression-full", "trace", "timeout"] }
 tower_governor = "0.8.0"
 governor = "0.10.4"
-simd-json = "0.18.1"
+simd-json = "0.19.0"
 mimalloc = "0.1"
 serde_json = "1.0.154"
 
