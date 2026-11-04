@@ -63,8 +63,8 @@
 //! consistent everywhere in the report.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 pub use core_timing_macros::timed;
 
@@ -148,9 +148,47 @@ impl FnStats {
 // (category, function name, source filename — no directories)
 type Key = (&'static str, &'static str, &'static str);
 
-fn registry() -> &'static Mutex<HashMap<Key, FnStats>> {
+/// Locks the registry. A panic while the lock was held cannot leave the map invalid (each
+/// update is a few plain field writes), so a poisoned lock is taken over instead of turning
+/// every later timed call into a panic.
+fn registry() -> MutexGuard<'static, HashMap<Key, FnStats>> {
     static REGISTRY: OnceLock<Mutex<HashMap<Key, FnStats>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+    REGISTRY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Drop guard created by `#[timed]`: records the time from [`Timer::start`] to drop.
+/// Not meant to be used directly; use `#[timed]` or [`timed_block!`].
+#[doc(hidden)]
+pub struct Timer {
+    category: &'static str,
+    name: &'static str,
+    file: &'static str,
+    start: Instant,
+}
+
+impl Timer {
+    #[inline]
+    pub fn start(category: &'static str, name: &'static str, file: &'static str) -> Self {
+        Timer {
+            category,
+            name,
+            file,
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        // a call cut short by a panic did not do its normal work; it would skew the stats
+        if std::thread::panicking() {
+            return;
+        }
+        record(self.category, self.name, self.file, self.start.elapsed());
+    }
 }
 
 /// Strips a `file!()`-style path (e.g. `crates/core-core/src/shard_db.rs`,
@@ -177,13 +215,13 @@ fn filename_only(file: &'static str) -> &'static str {
 /// (parse, index-write, disk-write) rather than every inner helper.
 pub fn record(category: &'static str, name: &'static str, file: &'static str, elapsed: Duration) {
     let file = filename_only(file);
-    let ns = elapsed.as_nanos() as u64;
-    let mut map = registry().lock().unwrap();
+    let ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+    let mut map = registry();
     let entry = map
         .entry((category, name, file))
         .or_insert_with(FnStats::empty);
-    entry.count += 1;
-    entry.total_ns += ns;
+    entry.count = entry.count.saturating_add(1);
+    entry.total_ns = entry.total_ns.saturating_add(ns);
     if ns < entry.min_ns {
         entry.min_ns = ns;
     }
@@ -220,11 +258,11 @@ pub fn record(category: &'static str, name: &'static str, file: &'static str, el
 /// category, so `MB/s` means the same thing on every row.
 pub fn add_bytes(category: &'static str, name: &'static str, file: &'static str, bytes: u64) {
     let file = filename_only(file);
-    let mut map = registry().lock().unwrap();
+    let mut map = registry();
     let entry = map
         .entry((category, name, file))
         .or_insert_with(FnStats::empty);
-    entry.total_bytes += bytes;
+    entry.total_bytes = entry.total_bytes.saturating_add(bytes);
 }
 
 type CategoryEntries = Vec<(&'static str, &'static str, FnStats)>; // (name, file, stats)
@@ -233,7 +271,7 @@ type CategoryEntries = Vec<(&'static str, &'static str, FnStats)>; // (name, fil
 /// time descending, categories themselves sorted by their summed total
 /// time descending (biggest time-sink category first).
 pub fn snapshot() -> Vec<(&'static str, CategoryEntries)> {
-    let map = registry().lock().unwrap();
+    let map = registry();
     let mut by_category: HashMap<&'static str, CategoryEntries> = HashMap::new();
     for (&(category, name, file), &stats) in map.iter() {
         by_category
@@ -290,7 +328,7 @@ pub fn snapshot_filtered<S: AsRef<str>>(
 /// Clear all recorded stats (including baselines and byte counters) —
 /// useful between benchmark runs.
 pub fn reset() {
-    registry().lock().unwrap().clear();
+    registry().clear();
 }
 
 /// Human-readable table, grouped by category, e.g. to return from a
@@ -376,22 +414,14 @@ fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
                 Some(bps) => fmt_bytes_rate(bps),
                 None => "-".to_string(),
             };
-            let drift = match s.drift_pct() {
-                Some(pct) if s.baseline_bytes_rate.is_some() => {
-                    format!(
-                        "{:+.1}% (was {})",
-                        pct,
-                        fmt_bytes_rate(s.baseline_bytes_rate.unwrap())
-                    )
+            let drift = match (s.drift_pct(), s.baseline_bytes_rate, s.baseline_avg_ns) {
+                (Some(pct), Some(rate), _) => {
+                    format!("{:+.1}% (was {})", pct, fmt_bytes_rate(rate))
                 }
-                Some(pct) => {
-                    format!(
-                        "{:+.1}% (was {})",
-                        pct,
-                        fmt_duration(s.baseline_avg_ns.unwrap() as u64)
-                    )
+                (Some(pct), None, Some(avg)) => {
+                    format!("{:+.1}% (was {})", pct, fmt_duration(avg as u64))
                 }
-                None => "(warming up)".to_string(),
+                _ => "(warming up)".to_string(),
             };
             out.push_str(&format!(
                 "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>14} {:>24}\n",

@@ -7,7 +7,7 @@
 use proc_macro::TokenStream;
 use quote::quote_spanned;
 use syn::{
-    Ident, ItemFn, LitStr, ReturnType, Token,
+    Ident, ItemFn, LitStr, Token,
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
@@ -80,6 +80,14 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
     let args = parse_macro_input!(attr as TimedArgs);
 
+    // `Instant::now()` and a `Drop` guard are not allowed in a `const fn`; fail here with a
+    // clear message instead of a confusing error inside the expansion.
+    if let Some(constness) = &input.sig.constness {
+        return syn::Error::new_spanned(constness, "#[timed] cannot be used on a `const fn`")
+            .to_compile_error()
+            .into();
+    }
+
     let ItemFn {
         attrs,
         vis,
@@ -95,56 +103,35 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     // keeps the lint working; interpolated `#sig`/`#block` keep their own
     // spans either way, so diagnostics stay accurate.
     let span = sig.ident.span();
-    let is_async = sig.asyncness.is_some();
-    let is_unsafe = sig.unsafety.is_some();
     let fn_name = sig.ident.to_string();
+    // the body's statements are spliced in directly; `{ #block }` would trip `unused_braces`
+    let stmts = &block.stmts;
 
     let category = args
-        .category.map_or_else(|| "uncategorized".to_string(), |ident| ident.to_string());
+        .category
+        .map_or_else(|| "uncategorized".to_string(), |ident| ident.to_string());
     let label = args.label.map_or(fn_name, |lit| lit.value());
 
-    let ret_ty = match &sig.output {
-        ReturnType::Default => quote_spanned! { span => () },
-        ReturnType::Type(_, ty) => quote_spanned! { span => #ty },
-    };
-
-    // If the original fn was `unsafe fn`, its body may rely on being an
-    // implicit unsafe context. Wrapping the body in a plain closure/async
-    // block loses that, so we re-wrap explicitly in that case.
-    let body_tokens = if is_unsafe {
-        quote_spanned! { span => unsafe #block }
-    } else {
-        quote_spanned! { span => #block }
-    };
-
-    let timed_expr = if is_async {
-        quote_spanned! { span =>
-            {
-                let __perf_start = ::std::time::Instant::now();
-                let __perf_result: #ret_ty = (async move #body_tokens).await;
-                ::core_timing::record(#category, #label, file!(), __perf_start.elapsed());
-                __perf_result
-            }
-        }
-    } else {
-        quote_spanned! { span =>
-            {
-                let __perf_start = ::std::time::Instant::now();
-                let __perf_result: #ret_ty = (move || -> #ret_ty #body_tokens)();
-                ::core_timing::record(#category, #label, file!(), __perf_start.elapsed());
-                __perf_result
-            }
-        }
-    };
-
+    // The body is emitted once and unchanged, behind a drop guard that records the time when
+    // the function returns (normally, by `return` or by `?`). No closure or async block
+    // wraps it, so the return type is never written out: `impl Trait` returns, borrowed
+    // returns and `unsafe fn` bodies keep working, and `static`s in the body stay single.
+    // In an `async fn` the guard lives inside the future, so it measures until the future
+    // completes or is dropped. `cfg!` is evaluated in the crate that uses the macro; when
+    // its `timing` feature is off the guard is a constant `None` and compiles away.
     let output = quote_spanned! { span =>
         #(#attrs)*
         #vis #sig {
-            if cfg!(feature = "timing") {
-                #timed_expr
+            let __core_timing_guard = if ::core::cfg!(feature = "timing") {
+                ::core::option::Option::Some(::core_timing::Timer::start(
+                    #category,
+                    #label,
+                    ::core::file!(),
+                ))
             } else {
-                #block
-            }
+                ::core::option::Option::None
+            };
+            #(#stmts)*
         }
     };
 

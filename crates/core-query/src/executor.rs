@@ -11,8 +11,7 @@ use core_index::{
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, hash_map::Entry},
-    u32,
+    collections::{BinaryHeap, HashMap, hash_map::Entry}
 };
 
 use ahash::{HashSet, HashSetExt};
