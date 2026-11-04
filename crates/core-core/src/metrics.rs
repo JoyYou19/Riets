@@ -28,8 +28,7 @@ pub enum BackgroundActivity {
     Embedding = 2,
     Reindexing = 3,
     //document compaction
-    Cleanup =4
-
+    Cleanup = 4,
 }
 
 impl BackgroundActivity {
@@ -87,7 +86,7 @@ pub struct EmbeddingStats {
 pub struct BackgroundStats {
     pub shards_compacting: usize,
     pub shards_embedding: usize,
-    pub shards_reindexing:usize,
+    pub shards_reindexing: usize,
     pub shards_cleaning: usize,
 
     pub compaction_failures: u64,
@@ -397,11 +396,11 @@ impl DbStats {
                 BackgroundActivity::Embedding => {
                     embedding_now += 1;
                 }
-                BackgroundActivity::Reindexing =>{
-                    reindexing +=1;
+                BackgroundActivity::Reindexing => {
+                    reindexing += 1;
                 }
-                BackgroundActivity::Cleanup =>{
-                    cleaning +=1;
+                BackgroundActivity::Cleanup => {
+                    cleaning += 1;
                 }
                 BackgroundActivity::Idle => {}
             }
@@ -436,8 +435,8 @@ impl DbStats {
             restoring: false,
             reindexing: self.reindex.snapshot().into(),
             background: BackgroundStats {
-                shards_cleaning:cleaning,
-                shards_reindexing:reindexing,
+                shards_cleaning: cleaning,
+                shards_reindexing: reindexing,
                 shards_compacting: compacting,
                 shards_embedding: embedding_now,
                 compaction_failures,
@@ -727,7 +726,10 @@ mod tests {
         b.set_vector_progress(1_000, 1_000);
         let embedding = stats.snapshot().background.embedding;
         assert_eq!(embedding.status, EmbeddingStatus::Complete);
-        assert_eq!((embedding.docs_per_second, embedding.eta_seconds), (None, None));
+        assert_eq!(
+            (embedding.docs_per_second, embedding.eta_seconds),
+            (None, None)
+        );
 
         // new documents start a second run, measured from its own first round
         a.set_vector_progress(1_200, 1_000);

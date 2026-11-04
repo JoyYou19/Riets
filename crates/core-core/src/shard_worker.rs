@@ -1,4 +1,5 @@
 use ahash::HashMap as AHashMap;
+use core_query::ranking::{POOL_SIZE, finalize};
 use std::collections::HashMap;
 
 use std::path::PathBuf;
@@ -41,6 +42,8 @@ use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
 
+//how often the worker loop wakes up to run that check
+const IDLE_FLUSH_POLL: Duration = Duration::from_secs(1);
 //info: i genuenly made this so that the fucking function response isnt this:
 pub struct ShardRankedResult {
     pub total: usize,
@@ -231,6 +234,44 @@ impl ShardHandle {
         })
     }
 
+    /// For each candidate, the documents of this shard holding it together with every context
+    /// word, each word in any of `xpaths`. No context: the documents holding the candidate.
+    pub fn co_occurrence_fuzzy(
+        &self,
+        candidates: &[String],
+        context: &[String],
+        xpaths: &[XPathId],
+    ) -> Vec<u64> {
+        let snapshot = self.shared.snapshot.get();
+        let docs_of = |term: &str| -> ahash::HashSet<DocId> {
+            xpaths
+                .iter()
+                .flat_map(|&xpath| {
+                    snapshot
+                        .lookup(term, xpath)
+                        .items()
+                        .iter()
+                        .map(|posting| posting.doc_id)
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let context_docs: Option<ahash::HashSet<DocId>> = context
+            .iter()
+            .map(|word| docs_of(word))
+            .reduce(|kept, next| kept.intersection(&next).copied().collect());
+        candidates
+            .iter()
+            .map(|candidate| {
+                let docs = docs_of(candidate);
+                let together = match &context_docs {
+                    Some(context) => docs.intersection(context).count(),
+                    None => docs.len(),
+                };
+                together as u64
+            })
+            .collect()
+    }
     // CHANGED: analyzes each word with each field's own analyzer, not one shared default.
     pub fn info_words_direct(
         &self,
@@ -274,19 +315,21 @@ impl ShardHandle {
         self.ensure_readable()?;
         let snapshot = self.shared.snapshot.get();
 
-        let mut per_field = Vec::with_capacity(xpaths.len());
+        // one list per typed word (the order the manager reads them in), holding the word's
+        // expansions from every field, each field analyzing the word its own way
+        let typed: Vec<&str> = raw.split_whitespace().collect();
+        let mut per_word: Vec<Vec<FuzzyExpansion>> = vec![Vec::new(); typed.len()];
         for &xpath in xpaths {
-            let analyzer = analyzers.get(&xpath).unwrap_or_else(|| &self.analyzer);
-            let mut expansions = Vec::new();
-            for word in fuzzable_words(analyzer, raw) {
-                let opts = core_query::fuzzy_options(&word, fuzziness, spec);
-                expansions.extend(snapshot.fuzzy_expansions(&word, xpath, opts));
+            let analyzer = analyzers.get(&xpath).unwrap_or(&self.analyzer);
+            for (index, piece) in typed.iter().enumerate() {
+                for word in fuzzable_words(analyzer, piece) {
+                    let opts = core_query::fuzzy_options(&word, fuzziness, spec);
+                    per_word[index].extend(snapshot.fuzzy_expansions(&word, xpath, opts));
+                }
             }
-            per_field.push(expansions);
         }
-        Ok(per_field)
+        Ok(per_word)
     }
-
     /// Pins the snapshot the search reads and reads the query from it once: the posting lists
     /// ranking needs, and from them what this shard adds to the statistics of the search.
     //INFO:  changed to &[querygroup]
@@ -318,8 +361,6 @@ impl ShardHandle {
         }
     }
 
-    //helper for the ranking
-    //INFO: changed so that it ranks every group with its own executor/analyzer, then merges hits by doc_id.
     fn rank_candidates(
         &self,
         snapshot: &IndexSnapshot,
@@ -334,51 +375,42 @@ impl ShardHandle {
         if k == 0 {
             return (0, Vec::new());
         }
-        let mut merged: HashMap<DocId, SearchHit> = HashMap::new();
+        // filters do not depend on the group's analyzer: evaluate them once
+        let restrict = filters.and_then(|f| {
+            QueryExecutor::new(snapshot, &self.analyzer)
+                .with_corpus(corpus)
+                .filter_doc_ids(f)
+        });
+        // each group sees only part of a document's evidence: keep more of its candidates, so
+        // documents strong across groups but middling in each survive until they are merged
+        let group_k = if groups.len() > 1 {
+            k.max(POOL_SIZE)
+        } else {
+            k
+        };
+        // `prepare_search` prepared only the groups that kept a query, in order
+        let searched = groups
+            .iter()
+            .zip(plans)
+            .filter_map(|(group, plan)| group.query.as_ref().map(|query| (group, plan, query)));
+        let mut ranked = Vec::with_capacity(groups.len());
         //WARN: this is done sequencially for each query group we might need to do some par_iter()
         //bs if slow
-        for ((group, plan), prepared_group) in groups.iter().zip(plans).zip(prepared) {
-            let Some(query) = group.query.as_ref() else {
-                continue;
-            };
+        for ((group, plan, query), prepared_group) in searched.zip(prepared) {
             let executor = QueryExecutor::new(snapshot, &group.analyzer)
                 .with_corpus(corpus)
                 .with_prepared(prepared_group);
-            let restrict = filters.and_then(|f| executor.filter_doc_ids(f));
-            for hit in executor.rank(
+            ranked.push(executor.rank_features(
                 Some(query),
                 &group.ctxs,
-                k,
+                group_k,
                 restrict.as_ref(),
                 mactmode,
                 plan,
-            ) {
-                merged
-                    .entry(hit.doc_id)
-                    .and_modify(|e| {
-                        e.score += hit.score;
-                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                        e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
-                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                        e.tier = e.tier.min(hit.tier);
-                    })
-                    .or_insert(hit);
-            }
+            ));
         }
-        let mut hits: Vec<SearchHit> = merged.into_values().collect();
-        hits.sort_by(|a, b| {
-            b.tier
-                .cmp(&a.tier)
-                .then(
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal),
-                )
-                .then(a.doc_id.cmp(&b.doc_id))
-        });
-        hits.truncate(k);
-        let total = hits.len();
-        (total, hits)
+        let hits = finalize(ranked, k);
+        (hits.len(), hits)
     }
 
     #[timed(search)]
@@ -931,9 +963,6 @@ pub fn spawn(
         boot_rx,
     ))
 }
-
-//how often the worker loop wakes up to run that check
-const IDLE_FLUSH_POLL: Duration = Duration::from_secs(1);
 
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
     loop {

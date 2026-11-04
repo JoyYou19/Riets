@@ -16,8 +16,8 @@ use core_storage::binary_store::BinaryDocumentStore;
 use core_storage::search_database::SearchDatabase;
 use core_timing::timed;
 
-use crate::metrics::DbStats;
 use crate::DatabaseOptions;
+use crate::metrics::DbStats;
 
 pub struct ReindexParams {
     pub shard_id: ShardId,
@@ -35,10 +35,10 @@ pub struct CompletedShardReindex {
     pub built_through: u64,
     pub generation: u64,
 }
-pub struct ReindexTask{
+pub struct ReindexTask {
     pub params: ReindexParams,
-    pub progress:Arc<ReindexProgress>,
-    pub stats:Arc<DbStats>
+    pub progress: Arc<ReindexProgress>,
+    pub stats: Arc<DbStats>,
 }
 
 /// Builds a fresh index into index.new. Reads the shard's document store but
@@ -67,10 +67,7 @@ pub(crate) fn build_staging_index(
     .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
     staging
-        .reindex_existing_documents(
-            params.options.runtime.indexing_batch_size,
-            progress,
-        )
+        .reindex_existing_documents(params.options.runtime.indexing_batch_size, progress)
         .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
     staging

@@ -24,9 +24,8 @@ use crate::{
     search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
     segment::{ImmutableSegment, SegmentHandle},
     types::{ArrayRowId, DocId, XPathId},
-    vector::{
-        HnswGraph, SegmentVectors, VectorFile, find_vector_files, hnsw_file_path, vector_file_path,
-    },
+    vector::{HnswGraph, hnsw_file_path},
+    vector::{SegmentVectors, VectorFile, find_vector_files, vector_file_path},
     wildcard::WildcardPattern,
 };
 
@@ -55,7 +54,7 @@ pub struct LsmIndex {
 pub struct FlushJob {
     seq: u64,
     path: PathBuf,
-    segment: Arc<ImmutableSegment>,
+    generations: Arc<[Arc<MemIndex>]>,
 }
 
 impl FlushJob {
@@ -63,22 +62,27 @@ impl FlushJob {
         self.seq
     }
 
-    /// Writes and fsyncs the segment file, then opens it for reading. Touches no index state,
-    /// so it can run on any thread.
+    /// Builds the segment from the generations, writes and fsyncs it, then opens it for
+    /// reading. Touches no index state, so it runs on the writer, off the ingest path.
     #[timed(writing_files)]
     pub fn write(self) -> io::Result<DiskSegment> {
         let with_path =
             |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", self.path.display()));
-        write_segment(&self.path, &self.segment).map_err(with_path)?;
+        let segment = MemIndex::freeze_shared(&self.generations);
+        write_segment(&self.path, &segment).map_err(with_path)?;
         DiskSegment::open(&self.path).map_err(with_path)
     }
 }
 
-/// A queued segment that is not yet installed from disk.
+/// A queued flush that is not yet installed from disk. Its generations stay searchable from
+/// memory until then.
 struct PendingFlush {
     seq: u64,
     path: PathBuf,
-    segment: Arc<ImmutableSegment>,
+    generations: Arc<[Arc<MemIndex>]>,
+    /// segments added (`add_immutable_segment`) since this flush was queued: they hold newer
+    /// documents, so it installs before them
+    added_after: usize,
 }
 #[derive(Default)]
 struct FlushQueue {
@@ -88,15 +92,27 @@ struct FlushQueue {
     failure: Option<String>,
 }
 impl FlushQueue {
-    fn push(&mut self, path: PathBuf, segment: Arc<ImmutableSegment>) {
+    fn push(&mut self, path: PathBuf, generations: Arc<[Arc<MemIndex>]>) {
         let seq = self.next_seq;
         self.next_seq += 1;
         self.pending.push_back(PendingFlush {
             seq,
             path: path.clone(),
-            segment: Arc::clone(&segment),
+            generations: Arc::clone(&generations),
+            added_after: 0,
         });
-        self.made_not_flushed.push(FlushJob { seq, path, segment });
+        self.made_not_flushed.push(FlushJob {
+            seq,
+            path,
+            generations,
+        });
+    }
+
+    /// A segment was added after every flush still pending.
+    fn segment_added(&mut self) {
+        for pending in &mut self.pending {
+            pending.added_after += 1;
+        }
     }
 
     fn take_jobs(&mut self) -> Vec<FlushJob> {
@@ -362,8 +378,15 @@ impl LsmIndex {
             if newest.estimated_size_bytes() > sealed.estimated_size_bytes() {
                 break;
             }
-            // Older first, so doc ids stay ascending within the merged generation.
-            let mut merged = unwrap_mem(self.generations.pop().expect("checked non-empty"));
+            // a snapshot still reads this generation: merging would copy all of it, so leave
+            // it and stack the new one on top (the flush merges them once)
+            if Arc::strong_count(newest) > 1 {
+                break;
+            }
+            let Some(newest) = self.generations.pop() else {
+                break;
+            };
+            let mut merged = unwrap_mem(newest);
             merged.merge_from(sealed);
             sealed = merged;
         }
@@ -372,6 +395,9 @@ impl LsmIndex {
 
     pub(crate) fn should_flush(&self) -> bool {
         self.memtable_size() >= self.flush_threshold
+    }
+    pub fn pending_flushes(&self) -> usize {
+        self.flush_queue.pending.len()
     }
 
     pub fn publish_snapshot(&mut self) -> IndexSnapshot {
@@ -385,13 +411,26 @@ impl LsmIndex {
     }
 
     fn build_snapshot(&self, mem: Arc<MemIndex>) -> IndexSnapshot {
+        let pending: usize = self
+            .flush_queue
+            .pending
+            .iter()
+            .map(|pending| pending.generations.len())
+            .sum();
         let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> =
-            Vec::with_capacity(self.generations.len() + self.query_segments.len());
+            Vec::with_capacity(self.generations.len() + pending + self.query_segments.len());
         segments.extend(
             self.generations
                 .iter()
                 .map(|generation| Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>),
         );
+        for flush in &self.flush_queue.pending {
+            segments.extend(
+                flush.generations.iter().map(|generation| {
+                    Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>
+                }),
+            );
+        }
         segments.extend(self.query_segments.iter().cloned());
         IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
             .with_vectors(Arc::clone(&self.vectors))
@@ -414,9 +453,8 @@ impl LsmIndex {
     pub fn flush_threshold(&self) -> usize {
         self.flush_threshold
     }
-    /// Freezes the memtable into a segment that is searchable right away from memory, and
-    /// queues it to be written to disk (`take_flush_jobs`). Indexes without a root keep the
-    /// segment in memory.
+    /// Seals the memtable and queues its generations to be written to disk
+
     #[timed(flushing)]
     pub fn queue_flush(&mut self) -> io::Result<()> {
         self.flush_queue.health()?;
@@ -428,30 +466,34 @@ impl LsmIndex {
             return Ok(());
         }
 
-        // Oldest first: index 0 holds the lowest doc ids.
-        let mut generations = std::mem::take(&mut self.generations).into_iter();
-        let mut merged_mem = unwrap_mem(generations.next().expect("checked non-empty"));
-        for generation in generations {
-            merged_mem.merge_from(unwrap_mem(generation));
-        }
-        let Some((_, max_doc_id)) = merged_mem.doc_id_range() else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "flushed generations contain no document ids",
-            ));
-        };
+        // oldest first: index 0 holds the lowest doc ids
+        let generations: Arc<[Arc<MemIndex>]> = std::mem::take(&mut self.generations).into();
+        let max_doc_id = generations
+            .iter()
+            .filter_map(|generation| generation.doc_id_range())
+            .map(|(_, max)| max)
+            .max()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "flushed generations contain no document ids",
+                )
+            })?;
         self.next_doc_id = max_doc_id.saturating_add(1);
 
-        let segment = Arc::new(merged_mem.freeze());
-        self.segment_handles
-            .push(SegmentHandle::Memory(Arc::clone(&segment)));
-        Arc::make_mut(&mut self.query_segments)
-            .push(Arc::clone(&segment) as Arc<dyn SearchReader + Send + Sync>);
-
-        if let Some(root) = &self.root {
-            let path = root.join(format!("segment-{}.idx", self.next_segment_id));
-            self.next_segment_id += 1;
-            self.flush_queue.push(path, segment);
+        match &self.root {
+            Some(root) => {
+                let path = root.join(format!("segment-{}.idx", self.next_segment_id));
+                self.next_segment_id += 1;
+                self.flush_queue.push(path, generations);
+            }
+            None => {
+                let segment = Arc::new(MemIndex::freeze_shared(&generations));
+                self.segment_handles
+                    .push(SegmentHandle::Memory(Arc::clone(&segment)));
+                Arc::make_mut(&mut self.query_segments)
+                    .push(segment as Arc<dyn SearchReader + Send + Sync>);
+            }
         }
         Ok(())
     }
@@ -478,18 +520,32 @@ impl LsmIndex {
         self.flush_queue.take_jobs()
     }
 
-    /// Installs a written segment in place of its in-memory copy and records it in the
-    /// manifest. A failure is kept and reported by every later flush.
+    /// Installs a written segment in place of its generations and records it in the manifest.
+    /// When the write failed the generations are kept as an in-memory segment, so nothing
+    /// becomes unsearchable; the failure is kept and reported by every later flush.
     pub fn complete_flush(&mut self, seq: u64, written: io::Result<DiskSegment>) -> io::Result<()> {
-        let outcome = self.flush_queue.complete(seq).and_then(|pending| {
-            let installed = written.and_then(|disk| self.install_flushed(&pending, disk));
-            drop_flushed_segment(pending.segment);
-            installed
-        });
+        let pending = match self.flush_queue.complete(seq) {
+            Ok(pending) => pending,
+            Err(e) => {
+                self.flush_queue.fail(&e);
+                return Err(e);
+            }
+        };
+        let outcome = written.and_then(|disk| self.install_flushed(&pending, disk));
         if let Err(e) = &outcome {
+            self.keep_in_memory(&pending);
             self.flush_queue.fail(e);
         }
+        drop_flushed_generations(pending.generations);
         outcome
+    }
+
+    /// Where a pending flush goes among the segments: before the ones added after it was
+    /// queued, after everything older.
+    fn flush_position(&self, pending: &PendingFlush) -> usize {
+        self.segment_handles
+            .len()
+            .saturating_sub(pending.added_after)
     }
 
     fn install_flushed(&mut self, pending: &PendingFlush, disk: DiskSegment) -> io::Result<()> {
@@ -497,17 +553,23 @@ impl LsmIndex {
             .root
             .clone()
             .ok_or_else(|| io::Error::other("flushed segment without a root"))?;
-        let position = self.segment_handles
-            .iter()
-            .position(
-                |handle|
-                    matches!(handle, SegmentHandle::Memory(s) if Arc::ptr_eq(s, &pending.segment))
-            )
-            .ok_or_else(|| io::Error::other("flushed segment is no longer live"))?;
         manifest::append_segment(&root, &pending.path)?;
-        self.segment_handles[position] = SegmentHandle::Disk(pending.path.clone());
-        Arc::make_mut(&mut self.query_segments)[position] = Arc::new(disk);
+        let position = self.flush_position(pending);
+        self.segment_handles
+            .insert(position, SegmentHandle::Disk(pending.path.clone()));
+        Arc::make_mut(&mut self.query_segments).insert(position, Arc::new(disk));
         Ok(())
+    }
+
+    /// A flush that could not be written stays searchable from memory, where it would have
+    /// been installed.
+    fn keep_in_memory(&mut self, pending: &PendingFlush) {
+        let segment = Arc::new(MemIndex::freeze_shared(&pending.generations));
+        let position = self.flush_position(pending);
+        self.segment_handles
+            .insert(position, SegmentHandle::Memory(Arc::clone(&segment)));
+        Arc::make_mut(&mut self.query_segments)
+            .insert(position, segment as Arc<dyn SearchReader + Send + Sync>);
     }
 
     /// Every flush numbered below this has to finish before data queued so far is on disk.
@@ -552,6 +614,7 @@ impl LsmIndex {
                 }
             };
             Arc::make_mut(&mut self.query_segments).push(reader);
+            self.flush_queue.segment_added();
         }
 
         Ok(())
@@ -586,6 +649,11 @@ impl LsmIndex {
 
         // Documents stopped arriving: the load the segments came from is over.
         let quiet = self.quiet_for(config.idle_merge_after);
+
+        if !quiet && (self.has_pending_flushes() || sizes.len() <= config.max_segments) {
+            return Ok(None);
+        }
+
         let all_disk = disk_segments == sizes.len();
         let max_width = config.max_segments_per_compaction.max(config.min_width);
 
@@ -909,10 +977,9 @@ fn open_graph(segment: &Path, xpath: XPathId, file: &Arc<VectorFile>) -> Option<
     }
 }
 #[timed(flushing)]
-fn drop_flushed_segment(segment: Arc<ImmutableSegment>) {
-    drop(segment);
+fn drop_flushed_generations(generations: Arc<[Arc<MemIndex>]>) {
+    drop(generations);
 }
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod compaction_rules {

@@ -6,7 +6,14 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions}, mem::MemIndex, numeric_values::{NumericBound, NumericValue}, posting::{DeleteSet, PostingList, ops::union_many}, search::{SearchIndex, SearchNumeric, SearchReader, SearchStats}, types::{ArrayRowId, DocId, XPathId}, vector::{SegmentVectors, VectorFilter, VectorHit, search_segments}, wildcard::WildcardPattern,
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
+    mem::MemIndex,
+    numeric_values::{NumericBound, NumericValue},
+    posting::{DeleteSet, PostingList, ops::union_many},
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
+    types::{ArrayRowId, DocId, XPathId},
+    vector::{SegmentVectors, VectorFilter, VectorHit, search_segments},
+    wildcard::WildcardPattern,
 };
 
 /*

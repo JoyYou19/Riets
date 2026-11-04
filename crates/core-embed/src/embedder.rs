@@ -126,7 +126,10 @@ impl Embedder {
     pub fn embed_query(&self, text: &str) -> io::Result<Vec<f32>> {
         let text = text.trim();
         if text.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "query is empty"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "query is empty",
+            ));
         }
         let prefixed = format!(
             "{}{}",

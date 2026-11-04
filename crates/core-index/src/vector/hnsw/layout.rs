@@ -104,7 +104,9 @@ impl GraphHeader {
     pub(crate) fn validate(&self) -> Result<(), String> {
         let upper = usize::from(self.max_links_upper);
         if !(2..=MAX_LINKS_LIMIT).contains(&upper) {
-            return Err(format!("max_links_upper {upper} outside 2..={MAX_LINKS_LIMIT}"));
+            return Err(format!(
+                "max_links_upper {upper} outside 2..={MAX_LINKS_LIMIT}"
+            ));
         }
         if usize::from(self.max_links_level0) != upper * 2 {
             return Err(format!(
@@ -116,7 +118,10 @@ impl GraphHeader {
             return Err("graph has no nodes".to_string());
         }
         if self.entry_node >= self.node_count {
-            return Err(format!("entry node {} outside {} nodes", self.entry_node, self.node_count));
+            return Err(format!(
+                "entry node {} outside {} nodes",
+                self.entry_node, self.node_count
+            ));
         }
         if self.top_level > MAX_LEVEL {
             return Err(format!("top level {} above {MAX_LEVEL}", self.top_level));
@@ -152,13 +157,11 @@ impl GraphLayout {
         let upper_slot_length = (1 + usize::from(header.max_links_upper)) * 4;
 
         let node_levels_offset = header_length();
-        let upper_slot_starts_offset =
-            next_section(node_levels_offset.checked_add(nodes)?)?;
+        let upper_slot_starts_offset = next_section(node_levels_offset.checked_add(nodes)?)?;
         let level0_lists_offset =
             next_section(upper_slot_starts_offset.checked_add(nodes.checked_mul(4)?)?)?;
-        let upper_lists_offset = next_section(
-            level0_lists_offset.checked_add(nodes.checked_mul(level0_slot_length)?)?,
-        )?;
+        let upper_lists_offset =
+            next_section(level0_lists_offset.checked_add(nodes.checked_mul(level0_slot_length)?)?)?;
         let total_length = upper_lists_offset
             .checked_add((header.upper_slot_count as usize).checked_mul(upper_slot_length)?)?;
 
@@ -264,7 +267,10 @@ mod tests {
             let err = GraphHeader::read_from(&case, path).expect_err(name);
             assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{name}");
         }
-        assert!(GraphHeader::read_from(&bytes[..10], path).is_err(), "truncated");
+        assert!(
+            GraphHeader::read_from(&bytes[..10], path).is_err(),
+            "truncated"
+        );
     }
 
     #[test]
@@ -281,14 +287,23 @@ mod tests {
         assert!(offsets.iter().all(|o| o % SECTION_ALIGNMENT == 0));
         assert!(layout.upper_slot_starts_offset >= layout.node_levels_offset + nodes);
         assert!(layout.level0_lists_offset >= layout.upper_slot_starts_offset + nodes * 4);
-        assert!(layout.upper_lists_offset >= layout.level0_lists_offset + nodes * layout.level0_slot_length);
-        assert_eq!(layout.total_length, layout.upper_lists_offset + 70 * layout.upper_slot_length);
+        assert!(
+            layout.upper_lists_offset
+                >= layout.level0_lists_offset + nodes * layout.level0_slot_length
+        );
+        assert_eq!(
+            layout.total_length,
+            layout.upper_lists_offset + 70 * layout.upper_slot_length
+        );
     }
 
     #[test]
     fn slot_offsets_follow_the_layout() {
         let layout = GraphLayout::new(&sample_header()).expect("layout");
-        assert_eq!(layout.slot_offset(0, 0, NO_UPPER_SLOTS), layout.level0_lists_offset);
+        assert_eq!(
+            layout.slot_offset(0, 0, NO_UPPER_SLOTS),
+            layout.level0_lists_offset
+        );
         assert_eq!(
             layout.slot_offset(2, 0, NO_UPPER_SLOTS),
             layout.level0_lists_offset + 2 * layout.level0_slot_length
