@@ -18,7 +18,7 @@ use core_index::lsm::index_worker::Phase;
 use core_index::types::{DocId, ShardId, XPathId, shard_of};
 use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{
-    DidYouMeanRequest, Fuzziness, HighlightFieldOptions, LookupCommand, LookupResponse,
+    DidYouMeanRequest, Fuzziness, HighlightFieldOptions, LookupCommand, LookupResponse, MatchMode,
     QueryCorrection, SearchCommand, SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
@@ -33,7 +33,7 @@ use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
     FieldQuery, QueryGroup, compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
 };
-use core_query::{CorpusStats, SearchHit};
+use core_query::{CorpusStats, SearchHit, rank_order};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
@@ -42,7 +42,6 @@ use core_timing::timed;
 use crossbeam_channel::bounded;
 use parking_lot::{Mutex, RwLock};
 use simd_json::OwnedValue;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -53,7 +52,7 @@ use std::time::{Duration, SystemTime};
 use tokio::task::JoinSet;
 
 use crate::shard_manager_helpers::{
-    compile_filters, fold_sort_bounds, order_blended, order_strict, resolve_sorts,
+    ResolvedSort, compile_filters, fold_sort_bounds, order_blended, order_strict, resolve_sorts,
 };
 use core_embed::{Embedder, ModelRegistry};
 
@@ -78,6 +77,12 @@ const MAX_RESULTS_SIZE: usize = 1000;
 const CORRECTION_DOMINANCE: u32 = 20;
 /// True when `best` is clearly what was meant: every other candidate at the same or a smaller
 /// edit distance is in at most 1/CORRECTION_DOMINANCE as many documents.
+const CONTEXT_CANDIDATES: usize = 8;
+/// A correction chosen by context is trusted when its documents with the other words
+/// outnumber the next candidate's this many times.
+const CONTEXT_DOMINANCE: u64 = 3;
+/// A word at least this many documents contain is spelled right: it is never replaced.
+const TRUSTED_DOC_FREQ: u32 = 20;
 fn is_confident_correction(best: &FuzzyExpansion, candidates: &[FuzzyExpansion]) -> bool {
     candidates
         .iter()
@@ -146,7 +151,7 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
             names.is_none_or(|names| {
                 names
                     .iter()
-                    .any(|name| *name == field.full_path || *name == field.name)
+                    .any(|name| (*name == field.full_path || *name == field.name))
             })
         })
         .map(|field| field.xpath(policy))
@@ -175,6 +180,7 @@ struct WordCorrection {
 }
 impl ShardManager {
     const DEFAULT_QUEUE_DEPTH: usize = 256;
+    /// Candidates of a misspelled word that are checked against the rest of the query.
 
     #[timed(database_lifecycle)]
     pub fn create(
@@ -247,8 +253,6 @@ impl ShardManager {
         })
     }
 
-    //INFO: manual load is basically only used for rename_database so that it doesnt start based on
-    //boot : bool
     #[timed(database_lifecycle)]
     pub fn load(
         root: PathBuf,
@@ -1230,16 +1234,8 @@ impl ShardManager {
         Ok(out)
     }
 
-    #[timed(search)]
-    pub fn hits_cmp(a: &SearchHit, b: &SearchHit) -> Ordering {
-        a.tier
-            .cmp(&b.tier)
-            .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
-            .then_with(|| a.doc_id.cmp(&b.doc_id))
-    }
-
     fn build_plans(
-        command: &SearchCommand,
+        query: &OwnedValue,
         query_groups: &[QueryGroup],
         cascade_order: &[TierKind],
         has_sort: bool,
@@ -1249,7 +1245,7 @@ impl ShardManager {
         let full: Arc<Vec<RankPlan>> = Arc::new(
             query_groups
                 .iter()
-                .map(|group| match (&command.query, group.query.as_ref()) {
+                .map(|group| match (query, group.query.as_ref()) {
                     (OwnedValue::String(text), Some(resolved)) => {
                         let has_exact = group.ctxs.iter().any(|ctx| ctx.exact_xpath.is_some());
                         RankPlan::cascade(
@@ -1273,306 +1269,310 @@ impl ShardManager {
         (full, no_fuzzy)
     }
 
-    async fn prepare_shards(
-        &self,
-        query_groups: &Arc<Vec<QueryGroup>>,
-        plans_no_fuzzy: &Arc<Vec<RankPlan>>,
-        plans_full: &Arc<Vec<RankPlan>>,
-        raw: &OwnedValue,
-    ) -> Result<(Arc<CorpusStats>, Vec<Arc<PreparedShardSearch>>), CorelamoError> {
-        let plain_xpaths: Vec<XPathId> = query_groups
-            .iter()
-            .flat_map(|g| g.ctxs.iter())
-            .filter(|ctx| !ctx.row_keyed)
-            .map(|ctx| ctx.xpath)
-            .collect();
-        let raw_words: Vec<String> = match raw {
-            OwnedValue::String(text) => text.split_whitespace().map(str::to_lowercase).collect(),
-            _ => Vec::new(),
-        };
-        let has_fuzzy = plans_full
-            .iter()
-            .zip(plans_no_fuzzy.iter())
-            .any(|(f, n)| f.tiers.len() != n.tiers.len());
-
-        let mut current = plans_no_fuzzy.clone();
-        let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
-        let mut corpus = CorpusStats::new();
-
-        for pass in 0..2 {
-            let mut set = JoinSet::new();
-            for (index, handle) in self.shards.iter().enumerate() {
-                let handle = handle.clone();
-                let query_groups = query_groups.clone();
-                let current = current.clone();
-                set.spawn_blocking(move || (index, handle.prepare_search(&query_groups, &current)));
-            }
-            corpus = CorpusStats::new();
-            while let Some(res) = set.join_next().await {
-                match res {
-                    Ok((index, shard)) => {
-                        corpus.merge(shard.stats());
-                        prepared[index] = Some(Arc::new(shard));
-                    }
-                    Err(je) => {
-                        return Err(CorelamoError::Internal(format!(
-                            "shard prepare panicked: {je}"
-                        )));
-                    }
-                }
-            }
-
-            if !has_fuzzy || pass == 1 {
-                break;
-            }
-            let unknown = raw_words.iter().any(|word| {
-                self.shards
-                    .iter()
-                    .all(|handle| handle.word_missing(word, &plain_xpaths))
-            });
-            if !unknown {
-                break;
-            }
-            current = plans_full.clone();
-        }
-
-        Ok((
-            Arc::new(corpus),
-            prepared
-                .into_iter()
-                .map(|p| p.expect("shard prepared"))
-                .collect(),
-        ))
-    }
-
     #[timed(search)]
     pub async fn search(
         &self,
         command: &SearchCommand,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits, Option<QueryCorrection>), CorelamoError> {
-        let limit = command.docs.unwrap_or(10);
-        if limit > MAX_RESULTS_SIZE {
-            return Err(CorelamoError::InvalidData(format!(
-                "docs may be at most {MAX_RESULTS_SIZE}, got {limit}"
-            )));
-        }
-        let offset = command.offset.unwrap_or(0);
-        let fetch = offset.saturating_add(limit);
-        if fetch == 0 {
+        self.run_search(command, true).await
+    }
+
+    /// The whole search. `allow_correction`: false for the re-run with a corrected spelling,
+    /// so a spelling is fixed at most once.
+    async fn run_search(
+        &self,
+        command: &SearchCommand,
+        allow_correction: bool,
+    ) -> Result<(Vec<SearchDocumentHit>, TotalHits, Option<QueryCorrection>), CorelamoError> {
+        let Some(page) = requested_page(command)? else {
             return Ok((Vec::new(), TotalHits::default(), None));
-        }
+        };
         if let Some(request) = vector_request(&command.query)? {
             return self
-                .search_vectors_only(command, request, fetch, offset, limit)
+                .search_vectors_only(command, request, page.fetch, page.offset, page.limit)
                 .await;
         }
+        let search = self.compile_search(command, page)?;
+        let stats = self.collect_statistics(&search, &command.query).await?;
+
+        let suggestion = match self.check_spelling(command, &stats, allow_correction).await {
+            SpellingResult::SearchInstead(text) => {
+                let mut corrected = command.clone();
+                corrected.query = OwnedValue::String(text.clone());
+                let (docs, total, _) = Box::pin(self.run_search(&corrected, false)).await?;
+                return Ok((docs, total, Some(QueryCorrection::Applied(text))));
+            }
+            SpellingResult::Suggest(suggestion) => Some(suggestion),
+            SpellingResult::Fine => None,
+        };
+
+        // started only now: a corrected re-run must not leave an embedding search running
+        let vector_task = search.semantic.clone().map(|(text, xpaths)| {
+            self.spawn_vector_search(text, xpaths, FUSION_DEPTH, search.filters.clone())
+        });
+        let shard_hits = match self.rank_on_shards(&search, &stats).await {
+            Ok(shard_hits) => shard_hits,
+            Err(e) => {
+                if let Some(task) = vector_task {
+                    task.abort();
+                }
+                return Err(e);
+            }
+        };
+        let vectors = match vector_task {
+            Some(task) => task.await.ok().flatten(),
+            None => None,
+        };
+
+        let more = shard_hits.some_full || shard_hits.items.len() > page.fetch;
+        let mut items = merge_and_sort(&search, &stats.plans, shard_hits, vectors.as_deref());
+        items.truncate(page.fetch);
+        let hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
+        let CompiledSearch {
+            policy, highlight, ..
+        } = search;
+        let (docs, total) = self
+            .resolve_page(
+                hits,
+                page.offset,
+                page.limit,
+                more,
+                command,
+                &policy,
+                highlight,
+            )
+            .await?;
+        Ok((docs, total, suggestion))
+    }
+
+    /// Turns the request into analyzed queries, filters, sorts, highlighting and rank plans.
+    fn compile_search(
+        &self,
+        command: &SearchCommand,
+        page: PageRequest,
+    ) -> Result<CompiledSearch, CorelamoError> {
         if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
             return Err(CorelamoError::InvalidData(
                 "Search for something not nothing....".into(),
             ));
         }
-
         let policy = self.policy.read().clone();
         let cascade_order = self.options.read().search.cascade_order();
-        let matchmode = command.match_mode;
         let dictionary = self.synonyms.snapshot();
-
-        let query_groups = compile_query(
-            &command.query,
-            command.search_fields.as_deref(),
-            &self.analyzer_set.read(),
-            &policy,
-            Some(&dictionary),
-        )?;
-        let filters = compile_filters(&self.analyzer_set.read(), command, &policy)?;
+        // one read guard: two reads could see two different analyzer sets
+        let (groups, filters) = {
+            let analyzers = self.analyzer_set.read();
+            let groups = compile_query(
+                &command.query,
+                command.search_fields.as_deref(),
+                &analyzers,
+                &policy,
+                Some(&dictionary),
+            )?;
+            (groups, compile_filters(&analyzers, command, &policy)?)
+        };
         let sorts = resolve_sorts(command, &policy)?;
         let strict_sort = sorts
             .as_ref()
             .is_some_and(|s| matches!(s.mode, SortMode::Strict));
         let semantic = self.semantic_fields(&command.query, command, &policy, strict_sort);
         let word_fetch = if semantic.is_some() {
-            fetch.max(FUSION_DEPTH)
+            page.fetch.max(FUSION_DEPTH)
         } else {
-            fetch
+            page.fetch
         };
-        let window = fetch.saturating_mul(50).clamp(1000, 5_000);
-
+        let window = page.fetch.saturating_mul(50).clamp(1000, 5_000);
         let (plans_full, plans_no_fuzzy) = Self::build_plans(
-            command,
-            &query_groups,
+            &command.query,
+            &groups,
             &cascade_order,
             sorts.is_some(),
             window,
             word_fetch,
         );
-
-        let vector_task = semantic.map(|(text, xpaths)| {
-            self.spawn_vector_search(text, xpaths, FUSION_DEPTH, filters.clone())
-        });
-
-        // highlight: per-group matchers (single block, was duplicated/broken)
-        let highlight = match &command.highlight {
-            Some(cmd) => {
-                let mut fields = Vec::with_capacity(cmd.fields.len());
-                for (name, opts) in &cmd.fields {
-                    let field = policy
-                        .field_by_path(name)
-                        .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
-                    fields.push((field.full_path.clone(), opts.clone()));
-                }
-                let mut matchers = Vec::new();
-                for group in query_groups.iter() {
-                    if let Some(q) = group.query.as_ref() {
-                        matchers.extend(collect_highlight_matchers(q, &group.analyzer));
-                    }
-                }
-                Some((fields, matchers))
-            }
-            None => None,
-        };
-
-        let sort_xpaths: Option<Arc<Vec<XPathId>>> = sorts
+        let highlight = highlight_request(command, &policy, &groups)?;
+        let sort_xpaths = sorts
             .as_ref()
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
+        Ok(CompiledSearch {
+            policy,
+            groups,
+            filters,
+            sorts,
+            sort_xpaths,
+            semantic,
+            highlight,
+            plans_full,
+            plans_no_fuzzy,
+            match_mode: command.match_mode,
+            word_fetch,
+            window,
+        })
+    }
 
-        // two-phase prepare with spelling correction
-        let plain_xpaths: Vec<XPathId> = query_groups
+    /// Every shard reads the query and reports its statistics; merged, they make scores the
+    /// same whichever shard a document is in. Fuzzy expansions are the costly part, so they are
+    /// collected only when a typed word is in no document at all (a second round).
+    async fn collect_statistics(
+        &self,
+        search: &CompiledSearch,
+        typed: &OwnedValue,
+    ) -> Result<ShardStatistics, CorelamoError> {
+        let (corpus, shards) = self
+            .collect_statistics_once(&search.groups, &search.plans_no_fuzzy)
+            .await?;
+        let unknown_word = has_unknown_word(typed, &search.groups, &corpus);
+        let has_fuzzy = search
+            .plans_full
             .iter()
-            .flat_map(|g| g.ctxs.iter())
-            .filter(|ctx| !ctx.row_keyed)
-            .map(|ctx| ctx.xpath)
-            .collect();
-        let typed_words: Vec<String> = match &command.query {
-            OwnedValue::String(text) => {
-                core_query::fuzzable_words(self.analyzer_set.read().default_analyzer(), text)
-            }
-            _ => Vec::new(),
-        };
-        let has_fuzzy = plans_full
-            .iter()
-            .zip(plans_no_fuzzy.iter())
-            .any(|(f, n)| f.tiers.len() != n.tiers.len());
-
-        let mut suggestion: Option<QueryCorrection> = None;
-        let mut current_plans = plans_no_fuzzy.clone();
-        let mut prepared_search: Vec<Option<Arc<PreparedShardSearch>>> =
-            vec![None; self.shards.len()];
-        let mut corpus = CorpusStats::new();
-
-        for pass in 0..2 {
-            let mut set = JoinSet::new();
-            for (index, handle) in self.shards.iter().enumerate() {
-                let handle = handle.clone();
-                let query_groups = query_groups.clone();
-                let current_plans = current_plans.clone();
-                set.spawn_blocking(move || {
-                    (index, handle.prepare_search(&query_groups, &current_plans))
-                });
-            }
-            corpus = CorpusStats::new();
-            while let Some(res) = set.join_next().await {
-                match res {
-                    Ok((index, shard)) => {
-                        corpus.merge(shard.stats());
-                        prepared_search[index] = Some(Arc::new(shard));
-                    }
-                    Err(je) => {
-                        return Err(CorelamoError::Internal(format!(
-                            "shard prepare panicked: {je}"
-                        )));
-                    }
-                }
-            }
-
-            if !has_fuzzy || pass == 1 {
-                break;
-            }
-            let unknown = typed_words.iter().any(|word| {
-                plain_xpaths
-                    .iter()
-                    .all(|&xpath| corpus.term_doc_freq(xpath, word) == 0)
+            .zip(search.plans_no_fuzzy.iter())
+            .any(|(full, plain)| full.tiers.len() != plain.tiers.len());
+        if !(unknown_word && has_fuzzy) {
+            return Ok(ShardStatistics {
+                corpus: Arc::new(corpus),
+                shards,
+                plans: Arc::clone(&search.plans_no_fuzzy),
+                unknown_word,
             });
-            if !unknown {
-                break;
-            }
-
-            // a typed word is in no document: try a spelling correction before paying for fuzzy
-            if let OwnedValue::String(text) = &command.query {
-                if let Ok(report) = self
-                    .suggest_corrections(text, command.search_fields.as_deref(), Fuzziness::Auto, 1)
-                    .await
-                {
-                    if !report.corrected.is_empty() && report.corrected != *text {
-                        if report.confident {
-                            let (hits, total, _) =
-                                Box::pin(self.search_with(command, Some(&report.corrected)))
-                                    .await?;
-                            return Ok((
-                                hits,
-                                total,
-                                Some(QueryCorrection::Applied(report.corrected)),
-                            ));
-                        }
-                        suggestion = Some(QueryCorrection::Suggested(report.corrected));
-                    }
-                }
-            }
-            current_plans = plans_full.clone();
         }
-        let corpus = Arc::new(corpus);
+        let (corpus, shards) = self
+            .collect_statistics_once(&search.groups, &search.plans_full)
+            .await?;
+        Ok(ShardStatistics {
+            corpus: Arc::new(corpus),
+            shards,
+            plans: Arc::clone(&search.plans_full),
+            unknown_word,
+        })
+    }
 
-        // rank per group, merge across groups inside the shard
+    /// One round of `collect_statistics` on every shard.
+    async fn collect_statistics_once(
+        &self,
+        groups: &Arc<Vec<QueryGroup>>,
+        plans: &Arc<Vec<RankPlan>>,
+    ) -> Result<(CorpusStats, Vec<Arc<PreparedShardSearch>>), CorelamoError> {
         let mut set = JoinSet::new();
-        for (handle, prepared) in self.shards.iter().zip(prepared_search) {
+        for (index, handle) in self.shards.iter().enumerate() {
             let handle = handle.clone();
-            let prepared = prepared.expect("shard prepared");
-            let corpus = corpus.clone();
-            let query_groups = query_groups.clone();
-            let plans_full = plans_full.clone();
-            let filters = filters.clone();
-            let sort_xpaths = sort_xpaths.clone();
-            set.spawn_blocking(move || {
-                if let Some(sort_xpaths) = sort_xpaths.as_ref() {
-                    handle.rank_sorted(
-                        &prepared,
-                        &corpus,
-                        &query_groups,
-                        &plans_full,
-                        filters.as_deref(),
-                        sort_xpaths,
-                        window,
-                        matchmode,
-                    )
-                } else {
-                    handle.rank_top_k(
-                        &prepared,
-                        &corpus,
-                        &query_groups,
-                        &plans_full,
-                        filters.as_deref(),
-                        word_fetch,
-                        matchmode,
-                    )
-                }
+            let groups = Arc::clone(groups);
+            let plans = Arc::clone(plans);
+            set.spawn_blocking(move || (index, handle.prepare_search(&groups, &plans)));
+        }
+        let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
+        let mut corpus = CorpusStats::new();
+        while let Some(res) = set.join_next().await {
+            let (index, shard) =
+                res.map_err(|je| CorelamoError::Internal(format!("shard prepare panicked: {je}")))?;
+            corpus.merge(shard.stats());
+            prepared[index] = Some(Arc::new(shard));
+        }
+        let shards = prepared
+            .into_iter()
+            .enumerate()
+            .map(|(index, shard)| {
+                shard.ok_or_else(|| {
+                    CorelamoError::Internal(format!("shard {index} returned no statistics"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((corpus, shards))
+    }
+
+    /// A typed word no document has: search a clearly meant spelling instead (fuzzy favours
+    /// rare close words and the embedding model cannot read a typo), or offer it.
+    async fn check_spelling(
+        &self,
+        command: &SearchCommand,
+        stats: &ShardStatistics,
+        allow_correction: bool,
+    ) -> SpellingResult {
+        if !allow_correction || !stats.unknown_word {
+            return SpellingResult::Fine;
+        }
+        let OwnedValue::String(text) = &command.query else {
+            return SpellingResult::Fine;
+        };
+        let report = match self
+            .suggest_corrections(text, command.search_fields.as_deref(), Fuzziness::Auto, 1)
+            .await
+        {
+            Ok(report) => report,
+            // the typed query still runs (fuzzy matches it); a correction is only an extra
+            Err(_) => {
+                return SpellingResult::Fine;
+            }
+        };
+        if report.corrected.is_empty() || report.corrected == *text {
+            return SpellingResult::Fine;
+        }
+        if report.confident {
+            SpellingResult::SearchInstead(report.corrected)
+        } else {
+            SpellingResult::Suggest(QueryCorrection::Suggested(report.corrected))
+        }
+    }
+
+    /// Every shard ranks its documents with the merged statistics and the plans it was
+    /// prepared with.
+    async fn rank_on_shards(
+        &self,
+        search: &CompiledSearch,
+        stats: &ShardStatistics,
+    ) -> Result<ShardHits, CorelamoError> {
+        let mut set = JoinSet::new();
+        for (handle, prepared) in self.shards.iter().zip(&stats.shards) {
+            let handle = handle.clone();
+            let prepared = Arc::clone(prepared);
+            let corpus = Arc::clone(&stats.corpus);
+            let groups = Arc::clone(&search.groups);
+            let plans = Arc::clone(&stats.plans);
+            let filters = search.filters.clone();
+            let sort_xpaths = search.sort_xpaths.clone();
+            let (window, word_fetch, match_mode) =
+                (search.window, search.word_fetch, search.match_mode);
+            set.spawn_blocking(move || match sort_xpaths.as_ref() {
+                Some(sort_xpaths) => handle.rank_sorted(
+                    &prepared,
+                    &corpus,
+                    &groups,
+                    &plans,
+                    filters.as_deref(),
+                    sort_xpaths,
+                    window,
+                    match_mode,
+                ),
+                None => handle.rank_top_k(
+                    &prepared,
+                    &corpus,
+                    &groups,
+                    &plans,
+                    filters.as_deref(),
+                    word_fetch,
+                    match_mode,
+                ),
             });
         }
 
-        let shard_request = if sorts.is_some() { window } else { word_fetch };
-        let mut items: Vec<(SearchHit, Vec<Option<f64>>)> = Vec::new();
-        let mut per_shard_bounds: Vec<Vec<(Option<f64>, Option<f64>)>> = Vec::new();
-        let mut some_shard_full = false;
+        let requested = search.shard_request();
+        let mut shard_hits = ShardHits {
+            items: Vec::new(),
+            bounds: Vec::new(),
+            some_full: false,
+        };
         let mut first_err = None;
-
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Ok(r)) => {
-                    some_shard_full |= r.total >= shard_request;
-                    items.extend(r.items);
-                    if !r.bounds.is_empty() {
-                        per_shard_bounds.push(r.bounds);
+                Ok(Ok(ranked)) => {
+                    shard_hits.some_full |= ranked.total >= requested;
+                    shard_hits.items.extend(ranked.items);
+                    if !ranked.bounds.is_empty() {
+                        shard_hits.bounds.push(ranked.bounds);
                     }
                 }
-                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Ok(Err(e)) if first_err.is_none() => {
+                    first_err = Some(e);
+                }
                 Err(je) if first_err.is_none() => {
                     first_err = Some(CorelamoError::Internal(format!(
                         "shard search panicked: {je}"
@@ -1581,57 +1581,10 @@ impl ShardManager {
                 _ => {}
             }
         }
-        if let Some(e) = first_err {
-            return Err(e);
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(shard_hits),
         }
-
-        let vector_hits = match vector_task {
-            Some(task) => task.await.ok().flatten(),
-            None => None,
-        };
-        if let Some(specs) = sorts.as_ref() {
-            if let Some(vectors) = vector_hits.as_deref() {
-                items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
-                items = fuse_rrf(items, vectors, false);
-            }
-            let bounds = fold_sort_bounds(&specs.fields, per_shard_bounds);
-            match specs.mode {
-                SortMode::Blend => order_blended(&mut items, &specs.fields, &bounds),
-                SortMode::Strict => order_strict(&mut items, &specs.fields),
-            }
-        } else {
-            items.sort_unstable_by(|(a, _), (b, _)| Self::hits_cmp(a, b));
-            if let Some(vectors) = vector_hits.as_deref() {
-                items.truncate(word_fetch);
-                let named_limit = plans_full
-                    .iter()
-                    .map(|p| p.named_tier_limit())
-                    .min()
-                    .unwrap_or(0);
-                items = fuse_keeping_named(items, vectors, named_limit);
-            }
-        }
-        let more = some_shard_full || items.len() > fetch;
-        if items.len() > fetch {
-            items.truncate(fetch);
-        }
-        let just_hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
-        let (hits, total) = self
-            .resolve_page(just_hits, offset, limit, more, command, &policy, highlight)
-            .await?;
-        Ok((hits, total, suggestion))
-    }
-
-    async fn search_with(
-        &self,
-        command: &SearchCommand,
-        corrected: Option<&str>,
-    ) -> Result<(Vec<SearchDocumentHit>, TotalHits, Option<QueryCorrection>), CorelamoError> {
-        let mut cmd = command.clone();
-        if let Some(text) = corrected {
-            cmd.query = OwnedValue::String(text.to_string());
-        }
-        self.search(&cmd).await
     }
 
     pub fn record_search(&self, failed: bool, elapsed: Duration) {
@@ -1639,6 +1592,7 @@ impl ShardManager {
     }
 
     //viss ar backups
+
     #[timed(backup)]
     pub fn try_start_backup(&self) -> Result<(), CorelamoError> {
         if !self.db_stats.begin_backup(self.shards.len()) {
@@ -1646,7 +1600,6 @@ impl ShardManager {
         }
         Ok(())
     }
-
     #[timed(restore)]
     pub fn try_start_restore(&self) -> Result<(), CorelamoError> {
         if self.db_stats.backup_progress().is_running() {
@@ -1657,7 +1610,6 @@ impl ShardManager {
         }
         Ok(())
     }
-
     #[timed(backup)]
     pub async fn backup_full(&self, user: String) -> Result<Vec<BackupManifest>, CorelamoError> {
         let backup_id = format!("full_{}", chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S"));
@@ -1777,7 +1729,35 @@ impl ShardManager {
         }
         Ok(manifests)
     }
-
+    /// For each candidate, the documents holding it together with every context word, over
+    /// all shards.
+    async fn co_occurrence_fuzzu(
+        &self,
+        candidates: Arc<Vec<String>>,
+        context: Arc<Vec<String>>,
+        xpaths: Arc<Vec<XPathId>>,
+    ) -> Result<Vec<u64>, CorelamoError> {
+        let mut set = JoinSet::new();
+        for handle in &self.shards {
+            let handle = handle.clone();
+            let (candidates, context, xpaths) = (
+                Arc::clone(&candidates),
+                Arc::clone(&context),
+                Arc::clone(&xpaths),
+            );
+            set.spawn_blocking(move || handle.co_occurrence_fuzzy(&candidates, &context, &xpaths));
+        }
+        let mut totals = vec![0u64; candidates.len()];
+        while let Some(res) = set.join_next().await {
+            let counts = res.map_err(|je| {
+                CorelamoError::Internal(format!("co-occurrence shard task panicked: {je}"))
+            })?;
+            for (total, count) in totals.iter_mut().zip(counts) {
+                *total = total.saturating_add(count);
+            }
+        }
+        Ok(totals)
+    }
     #[timed(retrieve_opps)]
     pub async fn info_words(&self, words: Vec<String>) -> Result<Vec<WordStats>, CorelamoError> {
         if words.is_empty() {
@@ -1860,8 +1840,19 @@ impl ShardManager {
             max_expansions: 0,
         };
 
-        //convert words to be fuzzable spider-man -> spiderman
-        let words = core_query::fuzzable_words(self.analyzer_set.read().default_analyzer(), &value);
+        // one entry per typed piece, as `suggest_direct` returns them; a piece the analyzer
+        // drops (a stopword) keeps its slot with no word, so the lists stay aligned
+        let analyzer = self.analyzer_set.read().default_analyzer().clone();
+        let words: Vec<Option<String>> = value
+            .split_whitespace()
+            .map(|piece| {
+                analyzer
+                    .analyze_query(piece)
+                    .into_iter()
+                    .next()
+                    .map(|t| t.text)
+            })
+            .collect();
 
         let analyzers_map = self
             .policy
@@ -1880,7 +1871,7 @@ impl ShardManager {
             });
         }
 
-        // One merged map per word, so a term's document frequency is the sum
+        // One merged map per typed piece, so a term's document frequency is the sum
         // over shards before anything gets ranked.
         let mut merged: Vec<BTreeMap<String, FuzzyExpansion>> =
             (0..words.len()).map(|_| BTreeMap::new()).collect();
@@ -1924,33 +1915,99 @@ impl ShardManager {
         if let Some(e) = first_err {
             return Err(e);
         }
-        //suggestions per analysed word, before we decide which ones to trust.
 
-        let by_word: HashMap<String, WordCorrection> = words
-            .into_iter()
-            .zip(merged)
-            .map(|(word, by_term)| {
-                let candidates: Vec<FuzzyExpansion> = by_term.into_values().collect();
-                let expansions = select_expansions(
-                    &word,
-                    candidates
-                        .iter()
-                        .map(|e| (e.term.clone(), e.edits, e.doc_freq)),
-                    size,
-                );
-                let confident = expansions.first().is_some_and(|best| {
-                    best.term != word && is_confident_correction(best, &candidates)
-                });
-                let suggestions = expansions.into_iter().map(|e| e.term).collect();
-                (
-                    word,
-                    WordCorrection {
-                        suggestions,
-                        confident,
-                    },
-                )
+        // the words some document has as typed: the context a misspelled word is checked against
+        let known: Vec<String> = words
+            .iter()
+            .zip(&merged)
+            .filter_map(|(word, by_term)| {
+                let word = word.as_ref()?;
+                by_term
+                    .get(word)
+                    .is_some_and(|e| e.doc_freq > 0)
+                    .then(|| word.clone())
             })
             .collect();
+        let context = Arc::new(known);
+
+        //suggestions per analysed word, before we decide which ones to trust.
+        let mut by_word: HashMap<String, WordCorrection> = HashMap::new();
+        for (word, by_term) in words.into_iter().zip(merged) {
+            let Some(word) = word else {
+                continue;
+            };
+            let candidates: Vec<FuzzyExpansion> = by_term.into_values().collect();
+
+            // a word many documents contain is spelled right, however common a neighbour is
+            let typed_freq = candidates
+                .iter()
+                .find(|e| e.term == word)
+                .map_or(0, |e| e.doc_freq);
+            if typed_freq >= TRUSTED_DOC_FREQ {
+                by_word.insert(
+                    word.clone(),
+                    WordCorrection {
+                        suggestions: vec![word],
+                        confident: true,
+                    },
+                );
+                continue;
+            }
+
+            let unknown = !context.contains(&word);
+            let mut expansions = select_expansions(
+                &word,
+                candidates
+                    .iter()
+                    .map(|e| (e.term.clone(), e.edits, e.doc_freq)),
+                size.max(CONTEXT_CANDIDATES),
+            );
+            let mut confident = expansions.first().is_some_and(|best| {
+                best.term != word && is_confident_correction(best, &candidates)
+            });
+
+            // a misspelled word among known ones: the right spelling is the one found in the
+            // same documents as the rest of the query ("ipjone 14" -> "iphone", not "ipone")
+            if unknown && !context.is_empty() && !expansions.is_empty() {
+                let terms = Arc::new(
+                    expansions
+                        .iter()
+                        .map(|e| e.term.clone())
+                        .collect::<Vec<_>>(),
+                );
+                let together = self
+                    .co_occurrence_fuzzu(
+                        Arc::clone(&terms),
+                        Arc::clone(&context),
+                        Arc::clone(&xpaths),
+                    )
+                    .await?;
+                let mut ranked: Vec<(u64, FuzzyExpansion)> =
+                    together.into_iter().zip(expansions).collect();
+                ranked.sort_by(|(a_count, a), (b_count, b)| {
+                    b_count
+                        .cmp(a_count)
+                        .then(a.edits.cmp(&b.edits))
+                        .then(b.doc_freq.cmp(&a.doc_freq))
+                });
+                let best = ranked.first().map_or(0, |(count, _)| *count);
+                let second = ranked.get(1).map_or(0, |(count, _)| *count);
+                if best > 0 {
+                    confident = best >= second.saturating_mul(CONTEXT_DOMINANCE);
+                }
+                expansions = ranked.into_iter().map(|(_, e)| e).collect();
+            }
+            expansions.truncate(size);
+            let suggestions = expansions.into_iter().map(|e| e.term).collect();
+            by_word.insert(
+                word,
+                WordCorrection {
+                    suggestions,
+                    confident,
+                },
+            );
+        }
+
         //we need to construct the original sentence (keeping stopwords/no running -> run)
         let mut pieces: Vec<String> = Vec::new();
         let mut reported: Vec<WordSuggestions> = Vec::new();
@@ -1958,14 +2015,7 @@ impl ShardManager {
         let mut all_confident = true;
 
         for piece in value.split_whitespace() {
-            let Some(token) = self
-                .analyzer_set
-                .read()
-                .default_analyzer()
-                .analyze_query(piece)
-                .into_iter()
-                .next()
-            else {
+            let Some(token) = analyzer.analyze_query(piece).into_iter().next() else {
                 //stopword: not searchable, keep it as typed.
                 pieces.push(piece.to_string());
                 continue;
@@ -2144,6 +2194,7 @@ impl ShardManager {
                 distance_factor: 1.0,
                 score: hit.score,
                 tier: 0,
+                ..SearchHit::default()
             })
             .collect();
         let (hits, total) = self
@@ -2416,15 +2467,17 @@ impl ShardManager {
     }
 }
 //VECTOR
-/// Semantic fusion that keeps what the query names first. Hits of the name and exact tiers
-/// (numbered below `named_limit`) stay on top in their order; the others are fused with the
+/// Semantic fusion that keeps what the query names first: hits from the name and exact tiers
+/// (tiers below `named_limit`) stay on top in their order; the others are fused with the
 /// vector hits by reciprocal rank and follow. Fusing everything would let a document that is
 /// only close in meaning (ranked well by both lists) pass the one whose title is the query.
-/// `items` must be sorted by `ShardManager::hits_cmp`.
+/// `add_vector_only`: also add documents only the vector side found (not for sorted searches,
+/// whose hits need sort keys). `items` must be sorted by `rank_order`.
 fn fuse_keeping_named(
     mut items: Vec<(SearchHit, Vec<Option<f64>>)>,
     vectors: &[VectorHit],
     named_limit: u8,
+    add_vector_only: bool,
 ) -> Vec<(SearchHit, Vec<Option<f64>>)> {
     let named = items.partition_point(|(hit, _)| hit.tier < named_limit);
     let rest = items.split_off(named);
@@ -2435,11 +2488,12 @@ fn fuse_keeping_named(
         .copied()
         .collect();
     items.extend(
-        fuse_rrf(rest, &vectors, true)
+        fuse_rrf(rest, &vectors, add_vector_only)
             .into_iter()
             .map(|(mut hit, keys)| {
                 // after every kept hit, whatever later step orders by tier
                 hit.tier = named_limit;
+                hit.level = 0;
                 (hit, keys)
             }),
     );
@@ -2474,6 +2528,7 @@ fn fuse_rrf(
                 distance_factor: 1.0,
                 score: 0.0,
                 tier: 0,
+                ..SearchHit::default()
             };
             fused.insert(hit.doc_id, (vector_hit, Vec::new(), contribution(rank)));
         }
@@ -2488,6 +2543,7 @@ fn fuse_rrf(
         .map(|(mut hit, keys, score)| {
             hit.score = if best > 0.0 { score / best } else { 0.0 };
             hit.tier = 0;
+            hit.level = 0;
             (hit, keys)
         })
         .collect();
@@ -2497,68 +2553,175 @@ fn fuse_rrf(
     out
 }
 
-#[cfg(test)]
-mod fusion_tests {
-    use super::*;
-    use core_query::planner::TIER_STEP;
+/// The page a search returns: `fetch` = offset + limit hits are ranked.
+#[derive(Debug, Clone, Copy)]
+struct PageRequest {
+    limit: usize,
+    offset: usize,
+    fetch: usize,
+}
 
-    fn word_hit(doc_id: DocId, tier: u8, score: f32) -> (SearchHit, Vec<Option<f64>>) {
-        let hit = SearchHit {
-            doc_id,
-            matched_terms: 2,
-            weight_sum: 0,
-            distance_factor: 1.0,
-            score,
-            tier,
-        };
-        (hit, Vec::new())
+/// Everything a search decides before it asks a shard anything.
+struct CompiledSearch {
+    policy: IndexPolicy,
+    groups: Arc<Vec<QueryGroup>>,
+    filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
+    sorts: Option<ResolvedSort>,
+    sort_xpaths: Option<Arc<Vec<XPathId>>>,
+    semantic: Option<(String, Vec<XPathId>)>,
+    highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)>,
+    plans_full: Arc<Vec<RankPlan>>,
+    plans_no_fuzzy: Arc<Vec<RankPlan>>,
+    match_mode: MatchMode,
+    /// hits each shard ranks: the page, or the fusion depth when vectors are fused
+    word_fetch: usize,
+    /// hits each shard ranks for a sorted search
+    window: usize,
+}
+
+impl CompiledSearch {
+    fn shard_request(&self) -> usize {
+        if self.sorts.is_some() {
+            self.window
+        } else {
+            self.word_fetch
+        }
     }
+}
 
-    fn close_in_meaning(doc_id: DocId) -> VectorHit {
-        VectorHit { doc_id, score: 0.9 }
+/// Every shard prepared for ranking, with the statistics of all of them merged.
+struct ShardStatistics {
+    corpus: Arc<CorpusStats>,
+    shards: Vec<Arc<PreparedShardSearch>>,
+    /// the plans the shards were prepared with: rank with exactly these
+    plans: Arc<Vec<RankPlan>>,
+    /// a typed word is in no document of its group's fields
+    unknown_word: bool,
+}
+/// What `check_spelling` decided about a typed word no document has.
+enum SpellingResult {
+    /// the correction is clearly what was meant: search it instead
+    SearchInstead(String),
+    /// keep the typed query and offer this spelling
+    Suggest(QueryCorrection),
+    Fine,
+}
+
+/// Every shard's ranked hits, before they are merged into one order.
+struct ShardHits {
+    items: Vec<(SearchHit, Vec<Option<f64>>)>,
+    bounds: Vec<Vec<(Option<f64>, Option<f64>)>>,
+    /// some shard had more matches than it returned
+    some_full: bool,
+}
+
+/// The requested page, or `None` when it holds no documents.
+fn requested_page(command: &SearchCommand) -> Result<Option<PageRequest>, CorelamoError> {
+    let limit = command.docs.unwrap_or(10);
+    if limit > MAX_RESULTS_SIZE {
+        return Err(CorelamoError::InvalidData(format!(
+            "docs may be at most {MAX_RESULTS_SIZE}, got {limit}"
+        )));
     }
+    let offset = command.offset.unwrap_or(0);
+    let fetch = offset.saturating_add(limit);
+    Ok((fetch > 0).then_some(PageRequest {
+        limit,
+        offset,
+        fetch,
+    }))
+}
 
-    fn order(items: &[(SearchHit, Vec<Option<f64>>)]) -> Vec<DocId> {
-        items.iter().map(|(hit, _)| hit.doc_id).collect()
+/// The fields to highlight and the query's matchers, each group's with its own analyzer.
+fn highlight_request(
+    command: &SearchCommand,
+    policy: &IndexPolicy,
+    groups: &[QueryGroup],
+) -> Result<Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)>, CorelamoError> {
+    let Some(cmd) = &command.highlight else {
+        return Ok(None);
+    };
+    let mut fields = Vec::with_capacity(cmd.fields.len());
+    for (name, opts) in &cmd.fields {
+        let field = policy
+            .field_by_path(name)
+            .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
+        fields.push((field.full_path.clone(), opts.clone()));
     }
+    let matchers = groups
+        .iter()
+        .filter_map(|group| group.query.as_ref().map(|query| (query, &group.analyzer)))
+        .flat_map(|(query, analyzer)| collect_highlight_matchers(query, analyzer))
+        .collect();
+    Ok(Some((fields, matchers)))
+}
 
-    /// Tier numbers of a plan that starts with a name tier: its hits are numbered below 16,
-    /// the phrase tier's from 32.
-    const NAMED_LIMIT: u8 = 16;
-    const PHRASE_TIER: u8 = 32;
+/// A typed word, analyzed by a group's analyzer, is in no document of that group's fields.
+fn has_unknown_word(typed: &OwnedValue, groups: &[QueryGroup], corpus: &CorpusStats) -> bool {
+    let OwnedValue::String(text) = typed else {
+        return false;
+    };
+    let fields: Vec<(&QueryGroup, Vec<XPathId>)> = groups
+        .iter()
+        .map(|group| {
+            let xpaths = group
+                .ctxs
+                .iter()
+                .filter(|ctx| !ctx.row_keyed)
+                .map(|ctx| ctx.xpath)
+                .collect();
+            (group, xpaths)
+        })
+        .collect();
+    text.split_whitespace().any(|word| {
+        let mut analyzed_somewhere = false;
+        let known = fields.iter().any(|(group, xpaths)| {
+            let Some(token) = group.analyzer.analyze_query(word).into_iter().next() else {
+                // a stopword or too short for this analyzer: says nothing about the word
+                return false;
+            };
+            analyzed_somewhere = true;
+            xpaths
+                .iter()
+                .any(|&xpath| corpus.term_doc_freq(xpath, &token.text) > 0)
+        });
+        analyzed_somewhere && !known
+    })
+}
 
-    #[test]
-    fn the_named_document_stays_first_when_others_rank_well_in_both_lists() {
-        assert_eq!(usize::from(NAMED_LIMIT), TIER_STEP);
-        // 1 is the title the query names (name tier); 2 and 3 have the words and are close in
-        // meaning; 4 is found by meaning only
-        let words = vec![
-            word_hit(1, 0, 30.0),
-            word_hit(2, PHRASE_TIER, 12.0),
-            word_hit(3, PHRASE_TIER, 11.0),
-        ];
-        let vectors = [
-            close_in_meaning(3),
-            close_in_meaning(4),
-            close_in_meaning(2),
-            close_in_meaning(1),
-        ];
-
-        // fusing every hit ranks a document found by both lists above the named one
-        assert_eq!(order(&fuse_rrf(words.clone(), &vectors, true))[0], 3);
-
-        let fused = fuse_keeping_named(words, &vectors, NAMED_LIMIT);
-        assert_eq!(order(&fused), vec![1, 3, 2, 4]);
-        assert!(fused[1..].iter().all(|(hit, _)| hit.tier == NAMED_LIMIT));
+/// Every shard's hits in one order: semantic fusion (what the query names stays first), then
+/// the requested sort.
+fn merge_and_sort(
+    search: &CompiledSearch,
+    plans: &[RankPlan],
+    shard_hits: ShardHits,
+    vectors: Option<&[VectorHit]>,
+) -> Vec<(SearchHit, Vec<Option<f64>>)> {
+    let mut items = shard_hits.items;
+    let named_limit = plans
+        .iter()
+        .map(RankPlan::named_tier_limit)
+        .min()
+        .unwrap_or(0);
+    items.sort_unstable_by(|(a, _), (b, _)| rank_order(a, b));
+    match search.sorts.as_ref() {
+        Some(sorts) => {
+            if let Some(vectors) = vectors {
+                // vector-only documents carry no sort keys: fuse only what the words found
+                items = fuse_keeping_named(items, vectors, named_limit, false);
+            }
+            let bounds = fold_sort_bounds(&sorts.fields, shard_hits.bounds);
+            match sorts.mode {
+                SortMode::Blend => order_blended(&mut items, &sorts.fields, &bounds),
+                SortMode::Strict => order_strict(&mut items, &sorts.fields),
+            }
+        }
+        None => {
+            if let Some(vectors) = vectors {
+                items.truncate(search.word_fetch);
+                items = fuse_keeping_named(items, vectors, named_limit, true);
+            }
+        }
     }
-
-    #[test]
-    fn with_nothing_named_every_hit_is_fused() {
-        let words = vec![word_hit(2, 0, 12.0), word_hit(3, 0, 11.0)];
-        let vectors = [close_in_meaning(3), close_in_meaning(2)];
-        assert_eq!(
-            order(&fuse_keeping_named(words.clone(), &vectors, 0)),
-            order(&fuse_rrf(words, &vectors, true))
-        );
-    }
+    items
 }

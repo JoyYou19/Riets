@@ -26,7 +26,6 @@ pub struct DatabaseOptions {
     pub embed: EmbeddingConfig,
     #[serde(default)]
     pub search: SearchOptions,
-
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -35,7 +34,7 @@ impl DatabaseOptions {
         root.join(Self::CONFIG_FILE_NAME)
     }
 
-     pub fn save_to_file(&self, root: impl AsRef<Path>) -> io::Result<()> {
+    pub fn save_to_file(&self, root: impl AsRef<Path>) -> io::Result<()> {
         let toml_string = toml::to_string_pretty(self).map_err(io::Error::other)?;
         write_atomically(&Self::config_path(root.as_ref()), toml_string.as_bytes())
     }
@@ -68,7 +67,7 @@ impl Default for DatabaseOptions {
             bootable: true,
             sync_mode: core_storage::wal::SyncMode::Manual,
             embed: EmbeddingConfig::default(),
-            search:SearchOptions::default()
+            search: SearchOptions::default(),
         }
     }
 }
@@ -79,8 +78,6 @@ pub struct SearchOptions {
 }
 
 impl SearchOptions {
-
-
     fn default() -> Self {
         Self {
             cascade: TierKind::DEFAULT_ORDER
@@ -94,7 +91,9 @@ impl SearchOptions {
         let mut seen = std::collections::HashSet::new();
         for (kind, rank) in &self.cascade {
             if !seen.insert(*rank) {
-                return Err(format!("search.cascade: rank {rank} is given twice (at {kind:?})"));
+                return Err(format!(
+                    "search.cascade: rank {rank} is given twice (at {kind:?})"
+                ));
             }
         }
         Ok(())

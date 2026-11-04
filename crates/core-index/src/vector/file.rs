@@ -32,7 +32,6 @@ use crate::types::{DocId, XPathId};
 pub(super) const MAGIC: [u8; 8] = *b"CLVECTOR";
 pub(super) const VERSION: u32 = 2;
 
-
 const ORIGINAL_F32: u8 = 1;
 const QUANT_INT8: u8 = 1;
 const MAX_MODEL_ID_LEN: usize = u8::MAX as usize;
@@ -136,7 +135,7 @@ impl Layout {
 fn new_file_id(path: &Path) -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)//maybe needs to be universal
+        .duration_since(UNIX_EPOCH) //maybe needs to be universal
         .map_or(0, |d| d.as_nanos() as u64);
     let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
     let process = u64::from(std::process::id());
@@ -362,7 +361,10 @@ fn flush_to_file(writer: BufWriter<File>) -> io::Result<File> {
 //write zeros to fill the gap up to the next section so sections start at the same positon
 pub(crate) fn write_zero_padding(out: &mut impl Write, from: usize, to: usize) -> io::Result<()> {
     const ZEROS: [u8; SECTION_ALIGNMENT] = [0; SECTION_ALIGNMENT];
-    debug_assert!(to >= from && to - from < SECTION_ALIGNMENT, "write_zero_paddingding outside one alignment step");
+    debug_assert!(
+        to >= from && to - from < SECTION_ALIGNMENT,
+        "write_zero_paddingding outside one alignment step"
+    );
     out.write_all(&ZEROS[..to - from])
 }
 
@@ -410,10 +412,9 @@ impl VectorFile {
             ));
         }
         let id_len = usize::from(u16::from_le_bytes([data[30], data[31]]));
-        let range = QuantRange::from_absmax(f32::from_le_bytes([
-            data[32], data[33], data[34], data[35],
-        ]))
-        .ok_or_else(|| corrupt(&path, "invalid quantization range"))?;
+        let range =
+            QuantRange::from_absmax(f32::from_le_bytes([data[32], data[33], data[34], data[35]]))
+                .ok_or_else(|| corrupt(&path, "invalid quantization range"))?;
         let count = usize::try_from(read_u64(data, 40))
             .map_err(|_| corrupt(&path, "record count does not fit in memory"))?;
         let id_end = HEADER_FIXED_LEN + id_len;
@@ -428,7 +429,10 @@ impl VectorFile {
         if layout.total != data.len() {
             return Err(corrupt(
                 &path,
-                format!("length {} does not match {count} rows of {dims} dims", data.len()),
+                format!(
+                    "length {} does not match {count} rows of {dims} dims",
+                    data.len()
+                ),
             ));
         }
         if (mmap.as_ptr() as usize) % SECTION_ALIGNMENT != 0 {
@@ -515,7 +519,7 @@ impl VectorFile {
         let start = self.layout.codes + index * self.dims;
         &self.mmap[start..start + self.dims]
     }
-     /// Original f32 vector of row `index`.
+    /// Original f32 vector of row `index`.
     pub fn original(&self, index: usize) -> &[f32] {
         assert!(index < self.count, "row {index} out of {} rows", self.count);
         let start = self.layout.originals + index * self.dims * 4;
@@ -553,7 +557,10 @@ pub fn merge_vector_files(
     let first = inputs
         .first()
         .ok_or_else(|| invalid_input("merge_vector_files needs at least one input"))?;
-    if let Some(other) = inputs.iter().find(|f| !f.matches(&first.model_id, first.dims)) {
+    if let Some(other) = inputs
+        .iter()
+        .find(|f| !f.matches(&first.model_id, first.dims))
+    {
         return Err(invalid_input(format!(
             "cannot merge {} ({}, {} dims) with {} ({}, {} dims)",
             other.path.display(),
@@ -596,7 +603,8 @@ mod tests {
     use crate::vector::kernel::{approx_cosine, dot_f32, dot_i8, quantize_query};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("corelamo-vfile-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("corelamo-vfile-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
@@ -645,8 +653,15 @@ mod tests {
         let q = quantize_query(&query);
         for i in 0..file.len() {
             let exact = dot_f32(file.original(i), &query);
-            let approx = approx_cosine(dot_i8(file.codes(i), &q.codes), file.range().scale(), q.scale);
-            assert!((exact - approx).abs() < 0.02, "row {i}: exact {exact}, approx {approx}");
+            let approx = approx_cosine(
+                dot_i8(file.codes(i), &q.codes),
+                file.range().scale(),
+                q.scale,
+            );
+            assert!(
+                (exact - approx).abs() < 0.02,
+                "row {i}: exact {exact}, approx {approx}"
+            );
         }
         let _ = fs::remove_dir_all(dir);
     }
@@ -692,24 +707,36 @@ mod tests {
         let bytes = fs::read(&path).expect("read");
 
         fs::write(&path, &bytes[..bytes.len() - 1]).expect("truncate");
-        assert_eq!(VectorFile::open(&path).expect_err("truncated").kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            VectorFile::open(&path).expect_err("truncated").kind(),
+            io::ErrorKind::InvalidData
+        );
 
         let mut old = bytes.clone();
         old[8..12].copy_from_slice(&1u32.to_le_bytes());
         fs::write(&path, &old).expect("downgrade");
-        assert_eq!(VectorFile::open(&path).expect_err("v1").kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            VectorFile::open(&path).expect_err("v1").kind(),
+            io::ErrorKind::InvalidData
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
     fn merge_drops_deleted_and_last_input_wins() {
         let dir = temp_dir("merge");
-        let a = write(&dir.join("a.vec"), &[(1, unit(1, 8)), (2, unit(2, 8)), (3, unit(3, 8))]);
+        let a = write(
+            &dir.join("a.vec"),
+            &[(1, unit(1, 8)), (2, unit(2, 8)), (3, unit(3, 8))],
+        );
         let b = write(&dir.join("b.vec"), &[(2, unit(20, 8)), (4, unit(4, 8))]);
         let mut deleted = DeleteSet::new();
         deleted.delete(3);
         let out = dir.join("out.vec");
-        assert_eq!(merge_vector_files(&[&a, &b], &deleted, &out).expect("merge"), 3);
+        assert_eq!(
+            merge_vector_files(&[&a, &b], &deleted, &out).expect("merge"),
+            3
+        );
         let merged = VectorFile::open(&out).expect("open");
         assert_eq!(merged.doc_ids(), &[1, 2, 4]);
         assert_eq!(merged.original(1), unit(20, 8).as_slice());

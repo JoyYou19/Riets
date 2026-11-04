@@ -155,7 +155,11 @@ impl GraphUnderConstruction {
             .map(|&top| {
                 (0..=usize::from(top))
                     .map(|level| {
-                        let capacity = if level == 0 { max_links_level0 } else { params.max_links_upper };
+                        let capacity = if level == 0 {
+                            max_links_level0
+                        } else {
+                            params.max_links_upper
+                        };
                         Mutex::new(Vec::with_capacity(capacity + 1))
                     })
                     .collect::<Vec<_>>()
@@ -174,12 +178,16 @@ impl GraphUnderConstruction {
             .into_par_iter()
             .filter(|&node| node != entry_node)
             .for_each(|node| graph.insert(vectors, node, params.build_beam_width));
-        graph.connect_unreachable(vectors   );
+        graph.connect_unreachable(vectors);
         Ok(graph)
     }
 
     fn max_links_at(&self, level: usize) -> usize {
-        if level == 0 { self.max_links_level0 } else { self.max_links_upper }
+        if level == 0 {
+            self.max_links_level0
+        } else {
+            self.max_links_upper
+        }
     }
 
     /// Inserts `node` (Malkov & Yashunin, algorithm 1).
@@ -294,7 +302,11 @@ impl GraphUnderConstruction {
             .ok_or_else(|| invalid_input("graph file size overflows usize"))?;
 
         let tmp_path = tmp_path_for(path);
-        let file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp_path)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)?;
         let mut out = BufWriter::new(file);
 
         header.write_to(&mut out)?;
@@ -348,7 +360,7 @@ impl GraphUnderConstruction {
         }
         Ok(())
     }
-        /// Repair pass: gives every node that no search could reach on level 0 an incoming link.
+    /// Repair pass: gives every node that no search could reach on level 0 an incoming link.
     ///
     /// Pruning in `link_back` can drop a node from every list that linked to it; HNSW
     /// usually accepts that, but here it would hide documents from graph search until the
@@ -393,7 +405,12 @@ impl GraphUnderConstruction {
 
     /// The most similar reachable node to `node`: one of its own links if any is reachable,
     /// otherwise the best result of a level-0 search from the entry node.
-    fn nearest_reachable(&self, vectors: &VectorFile, node: u32, reachable: &[bool]) -> Option<u32> {
+    fn nearest_reachable(
+        &self,
+        vectors: &VectorFile,
+        node: u32,
+        reachable: &[bool],
+    ) -> Option<u32> {
         let target = InsertedNodeTarget {
             vectors,
             inserted_node: node,
@@ -446,8 +463,16 @@ impl GraphUnderConstruction {
             .iter()
             .enumerate()
             .min_by(|&(_, &a), &(_, &b)| {
-                let a = ScoredNode::salted(a, dot_f32(base, vectors.original(a as usize)), u64::from(anchor));
-                let b = ScoredNode::salted(b, dot_f32(base, vectors.original(b as usize)), u64::from(anchor));
+                let a = ScoredNode::salted(
+                    a,
+                    dot_f32(base, vectors.original(a as usize)),
+                    u64::from(anchor),
+                );
+                let b = ScoredNode::salted(
+                    b,
+                    dot_f32(base, vectors.original(b as usize)),
+                    u64::from(anchor),
+                );
                 a.cmp(&b)
             })
             .map(|(position, _)| position);
@@ -504,7 +529,10 @@ fn random_level(seed: u64, node: usize, level_multiplier: f64) -> u8 {
 
 /// Writes one list slot: length, the links, then zeros up to `max_links`.
 fn write_slot(out: &mut impl Write, links: &[u32], max_links: usize) -> io::Result<()> {
-    debug_assert!(links.len() <= max_links, "neighbour list longer than its slot");
+    debug_assert!(
+        links.len() <= max_links,
+        "neighbour list longer than its slot"
+    );
     out.write_all(&(links.len() as u32).to_le_bytes())?;
     for &link in links {
         out.write_all(&link.to_le_bytes())?;
@@ -533,7 +561,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("corelamo-gbuild-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("corelamo-gbuild-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
@@ -580,13 +609,17 @@ mod tests {
     fn lists_stay_within_limits_and_link_valid_nodes() {
         let dir = temp_dir("limits");
         let vectors = vector_file(&dir, (0..2_000).map(|i| unit(i, 32)), 32);
-        let graph = GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
+        let graph =
+            GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
         for (node, lists) in graph.neighbour_lists.iter().enumerate() {
             for (level, list) in lists.iter().enumerate() {
                 let list = lock(list);
                 assert!(list.len() <= graph.max_links_at(level));
                 assert!(!list.contains(&(node as u32)), "self link");
-                assert!(list.iter().all(|&n| usize::from(graph.node_levels[n as usize]) >= level));
+                assert!(
+                    list.iter()
+                        .all(|&n| usize::from(graph.node_levels[n as usize]) >= level)
+                );
             }
         }
         assert_eq!(reachable_on_level0(&graph), 2_000);
@@ -597,7 +630,8 @@ mod tests {
     fn identical_vectors_all_stay_reachable() {
         let dir = temp_dir("dupes");
         let vectors = vector_file(&dir, (0..500).map(|_| vec![1.0, 0.0, 0.0, 0.0]), 4);
-        let graph = GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
+        let graph =
+            GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
         assert_eq!(reachable_on_level0(&graph), 500);
         let _ = fs::remove_dir_all(dir);
     }
@@ -606,15 +640,21 @@ mod tests {
     fn written_header_describes_the_graph() {
         let dir = temp_dir("write");
         let vectors = vector_file(&dir, (0..300).map(|i| unit(i, 16)), 16);
-        let graph = GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
+        let graph =
+            GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
         let path = dir.join("s.1.hnsw");
-        graph.write(&path, vectors.file_id(), vectors.dims()).expect("write");
+        graph
+            .write(&path, vectors.file_id(), vectors.dims())
+            .expect("write");
         let bytes = fs::read(&path).expect("read");
         let header = GraphHeader::read_from(&bytes, &path).expect("header");
         assert_eq!(header.vector_file_id, vectors.file_id());
         assert_eq!(header.node_count, 300);
         assert_eq!(header.entry_node, graph.entry_node);
-        assert_eq!(bytes.len(), GraphLayout::new(&header).expect("layout").total_length);
+        assert_eq!(
+            bytes.len(),
+            GraphLayout::new(&header).expect("layout").total_length
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -630,8 +670,14 @@ mod tests {
 
     #[test]
     fn invalid_params_are_rejected() {
-        let too_few_links = GraphBuildParams { max_links_upper: 1, ..GraphBuildParams::default() };
-        let narrow_beam = GraphBuildParams { build_beam_width: 4, ..GraphBuildParams::default() };
+        let too_few_links = GraphBuildParams {
+            max_links_upper: 1,
+            ..GraphBuildParams::default()
+        };
+        let narrow_beam = GraphBuildParams {
+            build_beam_width: 4,
+            ..GraphBuildParams::default()
+        };
         assert!(too_few_links.validate().is_err());
         assert!(narrow_beam.validate().is_err());
     }
@@ -639,11 +685,18 @@ mod tests {
     #[test]
     fn levels_are_deterministic_and_mostly_zero() {
         let multiplier = 1.0 / 16f64.ln();
-        let levels: Vec<u8> = (0..10_000).map(|n| random_level(42, n, multiplier)).collect();
-        let again: Vec<u8> = (0..10_000).map(|n| random_level(42, n, multiplier)).collect();
+        let levels: Vec<u8> = (0..10_000)
+            .map(|n| random_level(42, n, multiplier))
+            .collect();
+        let again: Vec<u8> = (0..10_000)
+            .map(|n| random_level(42, n, multiplier))
+            .collect();
         assert_eq!(levels, again);
         let at_zero = levels.iter().filter(|&&l| l == 0).count();
         // Expected share at level 0 is 1 - 1/16 ≈ 94%.
-        assert!((9_200..=9_600).contains(&at_zero), "{at_zero} of 10000 at level 0");
+        assert!(
+            (9_200..=9_600).contains(&at_zero),
+            "{at_zero} of 10000 at level 0"
+        );
     }
 }

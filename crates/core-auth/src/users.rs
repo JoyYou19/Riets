@@ -42,7 +42,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             format: Format::JSON,
         };
         self.db.put_document(input, IndexMode::StoreOnly)?;
-        
+
         Ok(())
     }
     /// True when no user has been created yet: a fresh installation.
@@ -117,38 +117,38 @@ impl<S: DocumentStore> UserDatabase<S> {
         self.put_user(username, hash, &new_roles).is_ok()
     }
     /// A hash of a random password, built once with the same Argon2 settings as real users.
-/// Checked when the user does not exist, so both cases cost one Argon2 verify.
+    /// Checked when the user does not exist, so both cases cost one Argon2 verify.
 
     pub fn verify(&self, username: &str, password: &str) -> Option<Principal> {
-    let user = self
-        .db
-        .get_document(username)
-        .ok()
-        .flatten()
-        .and_then(|doc| Self::parse_user(&doc));
+        let user = self
+            .db
+            .get_document(username)
+            .ok()
+            .flatten()
+            .and_then(|doc| Self::parse_user(&doc));
 
-    let (stored_hash, roles) = match user {
-        Some(user) => user,
-        None => {
-            // same work as a real check, so the time does not reveal whether the user exists
-            if let Ok(parsed) = PasswordHash::new(dummy_hash()) {
-                let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
+        let (stored_hash, roles) = match user {
+            Some(user) => user,
+            None => {
+                // same work as a real check, so the time does not reveal whether the user exists
+                if let Ok(parsed) = PasswordHash::new(dummy_hash()) {
+                    let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
+                }
+                return None;
             }
-            return None;
+        };
+
+        let parsed_hash = PasswordHash::new(&stored_hash).ok()?;
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .ok()?;
+
+        let mut principal = Principal::new(username);
+        for role in roles {
+            principal = principal.with_role(role);
         }
-    };
-
-    let parsed_hash = PasswordHash::new(&stored_hash).ok()?;
-    Argon2::default()
-        .verify_password(password.as_bytes(), &parsed_hash)
-        .ok()?;
-
-    let mut principal = Principal::new(username);
-    for role in roles {
-        principal = principal.with_role(role);
+        Some(principal)
     }
-    Some(principal)
-}
 
     pub fn load_principal(&self, username: &str) -> Option<Principal> {
         let doc = self.db.get_document(username).ok()??;

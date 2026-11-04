@@ -225,8 +225,11 @@ pub struct LengthFilterStream<S> {
 impl<'a, S: TokenStream> TokenStream for LengthFilterStream<S> {
     fn advance(&mut self) -> bool {
         while self.tail.advance() {
-            let len = self.tail.token().text.len();
-            let too_short = self.min.map_or(false, |m| len < m);
+            let text = &self.tail.token().text;
+            let len = self.tail.token().text.chars().count();
+            // numbers and roman numerals carry meaning at any length ("world war 2", "rocky v")
+            let keeps_meaning = text.chars().all(|c| c.is_ascii_digit());
+            let too_short = !keeps_meaning && self.min.is_some_and(|m| len < m);
             let too_long = self.max.map_or(false, |m| len > m);
             if !too_short && !too_long {
                 return true;

@@ -38,7 +38,7 @@ impl AuthService {
     pub fn bootstrap(mut users: UserDatabase<BinaryDocumentStore>) -> Self {
         let policy = default_policy();
         if users.is_empty() {
-            let _= users.add_user("admin","corelamo", vec!["admin".to_string()]);
+            let _ = users.add_user("admin", "corelamo", vec!["admin".to_string()]);
         }
         Self::new(policy, TokenStore::new(), users)
     }
@@ -64,7 +64,7 @@ impl AuthService {
             .map_err(|e| {
                 CorelamoError::Internal(format!("failed to create user '{username}': {e}"))
             })?;
-        
+
         Ok(())
     }
     pub fn delete_user(
@@ -116,9 +116,9 @@ impl AuthService {
     }
 
     pub fn login(&self, username: &str, password: &str) -> Option<Token> {
-    let _ = self.users.verify(username, password)?;
-    Some(self.tokens.issue(username.to_string()))
-}
+        let _ = self.users.verify(username, password)?;
+        Some(self.tokens.issue(username.to_string()))
+    }
     pub fn authenticate(&self, token: &Token) -> Option<Principal> {
         let username = self.tokens.resolve_username(token)?;
         self.users.load_principal(&username)

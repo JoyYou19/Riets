@@ -226,7 +226,11 @@ impl HttpOk {
         }
     }
 
-    pub(crate) fn with_status(status: StatusCode, title: impl Into<String>, ctx: &RequestContext) -> Self {
+    pub(crate) fn with_status(
+        status: StatusCode,
+        title: impl Into<String>,
+        ctx: &RequestContext,
+    ) -> Self {
         Self {
             status,
             title: title.into(),

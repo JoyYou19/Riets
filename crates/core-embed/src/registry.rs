@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::path::{ Path, PathBuf };
-use std::sync::{ Arc, Mutex };
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::config::ModelConfig;
 use crate::embedder::{Embedder, vector_id};
-use crate::model::{ ModelSpec, find_model, known_model_ids };
+use crate::model::{ModelSpec, find_model, known_model_ids};
 
 /// Server-wide set of loaded models. Each model is loaded on first request and then shared.
 pub struct ModelRegistry {
@@ -34,7 +34,7 @@ impl ModelRegistry {
         let default_model = find_model(&config.model_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown model id `{}`", config.model_id)
+                format!("unknown model id `{}`", config.model_id),
             )
         })?;
         std::fs::create_dir_all(&cache_dir)?;
@@ -59,11 +59,15 @@ impl ModelRegistry {
         let spec = find_model(model_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown embedding model '{model_id}' (known: {})", known_model_ids())
+                format!(
+                    "unknown embedding model '{model_id}' (known: {})",
+                    known_model_ids()
+                ),
             )
         })?;
         // Held during loading so concurrent first requests load the model only once.
-        let mut loaded = self.loaded
+        let mut loaded = self
+            .loaded
             .lock()
             .map_err(|_| io::Error::other("model registry lock poisoned"))?;
         if let Some(embedder) = loaded.get(spec.id) {
@@ -83,9 +87,12 @@ impl ModelRegistry {
     pub fn default_embedder(&self) -> io::Result<Arc<Embedder>> {
         self.get(self.default_model.id)
     }
-     /// Ids of the models loaded so far, sorted.
+    /// Ids of the models loaded so far, sorted.
     pub fn loaded_model_ids(&self) -> Vec<&'static str> {
-        let loaded = self.loaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loaded = self
+            .loaded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut ids: Vec<&'static str> = loaded.keys().copied().collect();
         ids.sort_unstable();
         ids

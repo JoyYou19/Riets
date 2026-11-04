@@ -56,5 +56,3 @@ pub(super) fn append_segment(root: &Path, segment: &Path) -> io::Result<()> {
     // Persists both the new segment's and (first time) the manifest's directory entry.
     File::open(root)?.sync_all()
 }
-
-

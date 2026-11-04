@@ -1,5 +1,7 @@
 use std::{
-    fs::{File, OpenOptions}, io::{self, Write}, path::Path,
+    fs::{File, OpenOptions},
+    io::{self, Write},
+    path::Path,
 };
 
 use core_timing::timed;
@@ -18,13 +20,23 @@ pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
     };
 
     // everything after the last newline was cut off by a crash mid-append
-    let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |pos| pos + 1);
+    let complete = bytes
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |pos| pos + 1);
     if complete < bytes.len() {
-        OpenOptions::new().write(true).open(&path)?.set_len(complete as u64)?;
+        OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(complete as u64)?;
     }
 
-    let text = std::str::from_utf8(&bytes[..complete])
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", path.display())))?;
+    let text = std::str::from_utf8(&bytes[..complete]).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {e}", path.display()),
+        )
+    })?;
     let mut deleted = DeleteSet::new();
     for line in text.lines() {
         let line = line.trim();
@@ -32,7 +44,10 @@ pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
             continue;
         }
         let doc_id: DocId = line.parse().map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("{}: bad delete entry {line:?}: {e}", path.display()))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: bad delete entry {line:?}: {e}", path.display()),
+            )
         })?;
         deleted.delete(doc_id);
     }

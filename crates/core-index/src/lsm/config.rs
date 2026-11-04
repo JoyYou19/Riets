@@ -9,7 +9,6 @@ pub struct IndexRuntimeConfig {
     // Number of documents per segment
     pub indexing_batch_size: usize,
 
-
     pub compaction: CompactionConfig,
 }
 

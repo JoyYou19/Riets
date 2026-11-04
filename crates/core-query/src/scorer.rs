@@ -17,6 +17,15 @@ const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
 const SCORE_SCALE: f32 = 1000.0;
 
+/// BM25's idf: how rare a term is among `doc_count` documents.
+pub(crate) fn bm25_idf(doc_frequency: u32, doc_count: u64) -> f32 {
+    let n = doc_count as f32;
+    let df = (doc_frequency as f32).min(n);
+    if n <= 0.0 || df <= 0.0 {
+        return 0.0;
+    }
+    ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+}
 pub(crate) fn bm25_score(
     tf: u32,
     weight: u16,
@@ -29,13 +38,10 @@ pub(crate) fn bm25_score(
         return 0.0;
     }
 
-    let n = doc_count as f32;
-    let df = doc_frequency as f32;
     let tf = tf as f32;
     let dl = doc_len as f32;
 
-    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-
+    let idf = bm25_idf(doc_frequency, doc_count);
     let norm = 1.0 - BM25_B + BM25_B * (dl / avg_doc_len);
 
     let tf_component = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);

@@ -38,10 +38,6 @@ pub(crate) fn shard_for_untimed(external_id: &str, num_shards: u16) -> u16 {
     jump_consistent_hash(stable_hash64(external_id.as_bytes()), num_shards)
 }
 
-
-
-
-
 /// Lamping & Veach, "A Fast, Minimal Memory, Consistent Hash Algorithm" (2014).
 /// Only IEEE-754 operations with defined rounding are used, so the result is the same on
 /// every platform Rust supports. `num_buckets` must be at least 1.

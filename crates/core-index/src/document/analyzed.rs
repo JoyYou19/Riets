@@ -160,4 +160,3 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
         terms,
     }
 }
-

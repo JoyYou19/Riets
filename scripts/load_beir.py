@@ -12,7 +12,8 @@
 
 The dataset is downloaded once from the BEIR mirror at TU Darmstadt and unpacked into
 scripts/beir/<name>/ (corpus.jsonl, queries.jsonl, qrels/<split>.tsv); later runs reuse it.
-The database gets the same policy as FEVER (title 40-80, text 20-30), with each document's
+The database gets the same policy as load.py gives FEVER (title 40-80, text 20-30, English
+stemming and stopwords), with each document's
 BEIR `_id` as its id, so beir_eval.py can match hits by id:
 
     python3 beir_eval.py --database scifact --dataset-dir beir/scifact
@@ -48,28 +49,27 @@ DEFAULTS = {
 FALLBACK = (4, 50_000)
 IN_FLIGHT = 12  # insert requests running at the same time
 
-POLICY = """\
-{
-  "_id": {
-    "$type": "id_auto",
-    "$list": true,
-    "$weight": { "min": 90, "max": 95 }
-  },
-  "title": {
-    "$type": "text",
-    "$list": true,
-    "$exact": true,
-    "$stemming": "english",
-    "$weight": { "min": 40, "max": 80 }
-  },
-  "text": {
-    "$type": "text",
-    "$list": true,
-    "$stemming": "english",
-    "$weight": { "min": 20, "max": 30 }
-  }
-}
-"""
+# Same policy as load.py (FEVER): named analyzers + a "document" schema. "$stemming" on a
+# field is gone; fields without "$analyzer" use "$default". See docs/analyzers.md.
+POLICY = json.dumps({
+    "analyzers": {
+        "$default": {
+            "stemming": "english",
+            "min_length": 1,
+            "stopwords": [
+                "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
+                "into", "is", "it", "of", "on", "or", "such", "that", "the", "their", "then",
+                "there", "these", "they", "this", "to", "was", "will", "with",
+                "has", "have", "had", "were", "been", "which", "from", "also", "than",
+            ],
+        },
+    },
+    "document": {
+        "_id": {"$type": "id_auto", "$list": True, "$weight": {"min": 90, "max": 95}},
+        "title": {"$type": "text", "$list": True, "$exact": True, "$weight": {"min": 40, "max": 80}},
+        "text": {"$type": "text", "$list": True, "$weight": {"min": 20, "max": 30}},
+    },
+})
 
 
 def download(name: str) -> Path:
@@ -128,6 +128,14 @@ def post(base_url, path, body):
         return json.loads(text)
     except json.JSONDecodeError:
         return {"error": text}
+
+
+def failed(reply):
+    """True when the server rejected the request (transport error or non-2xx status)."""
+    if "error" in reply:
+        return True
+    status = reply.get("status")
+    return isinstance(status, int) and status >= 400
 
 
 ID_FIELD = re.compile(rb'"_id"\s*:\s*"((?:[^"\\]|\\.)*)"')
@@ -222,7 +230,11 @@ def main():
         print(post(args.url, f"/api/databases/{db}/start-database", "").get("title"))
 
         print("[INFO] Setting policy...")
-        print(post(args.url, f"/api/databases/{db}/set-policy", POLICY).get("title"))
+        reply = post(args.url, f"/api/databases/{db}/set-policy", POLICY)
+        print(reply.get("title"))
+        if failed(reply):
+            # inserting without the policy would index everything with the wrong fields/analyzers
+            sys.exit(f"[ERROR] set-policy failed, not inserting: {reply}")
 
     sent = 0
     inserted = 0

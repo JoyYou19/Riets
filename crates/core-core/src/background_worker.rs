@@ -5,27 +5,33 @@
 
 use std::{
     io,
-    sync::{ Arc, Mutex, atomic::{ AtomicBool, Ordering }, mpsc::Sender },
-    thread::{ self, JoinHandle },
-    time::{ Duration, Instant },
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
-use core_embed::{ Embedder, ModelRegistry };
+use core_embed::{Embedder, ModelRegistry};
 use core_index::{
     background::background_pool,
     lsm::{
-        compaction::{ CompactionConfig, run_compaction_cycle },
-        index_worker::{ IndexCommand, ReindexProgress },
+        compaction::{CompactionConfig, run_compaction_cycle},
+        index_worker::{IndexCommand, ReindexProgress},
     },
 };
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::run_segment_compaction;
-use crossbeam_channel::{ Receiver, RecvTimeoutError, SendTimeoutError, bounded, unbounded };
-use slog::{ Logger, error, info, warn };
+use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, bounded, unbounded};
+use slog::{Logger, error, info, warn};
 
 use crate::{
-
-    embed::EmbeddingJob, metrics::{ BackgroundActivity, ShardStatsHandle }, reindex::{ ReindexTask, build_staging_index }, shard_worker::ShardCmd,
+    embed::EmbeddingJob,
+    metrics::{BackgroundActivity, ShardStatsHandle},
+    reindex::{ReindexTask, build_staging_index},
+    shard_worker::ShardCmd,
 };
 
 const MODEL_RETRY: Duration = Duration::from_secs(60);
@@ -34,7 +40,7 @@ const MEASURE_EVERY: Duration = Duration::from_secs(60);
 const STOP_POLL: Duration = Duration::from_millis(100);
 /// A store-compaction check that finds nothing doubles its wait, up to interval × this.
 const STORE_BACKOFF_MAX: u32 = 64;
-pub(super)struct BackgroundConfig {
+pub(super) struct BackgroundConfig {
     pub index: Sender<IndexCommand>,
     pub shard_tx: crossbeam_channel::Sender<ShardCmd>,
     pub compaction: Option<CompactionConfig>,
@@ -70,12 +76,16 @@ impl BackgroundWorker {
             measured: None,
         };
         let stop_thread = Arc::clone(&stop);
-        let handle = thread::Builder
-            ::new()
+        let handle = thread::Builder::new()
             .name("shard-background".to_string())
             .spawn(move || looped.run(&stop_thread))
             .expect("failed to spawn shard background worker");
-        Self { stop, reindex_tx, current, handle: Some(handle) }
+        Self {
+            stop,
+            reindex_tx,
+            current,
+            handle: Some(handle),
+        }
     }
 
     /// Queues a reindex. It starts once the current step finishes; nothing else starts before it.
@@ -86,12 +96,7 @@ impl BackgroundWorker {
     }
     fn signal_stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        if
-            let Some(progress) = self.current
-                .lock()
-                .ok()
-                .and_then(|c| c.clone())
-        {
+        if let Some(progress) = self.current.lock().ok().and_then(|c| c.clone()) {
             progress.cancel();
         }
     }
@@ -99,7 +104,9 @@ impl BackgroundWorker {
     pub fn stop(mut self) -> io::Result<()> {
         self.signal_stop();
         if let Some(handle) = self.handle.take() {
-            handle.join().map_err(|_| io::Error::other("shard background worker panicked"))??;
+            handle
+                .join()
+                .map_err(|_| io::Error::other("shard background worker panicked"))??;
         }
         Ok(())
     }
@@ -128,7 +135,7 @@ struct BackgroundLoop {
     store_wait: Duration,
 }
 impl BackgroundLoop {
-      fn run(mut self, stop: &AtomicBool) -> io::Result<()> {
+    fn run(mut self, stop: &AtomicBool) -> io::Result<()> {
         let result = self.run_loop(stop);
         // a reindex queued but never started still has to be counted, or the database
         // reports a reindex running forever
@@ -196,7 +203,9 @@ impl BackgroundLoop {
         let Some(config) = self.config.compaction else {
             return Ok(false);
         };
-        self.config.stats.set_activity(BackgroundActivity::Compacting);
+        self.config
+            .stats
+            .set_activity(BackgroundActivity::Compacting);
         let started = Instant::now();
         let result = run_compaction_cycle(&self.config.index, config, &self.config.log);
         self.config.stats.set_activity(BackgroundActivity::Idle);
@@ -205,7 +214,9 @@ impl BackgroundLoop {
             Ok(false) => {}
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
             Err(e) => {
-                self.config.stats.record_compaction(false, started.elapsed());
+                self.config
+                    .stats
+                    .record_compaction(false, started.elapsed());
                 error!(self.config.log, "index compaction cycle failed; retrying after interval"; "error" => %e);
             }
         }
@@ -244,9 +255,13 @@ impl BackgroundLoop {
             }
         }
     }
-   
+
     fn run_reindex(&mut self, task: ReindexTask, stop: &AtomicBool) {
-        let ReindexTask { params, progress, stats } = task;
+        let ReindexTask {
+            params,
+            progress,
+            stats,
+        } = task;
         let started = Instant::now();
         let generation = params.generation;
         let shard_root = params.shard_root.clone();
@@ -254,7 +269,9 @@ impl BackgroundLoop {
         if let Ok(mut current) = self.current.lock() {
             *current = Some(Arc::clone(&progress));
         }
-        self.config.stats.set_activity(BackgroundActivity::Reindexing);
+        self.config
+            .stats
+            .set_activity(BackgroundActivity::Reindexing);
 
         // directly on this thread: the build already spreads over rayon and the background
         // pool, and wrapping it in background_pool().install could starve its own segment writes
@@ -266,10 +283,14 @@ impl BackgroundLoop {
         }
 
         match built {
-           Ok(done) => {
+            Ok(done) => {
                 // The commit replaces this worker. Do nothing until it does: any step started
                 // now would run against the index the commit is about to close.
-                let cmd = ShardCmd::CommitReindex { done, stats: Arc::clone(&stats), started };
+                let cmd = ShardCmd::CommitReindex {
+                    done,
+                    stats: Arc::clone(&stats),
+                    started,
+                };
                 if self.send_to_shard(stop, cmd) {
                     while !stop.load(Ordering::Relaxed) {
                         thread::sleep(STOP_POLL);
@@ -299,8 +320,11 @@ impl BackgroundLoop {
         let (reply, rx) = bounded(1);
         let planned = self.ask_shard(
             stop,
-            ShardCmd::PlanSegmentCompaction { dead_ratio_threshold, reply },
-            &rx
+            ShardCmd::PlanSegmentCompaction {
+                dead_ratio_threshold,
+                reply,
+            },
+            &rx,
         );
         let Some(Ok(Some(job))) = planned else {
             // nothing to reclaim: wait twice as long next time
@@ -317,8 +341,11 @@ impl BackgroundLoop {
                 let (ack, rx) = bounded(1);
                 let _ = self.ask_shard(
                     stop,
-                    ShardCmd::InstallSegmentCompaction { completed, ack: Some(ack) },
-                    &rx
+                    ShardCmd::InstallSegmentCompaction {
+                        completed,
+                        ack: Some(ack),
+                    },
+                    &rx,
                 );
             }
             Err(e) => warn!(self.config.log, "store compaction failed"; "error" => %e),
@@ -337,7 +364,10 @@ impl BackgroundLoop {
         // busy with another shard.
         let vector_id = self.config.models.default_vector_id();
         let dims = self.config.models.default_model().dims;
-        if self.last_measure.is_none_or(|at| at.elapsed() >= MEASURE_EVERY) {
+        if self
+            .last_measure
+            .is_none_or(|at| at.elapsed() >= MEASURE_EVERY)
+        {
             self.measure(&vector_id, dims);
         }
         let waiting = self.waiting_for_load()?;
@@ -355,8 +385,15 @@ impl BackgroundLoop {
         };
 
         let round_started = Instant::now();
-        self.config.stats.set_activity(BackgroundActivity::Embedding);
-        let result = self.config.embedding.as_mut().expect("checked above").step(&mut lease, stop);
+        self.config
+            .stats
+            .set_activity(BackgroundActivity::Embedding);
+        let result = self
+            .config
+            .embedding
+            .as_mut()
+            .expect("checked above")
+            .step(&mut lease, stop);
         drop(lease);
         if stop.load(Ordering::Relaxed) {
             return Ok(false);
@@ -388,10 +425,9 @@ impl BackgroundLoop {
     /// brings at least 1/`size_ratio` of this shard's documents, so the shard is embedded once,
     /// from the merged segment. A trickle of new documents into an embedded shard never waits.
     fn waiting_for_load(&self) -> io::Result<bool> {
-        let (Some(compaction), Some(job)) = (
-            self.config.compaction,
-            self.config.embedding.as_ref(),
-        ) else {
+        let (Some(compaction), Some(job)) =
+            (self.config.compaction, self.config.embedding.as_ref())
+        else {
             return Ok(false);
         };
         if !job.waits_for_load() {
@@ -404,19 +440,27 @@ impl BackgroundLoop {
             return Ok(false);
         }
         let (reply, rx) = std::sync::mpsc::channel();
-        self.config.index
+        self.config
+            .index
             .send(IndexCommand::Settling {
                 config: compaction,
                 reply,
             })
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped"))?;
         rx.recv().map_err(|_| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "index worker dropped settling reply")
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "index worker dropped settling reply",
+            )
         })
     }
 
     fn measure(&mut self, vector_id: &str, dims: usize) {
-        let job = self.config.embedding.as_ref().expect("measure is only called with a job");
+        let job = self
+            .config
+            .embedding
+            .as_ref()
+            .expect("measure is only called with a job");
         match job.measure(vector_id, dims) {
             Ok((total, done)) => {
                 self.measured = Some((total, done));
@@ -431,7 +475,10 @@ impl BackgroundLoop {
         if let Some(embedder) = &self.embedder {
             return Some(Arc::clone(embedder));
         }
-        if self.last_model_attempt.is_some_and(|attempt| attempt.elapsed() < MODEL_RETRY) {
+        if self
+            .last_model_attempt
+            .is_some_and(|attempt| attempt.elapsed() < MODEL_RETRY)
+        {
             return None;
         }
         self.last_model_attempt = Some(Instant::now());
@@ -447,8 +494,7 @@ impl BackgroundLoop {
                     "instances" => embedder.instances(),
                     "reason" => reason);
                     }
-                    None =>
-                        info!(self.config.log, "embedding model ready";
+                    None => info!(self.config.log, "embedding model ready";
                     "model" => embedder.spec().id,
                     "device" => %embedder.device(),
                     "instances" => embedder.instances()),
@@ -459,9 +505,9 @@ impl BackgroundLoop {
             }
             Err(e) => {
                 warn!(self.config.log, "embedding model unavailable; retrying later"; "error" => %e);
-                self.config.stats.set_embedding_error(
-                    Some(format!("embedding model unavailable: {e}"))
-                );
+                self.config
+                    .stats
+                    .set_embedding_error(Some(format!("embedding model unavailable: {e}")));
                 None
             }
         }

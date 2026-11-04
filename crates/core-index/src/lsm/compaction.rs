@@ -1,10 +1,30 @@
 use crate::{
-    array_rows::ArrayRowIndex, background::background_pool, disk::{reader::DiskSegment, writer::write_merged_segment}, document::document::BoolField, lsm::index_worker::IndexCommand, numeric_values::{NumericFields, NumericPoints, unpack}, posting::{DeleteSet, PostingList}, segment::{ImmutableSegment, SegmentHandle}, types::{DocId, TermKey, XPathId}, vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
+    array_rows::ArrayRowIndex,
+    background::background_pool,
+    disk::{reader::DiskSegment, writer::write_merged_segment},
+    document::document::BoolField,
+    lsm::index_worker::IndexCommand,
+    numeric_values::{NumericFields, NumericPoints, unpack},
+    posting::{DeleteSet, PostingList},
+    segment::{ImmutableSegment, SegmentHandle},
+    types::{DocId, TermKey, XPathId},
+    vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
 };
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Reverse, collections::{BTreeMap, BinaryHeap}, fs, io, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::Sender}, thread, time::{Duration, Instant}};
-
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap},
+    fs, io,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
 
@@ -131,13 +151,17 @@ pub struct CompactionConfig {
 }
 impl Default for CompactionConfig {
     fn default() -> Self {
-       Self {
+        Self {
             max_segments_per_compaction: 16,
+            //when this much never merge below
             compact_when_segments_at_least: 2,
+            //segment similarity sratio
             size_ratio: 2,
+            //similar sized segements worth to merge
             min_width: 4,
+            //max segements forces merge
             max_segments: 10,
-            idle_merge_after: Duration::from_secs(30),
+            idle_merge_after: Duration::from_secs(10),
         }
     }
 }
@@ -294,7 +318,10 @@ pub fn run_compaction_cycle(
                         "error" => %remove_err);
                 }
             }
-            return Err(io::Error::new(err.kind(), format!("{}: {}", output_path.display(), err)));
+            return Err(io::Error::new(
+                err.kind(),
+                format!("{}: {}", output_path.display(), err),
+            ));
         }
     };
 
