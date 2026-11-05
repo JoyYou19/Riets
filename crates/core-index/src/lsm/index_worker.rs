@@ -80,6 +80,12 @@ pub enum IndexCommand {
         xpath: XPathId,
         reply: InstallVectorsReply,
     },
+    /// Attaches a built HNSW graph to the segment's current vector file.
+    InstallGraph {
+        segment: PathBuf,
+        xpath: XPathId,
+        reply: InstallVectorsReply,
+    },
     /// Whether a load is still settling into its final segment (`LsmIndex::settling`).
     Settling {
         config: CompactionConfig,
@@ -530,6 +536,20 @@ fn run_index_worker(
                 reply,
             } => {
                 let outcome = index.install_vectors(&segment, xpath);
+                let installed = matches!(&outcome, Ok(true));
+                let _ = reply.send(outcome);
+                if installed {
+                    shared.publish(index.publish_snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
+            }
+            IndexCommand::InstallGraph {
+                segment,
+                xpath,
+                reply,
+            } => {
+                let outcome = index.install_graph(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
                 let _ = reply.send(outcome);
                 if installed {

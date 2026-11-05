@@ -24,7 +24,7 @@ use core_index::{
     lsm::{index_worker::IndexCommand, snapshot::IndexSnapshot},
     search::SearchIndex,
     types::{DocId, XPathId},
-    vector::{VectorFile, VectorFileWriter, vector_file_path},
+    vector::{MIN_ROWS_FOR_GRAPH, VectorFile, VectorFileWriter, vector_file_path},
 };
 use core_storage::json_parse::parse_source_into_node;
 use serde::{Deserialize, Serialize};
@@ -109,6 +109,15 @@ pub struct EmbeddingJob {
     log: Logger,
     /// Documents whose text could not be loaded; not retried until the process restarts.
     skipped: HashSet<DocId>,
+    /// Vector files (by file id) whose graph build failed; not retried until restart.
+    graph_failed: HashSet<u64>,
+}
+
+/// A vector file that is ready for an HNSW graph.
+pub struct GraphTask {
+    pub segment: PathBuf,
+    pub xpath: XPathId,
+    pub file: Arc<VectorFile>,
 }
 
 impl EmbeddingJob {
@@ -139,6 +148,7 @@ impl EmbeddingJob {
             config: config.sanitized(),
             log,
             skipped: HashSet::new(),
+            graph_failed: HashSet::new(),
         })
     }
 
@@ -185,6 +195,54 @@ impl EmbeddingJob {
             }
         }
         Ok((total, done))
+    }
+
+    /// The largest vector file that needs a graph: made with the current model, big enough
+    /// (`MIN_ROWS_FOR_GRAPH`), without a graph, and complete, meaning every live document of
+    /// its segment and field has its vector. An incomplete file is rewritten by the next
+    /// embedding round, which would throw its graph away.
+    pub fn next_graph(&self, vector_id: &str, dims: usize) -> io::Result<Option<GraphTask>> {
+        let snapshot = self.shared.snapshot.get();
+        let mut candidates: Vec<_> = snapshot
+            .vectors()
+            .iter()
+            .filter(|entry| {
+                entry.graph.is_none()
+                    && entry.file.len() >= MIN_ROWS_FOR_GRAPH
+                    && entry.file.matches(vector_id, dims)
+                    && !self.graph_failed.contains(&entry.file.file_id())
+                    && self.fields.iter().any(|field| field.xpath == entry.xpath)
+            })
+            .collect();
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.file.len()));
+
+        for entry in candidates {
+            let disk = match DiskSegment::open(&entry.segment) {
+                Ok(disk) => disk,
+                // merged away since the snapshot was taken
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            let complete = !disk.doc_lengths().iter().any(|((doc_id, xpath), _)| {
+                xpath == entry.xpath
+                    && !snapshot.is_deleted(doc_id)
+                    && !self.skipped.contains(&doc_id)
+                    && !entry.file.contains(doc_id)
+            });
+            if complete {
+                return Ok(Some(GraphTask {
+                    segment: entry.segment.clone(),
+                    xpath: entry.xpath,
+                    file: Arc::clone(&entry.file),
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Stops `next_graph` from offering this vector file again (its build failed).
+    pub fn graph_failed(&mut self, file_id: u64) {
+        self.graph_failed.insert(file_id);
     }
 
     /// Largest segment first, so the bulk of the corpus gets vectors before small new segments.
@@ -447,6 +505,24 @@ fn install_vectors(
         .map_err(|_| broken_pipe("index worker stopped"))?;
     rx.recv()
         .map_err(|_| broken_pipe("index worker dropped install vectors reply"))?
+}
+
+/// Attaches a built graph; false when the segment or its vector file changed meanwhile.
+pub fn install_graph(
+    sender: &Sender<IndexCommand>,
+    segment: PathBuf,
+    xpath: XPathId,
+) -> io::Result<bool> {
+    let (reply, rx) = mpsc::channel();
+    sender
+        .send(IndexCommand::InstallGraph {
+            segment,
+            xpath,
+            reply,
+        })
+        .map_err(|_| broken_pipe("index worker stopped"))?;
+    rx.recv()
+        .map_err(|_| broken_pipe("index worker dropped install graph reply"))?
 }
 
 fn broken_pipe(message: &'static str) -> io::Error {

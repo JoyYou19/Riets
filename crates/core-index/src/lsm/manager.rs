@@ -929,6 +929,33 @@ impl LsmIndex {
         Ok(true)
     }
 
+    /// Attaches `<segment>.<xpath>.hnsw` to that segment's current vector file.
+    /// Returns false, removing the graph file, when the segment is no longer live or the
+    /// graph was built from an older version of the vector file.
+    pub fn install_graph(&mut self, segment: &Path, xpath: XPathId) -> io::Result<bool> {
+        let path = hnsw_file_path(segment, xpath);
+        let vectors = Arc::make_mut(&mut self.vectors);
+        let Some(entry) = vectors
+            .iter_mut()
+            .find(|entry| entry.segment == segment && entry.xpath == xpath)
+        else {
+            let _ = std::fs::remove_file(&path);
+            return Ok(false);
+        };
+        match HnswGraph::open(&path, Arc::clone(&entry.file)) {
+            Ok(graph) => {
+                entry.graph = Some(Arc::new(graph));
+                Ok(true)
+            }
+            // derived data: a stale or corrupt graph is dropped and built again
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                let _ = std::fs::remove_file(&path);
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn attach_vectors(&mut self, segment: &Path, xpath: XPathId) -> io::Result<()> {
         let file = Arc::new(VectorFile::open(vector_file_path(segment, xpath))?);
         let vectors = Arc::make_mut(&mut self.vectors);
@@ -938,6 +965,12 @@ impl LsmIndex {
         {
             Some(existing) => {
                 existing.file = file;
+                // the graph indexes the old file: drop it, the background worker builds a new
+                // one. Removing can fail while a reader still maps it (Windows); the stale file
+                // is then rejected by its file id at the next open or install.
+                if existing.graph.take().is_some() {
+                    let _ = std::fs::remove_file(hnsw_file_path(segment, xpath));
+                }
             }
             None => vectors.push(SegmentVectors {
                 segment: segment.to_path_buf(),
@@ -955,6 +988,7 @@ impl LsmIndex {
         vectors.retain(|entry| {
             if entry.segment == segment {
                 let _ = std::fs::remove_file(entry.file.path());
+                let _ = std::fs::remove_file(hnsw_file_path(segment, entry.xpath));
                 false
             } else {
                 true
