@@ -1,6 +1,7 @@
 //! One background thread per shard. Work runs in priority order, one step at a time:
 //! a submitted reindex (alone, after the current step finishes), index compaction, embedding,
-//! and, only when idle, document-store compaction. Heavy CPU and disk work runs on
+//! HNSW graphs for fully embedded vector files, and, only when idle, document-store
+//! compaction. Heavy CPU and disk work runs on
 //! `background_pool()`, so compaction proceeds on as many shards at once as there are cores.
 
 use std::{
@@ -21,6 +22,7 @@ use core_index::{
         compaction::{CompactionConfig, run_compaction_cycle},
         index_worker::{IndexCommand, ReindexProgress},
     },
+    vector::{GraphBuildParams, build_graph_file, hnsw_file_path},
 };
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::run_segment_compaction;
@@ -28,7 +30,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, bounded, u
 use slog::{Logger, error, info, warn};
 
 use crate::{
-    embed::EmbeddingJob,
+    embed::{EmbeddingJob, install_graph},
     metrics::{BackgroundActivity, ShardStatsHandle},
     reindex::{ReindexTask, build_staging_index},
     shard_worker::ShardCmd,
@@ -178,7 +180,18 @@ impl BackgroundLoop {
                 }
                 Err(e) => warn!(self.config.log, "embedding round failed"; "error" => %e),
             }
-            // 4. idle: document-store compaction, rarely
+            // 4. one HNSW graph for a fully embedded vector file, then re-check 1 to 3
+            match self.graph_once(stop) {
+                Ok(true) => {
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                    return Ok(());
+                }
+                Err(e) => warn!(self.config.log, "vector graph step failed"; "error" => %e),
+            }
+            // 5. idle: document-store compaction, rarely
             if self.store_compaction_due() {
                 self.store_compaction_once(stop);
                 continue;
@@ -418,6 +431,74 @@ impl BackgroundLoop {
             self.measure(&vector_id, dims);
         }
         Ok(did_work)
+    }
+
+    /// Builds the graph of one complete vector file (see `EmbeddingJob::next_graph`).
+    /// Runs only when embedding had nothing to do this pass, so a file is not graphed and then
+    /// rewritten by the next round. Returns true when it built or tried a graph.
+    fn graph_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
+        if self.config.embedding.is_none() || stop.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        // a bulk load is about to be merged: its segments, and their graphs, would go away
+        if self.waiting_for_load()? {
+            return Ok(false);
+        }
+        let vector_id = self.config.models.default_vector_id();
+        let dims = self.config.models.default_model().dims;
+        let Some(task) = self
+            .config
+            .embedding
+            .as_ref()
+            .expect("checked above")
+            .next_graph(&vector_id, dims)?
+        else {
+            return Ok(false);
+        };
+
+        let path = hnsw_file_path(&task.segment, task.xpath);
+        let started = Instant::now();
+        // reported as embedding: it is the last stage of making the vectors searchable
+        self.config
+            .stats
+            .set_activity(BackgroundActivity::Embedding);
+        // the builder inserts nodes in parallel; on the background pool it shares the cores
+        // with the other shards' compaction instead of using rayon's global pool
+        let built = background_pool()
+            .install(|| build_graph_file(&task.file, &path, &GraphBuildParams::default()));
+        self.config.stats.set_activity(BackgroundActivity::Idle);
+
+        match built {
+            Ok(true) => {
+                if install_graph(&self.config.index, task.segment.clone(), task.xpath)? {
+                    info!(self.config.log, "built vector graph";
+                        "segment" => %task.segment.display(),
+                        "xpath" => task.xpath,
+                        "rows" => task.file.len(),
+                        "elapsed_ms" => started.elapsed().as_millis());
+                }
+                // not installed: the vector file changed meanwhile and the stale graph was
+                // removed; the new file is offered again once it is complete
+                Ok(true)
+            }
+            Ok(false) => {
+                // below MIN_ROWS_FOR_GRAPH; next_graph filters these, so only a size race
+                self.mark_graph_failed(task.file.file_id());
+                Ok(false)
+            }
+            Err(e) => {
+                warn!(self.config.log, "building vector graph failed; searching by scan";
+                    "segment" => %task.segment.display(), "xpath" => task.xpath, "error" => %e);
+                self.mark_graph_failed(task.file.file_id());
+                Ok(true)
+            }
+        }
+    }
+
+    fn mark_graph_failed(&mut self, file_id: u64) {
+        if let Some(job) = self.config.embedding.as_mut() {
+            job.graph_failed(file_id);
+        }
     }
 
     /// Whether embedding waits for a bulk load: the load is still settling into one segment
