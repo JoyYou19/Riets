@@ -304,19 +304,23 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         positions: Vec<u32>,
+        offsets: Vec<(u32, u32)>,
         weight: u16,
     ) {
-        self.estimated_bytes +=
-            size_of::<DocId>() + size_of::<u16>() + positions.len() * size_of::<u32>();
+        self.estimated_bytes += size_of::<DocId>()
+            + size_of::<u16>()
+            + positions.len() * size_of::<u32>()
+            + offsets.len() * size_of::<(u32, u32)>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             Entry::Occupied(mut slot) => {
-                slot.get_mut().insert_posting(doc_id, positions, weight);
+                slot.get_mut()
+                    .insert_posting(doc_id, positions, offsets, weight);
             }
             Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + size_of::<TermKey>();
                 slot.insert(PostingList::new())
-                    .insert_posting(doc_id, positions, weight);
+                    .insert_posting(doc_id, positions, offsets, weight);
             }
         }
     }
@@ -386,7 +390,14 @@ impl MemIndex {
         }
 
         for term in field.terms {
-            self.add_posting_weighted(term.term, field.xpath, doc_id, term.positions, term.weight);
+            self.add_posting_weighted(
+                term.term,
+                field.xpath,
+                doc_id,
+                term.positions,
+                term.offsets,
+                term.weight,
+            );
         }
     }
 

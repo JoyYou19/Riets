@@ -3,9 +3,7 @@
 
 use ahash::AHashMap;
 
-use crate::analyzer::Analyzer;
 use crate::analyzer::analyzer::AnalyzerSet;
-use crate::analyzer::analyzer_config::{AnalyzerConfig, CorelamoTokenizer};
 use crate::document::document::{BoolPoint, NumericPoint};
 use crate::document::{DocumentPart, IndexedDocument};
 use crate::types::{ArrayRowId, DocId, XPathId, encode_position};
@@ -177,33 +175,3 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
         terms,
     }
 }
-<<<<<<< HEAD
-=======
-
-#[test]
-fn for_each_token_with_offsets_reports_byte_spans() {
-    let config = AnalyzerConfig {
-        tokenizer: CorelamoTokenizer::WordDelimiter,
-        stemming: None,
-        lowercase: false,
-        ascii_folding: false,
-        stopwords: None,
-        min_length: None,
-        max_length: None,
-        preserve_original: true,
-        literal_symbols: ['_'].into_iter().collect(),
-        char_filters: Vec::new(),
-    };
-    let a = Analyzer::from_config(&config);
-    let mut parts = Vec::new();
-    a.for_each_token_with_offsets("Brown-Fox", |term, pos, _len, start, end| {
-        if term == "Brown" || term == "Fox" {
-            parts.push((term.to_string(), pos, start, end));
-        }
-    });
-    assert_eq!(
-        parts,
-        vec![("Brown".to_string(), 0, 0, 5), ("Fox".to_string(), 1, 6, 9),]
-    );
-}
->>>>>>> 1aa19a3 (more minor fixes + add_wieghted consumes byte offsetrs)
