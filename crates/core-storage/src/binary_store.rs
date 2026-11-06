@@ -779,6 +779,7 @@ impl DocumentStore for BinaryDocumentStore {
                     }
                     Ok(OP_DELETE) => {
                         let _external_id = read_string(&mut reader)?;
+                        let _internal_id= read_u64(&mut reader)?;
                     }
                     Ok(other) => {
                         return Err(io::Error::new(

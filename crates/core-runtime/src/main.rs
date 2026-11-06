@@ -9,7 +9,7 @@ use core_core::shard_manager::ShardManager;
 use tower_http::{cors::CorsLayer, decompression::RequestDecompressionLayer};
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
-use core_auth::{AuthService, UserDatabase};
+use core_auth::{AuthService, MIN_PASSWORD_LEN, SUPERUSER, UserDatabase};
 use core_index::{
     analyzer::analyzer::Analyzer,
     lsm::{LsmIndex, config::IndexRuntimeConfig},
@@ -60,9 +60,7 @@ const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const FORCED_EXIT_CODE: i32 = 130;
 
 /// Takes an exclusive OS lock on `<root>/corelamo.lock` for the life of the process, so a
-/// second server on the same data cannot start, even when it binds the port without an
-/// error (another address family, or an old process that is still shutting down). The OS
-/// drops the lock when the process dies, so a crash never leaves a stale lock behind.
+/// second server on the same data cannot start
 fn lock_root(root: &Path) -> io::Result<File> {
     std::fs::create_dir_all(root)?;
     let path = root.join("corelamo.lock");
@@ -101,7 +99,44 @@ fn lock_root(root: &Path) -> io::Result<File> {
     file.sync_all()?;
     Ok(file)
 }
+fn prompt_new_password() -> io::Result<String> {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--reset-password interactive needs a terminal; use random",
+        ));
+    }
+    loop {
+        let first = rpassword::prompt_password(format!("New password for '{SUPERUSER}': "))?;
+        if first.chars().count() < MIN_PASSWORD_LEN {
+            eprintln!("Too short: use at least {MIN_PASSWORD_LEN} characters.");
+            continue;
+        }
+        let second = rpassword::prompt_password("Repeat it: ")?;
+        if first == second {
+            return Ok(first);
+        }
+        eprintln!("The passwords do not match, try again.");
+    }
+}
+fn ask_to_set_password() -> io::Result<Option<String>> {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    eprint!("Set your own password now? [y/N]: ");
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        return Ok(None);
+    }
+    prompt_new_password().map(Some)
+}
 
+fn print_password(password: &str) {
+    eprintln!("\n  user:     {SUPERUSER}\n  password: {password}\n  Shown once, keep it safe, the password cannot be recovered\n");
+}
 #[derive(Clone)]
 pub struct AppState {
     pub databases: Arc<Databases>,
@@ -295,7 +330,35 @@ async fn run() -> io::Result<()> {
     let analyzer = Analyzer::default(); // or however movies builds it
 
     let user_db = UserDatabase::new(store, index, analyzer);
-    let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
+    let auth = match AuthService::bootstrap(user_db) {
+        Ok((mut auth, created)) => {
+            if let Some(password) = created {
+                eprintln!("\n Inital start: superuser created.");
+                print_password(&password);
+                warn!(log, "created the superuser with a generated password (printed on stderr)";
+                    "user" => SUPERUSER);
+                // first start only: offer to replace it while someone is at the terminal
+                match tokio::task::spawn_blocking(ask_to_set_password).await {
+                    Ok(Ok(Some(own))) => match auth.set_initial_password(&own) {
+                        Ok(()) => {
+                            eprintln!("Password for '{SUPERUSER}' updated.");
+                            info!(log, "superuser password set at first start"; "user" => SUPERUSER);
+                        }
+                        Err(e) => eprintln!("error: {e}; the printed password stays valid"),
+                    },
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => eprintln!("error: {e}; the printed password stays valid"),
+                    Err(e) => eprintln!("error: password prompt failed: {e}; the printed password stays valid"),
+                }
+            }
+            Arc::new(RwLock::new(auth))
+        }
+        Err(e) => {
+            error!(log, "cannot start: user bootstrap failed"; "error" => %e);
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
 
     let state = AppState {
         databases: Arc::new(databases_registry),
