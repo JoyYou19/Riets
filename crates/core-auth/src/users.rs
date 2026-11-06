@@ -14,6 +14,7 @@ use core_storage::search_database::{DocumentInput, IndexMode};
 
 use crate::Principal;
 
+pub(crate) type ListUsers =(String,Result<Vec<String>, String>);
 pub struct UserDatabase<S: DocumentStore> {
     db: SearchDatabase<S>,
 }
@@ -159,21 +160,17 @@ impl<S: DocumentStore> UserDatabase<S> {
     pub fn user_exists(&mut self, username: &str) -> bool {
         matches!(self.db.get_document(username), Ok(Some(_)))
     }
-    pub fn all_usernames(&self) -> Vec<String> {
-        self.db
-            .store()
-            .all_documents()
-            .map(|docs| docs.into_iter().map(|d| d.external_id).collect())
-            .unwrap_or_default()
-    }
-    pub fn all_users_with_roles(&self) -> Vec<(String, Vec<String>)> {
-        self.all_usernames()
+     pub fn all_users_with_roles(&self) -> io::Result<Vec<ListUsers>> {
+        let docs = self.db.store().all_documents()?;
+        Ok(docs
             .into_iter()
-            .filter_map(|username| {
-                let principal = self.load_principal(&username)?;
-                Some((username, principal.roles.into_iter().collect()))
+            .map(|doc| {
+                let roles = Self::parse_user(&doc)
+                    .map(|(_, roles)| roles)
+                    .ok_or_else(|| "user record is not valid JSON or has no password".to_string());
+                (doc.external_id, roles)
             })
-            .collect()
+            .collect())
     }
 }
 /// Salt of the dummy hash. It is never compared with a real password, so a fixed salt is

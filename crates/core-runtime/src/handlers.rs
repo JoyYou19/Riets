@@ -31,7 +31,7 @@ use core_storage::document_projections::id_path_to_strip;
 use core_timing::timed;
 use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
-use slog::{error, info, o};
+use slog::{error, info, o, warn};
 use std::{collections::HashMap, sync::Arc};
 
 //authorizations
@@ -145,14 +145,34 @@ pub(crate) async fn list_users_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let auth = state.auth.read().unwrap_or_else(|e| e.into_inner());
-    let users = auth.list_users();
-
+    let auth = Arc::clone(&state.auth);
+    let listed = tokio::task::spawn_blocking(move || {
+        let auth = auth.read().unwrap_or_else(|e| e.into_inner());
+        auth.list_users()
+    })
+    .await;
+    let users = match listed {
+        Ok(Ok(users)) => users,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(_) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal("auth service unavailable".to_string()),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+    let log = slog_scope::logger().new(o!("component" => "handlers"));
     let data: Vec<_> = users
         .into_iter()
-        .map(|(username, roles)| json!({ "username": username, "roles": roles }))
+        .map(|(username, roles)| match roles {
+            Ok(roles) => json!({ "username": username, "roles": roles }),
+            Err(reason) => {
+                warn!(log, "user record cannot be read"; "username" => &username, "error" => &reason);
+                json!({ "username": username, "roles": [], "error": reason })
+            }
+        })
         .collect();
-
     HttpOk::with_data(
         format!("{} user(s)", data.len()),
         json!({ "users": data }),

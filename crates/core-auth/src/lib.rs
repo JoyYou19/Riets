@@ -9,11 +9,22 @@ pub use bootstrap::default_policy;
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::BinaryDocumentStore;
 pub use permission::Permission;
-pub use principal::{Principal, UserId};
+pub use principal::{ Principal, UserId };
+use rand::{ TryRng, rngs::SysRng };
 pub use roles::PolicyStore;
-pub use token::{Token, TokenStore};
+pub use token::{ Token, TokenStore };
 pub use users::UserDatabase;
 
+use crate::users::ListUsers;
+pub const SUPERUSER:&str = "corelamo";
+pub const MIN_PASSWORD_LEN:usize=8;
+pub fn generate_password() -> Result<String, CorelamoError> {
+    let mut bytes = [0u8; 16];
+    SysRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|e| CorelamoError::Internal(format!("generating a password: {e}")))?;
+    Ok(hex::encode(bytes))
+}
 pub struct AuthService {
     policy: PolicyStore,
     tokens: TokenStore,
@@ -24,7 +35,7 @@ impl AuthService {
     pub fn new(
         policy: PolicyStore,
         tokens: TokenStore,
-        users: UserDatabase<BinaryDocumentStore>,
+        users: UserDatabase<BinaryDocumentStore>
     ) -> Self {
         Self {
             policy,
@@ -32,29 +43,39 @@ impl AuthService {
             users,
         }
     }
-    /// Creates the first admin only on a fresh installation, so a changed or removed admin
-    /// account is never reset on restart. The password comes from CORELAMO_ADMIN_PASSWORD, or
-    /// is generated and printed once.
-    pub fn bootstrap(mut users: UserDatabase<BinaryDocumentStore>) -> Self {
-        let policy = default_policy();
+   pub fn bootstrap(
+        mut users: UserDatabase<BinaryDocumentStore>,
+    ) -> Result<(Self, Option<String>), CorelamoError> {
+        let mut created = None;
         if users.is_empty() {
-            let _ = users.add_user("admin", "corelamo", vec!["admin".to_string()]);
+            let password = generate_password()?;
+            users
+                .add_user(SUPERUSER, &password, vec!["admin".to_string()])
+                .map_err(|e| CorelamoError::Internal(format!("creating '{SUPERUSER}': {e}")))?;
+            created = Some(password);
         }
-        Self::new(policy, TokenStore::new(), users)
+        Ok((Self::new(default_policy(), TokenStore::new(), users), created))
+    }
+    pub fn set_initial_password(&mut self, password: &str) -> Result<(), CorelamoError> {
+        if self.users.update_password(SUPERUSER, password) {
+            Ok(())
+        } else {
+            Err(CorelamoError::Internal(format!(
+                "could not set the password of '{SUPERUSER}'"
+            )))
+        }
     }
     pub fn create_user(
         &mut self,
         requester: &Principal,
         username: &str,
         password: &str,
-        roles: Vec<String>,
+        roles: Vec<String>
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::CreateUser)?;
 
         if self.users.user_exists(username) {
-            return Err(CorelamoError::AlreadyExists(format!(
-                "user '{username}' already exists"
-            )));
+            return Err(CorelamoError::AlreadyExists(format!("user '{username}' already exists")));
         }
         if let Some(bad) = roles.iter().find(|r| !self.policy.has_role(r)) {
             return Err(CorelamoError::InvalidData(format!("unknown role '{bad}'")));
@@ -70,15 +91,13 @@ impl AuthService {
     pub fn delete_user(
         &mut self,
         requester: &Principal,
-        username: &str,
+        username: &str
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::DeleteUser)?;
         if self.users.remove_user(username) {
             Ok(())
         } else {
-            Err(CorelamoError::NotFound(format!(
-                "user '{username}' not found"
-            )))
+            Err(CorelamoError::NotFound(format!("user '{username}' not found")))
         }
     }
     pub fn update_user_password(
@@ -90,6 +109,11 @@ impl AuthService {
         let is_self = requester.id.0 == username;
         if !is_self {
             self.check(requester, Permission::UpdatePwd)?;
+        }
+        if new_password.chars().count() < MIN_PASSWORD_LEN {
+            return Err(CorelamoError::InvalidData(format!(
+                "password must be at least {MIN_PASSWORD_LEN} characters"
+            )));
         }
         if self.users.update_password(username, new_password) {
             Ok(())
@@ -103,15 +127,13 @@ impl AuthService {
         &mut self,
         requester: &Principal,
         username: &str,
-        new_roles: Vec<String>,
+        new_roles: Vec<String>
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::UpdateRole)?;
         if self.users.update_roles(username, new_roles) {
             Ok(())
         } else {
-            Err(CorelamoError::NotFound(format!(
-                "user '{username}'not found "
-            )))
+            Err(CorelamoError::NotFound(format!("user '{username}'not found ")))
         }
     }
 
@@ -130,23 +152,25 @@ impl AuthService {
     pub fn check(
         &self,
         principal: &Principal,
-        permission: Permission,
+        permission: Permission
     ) -> Result<(), CorelamoError> {
-        let allowed = principal
-            .roles
+        let allowed = principal.roles
             .iter()
             .any(|role| self.policy.role_has_permission(role, &permission));
 
         if allowed {
             Ok(())
         } else {
-            Err(CorelamoError::PermissionDenied(format!(
-                "user '{}' lacks permission '{:?}'",
-                principal.id.0, permission
-            )))
+            Err(
+                CorelamoError::PermissionDenied(
+                    format!("user '{}' lacks permission '{:?}'", principal.id.0, permission)
+                )
+            )
         }
     }
-    pub fn list_users(&self) -> Vec<(String, Vec<String>)> {
-        self.users.all_users_with_roles()
+    pub fn list_users(&self) -> Result<Vec<ListUsers>, CorelamoError> {
+        self.users
+            .all_users_with_roles()
+            .map_err(|e| CorelamoError::Internal(format!("reading the user store: {e}")))
     }
 }

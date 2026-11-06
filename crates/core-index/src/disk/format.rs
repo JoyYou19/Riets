@@ -42,8 +42,8 @@
 //! ```
 
 //                          ahahahahhahah
-pub const MAGIC: [u8; 8] = *b"BANANA_3";
-pub const VERSION: u32 = 11;
+pub const MAGIC: [u8; 8] = *b"BANANA_4";
+pub const VERSION: u32 = 12;
 
 pub const HEADER_LEN: usize = 8 + 4;
 
