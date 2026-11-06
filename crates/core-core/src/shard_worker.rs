@@ -38,7 +38,7 @@ use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
 use core_query::{
-    CorpusStats, MatchedTerm, PreparedQuery, QueryExecutor, SearchHit, fuzzable_words,
+    CorpusStats, MatchedTerm, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words,
 };
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
@@ -718,24 +718,35 @@ impl ShardHandle {
         &self,
         hits: &[SearchHit],
         groups: &[QueryGroup],
+        plans: &[RankPlan],
         prepared: &PreparedShardSearch,
         corpus: &CorpusStats,
     ) -> Vec<Vec<MatchedTerm>> {
         let mut out: Vec<Vec<MatchedTerm>> = vec![Vec::new(); hits.len()];
 
-        //groups that kept a query line up 1:1 with prepared.prepared (same order)
-        for (group, prepared_group) in groups
-            .iter()
-            .filter(|g| g.query.is_some())
-            .zip(&prepared.prepared)
-        {
-            let query = group.query.as_ref().unwrap();
+        let mut prepared_iter = prepared.prepared.iter();
+        for (group, plan) in groups.iter().zip(plans) {
+            let Some(query) = group.query.as_ref() else {
+                continue;
+            };
+            let Some(prepared_group) = prepared_iter.next() else {
+                break;
+            };
             let executor = QueryExecutor::new(&*prepared.snapshot, &group.analyzer)
                 .with_corpus(corpus)
                 .with_prepared(prepared_group);
 
+            // the fuzzy (and other tier) queries live in the plan, not in group.query
+            let tier_queries: Vec<&Query> = plan
+                .queries()
+                .filter(|q| Some(*q) != group.query.as_ref())
+                .collect();
+
             for (i, hit) in hits.iter().enumerate() {
-                let m = executor.matched_terms(query, hit.doc_id, &group.ctxs);
+                let mut m = executor.matched_terms(query, hit.doc_id, &group.ctxs);
+                for tq in &tier_queries {
+                    m.extend(executor.matched_terms(tq, hit.doc_id, &group.ctxs));
+                }
                 if !m.is_empty() {
                     out[i].extend(m);
                 }
@@ -744,7 +755,6 @@ impl ShardHandle {
 
         out
     }
-
     pub(crate) fn send_raw(&self, cmd: ShardCmd) -> Result<(), (CorelamoError, ShardCmd)> {
         self.tx.send(cmd).map_err(|e| (self.dead(), e.0))
     }

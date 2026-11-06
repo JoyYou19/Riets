@@ -233,9 +233,13 @@ impl WordDelimiterTokenizer {
         if self.preserve_original {
             push(&original, from, to, start, span);
         }
+
         if !joined.is_empty() && joined != original {
-            push(&joined, from, to, start, span);
+            let j_from = from + parts.first().map(|(_, s, _)| *s).unwrap_or(0);
+            let j_to = from + parts.last().map(|(_, _, e)| *e).unwrap_or(0);
+            push(&joined, j_from, j_to, start, span);
         }
+
         for (index, part) in parts_to_emit.iter().enumerate() {
             push(&part.0, from + part.1, from + part.2, start + index, 1);
         }
