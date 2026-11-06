@@ -37,7 +37,9 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_query::{CorpusStats, PreparedQuery, QueryExecutor, SearchHit, fuzzable_words};
+use core_query::{
+    CorpusStats, MatchedTerm, PreparedQuery, QueryExecutor, SearchHit, fuzzable_words,
+};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
@@ -709,6 +711,38 @@ impl ShardHandle {
         }
 
         Ok(results)
+    }
+
+    //reusing the cached snapshots so no index reads for the final document highlights
+    pub fn matched_terms_for(
+        &self,
+        hits: &[SearchHit],
+        groups: &[QueryGroup],
+        prepared: &PreparedShardSearch,
+        corpus: &CorpusStats,
+    ) -> Vec<Vec<MatchedTerm>> {
+        let mut out: Vec<Vec<MatchedTerm>> = vec![Vec::new(); hits.len()];
+
+        //groups that kept a query line up 1:1 with prepared.prepared (same order)
+        for (group, prepared_group) in groups
+            .iter()
+            .filter(|g| g.query.is_some())
+            .zip(&prepared.prepared)
+        {
+            let query = group.query.as_ref().unwrap();
+            let executor = QueryExecutor::new(&*prepared.snapshot, &group.analyzer)
+                .with_corpus(corpus)
+                .with_prepared(prepared_group);
+
+            for (i, hit) in hits.iter().enumerate() {
+                let m = executor.matched_terms(query, hit.doc_id, &group.ctxs);
+                if !m.is_empty() {
+                    out[i].extend(m);
+                }
+            }
+        }
+
+        out
     }
 
     pub(crate) fn send_raw(&self, cmd: ShardCmd) -> Result<(), (CorelamoError, ShardCmd)> {

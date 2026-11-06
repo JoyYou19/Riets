@@ -1,7 +1,10 @@
+use ahash::HashSet;
+use core_index::types::position_start;
 use core_index::{analyzer::Analyzer, fuzzy::FuzzyMatcher, wildcard::WildcardPattern};
 use core_protocol::command_reponse_definitions::HighlightFieldOptions;
 use simd_json::OwnedValue;
 
+use crate::MatchedTerm;
 use crate::Query;
 
 #[derive(Debug, Clone)]
@@ -82,6 +85,61 @@ pub fn highlight_text(
         fragments_by_sentence(text, &ranges, opts)
     } else {
         fragments_by_chars(text, &ranges, opts)
+    }
+}
+
+/// Builds highlighted fragments for one field value from the spans that matched.
+/// Fast path (offsets stored) wraps byte spans on `text` directly; slow path
+/// (char-filtered field, no offsets) re-analyzes and maps positions to spans on the
+/// filtered text.
+pub fn highlight_field(
+    text: &str,
+    analyzer: &Analyzer,
+    matched: &[&MatchedTerm],
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    if matched.is_empty() {
+        return Vec::new();
+    }
+
+    let fast = matched.iter().any(|m| !m.offsets.is_empty());
+
+    if fast {
+        let ranges: Vec<(usize, usize)> = matched
+            .iter()
+            .flat_map(|m| m.offsets.iter().map(|&(s, e)| (s as usize, e as usize)))
+            .collect();
+        if ranges.is_empty() {
+            return Vec::new();
+        }
+        let ranges = merge_ranges(ranges);
+        return if opts.sentence {
+            fragments_by_sentence(text, &ranges, opts)
+        } else {
+            fragments_by_chars(text, &ranges, opts)
+        };
+    }
+
+    //slow branch: re-analyze once then map each matched position to its byte span
+    let (filtered, tokens) = analyzer.analyze_text(text);
+    let want: HashSet<u32> = matched
+        .iter()
+        .flat_map(|m| m.positions.iter().map(|&p| position_start(p)))
+        .collect();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for token in &tokens {
+        if want.contains(&token.position) {
+            ranges.push((token.start_byte, token.end_byte));
+        }
+    }
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    let ranges = merge_ranges(ranges);
+    if opts.sentence {
+        fragments_by_sentence(&filtered, &ranges, opts)
+    } else {
+        fragments_by_chars(&filtered, &ranges, opts)
     }
 }
 

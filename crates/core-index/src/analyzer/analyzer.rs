@@ -205,7 +205,7 @@ impl Analyzer {
             builder = builder.filter_dynamic(LowerCaser);
         }
 
-        //
+        //Jānis -> Janis
         if config.ascii_folding {
             builder = builder.filter_dynamic(AsciiFoldingFilter);
         }
@@ -223,6 +223,7 @@ impl Analyzer {
                 builder.filter_dynamic(CachedStemmer::new(lang.algorithm(), STEM_CACHE_CAPACITY));
         }
 
+        //<title>penis</title> -> penis
         let char_filters: Vec<CompiledCharFilter> = config
             .char_filters
             .iter()
@@ -329,6 +330,12 @@ impl Analyzer {
         }
         key.pop();
         Some(key)
+    }
+
+    pub fn analyze_text(&self, input: &str) -> (String, Vec<Token>) {
+        let filtered = self.apply_char_filters(input);
+        let tokens = self.tokenize(&filtered);
+        (filtered, tokens)
     }
 
     /// The name terms a field value is filed under: the whole value, and the value without a
