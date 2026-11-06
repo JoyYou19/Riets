@@ -1345,6 +1345,7 @@ impl ShardManager {
                 groups,
                 &stats.shards,
                 Some(Arc::clone(&stats.corpus)),
+                Arc::clone(&stats.plans),
             )
             .await?;
         Ok((docs, total, suggestion))
@@ -2248,6 +2249,7 @@ impl ShardManager {
                 Arc::new(Vec::new()),
                 &[],
                 None,
+                Arc::new(Vec::new()),
             )
             .await?;
         Ok((hits, total, None))
@@ -2266,6 +2268,7 @@ impl ShardManager {
         groups: Arc<Vec<QueryGroup>>,
         prepared: &[Arc<PreparedShardSearch>],
         corpus: Option<Arc<CorpusStats>>,
+        plans: Arc<Vec<RankPlan>>,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
         if offset >= just_hits.len() {
             return Ok((
@@ -2308,13 +2311,17 @@ impl ShardManager {
             let corpus = corpus.as_ref().map(Arc::clone);
             let positions: Vec<usize> = hits.iter().map(|(pos, _)| *pos).collect();
             let bare_hits: Vec<SearchHit> = hits.into_iter().map(|(_, h)| h).collect();
-
+            let plans = Arc::clone(&plans);
             set.spawn(async move {
                 let matched = if want_matches {
                     match (&prepared, &corpus) {
-                        (Some(p), Some(c)) => {
-                            handle.matched_terms_for(&bare_hits, groups.as_slice(), p, c)
-                        }
+                        (Some(prep), Some(corp)) => handle.matched_terms_for(
+                            &bare_hits,
+                            groups.as_slice(),
+                            &plans,
+                            prep,
+                            corp,
+                        ),
                         _ => vec![Vec::new(); bare_hits.len()],
                     }
                 } else {
