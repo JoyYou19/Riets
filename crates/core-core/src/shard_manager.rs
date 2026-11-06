@@ -6,7 +6,7 @@ use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use ahash::{HashMap, HashMapExt};
-use core_backup::backup::compress_file;
+use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::backup::{BackupManifest, BackupType};
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::analyzer::AnalyzerSet;
@@ -2074,31 +2074,62 @@ impl ShardManager {
         .await
     }
     #[timed(restore)]
-    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
-        let mut failures = Vec::new();
+        pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+        if !is_valid_backup_id(backup_id) {
+            return Err(CorelamoError::InvalidData(format!(
+                "invalid backup id '{backup_id}'"
+            )));
+        }
+        // incremental backups hold only document bytes: their documents need a reindex
+        let needs_reindex = self
+            .list_backups()?
+            .iter()
+            .any(|m| m.backup_id == backup_id && m.backup_type == BackupType::Incremental);
 
+        // 1. every shard unpacks into its staging folder; live data untouched
+        let mut failures = Vec::new();
+         for shard in &self.shards {
+            if let Err(e) = shard.prepare_restore(backup_id, user.clone()).await {
+                failures.push(format!("shard {}: {}", shard.id(), e));
+            }
+        
+        }
+        if !failures.is_empty() {
+            // 2. any failure: every shard drops its staging and runs on its old data again
+            for shard in &self.shards {
+                 let _ = shard.abort_restore().await;
+            }
+            self.start().await?;
+            return Err(CorelamoError::Internal(format!(
+                "restore failed on {} of {} shards, nothing was changed: {}",
+                failures.len(),
+                self.shards.len(),
+                failures.join("; ")
+            )));
+        }
+
+        // 3. all prepared: swap in on every shard
+        let mut failures = Vec::new();
         for shard in &self.shards {
-            if let Err(e) = shard.restore_backup(backup_id, user.clone()).await {
+            if let Err(e) = shard.commit_restore(backup_id).await{
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }
-        //not needed cuz the handler calls this too
-        //self.db_stats.finish_restore(failures.is_empty());
-
-        if failures.is_empty() {
-            self.start().await?;
-            Ok(())
-        } else {
-            Err(CorelamoError::Internal(
-                //janomaina
-                format!(
-                    "restore failed on {} of {} shards: {}",
-                    failures.len(),
-                    self.shards.len(),
-                    failures.join("; ")
-                ),
-            ))
+        if !failures.is_empty() {
+            // the copies are complete and fsynced; the startup check finishes the swap
+            return Err(CorelamoError::Internal(format!(
+                "restore commit failed on {} of {} shards; restart to finish it: {}",
+                failures.len(),
+                self.shards.len(),
+                failures.join("; ")
+            )));
         }
+
+        self.start().await?;
+        if needs_reindex {
+            self.reindex()?;
+        }
+        Ok(())
     }
 
     pub fn finish_restore(&self, ok: bool) {
@@ -2109,8 +2140,8 @@ impl ShardManager {
         self.db_stats.finish_backup(ok);
     }
     //to check before restore if there are any backups
-    pub fn has_backup(&self, backup_id: &str) -> bool {
-        self.backup_dir.join(backup_id).is_dir()
+     pub fn has_backup(&self, backup_id: &str) -> bool {
+        is_valid_backup_id(backup_id) && self.backup_dir.join(backup_id).is_dir()
     }
 
     #[timed(backup)]
@@ -2385,7 +2416,11 @@ impl ShardManager {
                 let ok = if is_full {
                     this.backup_full("System".to_string()).await.is_ok()
                 } else {
-                    this.backup_incremental("System".to_string()).await.is_ok()
+                    match this.backup_incremental("System".to_string()).await {
+                        Ok(_) => true,
+                        // no base backup, or store compaction ran since: take a full one instead
+                        Err(_) => this.backup_full("System".to_string()).await.is_ok(),
+                    }
                 };
                 this.finish_backup(ok);
                 let lifetime = this.options.read().backup_lifetime;
