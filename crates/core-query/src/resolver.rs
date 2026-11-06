@@ -67,7 +67,7 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
     }
 }
 
-fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
+pub fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
     field
         .analyzer
         .as_deref()

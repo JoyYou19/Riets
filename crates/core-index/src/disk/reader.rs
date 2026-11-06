@@ -234,14 +234,10 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
         let mut offsets = Offsets::new();
         if present {
             offsets = Offsets::with_capacity(position_count);
-            let mut last_end = 0u32;
             for _ in 0..position_count {
-                let start_delta = read_var_u32(bytes, &mut offset)?;
+                let start = read_var_u32(bytes, &mut offset)?;
                 let len = read_var_u32(bytes, &mut offset)?;
-                let start = last_end + start_delta;
-                let end = start + len;
-                offsets.push((start, end));
-                last_end = end;
+                offsets.push((start, start + len));
             }
         }
 

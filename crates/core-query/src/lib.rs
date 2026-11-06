@@ -4,6 +4,10 @@ pub mod dictionary;
 pub mod executor;
 pub use executor::{QueryExecutor, fuzzable_words, fuzzy_options};
 pub mod highlight;
+
+mod matched_terms;
+pub use matched_terms::MatchedTerm;
+
 pub mod planner;
 mod prepared;
 pub mod query_string_parser;

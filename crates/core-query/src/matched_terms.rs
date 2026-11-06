@@ -1,0 +1,12 @@
+use core_index::types::{Position, XPathId};
+
+//term of a phrase that matched withing one docs one field
+//INFO: fast-path -> highlight reads the offests and reads the documents bytes to return the snippet
+//      slow-path -> like <title>Batman</title>-> "Batman" bytes are inprecise so highlight would
+//      re-analyze the field and only then return the snippet
+#[derive(Debug, Clone)]
+pub struct MatchedTerm {
+    pub xpath: XPathId,
+    pub positions: Vec<Position>,
+    pub offsets: Vec<(u32, u32)>,
+}

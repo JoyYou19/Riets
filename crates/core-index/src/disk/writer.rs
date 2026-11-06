@@ -342,14 +342,13 @@ fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
         let doc_delta = posting.doc_id - last_doc_id;
         last_doc_id = posting.doc_id;
 
-        let has_offsets = !posting.offsets.is_empty();
-        //safety
-        debug_assert!(!has_offsets || posting.offsets.len() == posting.positions.len());
-        out.push(has_offsets as u8);
-
         push_var_u64(out, doc_delta);
         push_var_u16(out, posting.weight);
         push_var_u32(out, posting.positions.len() as u32);
+
+        let has_offsets = !posting.offsets.is_empty();
+        debug_assert!(!has_offsets || posting.offsets.len() == posting.positions.len());
+        out.push(has_offsets as u8);
 
         let mut last_position = 0u32;
 
@@ -359,13 +358,10 @@ fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
             push_var_u32(out, position_delta);
         }
 
-        //add offsets
         if has_offsets {
-            let mut last_end = 0u32;
             for &(start, end) in &posting.offsets {
-                push_var_u32(out, start - last_end);
+                push_var_u32(out, start);
                 push_var_u32(out, end - start);
-                last_end = end;
             }
         }
     }

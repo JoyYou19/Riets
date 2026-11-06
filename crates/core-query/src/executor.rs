@@ -2,7 +2,7 @@ use core_index::{
     analyzer::analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
     fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions},
     posting::{
-        PostingList,
+        Posting, PostingList,
         ops::{intersection, union_many},
     },
     search::{SearchIndex, SearchNumeric, SearchStats},
@@ -19,7 +19,7 @@ use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit,
+    MatchedTerm, ScoredPosting, SearchHit, TopHit,
     ast::{PhraseTerm, Query, SynonymAlternative},
     corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
     planner::{RankPlan, Tier},
@@ -643,6 +643,167 @@ where
                     .collect(),
                 None => HashSet::new(),
             }),
+        }
+    }
+
+    pub fn matched_terms(
+        &self,
+        query: &Query,
+        doc_id: DocId,
+        ctxs: &[FieldCtx],
+    ) -> Vec<MatchedTerm> {
+        let mut out = Vec::new();
+        self.collect_matched(query, doc_id, ctxs, &mut out);
+        out
+    }
+
+    fn collect_matched(
+        &self,
+        query: &Query,
+        doc_id: DocId,
+        ctxs: &[FieldCtx],
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        match query {
+            Query::Term(_) | Query::Prefix(_) | Query::Wildcard(_) | Query::Exact(_) => {
+                for &ctx in ctxs {
+                    if let Some(leaf) = self.leaf(query, ctx) {
+                        self.push_leaf_matches(&leaf.postings, doc_id, ctx.xpath, out);
+                    }
+                }
+            }
+            Query::Phrase(terms) => {
+                for &ctx in ctxs {
+                    self.collect_phrase(terms, doc_id, ctx.xpath, out);
+                }
+            }
+            // WARN: fuzzy is the one leaf that re-runs per doc. Cuz PreparedQuery caches the fuzzy
+            // candidates, but not the fuzzy union, i was told that this optimization migh bee
+            // negligable, we can cache it if needed - norca
+            Query::Fuzzy(v, fz, spec) => {
+                for &ctx in ctxs {
+                    let list = self.execute_fuzzy(v, ctx.xpath, *fz, *spec);
+                    self.push_leaf_matches(&list, doc_id, ctx.xpath, out);
+                }
+            }
+            Query::Wand(children)
+            | Query::And(children)
+            | Query::Or(children)
+            | Query::SameElement(children) => {
+                for child in children {
+                    self.collect_matched(child, doc_id, ctxs, out);
+                }
+            }
+            Query::Synonym(forms) => {
+                for form in forms {
+                    self.collect_matched(&form.query, doc_id, ctxs, out);
+                }
+            }
+            Query::Range(_) | Query::Bool(_) | Query::MatchAll => {}
+        }
+    }
+
+    fn push_leaf_matches(
+        &self,
+        list: &PostingList,
+        doc_id: DocId,
+        xpath: XPathId,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if let Some(p) = Self::posting_for(list, doc_id) {
+            if !p.positions.is_empty() {
+                out.push(MatchedTerm {
+                    xpath,
+                    positions: p.positions.to_vec(),
+                    offsets: p.offsets.to_vec(),
+                });
+            }
+        }
+    }
+
+    //kind of stupid that we need this, but a phrase match needs to return offsets as a single byte span
+    //not multiple ones
+    fn collect_phrase(
+        &self,
+        terms: &[PhraseTerm],
+        doc_id: DocId,
+        xpath: XPathId,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if terms.is_empty() {
+            return;
+        }
+
+        let mut word_postings: Vec<Option<Posting>> = Vec::with_capacity(terms.len());
+        for term in terms {
+            let (list, _) = self.fetch_term_list(&term.text, xpath);
+            word_postings.push(Self::posting_for(&list, doc_id).cloned());
+        }
+
+        if word_postings.iter().any(Option::is_none) {
+            return;
+        }
+
+        let position_lists: Vec<&[u32]> = word_postings
+            .iter()
+            .map(|p| p.as_ref().unwrap().positions.as_slice())
+            .collect();
+        let phrase_offsets: Vec<u32> = terms.iter().map(|t| t.offset).collect();
+        let has_offsets = !word_postings[0].as_ref().unwrap().offsets.is_empty();
+        let last_idx = terms.len() - 1;
+
+        for &first_pos in position_lists[0] {
+            let mut matched: Vec<u32> = Vec::with_capacity(terms.len());
+            matched.push(first_pos);
+            let mut next = position_start(first_pos) + position_span(first_pos);
+            let mut ok = true;
+
+            for i in 1..terms.len() {
+                let gap = phrase_offsets[i]
+                    .saturating_sub(phrase_offsets[i - 1])
+                    .saturating_sub(1);
+                let want = next + gap;
+                let at = position_lists[i].partition_point(|&p| position_start(p) < want);
+                match position_lists[i].get(at) {
+                    Some(&p) if position_start(p) == want => {
+                        matched.push(p);
+                        next = want + position_span(p);
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+
+            if ok {
+                if has_offsets {
+                    let first_enc = matched[0];
+                    let last_enc = *matched.last().unwrap();
+                    let first = word_postings[0].as_ref().unwrap();
+                    let last = word_postings[last_idx].as_ref().unwrap();
+                    let (s0, _) = Self::offset_for(
+                        &first.positions,
+                        &first.offsets,
+                        position_start(first_enc),
+                    )
+                    .unwrap_or((0, 0));
+                    let (_, e_n) =
+                        Self::offset_for(&last.positions, &last.offsets, position_start(last_enc))
+                            .unwrap_or((0, 0));
+                    out.push(MatchedTerm {
+                        xpath,
+                        positions: Vec::new(),
+                        offsets: vec![(s0, e_n)],
+                    });
+                } else {
+                    out.push(MatchedTerm {
+                        xpath,
+                        positions: matched,
+                        offsets: Vec::new(),
+                    });
+                }
+            }
         }
     }
 
@@ -2007,6 +2168,23 @@ where
                 .any(|&xpath| self.fetch_term_list(word, xpath).1 > 0)
         })
     }
+
+    //helpers for highlights
+    fn posting_for(list: &PostingList, doc_id: DocId) -> Option<&Posting> {
+        let idx = list
+            .items()
+            .binary_search_by_key(&doc_id, |p| p.doc_id)
+            .ok()?;
+        list.items().get(idx)
+    }
+
+    fn offset_for(positions: &[u32], offsets: &[(u32, u32)], pos: u32) -> Option<(u32, u32)> {
+        let idx = positions
+            .binary_search_by_key(&pos, |p| position_start(*p))
+            .ok()?;
+        offsets.get(idx).copied()
+    }
+
     #[timed(search)]
     fn execute_scored_fuzzy(
         &self,
