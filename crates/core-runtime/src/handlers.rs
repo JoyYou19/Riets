@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use core_auth::{Permission, Principal};
-use core_backup::backup::BackupType;
+use core_backup::backup::{BackupType, is_valid_backup_id};
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
@@ -1895,6 +1895,13 @@ pub(crate) async fn backup_restore_handler(
         Ok(x) => x,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+    if !is_valid_backup_id(&backup_id) {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData(format!("invalid backup id '{backup_id}'")),
+            &ctx,
+        )
+        .into_response();
+    }
 
     if !handle.has_backup(&backup_id) {
         return HttpError::from_corelamo(

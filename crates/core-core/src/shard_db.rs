@@ -69,6 +69,9 @@ pub struct DatabaseStats {
 }
 //has it been quiet long enough to flush
 pub(crate) const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
+const RESTORE_STAGING: &str = "restore.new";
+const RESTORE_OLD: &str = "restore.old";
+const RESTORE_DATA_DIRS: [&str; 2] = ["index", "documents"];
 pub struct ShardDb {
     shard_id: ShardId,
     shard_count: u16,
@@ -193,6 +196,16 @@ impl ShardDb {
             })?;
 
         let log = logger::shard_logger(&root, &name);
+         match recover_interrupted_restore(&root) {
+            Ok(true) => warn!(log, "finished a restore interrupted by a crash"; "shard" => &name),
+            Ok(false) => {}
+            Err(e) => {
+                return Err(CorelamoError::Internal(format!(
+                    "finishing an interrupted restore in {}: {e}",
+                    root.display()
+                )));
+            }
+        }
         // load
         let wal = open_wal(&root, options.sync_mode)
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
@@ -1163,9 +1176,16 @@ impl ShardDb {
         completed: CompletedSegmentCompaction,
     ) -> io::Result<bool> {
         let db = self.db_mut().map_err(io::Error::other)?;
-        let result = db.mut_store().install_segment_compaction(completed)?;
+        let installed = db.mut_store().install_segment_compaction(completed)?;
+        if installed {
+            // compaction rewrote segments: the incremental bookmark no longer matches them
+            if let Err(e) = self.backup.require_full_backup() {
+                warn!(self.log, "could not mark the next backup as full after store compaction";
+                    "error" => %e);
+            }
+        }
         self.publish_stats();
-        Ok(result)
+        Ok(installed)
     }
 
     #[timed(database_lifecycle)]
@@ -1241,19 +1261,17 @@ impl ShardDb {
         shard_backup_path: PathBuf,
         backup_id: String,
     ) -> Result<BackupManifest, CorelamoError> {
+        if self.wal_reindex.is_some() {
+            return Err(CorelamoError::Busy(
+                "a reindex is running; full backup skipped".into(),
+            ));
+        }
         self.flush()?;
 
         if let Some(worker) = self.background_worker.take() {
             if let Err(err) = worker.stop() {
                 warn!(self.log, "background worker exited with error before backup"; "error" => %err);
             }
-        }
-        // Stopping the worker would cancel the reindex it is building, and the index about to
-        // be copied is the one the reindex replaces: skip this backup, the next one runs.
-        if self.wal_reindex.is_some() {
-            return Err(CorelamoError::Busy(
-                "a reindex is running; full backup skipped".into(),
-            ));
         }
         let result = self.run_full_backup(&shard_backup_path, &backup_id);
         self.restart_background();
@@ -1333,17 +1351,50 @@ impl ShardDb {
     }
 
     #[timed(restore)]
-    pub fn restore_backup(&mut self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
-        let root = self.root.clone();
-        info!(self.log, "Restore to backup"; "backup id"=> backup_id, "user"=>user);
+    pub fn prepare_restore(&mut self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+        info!(self.log, "Restore: preparing"; "backup id" => backup_id, "user" => user);
         self.stop()?;
-        self.backup
-            .restore_chain(&backup_id, &root)
-            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        //self.start()?;
-
+        let staging = self.root.join(RESTORE_STAGING);
+        remove_dir_if_exists(&staging)
+            .map_err(|e| CorelamoError::Internal(format!("restore: {e}")))?;
+        if let Err(e) = self.backup.restore_chain(backup_id, &staging) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(CorelamoError::Internal(e.to_string()));
+        }
         Ok(())
     }
+
+    /// Phase 2: swaps the prepared data in, empties the WAL (its records belong to the data
+    /// that was replaced), and only then forgets the backups newer than the restored one.
+    #[timed(restore)]
+    pub fn commit_restore(&mut self, backup_id: &str) -> Result<(), CorelamoError> {
+        let internal = |e: io::Error| CorelamoError::Internal(format!("restore commit: {e}"));
+        swap_in_restore(&self.root).map_err(internal)?;
+        self.reset_wal_after_restore().map_err(internal)?;
+        finish_restore_swap(&self.root).map_err(internal)?;
+        self.backup
+            .cleanup_after_restore(backup_id)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        info!(self.log, "Restore: committed"; "backup id" => backup_id);
+        Ok(())
+    }
+
+    /// Any prepare failed: drops the prepared data, the shard keeps its old data.
+    pub fn abort_restore(&mut self) -> Result<(), CorelamoError> {
+        remove_dir_if_exists(&self.root.join(RESTORE_STAGING))
+            .map_err(|e| CorelamoError::Internal(format!("restore abort: {e}")))
+    }
+
+    /// The WAL may still hold records if a checkpoint failed in `stop()`; replayed on top of
+    /// the restored data they would bring newer writes back. Recreated empty instead of
+    /// `reset()`, which refuses a poisoned WAL.
+    fn reset_wal_after_restore(&mut self) -> io::Result<()> {
+        remove_dir_if_exists(&self.root.join("wal"))?;
+        self.wal = open_wal(&self.root, self.options.sync_mode)?;
+        self.failed = false;
+        Ok(())
+    }
+    
 
     fn publish_stats(&self) {
         let Ok(db) = self.db_ref() else {
@@ -1552,4 +1603,79 @@ impl ShardDb {
             log: self.log.new(slog::o!("component" => "background")),
         }));
     }
+}
+fn remove_dir_if_exists(path: &Path) -> io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// fsyncs every file and directory under `path`.
+fn sync_tree(path: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            sync_tree(&entry.path())?;
+        } else {
+            File::open(entry.path())?.sync_all()?;
+        }
+    }
+    File::open(path)?.sync_all()
+}
+
+/// Replaces the shard's data with the restored copy: the copy is made durable, the old data is
+/// moved aside, the copy renamed in, then the old data deleted. Files the backup does not
+/// contain (segments written after it) go away with the old data.
+fn swap_in_restore(root: &Path) -> io::Result<()> {
+    let staging = root.join(RESTORE_STAGING);
+    let old = root.join(RESTORE_OLD);
+    if !old.exists() {
+        for dir in RESTORE_DATA_DIRS {
+            sync_tree(&staging.join(dir))?;
+        }
+        std::fs::create_dir(&old)?;
+        File::open(root)?.sync_all()?;
+    }
+    for dir in RESTORE_DATA_DIRS {
+        let prepared = staging.join(dir);
+        if !prepared.exists() {
+            continue; // already swapped before a crash
+        }
+        let live = root.join(dir);
+        if live.exists() && !old.join(dir).exists() {
+            std::fs::rename(&live, old.join(dir))?;
+        }
+        remove_dir_if_exists(&live)?; // a half-moved copy from before a crash
+        std::fs::rename(&prepared, &live)?;
+    }
+    // derived from the replaced data; rebuilt from the restored files at start
+    remove_dir_if_exists(&root.join("index.new"))?;
+    remove_dir_if_exists(&root.join("index.old"))?;
+    match std::fs::remove_file(root.join("documents.maps.bin")) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    File::open(root)?.sync_all()
+}
+
+/// Last step: the old data is no longer needed once the WAL is empty.
+fn finish_restore_swap(root: &Path) -> io::Result<()> {
+    remove_dir_if_exists(&root.join(RESTORE_OLD))?;
+    remove_dir_if_exists(&root.join(RESTORE_STAGING))?;
+    File::open(root)?.sync_all()
+}
+
+/// Startup check for a restore interrupted by a crash or power loss. Run before the WAL is
+/// opened. `restore.old/` present: the commit had started with a complete copy, so it is
+/// finished. Only `restore.new/` present: the prepare never finished, so it is thrown away.
+fn recover_interrupted_restore(root: &Path) -> io::Result<bool> {
+    if root.join(RESTORE_OLD).exists() {
+        swap_in_restore(root)?;
+        remove_dir_if_exists(&root.join("wal"))?;
+        finish_restore_swap(root)?;
+        return Ok(true);
+    }
+    remove_dir_if_exists(&root.join(RESTORE_STAGING))?;
+    Ok(false)
 }

@@ -144,9 +144,18 @@ pub enum ShardCmd {
     ListBackups {
         resp: oneshot::Sender<Result<Vec<BackupManifest>, CorelamoError>>,
     },
-    Restore {
+    PrepareRestore {
         user: String,
         backup_id: String,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
+    },
+    /// Swap the prepared data in.
+    CommitRestore {
+        backup_id: String,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
+    },
+    /// Throw the prepared data away and keep the old data.
+    AbortRestore {
         resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     DeleteBackup {
@@ -891,14 +900,25 @@ impl ShardHandle {
     }
 
     #[timed(restore)]
-    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn prepare_restore(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
-        self.call(move |resp| ShardCmd::Restore {
+        self.call(move |resp| ShardCmd::PrepareRestore {
             user,
             backup_id,
             resp,
         })
         .await?
+    }
+
+    #[timed(restore)]
+    pub async fn commit_restore(&self, backup_id: &str) -> Result<(), CorelamoError> {
+        let backup_id = backup_id.to_string();
+        self.call(move |resp| ShardCmd::CommitRestore { backup_id, resp })
+            .await?
+    }
+
+    pub async fn abort_restore(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::AbortRestore { resp }).await?
     }
 }
 
@@ -1110,20 +1130,32 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let _ = resp.send(result);
             }
 
-            ShardCmd::Restore {
+           ShardCmd::PrepareRestore {
                 user,
-                resp,
                 backup_id,
+                resp,
             } => {
-                //salabots porniks ar vienkaris running/stopped/restoring/backing up....
                 shared.is_restoring.store(true, Ordering::Release);
-                let result = shard.restore_backup(&backup_id, user);
+                let result = shard.prepare_restore(&backup_id, user);
                 shared
                     .is_running
                     .store(shard.is_running(), Ordering::Release);
                 shared.is_restoring.store(false, Ordering::Release);
                 let _ = resp.send(result);
             }
+            ShardCmd::CommitRestore { backup_id, resp } => {
+                shared.is_restoring.store(true, Ordering::Release);
+                let result = shard.commit_restore(&backup_id);
+                shared
+                    .is_running
+                    .store(shard.is_running(), Ordering::Release);
+                shared.is_restoring.store(false, Ordering::Release);
+                let _ = resp.send(result);
+            }
+            ShardCmd::AbortRestore { resp } => {
+                let result = shard.abort_restore();
+                let _ = resp.send(result);
+            } 
 
             ShardCmd::ListBackups { resp } => {
                 let _ = resp.send(shard.list_backups());
