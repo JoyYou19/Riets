@@ -18,6 +18,7 @@ use crate::{
     document_values::DocValues,
     fuzzy::{FuzzyExpansion, FuzzyOptions},
     numeric_values::{NumericBound, NumericField, NumericFields, NumericKind, NumericValue},
+    posting::item::Offsets,
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
     segment::build_field_stats,
@@ -158,7 +159,7 @@ impl DiskSegment {
         })
     }
 
-    // Decodes the postings, specifically for the purpose of reading what is inside the actual data
+    //Decodes the postings and offsets
     fn read_postings(&self, meta: TermMeta) -> PostingList {
         let start = meta.postings_offset as usize;
         let len = meta.postings_len as usize;
@@ -175,7 +176,7 @@ impl DiskSegment {
             .unwrap_or_default()
     }
 
-    // Reads posting the same way as the original function, but into a buffer
+    //Reads posting the same way as the original function, but into a buffer
     fn read_postings_into(&self, meta: TermMeta, out: &mut Vec<Posting>) {
         let start = meta.postings_offset as usize;
         let len = meta.postings_len as usize;
@@ -192,10 +193,12 @@ impl DiskSegment {
     }
 }
 
+//gramatu tarps:
 fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -> io::Result<()> {
     let mut offset = 0;
     let count = doc_freq as usize;
 
+    //add more space for out
     out.reserve(count);
 
     let mut last_doc_id = 0u64;
@@ -208,6 +211,16 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
         let weight = read_var_u16(bytes, &mut offset)?;
         let position_count = read_var_u32(bytes, &mut offset)? as usize;
 
+        //per-posting offsets flag
+        if offset >= bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "missing offsets flag",
+            ));
+        }
+        let present = bytes[offset] != 0;
+        offset += 1;
+
         let mut positions = crate::posting::Positions::with_capacity(position_count);
         let mut last_position = 0u32;
 
@@ -218,7 +231,23 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
             positions.push(position);
         }
 
-        out.push(Posting::with_weight(doc_id, positions, weight));
+        let mut offsets = Offsets::new();
+        if present {
+            offsets = Offsets::with_capacity(position_count);
+            let mut last_end = 0u32;
+            for _ in 0..position_count {
+                let start_delta = read_var_u32(bytes, &mut offset)?;
+                let len = read_var_u32(bytes, &mut offset)?;
+                let start = last_end + start_delta;
+                let end = start + len;
+                offsets.push((start, end));
+                last_end = end;
+            }
+        }
+
+        out.push(Posting::with_weight_and_offsets(
+            doc_id, positions, offsets, weight,
+        ));
     }
 
     Ok(())
