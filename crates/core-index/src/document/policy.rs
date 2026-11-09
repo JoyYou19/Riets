@@ -420,8 +420,8 @@ impl IndexPolicy {
         }
 
         for field in self.indexed_fields() {
-            if let Some(name) = &field.analyzer {
-                if !self.analyzers.contains_key(name) {
+            if let Some(name) = &field.analyzer
+                && !self.analyzers.contains_key(name) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -430,18 +430,16 @@ impl IndexPolicy {
                         ),
                     ));
                 }
-            }
         }
 
         for (name, cfg) in &self.analyzers {
-            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length) {
-                if min > max {
+            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length)
+                && min > max {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("analyzer '{name}': min_length {min} > max_length {max}"),
                     ));
                 }
-            }
         }
 
         Ok(())
@@ -490,11 +488,10 @@ impl IndexPolicy {
     }
 
     pub fn analyzer_for(&self, field: &FieldPolicy) -> AnalyzerConfig {
-        if let Some(name) = &field.analyzer {
-            if let Some(cfg) = self.analyzers.get(name) {
+        if let Some(name) = &field.analyzer
+            && let Some(cfg) = self.analyzers.get(name) {
                 return cfg.clone();
             }
-        }
 
         //either user defined $default or the hardcoded
         self.analyzers
@@ -591,11 +588,10 @@ impl IndexPolicy {
                 if f.full_path == path {
                     return Some(f);
                 }
-                if f.kind == FieldKind::Struct {
-                    if let Some(hit) = find(&f.subfields, path) {
+                if f.kind == FieldKind::Struct
+                    && let Some(hit) = find(&f.subfields, path) {
                         return Some(hit);
                     }
-                }
             }
             None
         }

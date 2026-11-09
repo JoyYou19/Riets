@@ -106,7 +106,7 @@ pub fn make_doc_id(shard: ShardId, local: LocalDocId) -> DocId {
         local <= MAX_LOCAL_DOC_ID,
         "local document ID {local} exceeds the {LOCAL_BITS}-bit limit"
     );
-    ((shard.0 as u64) << LOCAL_BITS) | local
+    (u64::from(shard.0) << LOCAL_BITS) | local
 }
 
 // Returns the shard that owns a globally packed document ID

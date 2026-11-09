@@ -82,13 +82,10 @@ impl Wal {
             ));
         }
         fs::create_dir_all(&dir)?;
-        let segment = match list_segments(&dir)?.last() {
-            Some(&newest) => newest,
-            None => {
-                File::create_new(segment_path(&dir, 1))?.sync_all()?;
-                sync_dir(&dir)?;
-                1
-            }
+        let segment = if let Some(&newest) = list_segments(&dir)?.last() { newest } else {
+            File::create_new(segment_path(&dir, 1))?.sync_all()?;
+            sync_dir(&dir)?;
+            1
         };
         let mut file = OpenOptions::new()
             .read(true)

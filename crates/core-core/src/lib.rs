@@ -21,7 +21,7 @@ pub mod shard_manager_helpers;
 /// pinned by the golden values in the tests below; changing its output requires moving
 /// every stored document to its new shard first.
 ///
-/// Hash: 64-bit FNV-1a over the UTF-8 bytes, finished with MurmurHash3's `fmix64`.
+/// Hash: 64-bit FNV-1a over the UTF-8 bytes, finished with `MurmurHash3`'s `fmix64`.
 /// Bucket: jump consistent hash (Lamping & Veach, 2014). It is as uniform as `%`, and if
 /// the shard count ever grows from n to n + 1, only about 1/(n + 1) of the documents move.
 #[timed(shard_manager)]

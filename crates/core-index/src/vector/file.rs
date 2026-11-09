@@ -2,16 +2,16 @@
 //!
 //! Layout (little-endian), every section starting on a 64-byte boundary:
 //! +-------------+
-//! | header      |  magic[8] "CLVECTOR", u32 version, u32 reserved, u64 file_id, u32 dims,
-//! |             |  u8 original_kind, u8 quant_kind, u16 model_id_len, f32 quant_absmax,
-//! |             |  u32 reserved, u64 count, model_id bytes
+//! | header      |  magic[8] "CLVECTOR", u32 version, u32 reserved, u64 `file_id`, u32 dims,
+//! |             |  u8 `original_kind`, u8 `quant_kind`, u16 `model_id_len`, f32 `quant_absmax`,
+//! |             |  u32 reserved, u64 count, `model_id` bytes
 //! | doc ids     |  u64 * count, strictly increasing (binary search)
 //! | int8 codes  |  i8 * dims * count   hot: scans and graph walks
 //! | originals   |  f32 * dims * count  cold: rescoring, compaction, graph build
 //! +-------------+
 //!
 //! Vectors must be L2-normalized, so dot product = cosine. Codes are
-//! round(x * 127 / quant_absmax), clipped; `file_id` is random per written file and is what a
+//! round(x * 127 / `quant_absmax`), clipped; `file_id` is random per written file and is what a
 //! graph binds to. Files are written to `<path>.tmp`, fsynced and renamed, and never modified.
 #[cfg(target_endian = "big")]
 compile_error!("vector files are mapped as little-endian slices");
@@ -27,6 +27,7 @@ use memmap2::Mmap;
 use super::kernel::QuantRange;
 use crate::hash::{fmix64, stable_hash64};
 use crate::posting::DeleteSet;
+use crate::{tmp_path_for, with_suffix};
 use crate::types::{DocId, XPathId};
 
 pub(super) const MAGIC: [u8; 8] = *b"CLVECTOR";
@@ -35,8 +36,8 @@ pub(super) const VERSION: u32 = 2;
 const ORIGINAL_F32: u8 = 1;
 const QUANT_INT8: u8 = 1;
 const MAX_MODEL_ID_LEN: usize = u8::MAX as usize;
-/// magic + version + reserved + file_id + dims + original_kind + quant_kind + model_id_len +
-/// quant_absmax + reserved + count
+/// magic + version + reserved + `file_id` + dims + `original_kind` + `quant_kind` + `model_id_len` +
+/// `quant_absmax` + reserved + count
 const HEADER_FIXED_LEN: usize = 8 + 4 + 4 + 8 + 4 + 1 + 1 + 2 + 4 + 4 + 8;
 /// Section alignment; also guarantees the u64 and f32 views are aligned.
 pub(crate) const SECTION_ALIGNMENT: usize = 64;
@@ -79,15 +80,9 @@ pub fn find_vector_files(segment_path: &Path) -> io::Result<Vec<(XPathId, PathBu
 pub fn vector_file_path(segment_path: &Path, xpath: XPathId) -> PathBuf {
     segment_path.with_extension(format!("{xpath}.vec"))
 }
-pub(crate) fn tmp_path_for(path: &Path) -> PathBuf {
-    with_suffix(path, ".tmp")
-}
 
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(suffix);
-    PathBuf::from(name)
-}
+
+
 
 pub(crate) fn invalid_input(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg.into())
@@ -435,7 +430,7 @@ impl VectorFile {
                 ),
             ));
         }
-        if (mmap.as_ptr() as usize) % SECTION_ALIGNMENT != 0 {
+        if !(mmap.as_ptr() as usize).is_multiple_of(SECTION_ALIGNMENT) {
             return Err(corrupt(&path, "mapping is not aligned"));
         }
 

@@ -111,7 +111,7 @@ impl<'a> MergedTerms<'a> {
         list
     }
 }
-impl<'a> Iterator for MergedTerms<'a> {
+impl Iterator for MergedTerms<'_> {
     type Item = (TermKey, PostingList);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -226,13 +226,13 @@ pub fn compact_segments_streaming(
         for (xpath, field) in segment.bool_fields() {
             let slot = merged_bool_fields
                 .entry(*xpath)
-                .or_insert_with(BoolField::default);
-            for id in field.true_ids.iter() {
+                .or_default();
+            for id in &field.true_ids {
                 if !deleted.contains(id) {
                     slot.true_ids.insert(id);
                 }
             }
-            for id in field.false_ids.iter() {
+            for id in &field.false_ids {
                 if !deleted.contains(id) {
                     slot.false_ids.insert(id);
                 }
@@ -311,13 +311,12 @@ pub fn run_compaction_cycle(
     let completed = match background_pool().install(|| run_compaction_job(job)) {
         Ok(completed) => completed,
         Err(err) => {
-            if let Err(remove_err) = fs::remove_file(&output_path) {
-                if remove_err.kind() != io::ErrorKind::NotFound {
+            if let Err(remove_err) = fs::remove_file(&output_path)
+                && remove_err.kind() != io::ErrorKind::NotFound {
                     slog::warn!(log, "failed to remove partial compaction output";
                         "path" => %output_path.display(),
                         "error" => %remove_err);
                 }
-            }
             return Err(io::Error::new(
                 err.kind(),
                 format!("{}: {}", output_path.display(), err),
@@ -332,7 +331,7 @@ pub fn run_compaction_cycle(
             ack: Some(ack),
         })
         .map_err(|_| broken_pipe("index worker stopped"))?;
-    let _ = install_rx
+    let () = install_rx
         .recv()
         .map_err(|_| broken_pipe("index worker dropped install acknowledgement"))??;
 

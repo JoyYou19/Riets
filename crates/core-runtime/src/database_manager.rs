@@ -98,11 +98,11 @@ impl DbSlot {
     }
 
     fn inner_read(&self) -> RwLockReadGuard<'_, Inner> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner())
+        self.inner.read().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn inner_write(&self) -> RwLockWriteGuard<'_, Inner> {
-        self.inner.write().unwrap_or_else(|e| e.into_inner())
+        self.inner.write().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -176,10 +176,10 @@ impl Databases {
     }
 
     fn read(&self) -> RwLockReadGuard<'_, HashMap<String, Arc<DbSlot>>> {
-        self.slots.read().unwrap_or_else(|e| e.into_inner())
+        self.slots.read().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn write(&self) -> RwLockWriteGuard<'_, HashMap<String, Arc<DbSlot>>> {
-        self.slots.write().unwrap_or_else(|e| e.into_inner())
+        self.slots.write().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

@@ -237,7 +237,7 @@ impl ShardHandle {
             snapshot
                 .lookup(word, xpath)
                 .items()
-                .into_iter()
+                .iter()
                 .next()
                 .is_none()
         })
@@ -466,7 +466,7 @@ impl ShardHandle {
         let allowed = filters.and_then(|filters| {
             QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(filters)
         });
-        if allowed.as_ref().is_some_and(|set| set.is_empty()) {
+        if allowed.as_ref().is_some_and(std::collections::HashSet::is_empty) {
             return Ok(Vec::new());
         }
         let mut lists = Vec::with_capacity(xpaths.len());
@@ -523,7 +523,7 @@ impl ShardHandle {
             .iter()
             .map(|&x| {
                 let (min, max) = snapshot.numeric_bounds(x);
-                (min.map(|v| v.as_f64()), max.map(|v| v.as_f64()))
+                (min.map(core_index::numeric_values::NumericValue::as_f64), max.map(core_index::numeric_values::NumericValue::as_f64))
             })
             .collect();
 
@@ -546,7 +546,7 @@ impl ShardHandle {
                     .map(|&xpath| {
                         snapshot
                             .numeric_value(xpath, hit.doc_id)
-                            .map(|v| v.as_f64())
+                            .map(core_index::numeric_values::NumericValue::as_f64)
                             .or_else(|| {
                                 snapshot
                                     .bool_value(xpath, hit.doc_id)
@@ -852,7 +852,7 @@ impl ShardHandle {
 
         let mut all: Vec<BackupManifest> = fs::read_dir(&backup_dir)
             .map_err(|e| CorelamoError::Internal(e.to_string()))?
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter_map(|e| {
                 let text =
                     fs::read_to_string(e.path().join(shard_name).join("manifest.json")).ok()?;
@@ -954,7 +954,7 @@ pub fn spawn(
     let alive_worker = alive.clone();
     let shared_worker = shared.clone();
     let join = thread::Builder::new()
-        .name(format!("shard-{}", id))
+        .name(format!("shard-{id}"))
         .spawn(move || {
             let _guard = AliveGuard(alive_worker);
 
@@ -1089,7 +1089,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     *shared
                         .last_backup_id
                         .write()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(manifest.backup_id.clone());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(manifest.backup_id.clone());
                     shared
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);
@@ -1105,7 +1105,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 if shared
                     .last_backup_id
                     .read()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_none()
                 {
                     let _ = resp.send(Err(CorelamoError::Internal(
@@ -1122,7 +1122,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     *shared
                         .last_backup_id
                         .write()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(manifest.backup_id.clone());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(manifest.backup_id.clone());
                     shared
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);

@@ -528,7 +528,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 }
 
-impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
+impl<S: DocumentStore> IndexPipeline<'_, S> {
     #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
         let external_id = input.external_id;

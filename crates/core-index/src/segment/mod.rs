@@ -11,8 +11,8 @@ use crate::{
     types::{DocId, FieldStats, XPathId},
 };
 
-/// Compute the min/max DocId present in a segment from both text
-/// (doc_lengths) and numeric-only (BKD points) sources.
+/// Compute the min/max `DocId` present in a segment from both text
+/// (`doc_lengths`) and numeric-only (BKD points) sources.
 pub fn compute_doc_id_range(
     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
@@ -39,7 +39,7 @@ pub fn compute_doc_id_range(
     range
 }
 
-/// Derive per-field stats from doc_lengths. This is the single source of
+/// Derive per-field stats from `doc_lengths`. This is the single source of
 /// truth so that in-memory segments and reopened disk segments agree.
 pub fn build_field_stats(
     doc_lengths: impl IntoIterator<Item = ((DocId, XPathId), u32)>,
@@ -49,7 +49,7 @@ pub fn build_field_stats(
     for ((_, xpath), len) in doc_lengths {
         let entry = stats.entry(xpath).or_default();
         entry.doc_count += 1;
-        entry.total_doc_len += len as u64;
+        entry.total_doc_len += u64::from(len);
     }
 
     stats

@@ -55,15 +55,14 @@ impl PostingList {
 
         let mut merged: Vec<Posting> = Vec::with_capacity(items.len());
         for item in items {
-            if let Some(last) = merged.last_mut() {
-                if last.doc_id == item.doc_id {
+            if let Some(last) = merged.last_mut()
+                && last.doc_id == item.doc_id {
                     last.positions.extend_from_slice(&item.positions);
                     last.weight = last.weight.max(item.weight);
                     last.positions.sort_unstable();
                     last.positions.dedup();
                     continue;
                 }
-            }
 
             merged.push(item);
         }
@@ -144,7 +143,7 @@ impl PostingList {
         self.max_weight = self.max_weight.max(weight);
         if let Some(last) = self.items.last_mut() {
             if last.doc_id == doc_id {
-                Self::extend_positions_sorted(&mut last.positions, &mut positions);
+                Self::extend_positions_sorted(&mut last.positions, &positions);
                 last.weight = last.weight.max(weight);
                 return;
             }
@@ -158,7 +157,7 @@ impl PostingList {
 
         match self.items.binary_search_by_key(&doc_id, |p| p.doc_id) {
             Ok(index) => {
-                Self::extend_positions_sorted(&mut self.items[index].positions, &mut positions);
+                Self::extend_positions_sorted(&mut self.items[index].positions, &positions);
                 self.items[index].weight = self.items[index].weight.max(weight);
             }
 

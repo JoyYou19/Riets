@@ -106,7 +106,7 @@ fn exponent_search_to(slice: &[Posting], start: usize, target: DocId) -> usize {
 pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> PostingList {
     let sources: Vec<&[Posting]> = lists
         .into_iter()
-        .map(|l| l.items())
+        .map(PostingList::items)
         .filter(|s| !s.is_empty())
         .collect();
 

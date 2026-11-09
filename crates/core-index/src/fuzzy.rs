@@ -83,8 +83,7 @@ pub fn split_prefix(term: &str, prefix_chars: usize) -> (&str, &str) {
     let byte = term
         .char_indices()
         .nth(prefix_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(term.len());
+        .map_or(term.len(), |(i, _)| i);
     term.split_at(byte)
 }
 pub fn levenshtein(a: &str, b: &str) -> usize {
@@ -95,7 +94,7 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     for i in 1..=a.len() {
         let mut cur = vec![i; b.len() + 1];
         for j in 1..=b.len() {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            let cost = usize::from(a[i - 1] != b[j - 1]);
             cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
         }
         prev = cur;
@@ -165,7 +164,7 @@ impl LevenshteinAutomaton {
 
     /// Query column held by band slot `t` of the row after `chars` input chars.
     fn column(&self, chars: u32, t: usize) -> Option<usize> {
-        let j = (chars as i64) - (self.max_edits as i64) + (t as i64);
+        let j = i64::from(chars) - i64::from(self.max_edits) + (t as i64);
         (j >= 0 && j <= (self.query.len() as i64)).then_some(j as usize)
     }
 
@@ -210,14 +209,12 @@ impl LevenshteinAutomaton {
                 if t > 0 {
                     v = v.min(next[t - 1].saturating_add(1));
                 }
-                v = v.min(old[t].saturating_add((self.query[j - 1] != c) as u8));
-                if j >= 2 && state.chars >= 1 {
-                    if let Some(p) = state.prev_char {
-                        if c != p && c == self.query[j - 2] && p == self.query[j - 1] {
+                v = v.min(old[t].saturating_add(u8::from(self.query[j - 1] != c)));
+                if j >= 2 && state.chars >= 1
+                    && let Some(p) = state.prev_char
+                        && c != p && c == self.query[j - 2] && p == self.query[j - 1] {
                             v = v.min(state.prev_row[t].saturating_add(1));
                         }
-                    }
-                }
             }
             let v = v.min(cap);
             next[t] = v;
@@ -241,8 +238,8 @@ impl LevenshteinAutomaton {
     pub fn distance(&self, state: &LevState) -> Option<u8> {
         match state {
             LevState::Fuzzy(s) if s.utf8_need == 0 => {
-                let t = (self.query.len() as i64) - (s.chars as i64) + (self.max_edits as i64);
-                if t < 0 || t > 2 * (self.max_edits as i64) {
+                let t = (self.query.len() as i64) - i64::from(s.chars) + i64::from(self.max_edits);
+                if t < 0 || t > 2 * i64::from(self.max_edits) {
                     return None;
                 }
                 let d = s.row[t as usize];
@@ -436,7 +433,7 @@ fn is_vowel(c: char) -> bool {
 fn sound_alike(a: char, b: char) -> bool {
     matches!(
         (a.min(b), a.max(b)),
-        ('c', 'k') | ('c', 's') | ('k', 'q') | ('s', 'z') | ('v', 'w') | ('g', 'j')
+        ('c', 'k' | 's') | ('k', 'q') | ('s', 'z') | ('v', 'w') | ('g', 'j')
     )
 }
 
@@ -499,7 +496,7 @@ pub fn weighted_distance(query: &str, candidate: &str) -> f64 {
 
 /// Noisy-channel score: how likely `candidate` is what the user meant.
 pub fn expansion_score(query: &str, candidate: &str, doc_freq: u32) -> f64 {
-    (doc_freq.max(1) as f64).log10() - EDIT_WEIGHT * weighted_distance(query, candidate)
+    f64::from(doc_freq.max(1)).log10() - EDIT_WEIGHT * weighted_distance(query, candidate)
 }
 
 /// Ranks candidates `(term, edits, doc_freq)` and keeps at most
