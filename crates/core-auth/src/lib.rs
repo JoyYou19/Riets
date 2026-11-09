@@ -5,6 +5,9 @@ mod roles;
 mod token;
 mod users;
 
+use std::io;
+
+use argon2::{Argon2, PasswordHasher};
 pub use bootstrap::default_policy;
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::BinaryDocumentStore;
@@ -24,6 +27,18 @@ pub fn generate_password() -> Result<String, CorelamoError> {
         .try_fill_bytes(&mut bytes)
         .map_err(|e| CorelamoError::Internal(format!("generating a password: {e}")))?;
     Ok(hex::encode(bytes))
+}
+pub fn hash_password(password:&str) -> io::Result<String> {
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("password must be at least {} characters", MIN_PASSWORD_LEN),
+        ));
+    }
+     Argon2::default()
+            .hash_password(password.as_bytes())
+          .map(|hash| hash.to_string())
+        .map_err(|e| io::Error::other(format!("password hashing failed: {e}")))
 }
 pub struct AuthService {
     policy: PolicyStore,
@@ -50,14 +65,18 @@ impl AuthService {
         if users.is_empty() {
             let password = generate_password()?;
             users
-                .add_user(SUPERUSER, &password, vec!["admin".to_string()])
+                .add_user(SUPERUSER, hash_password(&password)?, vec!["admin".to_string()])
                 .map_err(|e| CorelamoError::Internal(format!("creating '{SUPERUSER}': {e}")))?;
             created = Some(password);
         }
         Ok((Self::new(default_policy(), TokenStore::new(), users), created))
     }
     pub fn set_initial_password(&mut self, password: &str) -> Result<(), CorelamoError> {
-        if self.users.update_password(SUPERUSER, password) {
+        let hash = hash_password(password).map_err(|e| match e.kind() {
+            io::ErrorKind::InvalidInput => CorelamoError::InvalidData(e.to_string()),
+            _ => CorelamoError::Internal(e.to_string()),
+        })?;
+        if self.users.update_password(SUPERUSER, hash) {
             Ok(())
         } else {
             Err(CorelamoError::Internal(format!(
@@ -69,8 +88,8 @@ impl AuthService {
         &mut self,
         requester: &Principal,
         username: &str,
-        password: &str,
-        roles: Vec<String>
+        password_hash: String,
+        roles: Vec<String>,
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::CreateUser)?;
 
@@ -81,7 +100,7 @@ impl AuthService {
             return Err(CorelamoError::InvalidData(format!("unknown role '{bad}'")));
         }
         self.users
-            .add_user(username, password, roles)
+            .add_user(username, password_hash, roles)
             .map_err(|e| {
                 CorelamoError::Internal(format!("failed to create user '{username}': {e}"))
             })?;
@@ -94,28 +113,27 @@ impl AuthService {
         username: &str
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::DeleteUser)?;
-        if self.users.remove_user(username) {
-            Ok(())
-        } else {
-            Err(CorelamoError::NotFound(format!("user '{username}' not found")))
+        if username==SUPERUSER{
+           Err(CorelamoError::NotFound(format!("superuser cannot be deleted"))) 
+        }else{
+            if self.users.remove_user(username) && username!=SUPERUSER {
+                Ok(())
+            } else {
+                Err(CorelamoError::NotFound(format!("user '{username}' not found")))
+            }
         }
     }
     pub fn update_user_password(
         &mut self,
         requester: &Principal,
         username: &str,
-        new_password: &str,
+        new_hashed:String
     ) -> Result<(), CorelamoError> {
         let is_self = requester.id.0 == username;
         if !is_self {
             self.check(requester, Permission::UpdatePwd)?;
         }
-        if new_password.chars().count() < MIN_PASSWORD_LEN {
-            return Err(CorelamoError::InvalidData(format!(
-                "password must be at least {MIN_PASSWORD_LEN} characters"
-            )));
-        }
-        if self.users.update_password(username, new_password) {
+        if self.users.update_password(username, new_hashed) {
             Ok(())
         } else {
             Err(CorelamoError::NotFound(format!(

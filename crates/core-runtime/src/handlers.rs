@@ -12,7 +12,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal};
+use core_auth::{Permission, Principal, hash_password};
 use core_backup::backup::{BackupType, is_valid_backup_id};
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
@@ -207,19 +207,30 @@ pub(crate) async fn create_user_handler(
             .into_response();
         }
     };
+    let auth = Arc::clone(&state.auth);
+    let username = req.username.clone();
+    let created = tokio::task::spawn_blocking(move || {
+       
+        let hash = hash_password(&req.password)?;
+       
+        let mut auth = auth.write().unwrap_or_else(|e| e.into_inner());
+        auth.create_user(&principal, &req.username, hash, req.roles)
+    })
+    .await;
 
-    let Ok(mut auth) = state.auth.write() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
+    match created {
+        Ok(Ok(())) => HttpOk::new(format!("user '{username}' created"), &ctx).into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(_) => HttpError::from_corelamo(
+            CorelamoError::Internal("auth service unavailable".to_string()),
             &ctx,
         )
-        .into_response();
-    };
-    match auth.create_user(&principal, &req.username, &req.password, req.roles) {
-        Ok(()) => HttpOk::new(format!("user '{}' created", req.username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+        .into_response(),
     }
 }
+
+   
+
 
 pub(crate) async fn delete_user_handler(
     State(state): State<AppState>,
@@ -250,6 +261,11 @@ pub(crate) async fn update_user_password_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
+     if principal.id.0 != username {
+        if let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd) {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    }
     let mut buf = body.as_bytes().to_vec();
     let req: UpdatePasswordRequest = match simd_json::from_slice(&mut buf) {
         Ok(r) => r,
@@ -262,11 +278,30 @@ pub(crate) async fn update_user_password_handler(
         }
     };
 
-    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
-    match auth.update_user_password(&principal, &username, &req.password) {
-        Ok(()) => HttpOk::new(format!("password updated for '{}'", username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    let auth = Arc::clone(&state.auth);
+    let target = username.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        // slow (Argon2), no lock held
+        let hash = hash_password(&req.password)?;
+        // short: the write lock only covers the store update; update_user_password checks
+        // the permission again, since it may have changed while hashing
+        let mut auth = auth.write().unwrap_or_else(|e| e.into_inner());
+        auth.update_user_password(&principal, &target, hash)
+    })
+    .await;
+
+    match updated {
+        Ok(Ok(())) => {
+            HttpOk::new(format!("password updated for '{username}'"), &ctx).into_response()
+        }
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(_) => HttpError::from_corelamo(
+            CorelamoError::Internal("auth service unavailable".to_string()),
+            &ctx,
+        )
+        .into_response(),
     }
+
 }
 
 pub(crate) async fn update_user_roles_handler(

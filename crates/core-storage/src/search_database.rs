@@ -301,8 +301,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &self.policy,
                 &mut self.array_row_allocator,
             );
-            self.index_worker
-                .add_indexed_document_wait(indexed.analyze(&self.analyzer_set))?;
+             self.index_worker
+                .add_indexed_documents_wait(vec![indexed.analyze(&self.analyzer_set)])?;
         }
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -326,12 +326,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             ));
         }
 
-        // if window_size == 0 {
-        //     return Err(io::Error::new(
-        //         io::ErrorKind::InvalidInput,
-        //         "window_size must be greater than zero",
-        //     ));
-        // }
+
 
         Ok(IndexPipeline {
             db: self,
@@ -363,9 +358,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         pipeline.finish()
     }
 
-    // Update creates a new internal version, the old internal_id is tombstoned, while the
-    // external_id points to the latest version
-    // INFO: changed the name cuz upsert is more precise here
     #[timed(modifying_documents)]
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let internal_id = self.allocate_internal_id()?;
@@ -388,7 +380,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &mut self.array_row_allocator,
             );
             self.index_worker
-                .add_indexed_document_wait(indexed.analyze(&self.analyzer_set))?;
+                .add_indexed_documents_wait(vec![indexed.analyze(&self.analyzer_set)])?;
         }
 
         let doc = StoredDocument {

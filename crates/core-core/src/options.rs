@@ -26,6 +26,8 @@ pub struct DatabaseOptions {
     pub embed: EmbeddingConfig,
     #[serde(default)]
     pub search: SearchOptions,
+    #[serde(default)]
+    pub skip_unreplayable_wal_records:bool
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -68,7 +70,8 @@ impl Default for DatabaseOptions {
             sync_mode: core_storage::wal::SyncMode::Manual,
             embed: EmbeddingConfig::default(),
             search: SearchOptions::default(),
-        }
+            skip_unreplayable_wal_records: false     
+           }
     }
 }
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]

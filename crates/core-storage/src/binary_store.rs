@@ -402,7 +402,7 @@ impl BinaryDocumentStore {
                 }
             }
         }
-
+        self.sync()?;
         // The persisted map must stop referencing the old segments before they are deleted.
         save_maps(
             &self.path,
@@ -417,6 +417,7 @@ impl BinaryDocumentStore {
                 }
             }
         }
+
         save_maps(
             &self.path,
             &self.locations,
@@ -485,6 +486,11 @@ impl BinaryDocumentStore {
                         self.highest_id
                             .fetch_max(doc.internal_id, Ordering::Relaxed);
                         let len = (start + reader.position() - doc_offset) as u32;
+                        let newer_than_current= self.locations.get(&doc.external_id).is_none_or(|current| current.internal_id <=doc.internal_id);
+                        let newer_than_delete= deleted_versions.get(&doc.external_id).is_none_or(|&deleted| doc.internal_id>deleted);
+                        if!(newer_than_current &&newer_than_delete){
+                            return;
+                        }
                         if let Some(old) = self.locations.insert(
                             doc.external_id.clone(),
                             DocLocation {
@@ -681,6 +687,7 @@ impl DocumentStore for BinaryDocumentStore {
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
             let len = (writer.position() - doc_offset) as u32;
+            self.highest_id.fetch_max( doc.internal_id, Ordering::Relaxed);
             self.internal_to_external
                 .insert(doc.internal_id, doc.external_id.clone());
             self.locations.insert(
@@ -692,8 +699,9 @@ impl DocumentStore for BinaryDocumentStore {
                     len,
                 },
             );
-
             self.docs.insert(doc.external_id.clone(), doc);
+        
+           
         }
 
         writer.flush()?;
@@ -731,6 +739,7 @@ impl DocumentStore for BinaryDocumentStore {
             self.internal_to_external.remove(&loc.internal_id);
         }
         self.docs.invalidate(external_id);
+        self.highest_id.fetch_max(internal_id, Ordering::Relaxed);
         Ok(())
     }
 
