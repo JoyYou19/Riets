@@ -663,7 +663,8 @@ impl ShardHandle {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
                     project_document(&doc, policy, return_fields)
-                        .map_err(|e| CorelamoError::Internal(e.to_string()))?,
+                        .map_err(|e| CorelamoError::Internal(e.to_string()))?
+                        .0,
                 )),
                 None => not_found.push(id.clone()),
             }
@@ -710,12 +711,14 @@ impl ShardHandle {
             let Some(doc) = res.map_err(|e| CorelamoError::Internal(e.to_string()))? else {
                 continue;
             };
+            let (doc_out, full_doc) = project_document(&doc, policy, return_fields)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             results[i] = Some(SearchDocumentHit {
                 external_id: doc.external_id.clone(),
                 internal_id: doc.internal_id,
                 score: hits[i].score,
-                doc: project_document(&doc, policy, return_fields)
-                    .map_err(|e| CorelamoError::Internal(e.to_string()))?,
+                doc: doc_out,
+                full_doc,
                 highlights: Vec::new(),
             });
         }
@@ -948,7 +951,11 @@ impl ShardHandle {
     }
 
     #[timed(restore)]
-    pub async fn prepare_restore(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn prepare_restore(
+        &self,
+        backup_id: &str,
+        user: String,
+    ) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
         self.call(move |resp| ShardCmd::PrepareRestore {
             user,
@@ -1178,7 +1185,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let _ = resp.send(result);
             }
 
-           ShardCmd::PrepareRestore {
+            ShardCmd::PrepareRestore {
                 user,
                 backup_id,
                 resp,
@@ -1203,7 +1210,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::AbortRestore { resp } => {
                 let result = shard.abort_restore();
                 let _ = resp.send(result);
-            } 
+            }
 
             ShardCmd::ListBackups { resp } => {
                 let _ = resp.send(shard.list_backups());

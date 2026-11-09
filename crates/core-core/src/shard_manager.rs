@@ -6,8 +6,8 @@ use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use ahash::{HashMap, HashMapExt};
-use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::backup::{BackupManifest, BackupType};
+use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
 use core_index::analyzer::analyzer::AnalyzerSet;
@@ -42,6 +42,7 @@ use core_timing::timed;
 use crossbeam_channel::bounded;
 use parking_lot::{Mutex, RwLock};
 use simd_json::OwnedValue;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -2084,7 +2085,7 @@ impl ShardManager {
         .await
     }
     #[timed(restore)]
-        pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         if !is_valid_backup_id(backup_id) {
             return Err(CorelamoError::InvalidData(format!(
                 "invalid backup id '{backup_id}'"
@@ -2098,16 +2099,15 @@ impl ShardManager {
 
         // 1. every shard unpacks into its staging folder; live data untouched
         let mut failures = Vec::new();
-         for shard in &self.shards {
+        for shard in &self.shards {
             if let Err(e) = shard.prepare_restore(backup_id, user.clone()).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
-        
         }
         if !failures.is_empty() {
             // 2. any failure: every shard drops its staging and runs on its old data again
             for shard in &self.shards {
-                 let _ = shard.abort_restore().await;
+                let _ = shard.abort_restore().await;
             }
             self.start().await?;
             return Err(CorelamoError::Internal(format!(
@@ -2121,7 +2121,7 @@ impl ShardManager {
         // 3. all prepared: swap in on every shard
         let mut failures = Vec::new();
         for shard in &self.shards {
-            if let Err(e) = shard.commit_restore(backup_id).await{
+            if let Err(e) = shard.commit_restore(backup_id).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }
@@ -2150,7 +2150,7 @@ impl ShardManager {
         self.db_stats.finish_backup(ok);
     }
     //to check before restore if there are any backups
-     pub fn has_backup(&self, backup_id: &str) -> bool {
+    pub fn has_backup(&self, backup_id: &str) -> bool {
         is_valid_backup_id(backup_id) && self.backup_dir.join(backup_id).is_dir()
     }
 
@@ -2381,21 +2381,27 @@ impl ShardManager {
                         .unwrap_or(&[]);
                     let mut highlights = Vec::new();
                     if !matched.is_empty() {
-                        if let Ok(value) = hit.doc.to_value(None) {
-                            for (xpath, full_path, analyzer, opts) in &fields {
-                                let field_matches: Vec<&MatchedTerm> =
-                                    matched.iter().filter(|m| m.xpath == *xpath).collect();
-                                if field_matches.is_empty() {
-                                    continue;
-                                }
-                                for text in field_texts(&value, full_path) {
-                                    highlights.extend(highlight_field(
-                                        &text,
-                                        analyzer,
-                                        &field_matches,
-                                        opts,
-                                    ));
-                                }
+                        let value = match &hit.full_doc {
+                            //smart shit to highlight non-returned fields
+                            Some(full) => Cow::Borrowed(full),
+                            None => match hit.doc.value() {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            },
+                        };
+                        for (xpath, full_path, analyzer, opts) in &fields {
+                            let field_matches: Vec<&MatchedTerm> =
+                                matched.iter().filter(|m| m.xpath == *xpath).collect();
+                            if field_matches.is_empty() {
+                                continue;
+                            }
+                            for text in field_texts(&value, full_path) {
+                                highlights.extend(highlight_field(
+                                    &text,
+                                    analyzer,
+                                    &field_matches,
+                                    opts,
+                                ));
                             }
                         }
                     }

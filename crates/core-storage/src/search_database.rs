@@ -35,6 +35,7 @@ use core_protocol::{
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use simd_json::OwnedValue;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,
@@ -143,6 +144,8 @@ pub struct SearchDocumentHit {
     pub score: f32,
     pub doc: DocumentOut,
     pub highlights: Vec<String>,
+    //full doc for highlights
+    pub full_doc: Option<OwnedValue>,
 }
 
 impl<S: DocumentStore> SearchDatabase<S> {
@@ -428,7 +431,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             match self.get_document(id)? {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
-                    project_document(&doc, &self.policy, return_fields)?,
+                    project_document(&doc, &self.policy, return_fields)?.0,
                 )),
                 None => not_found.push(id.clone()),
             }
