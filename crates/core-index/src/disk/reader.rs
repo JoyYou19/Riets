@@ -675,7 +675,7 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
-    let base = cursor.read_u64()?;
+    let base = ArrayRowId::from_raw(cursor.read_u64()?);
     let count = cursor.read_u32()? as usize;
     let mut idx = ArrayRowIndex::new(base);
     for i in 0..count {
@@ -683,9 +683,9 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
         let parent = cursor.read_u64()?;
         let element = cursor.read_u32()?;
         idx.push_row(
-            base + (i as u64),
+            ArrayRowId::from_raw(base.raw() + i as u64),
             doc,
-            (parent != NO_PARENT_ROW).then_some(parent),
+            (parent != NO_PARENT_ROW.raw()).then_some(ArrayRowId::from_raw(parent)),
             element,
         );
     }

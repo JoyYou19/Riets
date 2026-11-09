@@ -358,7 +358,7 @@ impl MemIndex {
                 row.parent,
                 row.element_index,
             );
-            self.apply_target(row.array_row_id, row.target);
+            self.apply_target(row.array_row_id.raw(), row.target);
         }
     }
 

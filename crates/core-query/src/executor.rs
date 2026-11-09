@@ -182,7 +182,7 @@ where
     //row-keyed postings are per element/row fold a hit onto its document
     fn fold_to_doc(&self, ctx: FieldCtx, id: DocId) -> Option<DocId> {
         if ctx.row_keyed {
-            self.index.doc_of_row(id)
+            self.index.doc_of_row(ArrayRowId::from_raw(id))
         } else {
             Some(id)
         }
@@ -580,7 +580,7 @@ where
         self.index.lookup(raw, xpath)
     }
 
-    fn ascend(&self, rows: HashSet<DocId>, levels: u32) -> HashSet<DocId> {
+    fn ascend(&self, rows: HashSet<ArrayRowId>, levels: u32) -> HashSet<ArrayRowId> {
         let mut rows = rows;
         for _ in 0..levels {
             rows = rows
@@ -694,11 +694,13 @@ where
                     let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
                     if ctx.row_keyed {
                         for posting in list.items() {
-                            if self.index.doc_of_row(posting.doc_id) == Some(doc_id) {
+                            if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id))
+                                == Some(doc_id)
+                            {
                                 if !posting.positions.is_empty() {
                                     out.push(MatchedTerm {
                                         xpath: ctx.xpath,
-                                        row_id: Some(posting.doc_id),
+                                        row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
                                         row_path: Vec::new(),
                                         positions: posting.positions.to_vec(),
                                         offsets: posting.offsets.to_vec(),
@@ -763,11 +765,11 @@ where
             return;
         };
         for posting in leaf.postings.items() {
-            if self.index.doc_of_row(posting.doc_id) == Some(doc_id) {
+            if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) == Some(doc_id) {
                 if !posting.positions.is_empty() {
                     out.push(MatchedTerm {
                         xpath: ctx.xpath,
-                        row_id: Some(posting.doc_id),
+                        row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
                         row_path: Vec::new(),
                         positions: posting.positions.to_vec(),
                         offsets: posting.offsets.to_vec(),
@@ -893,7 +895,7 @@ where
             .map(|t| self.fetch_term_list(&t.text, xpath).0)
             .collect();
         for posting in lists[0].items() {
-            if self.index.doc_of_row(posting.doc_id) != Some(doc_id) {
+            if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) != Some(doc_id) {
                 continue;
             }
             let row_id = posting.doc_id;
@@ -901,7 +903,13 @@ where
                 .iter()
                 .map(|l| Self::posting_for(l, row_id).cloned())
                 .collect();
-            Self::push_phrase_matches(terms, xpath, Some(row_id), &word_postings, out);
+            Self::push_phrase_matches(
+                terms,
+                xpath,
+                Some(ArrayRowId::from_raw(row_id)),
+                &word_postings,
+                out,
+            );
         }
     }
 
@@ -1209,10 +1217,10 @@ where
         &self,
         children: &[Query],
         binding: &SameElementBinding,
-    ) -> HashSet<DocId> {
-        let mut rows: Option<HashSet<DocId>> = None;
+    ) -> HashSet<ArrayRowId> {
+        let mut rows: Option<HashSet<ArrayRowId>> = None;
         for (child, clause) in children.iter().zip(&binding.clauses) {
-            let r: HashSet<DocId> = match &clause.nested {
+            let r: HashSet<ArrayRowId> = match &clause.nested {
                 Some(nested) => {
                     let Query::SameElement(inner_children) = child else {
                         continue;
@@ -1220,7 +1228,7 @@ where
                     self.same_element_rows(inner_children, nested)
                 }
                 None => match self.evaluate(child, &[clause.ctx], EvalMode::Filter) {
-                    EvalOutcome::Docs(d) => d,
+                    EvalOutcome::Docs(d) => d.iter().map(|&id| ArrayRowId::from_raw(id)).collect(),
                     _ => HashSet::new(),
                 },
             };
@@ -1332,7 +1340,9 @@ where
                         continue;
                     };
                     if fq.row_keyed {
-                        self.index.resolve_array_rows(&raw)
+                        let rows: HashSet<ArrayRowId> =
+                            raw.iter().map(|&r| ArrayRowId::from_raw(r)).collect();
+                        self.index.resolve_array_rows(&rows)
                     } else {
                         raw
                     }

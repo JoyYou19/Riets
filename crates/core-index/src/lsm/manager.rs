@@ -23,7 +23,7 @@ use crate::{
     posting::{DeleteSet, PostingList},
     search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
     segment::{ImmutableSegment, SegmentHandle},
-    types::{ArrayRowId, DocId, XPathId},
+    types::{ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId},
     vector::{HnswGraph, hnsw_file_path},
     vector::{SegmentVectors, VectorFile, find_vector_files, vector_file_path},
     wildcard::WildcardPattern,
@@ -279,7 +279,7 @@ impl LsmIndex {
             next_doc_id: 0,
             next_segment_id: 0,
             next_compaction_job_id: 0,
-            max_array_row: 0,
+            max_array_row: ArrayRowId::from_raw(0),
             last_ingest: None,
             vectors: Arc::new(Vec::new()),
         }
@@ -295,7 +295,7 @@ impl LsmIndex {
         let mut segment_handles = Vec::new();
         let mut query_segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::new();
         let mut next_segment_id = 0;
-        let mut max_array_row = 0;
+        let mut max_array_row = ArrayRowId(0);
         let deleted = crate::lsm::deletes::read_deletes(&root)?;
         // let mut deleted_generation=
         let mut vectors: Vec<SegmentVectors> = Vec::new();
@@ -305,7 +305,11 @@ impl LsmIndex {
                 next_doc_id = next_doc_id.max(max + 1);
             }
 
-            max_array_row = max_array_row.max(disk.array_row_index().max_array_row().unwrap_or(0));
+            max_array_row = max_array_row.max(
+                disk.array_row_index()
+                    .max_array_row()
+                    .unwrap_or(ArrayRowId(0)),
+            );
 
             if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
                 && let Some(id) = stem
@@ -364,11 +368,17 @@ impl LsmIndex {
     pub fn max_array_row(&self) -> ArrayRowId {
         self.max_array_row
     }
+
     /// Highest document id this index still holds anything for: in a segment, or marked
     /// deleted. A new document must get a higher id, or it would inherit those traces.
     pub fn highest_known_doc_id(&self) -> DocId {
         let in_segments = self.next_doc_id.saturating_sub(1);
-        let deleted = self.deleted.iter().max().unwrap_or(0);
+        let deleted = self
+            .deleted
+            .iter()
+            .filter(|&doc_id| doc_id & ARRAY_ROW_FLAG == 0)
+            .max()
+            .unwrap_or(0);
         in_segments.max(deleted)
     }
 

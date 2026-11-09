@@ -1,13 +1,11 @@
+use crate::MatchedTerm;
 use ahash::{HashMap, HashMapExt, HashSet};
 use core_index::analyzer::Analyzer;
+use core_index::document::policy::ARRAY_GAP;
 use core_index::types::position_start;
 use core_protocol::command_reponse_definitions::HighlightFieldOptions;
 use core_timing::timed;
 use simd_json::OwnedValue;
-
-use crate::MatchedTerm;
-
-use core_index::document::policy::ARRAY_GAP;
 
 //we need to re-analyze flattened arrays cause the position and offsets dont match in them
 #[timed(highlight)]
