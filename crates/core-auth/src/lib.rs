@@ -32,7 +32,7 @@ pub fn hash_password(password:&str) -> io::Result<String> {
     if password.chars().count() < MIN_PASSWORD_LEN {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("password must be at least {} characters", MIN_PASSWORD_LEN),
+            format!("password must be at least {MIN_PASSWORD_LEN} characters"),
         ));
     }
      Argon2::default()
@@ -114,13 +114,11 @@ impl AuthService {
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::DeleteUser)?;
         if username==SUPERUSER{
-           Err(CorelamoError::NotFound(format!("superuser cannot be deleted"))) 
-        }else{
-            if self.users.remove_user(username) && username!=SUPERUSER {
-                Ok(())
-            } else {
-                Err(CorelamoError::NotFound(format!("user '{username}' not found")))
-            }
+           Err(CorelamoError::NotFound("superuser cannot be deleted".to_string())) 
+        }else if self.users.remove_user(username) && username!=SUPERUSER {
+            Ok(())
+        } else {
+            Err(CorelamoError::NotFound(format!("user '{username}' not found")))
         }
     }
     pub fn update_user_password(

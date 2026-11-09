@@ -258,7 +258,7 @@ impl EmbeddingJob {
         let mut segments = disk_segments(&self.sender)?;
         self.forget_removed_segments(&segments);
         segments.sort_by_key(|path| {
-            std::cmp::Reverse(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            std::cmp::Reverse(std::fs::metadata(path).map_or(0, |m| m.len()))
         });
 
         for segment in segments {

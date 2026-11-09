@@ -4,9 +4,9 @@ use tantivy::tokenizer::{BoxTokenStream, Token, TokenStream, Tokenizer};
 
 // "https://www.Example.com/path" -> "Example.com"
 fn domain_of(url: &str) -> Option<String> {
-    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = after_scheme
-        .split(|c| matches!(c, '/' | '?' | '#'))
+        .split(['/', '?', '#'])
         .next()?;
     let host = host.rsplit('@').next().unwrap_or(host); // strip "user:pass@"
 
@@ -17,9 +17,7 @@ fn domain_of(url: &str) -> Option<String> {
     // drop the leading subdomain only when there is one ("www.example.com" -> "example.com")
     if host.matches('.').count() >= 2 {
         Some(
-            host.split_once('.')
-                .map(|(_, domain)| domain.to_string())
-                .unwrap_or_else(|| host.to_string()),
+            host.split_once('.').map_or_else(|| host.to_string(), |(_, domain)| domain.to_string()),
         )
     } else {
         Some(host.to_string())
@@ -72,11 +70,10 @@ impl UrlTokenizer {
         if self.preserve_original {
             push(chunk, start, span); // whole URL
         }
-        if let Some(domain) = domain_of(chunk) {
-            if domain != chunk {
+        if let Some(domain) = domain_of(chunk)
+            && domain != chunk {
                 push(&domain, start, span); // "example.com"
             }
-        }
         for (index, part) in parts.iter().enumerate() {
             push(part, start + index, 1); // everything split
         }

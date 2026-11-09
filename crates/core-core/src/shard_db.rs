@@ -116,7 +116,7 @@ impl ShardDb {
         models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
-        let name = format!("shard-{}", shard_id);
+        let name = format!("shard-{shard_id}");
 
         if root.exists() {
             return Err(CorelamoError::AlreadyExists(format!(
@@ -188,7 +188,7 @@ impl ShardDb {
             .strip_prefix("shard-")
             .and_then(|s| s.parse::<u16>().ok())
             .ok_or_else(|| {
-                CorelamoError::InvalidData(format!("invalid shard directory name: {}", name))
+                CorelamoError::InvalidData(format!("invalid shard directory name: {name}"))
             })?;
 
         let log = logger::shard_logger(&root, &name);
@@ -242,9 +242,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to reopen WAL: {e}")))?;
     }
     let skip_bad = self.options.skip_unreplayable_wal_records;
-    // Decoded before anything is opened: a Clear in the WAL means a clear that crashed
-    // halfway, and it is finished first, so only what was written after it comes back.
-    // The raw payload is kept only when it may be quarantined.
+   
     let mut records: Vec<(u64, usize, Option<Vec<u8>>, WalRecord)> = Vec::new();
     for (segment, n, payload) in self
         .wal
@@ -293,6 +291,18 @@ impl ShardDb {
     let analyzer = self.analyzer();
 
     let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
+    if !index.removed_leftovers().is_empty() {
+            // expected after a crash: interrupted writes and never-named segments
+            info!(self.log, "removed index files left over from an interrupted write";
+                "shard_id" => self.shard_id,
+                "files" => ?index.removed_leftovers());
+        }
+        if !index.lost_segments().is_empty() {
+            warn!(self.log, "index segments missing or unreadable at startup; a reindex will rebuild them";
+                "shard_id" => self.shard_id,
+                "segments" => ?index.lost_segments());
+           
+        }
     let store = BinaryDocumentStore::open_with_maps(
         &store_path,
         self.shared.docs.clone(),
@@ -442,16 +452,19 @@ impl ShardDb {
         .map_err(|_| CorelamoError::Internal("index worker dropped the segment list".into()))?
         .map_err(|e| CorelamoError::Internal(format!("listing segments failed: {e}")))?;
     let snapshot = self.shared.snapshot.get();
-    let mut stale: HashSet<DocId> = HashSet::new();
-    for path in segments {
-        let segment = DiskSegment::open(&path)
-            .map_err(|e| CorelamoError::Internal(format!("reading segment failed: {e}")))?;
-        for ((doc_id, _), _) in segment.doc_lengths().iter() {
-            if !live.contains(&doc_id) && !snapshot.is_deleted(doc_id) {
-                stale.insert(doc_id);
+        let mut stale: HashSet<DocId> = HashSet::new();
+        for path in segments {
+            let segment = DiskSegment::open(&path)
+                .map_err(|e| CorelamoError::Internal(format!("reading segment failed: {e}")))?;
+            for ((doc_id, _), _) in segment.doc_lengths().iter() {
+                if segment.doc_of_row(doc_id).is_some() {
+                    continue; // an array row of a document, not a document
+                }
+                if !live.contains(&doc_id) && !snapshot.is_deleted(doc_id) {
+                    stale.insert(doc_id);
+                }
             }
         }
-    }
     for &doc_id in &stale {
         let (ack, acked) = mpsc::channel();
         sender
@@ -755,7 +768,7 @@ impl ShardDb {
         let elapsed = started.elapsed();
         match &result {
             Ok(report) => {
-                self.stats.add_documents_indexed(report.inserted as u64);
+                self.stats.add_documents_indexed(u64::from(report.inserted));
                 self.publish_stats();
                 self.last_write = Instant::now();
                 info!(self.log, "indexed batch";
@@ -1208,7 +1221,7 @@ impl ShardDb {
     }
 
     pub fn document_count(&self) -> usize {
-        self.db.as_ref().map(|d| d.document_count()).unwrap_or(0)
+        self.db.as_ref().map_or(0, SearchDatabase::document_count)
     }
 
     pub fn segment_count(&self) -> Result<usize, CorelamoError> {
@@ -1267,12 +1280,11 @@ impl ShardDb {
         }
         self.pending_checkpoints.clear();
         self.wal_reindex = None;
-        if let Some(db) = self.db.take() {
-            if let Err(e) = db.shutdown() {
+        if let Some(db) = self.db.take()
+            && let Err(e) = db.shutdown() {
                 warn!(self.log, "clear: shutdown of old database failed";
                 "shard_id" => self.shard_id, "error" => %e);
             }
-        }
 
         // If this fails, the Clear record stays in the WAL and the next start finishes the clear.
         self.remove_data_files().map_err(|e| {
@@ -1329,11 +1341,10 @@ impl ShardDb {
         }
         self.flush()?;
 
-        if let Some(worker) = self.background_worker.take() {
-            if let Err(err) = worker.stop() {
+        if let Some(worker) = self.background_worker.take()
+            && let Err(err) = worker.stop() {
                 warn!(self.log, "background worker exited with error before backup"; "error" => %err);
             }
-        }
         let result = self.run_full_backup(&shard_backup_path, &backup_id);
         self.restart_background();
 
@@ -1588,13 +1599,10 @@ impl ShardDb {
                     .remove_through(through_segment)
                     .map_err(|e| CorelamoError::Internal(format!("wal cleanup failed: {e}")))
             });
-        match &outcome {
-            Ok(()) => self.publish_stats(),
-            Err(_) => {
-                self.failed = true;
-                // Later checkpoints depend on this one's segments; they are replayed instead.
-                self.pending_checkpoints.clear();
-            }
+        if let Ok(()) = &outcome { self.publish_stats() } else {
+            self.failed = true;
+            // Later checkpoints depend on this one's segments; they are replayed instead.
+            self.pending_checkpoints.clear();
         }
         outcome
     }

@@ -121,15 +121,12 @@ impl<S: DocumentStore> UserDatabase<S> {
             .flatten()
             .and_then(|doc| Self::parse_user(&doc));
 
-        let (stored_hash, roles) = match user {
-            Some(user) => user,
-            None => {
-                // same work as a real check, so the time does not reveal whether the user exists
-                if let Some(parsed) = dummy_hash().and_then(|hash| PasswordHash::new(hash).ok()) {
-                    let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
-                }
-                return None;
+        let (stored_hash, roles) = if let Some(user) = user { user } else {
+            // same work as a real check, so the time does not reveal whether the user exists
+            if let Some(parsed) = dummy_hash().and_then(|hash| PasswordHash::new(hash).ok()) {
+                let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
             }
+            return None;
         };
 
         let parsed_hash = PasswordHash::new(&stored_hash).ok()?;

@@ -12,7 +12,7 @@ pub const MAX_ALL_BUT_ONE_WORDS: usize = 7;
 /// Twice as spread out gets half of it. basically makes words that are closer score higher
 pub const DENSITY_BOOST: f32 = 0.5;
 /// A document whose name is a run of the query's words has its score multiplied by
-/// 1 + NAME_BONUS × the share of the query's weight the run holds: ×2.5 for a run that holds the
+/// 1 + `NAME_BONUS` × the share of the query's weight the run holds: ×2.5 for a run that holds the
 /// whole query, ×1.5 for one that holds a third of it.
 pub const NAME_BONUS: f32 = 1.5;
 
@@ -205,7 +205,7 @@ impl RankPlan {
                     tiers.push(Tier::AllButOne(Query::Wand(parts.clone())));
                 }
                 TierKind::Any if parts.len() >= 2 => {
-                    tiers.push(Tier::Any(Query::Wand(parts.clone())))
+                    tiers.push(Tier::Any(Query::Wand(parts.clone())));
                 }
                 // the tier's condition does not hold for this query
                 _ => {}
@@ -333,7 +333,7 @@ fn written_forms(query: &Query) -> Vec<String> {
     }
 }
 
-/// The name key of every run of the typed words, up to MAX_NAME_WORDS long: a document whose
+/// The name key of every run of the typed words, up to `MAX_NAME_WORDS` long: a document whose
 /// name is one of them is something the query is about ("Vera Wang" in "Vera Wang was born in
 /// March"). And the query's words as the keys write them, to weigh how much of the query a run is.
 fn named_runs(raw: &str, analyzer: &Analyzer) -> (Vec<String>, Vec<String>) {
@@ -345,11 +345,10 @@ fn named_runs(raw: &str, analyzer: &Analyzer) -> (Vec<String>, Vec<String>) {
     let mut seen: HashSet<String> = HashSet::new();
     for start in 0..typed.len() {
         for end in start + 1..=typed.len().min(start + MAX_NAME_WORDS) {
-            if let Some(key) = analyzer.name_key(&typed[start..end].join(" ")) {
-                if seen.insert(key.clone()) {
+            if let Some(key) = analyzer.name_key(&typed[start..end].join(" "))
+                && seen.insert(key.clone()) {
                     keys.push(key);
                 }
-            }
         }
     }
     // the words name_key keeps: one per position, a hyphenated word's parts but not its joined form

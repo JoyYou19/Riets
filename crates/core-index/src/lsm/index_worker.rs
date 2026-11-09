@@ -103,7 +103,7 @@ impl PendingAck {
         let rx = self
             .0
             .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         wait_for_acknowledgement(rx)
     }
 
@@ -477,19 +477,16 @@ fn run_index_worker(
             }
             IndexCommand::Flush { ack } => {
                 let queued = index.queue_flush().and_then(|()| writer.submit(&mut index));
-                match queued {
-                    Err(e) => send_acknowledgement(ack, Err(e))?,
-                    Ok(()) => {
-                        shared.publish(index.publish_snapshot());
-                        docs_since_publish = 0;
-                        last_publish = Instant::now();
-                        stats.segment_count = index.segment_count();
-                        stats.memtable_term_count = index.memtable_term_count();
-                        published_stats.store(Arc::new(stats.clone()));
-                        // Acknowledged once every segment queued so far is on disk.
-                        flush_waiters.push_back((index.flush_target(), ack));
-                        release_flush_waiters(&mut flush_waiters, &index)?;
-                    }
+                if let Err(e) = queued { send_acknowledgement(ack, Err(e))? } else {
+                    shared.publish(index.publish_snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                    stats.segment_count = index.segment_count();
+                    stats.memtable_term_count = index.memtable_term_count();
+                    published_stats.store(Arc::new(stats.clone()));
+                    // Acknowledged once every segment queued so far is on disk.
+                    flush_waiters.push_back((index.flush_target(), ack));
+                    release_flush_waiters(&mut flush_waiters, &index)?;
                 }
             }
             IndexCommand::SegmentWritten { seq, replay } => {
@@ -603,11 +600,10 @@ fn stage_and_merge(
 
         if staging.estimated_size_bytes() >= staging_cap {
             index.merge_into_memtable(std::mem::take(&mut staging));
-            if index.should_flush() {
-                if let Err(error) = index.queue_flush() {
+            if index.should_flush()
+                && let Err(error) = index.queue_flush() {
                     return (added, Err(error));
                 }
-            }
         }
     }
 
@@ -1020,7 +1016,7 @@ impl ReindexProgress {
 }
 
 fn round_eta(secs: f64) -> u64 {
-    let s = secs.ceil().clamp(0.0, u32::MAX as f64) as u64;
+    let s = secs.ceil().clamp(0.0, f64::from(u32::MAX)) as u64;
     match s {
         0..=30 => s,
         31..=300 => s.div_ceil(5) * 5,

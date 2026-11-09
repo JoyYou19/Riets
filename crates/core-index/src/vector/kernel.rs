@@ -83,7 +83,7 @@ fn encode_with_scale(values: &[f32], scale: f32, out: &mut Vec<u8>) {
 }
 
 /// Dot product of two int8 code vectors stored as bytes, in i32.
-/// max |sum| = dims × 127², so it cannot overflow for dims < 130_000.
+/// max |sum| = dims × 127², so it cannot overflow for dims < `130_000`.
 #[inline]
 pub(crate) fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
     debug_assert_eq!(

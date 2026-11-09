@@ -62,13 +62,11 @@ fn format_unknown_field(err_str: &str) -> Option<String> {
         if let Some(best_match) = expected_fields
             .iter()
             .min_by_key(|field| levenshtein(bad_field, field))
-        {
-            if levenshtein(bad_field, best_match) <= 3 {
+            && levenshtein(bad_field, best_match) <= 3 {
                 return Some(format!(
                     "Unknown field '{bad_field}'. Did you mean '{best_match}'?"
                 ));
             }
-        }
     }
 
     Some(format!("Unknown field '{bad_field}'."))
@@ -281,19 +279,12 @@ pub struct SortSpec {
     pub modifier: SortModifier,
 }
 
+#[derive(Default)]
 pub struct TotalHits {
     pub value: u64,
     pub more: bool,
 }
 
-impl Default for TotalHits {
-    fn default() -> Self {
-        TotalHits {
-            value: 0,
-            more: false,
-        }
-    }
-}
 /// How a search used a spelling correction of its query.
 #[derive(Debug, Clone)]
 pub enum QueryCorrection {

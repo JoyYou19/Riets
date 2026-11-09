@@ -36,8 +36,7 @@ impl SearchIndex for ImmutableSegment {
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.lookup(term, xpath)
-            .map(|list| list.len() as u32)
-            .unwrap_or(0)
+            .map_or(0, |list| list.len() as u32)
     }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.terms
@@ -126,15 +125,13 @@ impl SearchStats for ImmutableSegment {
     fn doc_count(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.doc_count)
-            .unwrap_or(0)
+            .map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.total_doc_len)
-            .unwrap_or(0)
+            .map_or(0, |s| s.total_doc_len)
     }
 
     fn doc_range(&self) -> Option<(DocId, DocId)> {

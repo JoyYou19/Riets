@@ -207,10 +207,10 @@ async fn shutdown_signal() {
     let quit = std::future::pending::<()>();
 
     let reason = tokio::select! {
-        _ = ctrl_c => "SIGINT (Ctrl+C)",
-        _ = terminate => "SIGTERM",
-        _ = hangup => "SIGHUP",
-        _ = quit => "SIGQUIT",
+        () = ctrl_c => "SIGINT (Ctrl+C)",
+        () = terminate => "SIGTERM",
+        () = hangup => "SIGHUP",
+        () = quit => "SIGQUIT",
     };
 
     warn!(log,"Shutting down gracefully..."; "shutdown_signal"=>%reason,);
@@ -242,7 +242,7 @@ async fn run() -> io::Result<()> {
         }
     };
 
-    if let Err(_) = corelamo_settings::validate_settings(&settings) {
+    if corelamo_settings::validate_settings(&settings).is_err() {
         process::exit(1);
     }
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));

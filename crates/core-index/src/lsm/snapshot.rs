@@ -230,11 +230,10 @@ impl SearchStats for IndexSnapshot {
             return Some(len);
         }
         for segment in self.segments.iter().rev() {
-            if let Some((lo, hi)) = segment.doc_range() {
-                if doc_id < lo || doc_id > hi {
+            if let Some((lo, hi)) = segment.doc_range()
+                && (doc_id < lo || doc_id > hi) {
                     continue;
                 }
-            }
             if let Some(len) = segment.doc_len(doc_id, xpath) {
                 return Some(len);
             }
@@ -253,7 +252,7 @@ impl SearchStats for IndexSnapshot {
             .deleted
             .iter()
             .filter_map(|doc_id| self.doc_len(doc_id, xpath))
-            .map(|len| len as u64)
+            .map(u64::from)
             .sum();
         raw.saturating_sub(deleted)
     }

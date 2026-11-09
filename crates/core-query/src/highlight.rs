@@ -174,8 +174,8 @@ fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
 }
 
 fn tags(opts: &HighlightFieldOptions) -> (&str, &str) {
-    let pre = opts.pre_tags.first().map(String::as_str).unwrap_or("");
-    let post = opts.post_tags.first().map(String::as_str).unwrap_or("");
+    let pre = opts.pre_tags.first().map_or("", String::as_str);
+    let post = opts.post_tags.first().map_or("", String::as_str);
     (pre, post)
 }
 

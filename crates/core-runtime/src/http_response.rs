@@ -198,7 +198,7 @@ fn envelope_raw(
     body.extend_from_slice(b"}");
 
     //INFO: sorry valc par manu necienu pret semikolu neizmantosanu
-    return body;
+    body
 }
 
 pub(crate) struct HttpOk {
@@ -319,8 +319,8 @@ impl IntoResponse for HttpOk {
                     .map(|d| d.extra_fields())
                     .unwrap_or_default();
 
-                if !self.pretty {
-                    if let Some(fragment) = self.data.as_ref().and_then(|d| d.to_raw_json()) {
+                if !self.pretty
+                    && let Some(fragment) = self.data.as_ref().and_then(|d| d.to_raw_json()) {
                         let body = envelope_raw(
                             self.status,
                             &self.title,
@@ -337,7 +337,6 @@ impl IntoResponse for HttpOk {
                             .body(Body::from(body))
                             .unwrap();
                     }
-                }
 
                 let data_value = match &self.data {
                     Some(d) => match d.to_json() {
@@ -365,7 +364,7 @@ impl IntoResponse for HttpOk {
                     "request_id".into(),
                     OwnedValue::String(self.request_id.to_string()),
                 );
-                obj.insert("time_taken".into(), OwnedValue::String(time_taken.into()));
+                obj.insert("time_taken".into(), OwnedValue::String(time_taken));
 
                 for (k, v) in extra {
                     obj.insert(k, v);

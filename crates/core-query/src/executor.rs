@@ -62,7 +62,7 @@ impl DidYouMeanReport {
     pub fn empty(original: &str) -> Self {
         DidYouMeanReport {
             original: original.to_string(),
-            corrected: "".to_string(),
+            corrected: String::new(),
             words: Vec::new(),
             confident: false,
         }
@@ -230,12 +230,9 @@ where
     #[timed(search)]
     fn fetch_term_list(&self, term: &str, xpath: XPathId) -> (Cow<'a, PostingList>, u32) {
         let key = LeafKey::Term(term.to_string());
-        let (postings, local_doc_freq) = match self.prepared.and_then(|p| p.list(xpath, &key)) {
-            Some(list) => (Cow::Borrowed(list), list.len() as u32),
-            None => {
-                let found = self.index.lookup_term(term, xpath);
-                (Cow::Owned(found.postings), found.doc_freq)
-            }
+        let (postings, local_doc_freq) = if let Some(list) = self.prepared.and_then(|p| p.list(xpath, &key)) { (Cow::Borrowed(list), list.len() as u32) } else {
+            let found = self.index.lookup_term(term, xpath);
+            (Cow::Owned(found.postings), found.doc_freq)
         };
         let doc_freq = self.leaf_doc_freq(xpath, &key, local_doc_freq as usize);
         (postings, doc_freq)
@@ -260,8 +257,8 @@ where
         }
 
         //conjunctive flat-term case (And) -> conjunctive top-k
-        if let Query::And(parts) = query {
-            if parts.iter().all(|p| matches!(p, Query::Term(_))) {
+        if let Query::And(parts) = query
+            && parts.iter().all(|p| matches!(p, Query::Term(_))) {
                 let terms: Vec<&str> = parts
                     .iter()
                     .filter_map(|p| match p {
@@ -277,18 +274,17 @@ where
                     restrict,
                 ));
             }
-        }
 
         None
     }
 
     /// The WAND fast path for flat queries: every part a word or a group of words, phrases, exact
-    /// matches and typed multi-word spans (best_fields: only queries with synonym groups, the
+    /// matches and typed multi-word spans (`best_fields`: only queries with synonym groups, the
     /// others take `execute_top_k_retrieval`).
     ///
     /// `cross_fields`: a part matches in any of the fields and adds up its best form in each, as
     /// `cross_field_hits` scores it, one document at a time instead of scoring every match.
-    /// Otherwise each field ranks its clauses on its own. `coverage` (cross_fields, a disjunction):
+    /// Otherwise each field ranks its clauses on its own. `coverage` (`cross_fields`, a disjunction):
     /// keep only documents covering that share of the query's weight and scale their scores by it
     /// (see `wand::wand_top_k_grouped`); `None` is any part.
     fn execute_grouped_retrieval(
@@ -883,7 +879,7 @@ where
                             Some(cur) => cur.intersection(&docs).copied().collect(),
                             None => docs,
                         });
-                        if candidates.as_ref().is_some_and(|s| s.is_empty()) {
+                        if candidates.as_ref().is_some_and(std::collections::HashSet::is_empty) {
                             return EvalOutcome::Docs(HashSet::new());
                         }
                     }
@@ -1057,26 +1053,23 @@ where
 
         let mut restrict: Option<HashSet<DocId>> = None;
         for fq in filters.values() {
-            let matched: HashSet<DocId> = match &fq.query {
-                Query::SameElement(children) => {
-                    let binding = fq
-                        .same_element
-                        .as_ref()
-                        .expect("same_element binding missing");
-                    let rows = self.same_element_rows(children, binding);
-                    self.index.resolve_array_rows(&rows)
-                }
-                _ => {
-                    let EvalOutcome::Docs(raw) =
-                        self.evaluate(&fq.query, &[fq.ctx], EvalMode::Filter)
-                    else {
-                        continue;
-                    };
-                    if fq.row_keyed {
-                        self.index.resolve_array_rows(&raw)
-                    } else {
-                        raw
-                    }
+            let matched: HashSet<DocId> = if let Query::SameElement(children) = &fq.query {
+                let binding = fq
+                    .same_element
+                    .as_ref()
+                    .expect("same_element binding missing");
+                let rows = self.same_element_rows(children, binding);
+                self.index.resolve_array_rows(&rows)
+            } else {
+                let EvalOutcome::Docs(raw) =
+                    self.evaluate(&fq.query, &[fq.ctx], EvalMode::Filter)
+                else {
+                    continue;
+                };
+                if fq.row_keyed {
+                    self.index.resolve_array_rows(&raw)
+                } else {
+                    raw
                 }
             };
 
@@ -1084,7 +1077,7 @@ where
                 Some(cur) => cur.intersection(&matched).copied().collect(),
                 None => matched,
             });
-            if restrict.as_ref().is_some_and(|s| s.is_empty()) {
+            if restrict.as_ref().is_some_and(std::collections::HashSet::is_empty) {
                 return restrict;
             }
         }
@@ -1100,7 +1093,7 @@ where
         restrict: Option<&HashSet<DocId>>,
         match_mode: MatchMode, // plan: RankPlan
     ) -> Vec<SearchHit> {
-        if k == 0 || restrict.is_some_and(|d| d.is_empty()) || self.index.doc_range().is_none() {
+        if k == 0 || restrict.is_some_and(std::collections::HashSet::is_empty) || self.index.doc_range().is_none() {
             return Vec::new();
         }
 
@@ -1215,13 +1208,12 @@ where
                 }
                 // flat queries (words and synonym groups, all of them or any of them): one
                 // document at a time, instead of scoring every match and cutting to k after
-                if ctxs.iter().all(|ctx| !ctx.row_keyed) {
-                    if let Some(hits) =
+                if ctxs.iter().all(|ctx| !ctx.row_keyed)
+                    && let Some(hits) =
                         self.execute_grouped_retrieval(query, ctxs, k, restrict, true, None)
                     {
                         return hits.into_iter().map(wand_hit_to_search_hit).collect();
                     }
-                }
                 return top_k_from_hits(self.cross_field_hits(query, ctxs, restrict), k);
             }
         }
@@ -1229,7 +1221,7 @@ where
         top_k_from_hits(by_doc.into_values(), k)
     }
 
-    /// Every document `query` matches across the fields, scored (the CrossFields ranking before
+    /// Every document `query` matches across the fields, scored (the `CrossFields` ranking before
     /// it is cut to k), so the cascade can take several tiers' top hits from one evaluation.
     fn cross_field_hits(
         &self,
@@ -1248,7 +1240,7 @@ where
             let hit = SearchHit {
                 doc_id: p.doc_id,
                 matched_terms: p.matched_terms,
-                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                weight_sum: (p.score / 1000).min(u64::from(u32::MAX)) as u32,
                 distance_factor: p.density,
                 score: ((p.score as f32) / 1000.0) * p.density,
                 tier: 0,
@@ -1815,7 +1807,7 @@ where
         }
         docs
     }
-    /// Multiplies each hit's score by 1 + DENSITY_BOOST × how close together its words are, in
+    /// Multiplies each hit's score by 1 + `DENSITY_BOOST` × how close together its words are, in
     /// its best field: the span of the words as typed against the span they take in the field
     /// (1 when they form the phrase), times the share of the query's words the field holds, so
     /// a page with two of four words side by side gets less than one with all four. A field
@@ -1932,8 +1924,8 @@ where
         restrict: Option<&HashSet<DocId>>,
         by_doc: &mut HashMap<DocId, SearchHit>,
     ) {
-        if !ctx.row_keyed {
-            if let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
+        if !ctx.row_keyed
+            && let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
                 for h in hits {
                     let hit = wand_hit_to_search_hit(h);
                     by_doc
@@ -1947,7 +1939,6 @@ where
                 }
                 return;
             }
-        }
 
         let EvalOutcome::Scored(scored) = self.evaluate(query, &[ctx], EvalMode::Rank) else {
             return;
@@ -1960,7 +1951,7 @@ where
             let hit = SearchHit {
                 doc_id: p.doc_id,
                 matched_terms: p.matched_terms,
-                weight_sum: (p.score / 1000).min(u32::MAX as u64) as u32,
+                weight_sum: (p.score / 1000).min(u64::from(u32::MAX)) as u32,
                 distance_factor: p.density,
                 score: ((p.score as f32) / 1000.0) * p.density,
                 tier: 0,
@@ -2257,7 +2248,7 @@ fn wand_hit_to_search_hit(hit: WandHit) -> SearchHit {
     SearchHit {
         doc_id: hit.doc_id,
         matched_terms: hit.matched_terms,
-        weight_sum: (hit.raw / 1000).min(u32::MAX as u64) as u32,
+        weight_sum: (hit.raw / 1000).min(u64::from(u32::MAX)) as u32,
         score: raw,
         base: raw,
         ..SearchHit::default()
@@ -2285,7 +2276,7 @@ fn field_terms<'l>(lists: &'l [FieldLists<'_>]) -> Vec<FieldTerms<'l>> {
 /// The parts of a flat query, and whether all of them must match: every part a word or a group
 /// of words, phrases, exact matches and words that must all be present. `None` for any other
 /// shape, and with `needs_group` for a query without synonym groups (`additive_terms` and the
-/// conjunctive path take those in best_fields).
+/// conjunctive path take those in `best_fields`).
 fn grouped_parts(query: &Query, needs_group: bool) -> Option<(bool, Vec<&Query>)> {
     let (conjunctive, parts): (bool, Vec<&Query>) = match query {
         Query::Synonym(_) => (false, vec![query]),

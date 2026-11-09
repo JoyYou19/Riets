@@ -81,7 +81,7 @@ pub struct CachedStemmerTokenStream<'a, S> {
     cache: &'a mut StemCache,        // shared word cache
 }
 
-impl<'a, S: TokenStream> TokenStream for CachedStemmerTokenStream<'a, S> {
+impl<S: TokenStream> TokenStream for CachedStemmerTokenStream<'_, S> {
     fn advance(&mut self) -> bool {
         if !self.tail.advance() {
             return false;

@@ -103,7 +103,7 @@ pub fn order_blended(
         return;
     }
 
-    let total_ratio: f32 = specs.iter().map(|s| s.ratio as f32).sum::<f32>().min(100.0);
+    let total_ratio: f32 = specs.iter().map(|s| f32::from(s.ratio)).sum::<f32>().min(100.0);
     let relevance_weight = 100.0 - total_ratio;
 
     // tiers are ranked by their place among the (tier, level) pairs present, not by value.
@@ -134,7 +134,7 @@ pub fn order_blended(
             };
 
             //we do / 2 so that final relevance is [0...1] not [0....2]
-            let relevance = ((rank_norm + score_norm) / 2.0) * relevance_weight;
+            let relevance = f32::midpoint(rank_norm, score_norm) * relevance_weight;
 
             let mut field = 0.0f32;
             for (index, spec) in specs.iter().enumerate() {
@@ -158,7 +158,7 @@ pub fn order_blended(
                         _ => 1.0,
                     },
                 };
-                field += spec.ratio as f32 * component;
+                field += f32::from(spec.ratio) * component;
             }
 
             relevance + field
@@ -235,7 +235,7 @@ pub fn resolve_sorts(
                         "sort ratio for '{name}' must be between 0 and 100"
                     )));
                 }
-                total_ratio += r as u32;
+                total_ratio += u32::from(r);
                 if total_ratio > 100 {
                     return Err(CorelamoError::InvalidData(
                         "sort ratios must add up to at most 100 (the rest is relevance)"
@@ -247,7 +247,7 @@ pub fn resolve_sorts(
         };
 
         fields.push(SortField {
-            xpath: field_pol.xpath(&policy),
+            xpath: field_pol.xpath(policy),
             order: spec.order,
             ratio,
             is_bool: field_pol.kind.is_bool(),
