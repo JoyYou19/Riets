@@ -39,6 +39,7 @@ pub struct ArrayRowIndex {
     row_to_doc: Vec<DocId>,
     //rowid -> parent id
     parent_row: Vec<ArrayRowId>,
+    element_index: Vec<u32>,
 }
 
 impl ArrayRowIndex {
@@ -46,18 +47,9 @@ impl ArrayRowIndex {
         Self {
             base,
             row_to_doc: Vec::new(),
+            element_index: Vec::new(),
             parent_row: Vec::new(),
         }
-    }
-
-    pub fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
-        let mut out = Vec::new();
-        for (i, &d) in self.row_to_doc.iter().enumerate() {
-            if d == doc_id {
-                out.push(self.base + i as ArrayRowId);
-            }
-        }
-        out
     }
 
     pub fn parent_of(&self, array_row_id: ArrayRowId) -> Option<ArrayRowId> {
@@ -66,7 +58,13 @@ impl ArrayRowIndex {
         (parent != NO_PARENT_ROW).then_some(parent)
     }
 
-    pub fn push_row(&mut self, array_row_id: ArrayRowId, doc: DocId, parent: Option<ArrayRowId>) {
+    pub fn push_row(
+        &mut self,
+        array_row_id: ArrayRowId,
+        doc: DocId,
+        parent: Option<ArrayRowId>,
+        element_index: u32,
+    ) {
         if self.row_to_doc.is_empty() {
             self.base = array_row_id;
         }
@@ -77,6 +75,16 @@ impl ArrayRowIndex {
         );
         self.row_to_doc.push(doc);
         self.parent_row.push(parent.unwrap_or(NO_PARENT_ROW));
+        self.element_index.push(element_index);
+    }
+
+    pub fn element_index_of(&self, array_row_id: ArrayRowId) -> Option<u32> {
+        let idx = array_row_id.checked_sub(self.base)? as usize;
+        self.element_index.get(idx).copied()
+    }
+
+    pub fn element_indices(&self) -> &[u32] {
+        &self.element_index
     }
 
     pub fn merge_from(&mut self, other: &ArrayRowIndex) {
@@ -88,6 +96,7 @@ impl ArrayRowIndex {
         }
         debug_assert_eq!(other.base, self.base + self.len() as ArrayRowId);
         self.row_to_doc.extend_from_slice(&other.row_to_doc);
+        self.element_index.extend_from_slice(&other.element_index);
         self.parent_row.extend_from_slice(&other.parent_row);
     }
 

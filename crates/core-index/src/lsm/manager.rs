@@ -179,8 +179,8 @@ impl SearchIndex for LsmIndex {
         self.snapshot().resolve_array_rows(rows)
     }
 
-    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
-        self.snapshot().rows_of_doc(doc_id)
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        self.snapshot().element_index_of_row(row)
     }
 
     fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {

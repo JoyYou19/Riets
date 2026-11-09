@@ -46,13 +46,13 @@ impl SearchIndex for IndexSnapshot {
         out.into_iter().collect()
     }
 
-    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
-        let mut out = self.mem.rows_of_doc(doc_id);
-        for seg in self.segments.iter() {
-            out.extend(seg.rows_of_doc(doc_id));
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        if let Some(e) = self.mem.element_index_of_row(row) {
+            return Some(e);
         }
-        out.sort_unstable();
-        out
+        self.segments
+            .iter()
+            .find_map(|seg| seg.element_index_of_row(row))
     }
 
     fn is_deleted(&self, doc_id: DocId) -> bool {

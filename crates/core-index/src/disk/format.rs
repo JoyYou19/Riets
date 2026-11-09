@@ -94,7 +94,7 @@
 //! ```text
 //! base u64
 //! len u32
-//! (doc_id u64, parent u64) × len
+//! (doc_id u64, parent u64, element_index u32) × len
 //! ```
 //!
 //! Maps each array row id to the document (or parent row) that owns it, so a
@@ -134,7 +134,7 @@
 
 //                          ahahahahhahah
 pub const MAGIC: [u8; 8] = *b"BANANA_4";
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 
 pub const HEADER_LEN: usize = 8 + 4;
 

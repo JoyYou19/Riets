@@ -35,6 +35,7 @@ pub struct AnalyzedArrayRow {
     pub array_row_id: ArrayRowId,
     pub parent: Option<ArrayRowId>,
     pub target: AnalyzedTarget,
+    pub element_index: u32,
 }
 
 pub struct AnalyzedDocument {
@@ -62,6 +63,7 @@ impl IndexedDocument {
                 .map(|row| AnalyzedArrayRow {
                     array_row_id: row.array_row_id,
                     parent: row.parent,
+                    element_index: row.element_index,
                     target: analyze_target(
                         analyzers,
                         &row.parts,

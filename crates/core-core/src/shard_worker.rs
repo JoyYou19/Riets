@@ -1,4 +1,4 @@
-use ahash::{HashMap as AHashMap, HashMapExt};
+use ahash::HashMap as AHashMap;
 use core_query::ranking::{POOL_SIZE, finalize};
 use std::collections::HashMap;
 
@@ -35,7 +35,7 @@ use crate::shared_state::SharedShardState;
 
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
-use core_index::types::{ArrayRowId, DocId, ShardId, XPathId};
+use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
 use core_query::{
     CorpusStats, MatchedTerm, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words,
@@ -770,31 +770,14 @@ impl ShardHandle {
         }
 
         //adds the array[index] so that highlighter can find the precise place where search found it
-        //yay
-        for (i, hit) in hits.iter().enumerate() {
-            Self::fill_row_paths(prepared.snapshot.as_ref(), hit.doc_id, &mut out[i]);
+        for matches in out.iter_mut() {
+            Self::fill_row_paths(prepared.snapshot.as_ref(), matches);
         }
 
         out
     }
 
-    //insane vibe function to get this sorted out
-    // basically "which element indices is this row?"
-    fn fill_row_paths(snapshot: &IndexSnapshot, doc_id: DocId, matches: &mut [MatchedTerm]) {
-        if !matches.iter().any(|m| m.row_id.is_some()) {
-            return;
-        }
-
-        let rows = snapshot.rows_of_doc(doc_id);
-        let mut next_sibling: AHashMap<Option<ArrayRowId>, u32> = AHashMap::new();
-        let mut sibling_index: AHashMap<ArrayRowId, u32> = AHashMap::new();
-        for &row in &rows {
-            let parent = snapshot.parent_of_row(row);
-            let slot = next_sibling.entry(parent).or_insert(0);
-            sibling_index.insert(row, *slot);
-            *slot += 1;
-        }
-
+    fn fill_row_paths(snapshot: &IndexSnapshot, matches: &mut [MatchedTerm]) {
         for m in matches.iter_mut() {
             let Some(row_id) = m.row_id else {
                 continue;
@@ -802,7 +785,7 @@ impl ShardHandle {
             let mut path = Vec::new();
             let mut cur = Some(row_id);
             while let Some(r) = cur {
-                let Some(&idx) = sibling_index.get(&r) else {
+                let Some(idx) = snapshot.element_index_of_row(r) else {
                     break;
                 };
                 path.push(idx);

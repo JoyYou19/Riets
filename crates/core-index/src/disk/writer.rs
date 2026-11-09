@@ -327,9 +327,15 @@ fn write_doc_lengths(
 fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Result<()> {
     write_u64(out, idx.base())?;
     write_u32(out, idx.len() as u32)?;
-    for (&doc, &parent) in idx.row_to_doc().iter().zip(idx.parent_rows().iter()) {
+    for ((&doc, &parent), &element) in idx
+        .row_to_doc()
+        .iter()
+        .zip(idx.parent_rows().iter())
+        .zip(idx.element_indices().iter())
+    {
         write_u64(out, doc)?;
         write_u64(out, parent)?;
+        write_u32(out, element)?;
     }
     Ok(())
 }

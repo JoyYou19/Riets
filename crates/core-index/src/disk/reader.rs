@@ -285,12 +285,12 @@ impl SearchIndex for DiskSegment {
         self.array_row_index.parent_of(row)
     }
 
-    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
-        self.array_row_index.doc_of(row)
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        self.array_row_index.element_index_of(row)
     }
 
-    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
-        self.array_row_index.rows_of_doc(doc_id)
+    fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
+        self.array_row_index.doc_of(row)
     }
 
     fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
@@ -681,10 +681,12 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
     for i in 0..count {
         let doc = cursor.read_u64()?;
         let parent = cursor.read_u64()?;
+        let element = cursor.read_u32()?;
         idx.push_row(
             base + (i as u64),
             doc,
             (parent != NO_PARENT_ROW).then_some(parent),
+            element,
         );
     }
     Ok(idx)

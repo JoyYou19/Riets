@@ -61,8 +61,8 @@ impl SearchIndex for MemIndex {
         self.array_row_index.parent_of(row)
     }
 
-    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
-        self.array_row_index.rows_of_doc(doc_id)
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        self.array_row_index.element_index_of(row)
     }
 
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
@@ -352,8 +352,12 @@ impl MemIndex {
         self.apply_target(document.doc_id, document.main);
 
         for row in document.array_rows {
-            self.array_row_index
-                .push_row(row.array_row_id, document.doc_id, row.parent);
+            self.array_row_index.push_row(
+                row.array_row_id,
+                document.doc_id,
+                row.parent,
+                row.element_index,
+            );
             self.apply_target(row.array_row_id, row.target);
         }
     }

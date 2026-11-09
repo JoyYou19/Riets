@@ -41,7 +41,7 @@ pub trait SearchIndex {
 
     fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId>;
 
-    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId>;
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32>;
 
     fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId>;
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId>;
