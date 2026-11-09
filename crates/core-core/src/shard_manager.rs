@@ -1398,9 +1398,14 @@ impl ShardManager {
             window,
             word_fetch,
         );
+
+        let searched: HashSet<XPathId> = groups
+            .iter()
+            .flat_map(|g| g.ctxs.iter().map(|c| c.xpath))
+            .collect();
         let highlight = {
             let analyzers = self.analyzer_set.read();
-            highlight_request(command, &policy, &analyzers)?
+            highlight_request(command, &policy, &analyzers, &searched)?
         };
         let sort_xpaths = sorts
             .as_ref()
@@ -2754,6 +2759,7 @@ fn highlight_request(
     command: &SearchCommand,
     policy: &IndexPolicy,
     analyzers: &AnalyzerSet,
+    searched: &HashSet<XPathId>,
 ) -> Result<
     Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
     CorelamoError,
@@ -2767,6 +2773,14 @@ fn highlight_request(
             .field_by_path(name)
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
         let xpath = field.xpath(policy);
+
+        //a field can only be highlighted if the query actually searched it
+        if !searched.contains(&xpath) {
+            return Err(CorelamoError::InvalidData(format!(
+                "cannot highlight '{name}': it is not a searched field"
+            )));
+        }
+
         let analyzer = field_analyzer(field, analyzers).clone();
         let flattened = field.repeated;
         let row_keyed = field.row_keyed;
