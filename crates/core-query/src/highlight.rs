@@ -1,7 +1,8 @@
-use ahash::HashSet;
+use ahash::{HashMap, HashMapExt, HashSet};
 use core_index::types::position_start;
 use core_index::{analyzer::Analyzer, fuzzy::FuzzyMatcher, wildcard::WildcardPattern};
 use core_protocol::command_reponse_definitions::HighlightFieldOptions;
+use core_timing::timed;
 use simd_json::OwnedValue;
 
 use crate::MatchedTerm;
@@ -71,6 +72,7 @@ fn collect(query: &Query, analyzer: &Analyzer, out: &mut Vec<HighlightMatcher>) 
     }
 }
 
+#[timed(highlight)]
 pub fn highlight_text(
     text: &str,
     analyzer: &Analyzer,
@@ -91,6 +93,7 @@ pub fn highlight_text(
 use core_index::document::policy::ARRAY_GAP;
 
 //we need to re-analyze flattened arrays cause the position and offsets dont match in them
+#[timed(highlight)]
 pub fn highlight_field_array(
     texts: &[String],
     analyzer: &Analyzer,
@@ -104,36 +107,52 @@ pub fn highlight_field_array(
     if want.is_empty() {
         return Vec::new();
     }
+    highlight_flattened_texts(texts, analyzer, &want, opts)
+}
+
+//                                  this bs:
+//like ummm cast: {name, surname, aliases["", "", ""],}
+#[timed(highlight)]
+pub fn highlight_field_row_keyed_flattened(
+    value: &OwnedValue,
+    full_path: &str,
+    analyzer: &Analyzer,
+    matched: &[&MatchedTerm],
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    let mut by_row: HashMap<Vec<u32>, HashSet<u32>> = HashMap::new();
+    for m in matched {
+        by_row
+            .entry(m.row_path.clone())
+            .or_default()
+            .extend(m.positions.iter().map(|&p| position_start(p)));
+    }
 
     let mut out = Vec::new();
-    let mut base = 0u32;
-    for text in texts {
-        let (filtered, tokens) = analyzer.analyze_text(text);
-        let mut ranges: Vec<(usize, usize)> = Vec::new();
-        let mut span = 0u32;
-        for token in &tokens {
-            if want.contains(&(base + token.position)) {
-                ranges.push((token.start_byte, token.end_byte));
-            }
-            span = span.max(token.position + token.position_length.max(1));
+    for (row_path, want) in by_row {
+        let Some(OwnedValue::Array(items)) = value_for_row(value, full_path, &row_path) else {
+            continue;
+        };
+        let texts: Vec<String> = items
+            .iter()
+            .filter_map(|v| match v {
+                OwnedValue::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        if texts.is_empty() {
+            continue;
         }
-        if !ranges.is_empty() {
-            let ranges = merge_ranges(ranges);
-            if opts.sentence {
-                out.extend(fragments_by_sentence(&filtered, &ranges, opts));
-            } else {
-                out.extend(fragments_by_chars(&filtered, &ranges, opts));
-            }
-        }
-        base += span + ARRAY_GAP;
+        out.extend(highlight_flattened_texts(&texts, analyzer, &want, opts));
     }
     out
 }
 
-/// Builds highlighted fragments for one field value from the spans that matched.
-/// Fast path (offsets stored) wraps byte spans on `text` directly; slow path
-/// (char-filtered field, no offsets) re-analyzes and maps positions to spans on the
-/// filtered text.
+//Builds highlighted fragments for one field value from the spans that matched.
+//Fast path (offsets stored) wraps byte spans on `text` directly; slow path
+//(char-filtered field, no offsets) re-analyzes and maps positions to spans on the
+//filtered text.
+#[timed(highlight)]
 pub fn highlight_field(
     text: &str,
     analyzer: &Analyzer,
@@ -183,6 +202,104 @@ pub fn highlight_field(
     } else {
         fragments_by_chars(&filtered, &ranges, opts)
     }
+}
+
+#[timed(highlight)]
+fn highlight_flattened_texts(
+    texts: &[String],
+    analyzer: &Analyzer,
+    want: &HashSet<u32>,
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut base = 0u32;
+    for text in texts {
+        let (filtered, tokens) = analyzer.analyze_text(text);
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut span = 0u32;
+        for token in &tokens {
+            if want.contains(&(base + token.position)) {
+                ranges.push((token.start_byte, token.end_byte));
+            }
+            span = span.max(token.position + token.position_length.max(1));
+        }
+        if !ranges.is_empty() {
+            let ranges = merge_ranges(ranges);
+            if opts.sentence {
+                out.extend(fragments_by_sentence(&filtered, &ranges, opts));
+            } else {
+                out.extend(fragments_by_chars(&filtered, &ranges, opts));
+            }
+        }
+        base += span + ARRAY_GAP;
+    }
+    out
+}
+
+//rewalks the json to get the precise element from the [index] of the array
+#[timed(highlight)]
+pub fn highlight_field_row_keyed(
+    value: &OwnedValue,
+    full_path: &str,
+    analyzer: &Analyzer,
+    matched: &[&MatchedTerm],
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    //group positions by row, so each array element is highlighted once
+    let mut by_row: HashMap<Vec<u32>, HashSet<u32>> = HashMap::new();
+    for m in matched {
+        by_row
+            .entry(m.row_path.clone())
+            .or_default()
+            .extend(m.positions.iter().map(|&p| position_start(p)));
+    }
+
+    let mut out = Vec::new();
+    for (row_path, want) in by_row {
+        let Some(OwnedValue::String(text)) = value_for_row(value, full_path, &row_path) else {
+            continue;
+        };
+        let (filtered, tokens) = analyzer.analyze_text(&text);
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for token in &tokens {
+            if want.contains(&token.position) {
+                ranges.push((token.start_byte, token.end_byte));
+            }
+        }
+        if ranges.is_empty() {
+            continue;
+        }
+        let ranges = merge_ranges(ranges);
+        if opts.sentence {
+            out.extend(fragments_by_sentence(&filtered, &ranges, opts));
+        } else {
+            out.extend(fragments_by_chars(&filtered, &ranges, opts));
+        }
+    }
+    out
+}
+
+//recursive walkt to get the Balue in the precise row and precise [index]
+//basically: "given those indices, what Value is actually there?"
+#[timed(highlight)]
+fn value_for_row<'a>(
+    value: &'a OwnedValue,
+    path: &str,
+    row_path: &[u32],
+) -> Option<&'a OwnedValue> {
+    let segs: Vec<&str> = path.split('/').collect();
+    let mut cur = value;
+    let mut row_iter = row_path.iter();
+    for &seg in &segs {
+        if let OwnedValue::Array(items) = cur {
+            cur = items.get(*row_iter.next()? as usize)?;
+        }
+        let OwnedValue::Object(obj) = cur else {
+            return None;
+        };
+        cur = obj.get(seg)?;
+    }
+    Some(cur)
 }
 
 fn words(text: &str, analyzer: &Analyzer) -> Vec<(String, usize, usize)> {

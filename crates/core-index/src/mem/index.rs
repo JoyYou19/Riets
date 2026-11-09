@@ -61,6 +61,10 @@ impl SearchIndex for MemIndex {
         self.array_row_index.parent_of(row)
     }
 
+    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
+        self.array_row_index.rows_of_doc(doc_id)
+    }
+
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
         self.array_row_index.doc_of(row)
     }

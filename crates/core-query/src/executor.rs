@@ -6,7 +6,7 @@ use core_index::{
         ops::{intersection, union_many},
     },
     search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{DocId, XPathId, position_span, position_start},
+    types::{ArrayRowId, DocId, XPathId, position_span, position_start},
 };
 use std::{
     borrow::Cow,
@@ -646,6 +646,7 @@ where
         }
     }
 
+    #[timed(highlight)]
     pub fn matched_terms(
         &self,
         query: &Query,
@@ -657,6 +658,7 @@ where
         out
     }
 
+    #[timed(highlight)]
     fn collect_matched(
         &self,
         query: &Query,
@@ -676,7 +678,11 @@ where
             }
             Query::Phrase(terms) => {
                 for &ctx in ctxs {
-                    self.collect_phrase(terms, doc_id, ctx.xpath, out);
+                    if ctx.row_keyed {
+                        self.collect_phrase_row_keyed(terms, doc_id, ctx, out);
+                    } else {
+                        self.collect_phrase(terms, doc_id, ctx.xpath, out);
+                    }
                 }
             }
 
@@ -686,7 +692,23 @@ where
             Query::Fuzzy(raw, fuzziness, fuzzy_spec) => {
                 for &ctx in ctxs {
                     let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
-                    self.push_leaf_matches(&list, doc_id, ctx.xpath, out);
+                    if ctx.row_keyed {
+                        for posting in list.items() {
+                            if self.index.doc_of_row(posting.doc_id) == Some(doc_id) {
+                                if !posting.positions.is_empty() {
+                                    out.push(MatchedTerm {
+                                        xpath: ctx.xpath,
+                                        row_id: Some(posting.doc_id),
+                                        row_path: Vec::new(),
+                                        positions: posting.positions.to_vec(),
+                                        offsets: posting.offsets.to_vec(),
+                                    });
+                                }
+                            }
+                        }
+                    } else {
+                        self.push_leaf_matches(&list, doc_id, ctx.xpath, out);
+                    }
                 }
             }
             Query::Wand(children)
@@ -721,6 +743,7 @@ where
                     xpath,
                     row_id: None,
                     positions: p.positions.to_vec(),
+                    row_path: Vec::new(),
                     offsets: p.offsets.to_vec(),
                 });
             }
@@ -728,6 +751,7 @@ where
     }
 
     //row-keyed postings have array_row_id we need to match it to the correct dovument
+    #[timed(highlight)]
     fn push_row_matches(
         &self,
         query: &Query,
@@ -735,17 +759,16 @@ where
         ctx: FieldCtx,
         out: &mut Vec<MatchedTerm>,
     ) {
-        let Some((_, xpath)) = Self::leaf_key(query, ctx) else {
+        let Some(leaf) = self.leaf(query, ctx) else {
             return;
         };
-        let list = self.fetch_leaf(query, xpath);
-        for posting in list.items() {
-            //simple matching
+        for posting in leaf.postings.items() {
             if self.index.doc_of_row(posting.doc_id) == Some(doc_id) {
                 if !posting.positions.is_empty() {
                     out.push(MatchedTerm {
                         xpath: ctx.xpath,
                         row_id: Some(posting.doc_id),
+                        row_path: Vec::new(),
                         positions: posting.positions.to_vec(),
                         offsets: posting.offsets.to_vec(),
                     });
@@ -756,27 +779,16 @@ where
 
     //kind of stupid that we need this, but a phrase match needs to return offsets as a single byte span
     //not multiple ones
-    fn collect_phrase(
-        &self,
+    fn push_phrase_matches(
         terms: &[PhraseTerm],
-        doc_id: DocId,
         xpath: XPathId,
+        row_id: Option<ArrayRowId>,
+        word_postings: &[Option<Posting>],
         out: &mut Vec<MatchedTerm>,
     ) {
-        if terms.is_empty() {
-            return;
-        }
-
-        let mut word_postings: Vec<Option<Posting>> = Vec::with_capacity(terms.len());
-        for term in terms {
-            let (list, _) = self.fetch_term_list(&term.text, xpath);
-            word_postings.push(Self::posting_for(&list, doc_id).cloned());
-        }
-
         if word_postings.iter().any(Option::is_none) {
             return;
         }
-
         let position_lists: Vec<&[u32]> = word_postings
             .iter()
             .map(|p| p.as_ref().unwrap().positions.as_slice())
@@ -827,18 +839,69 @@ where
                     out.push(MatchedTerm {
                         xpath,
                         positions: Vec::new(),
-                        row_id: None,
+                        row_path: Vec::new(),
+                        row_id,
                         offsets: vec![(start, end)],
                     });
                 } else {
                     out.push(MatchedTerm {
                         xpath,
-                        row_id: None,
+                        row_id,
+                        row_path: Vec::new(),
                         positions: matched,
                         offsets: Vec::new(),
                     });
                 }
             }
+        }
+    }
+
+    #[timed(highlight)]
+    fn collect_phrase(
+        &self,
+        terms: &[PhraseTerm],
+        doc_id: DocId,
+        xpath: XPathId,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if terms.is_empty() {
+            return;
+        }
+        let word_postings: Vec<Option<Posting>> = terms
+            .iter()
+            .map(|t| {
+                let (list, _) = self.fetch_term_list(&t.text, xpath);
+                Self::posting_for(&list, doc_id).cloned()
+            })
+            .collect();
+        Self::push_phrase_matches(terms, xpath, None, &word_postings, out);
+    }
+
+    fn collect_phrase_row_keyed(
+        &self,
+        terms: &[PhraseTerm],
+        doc_id: DocId,
+        ctx: FieldCtx,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if terms.is_empty() {
+            return;
+        }
+        let xpath = ctx.xpath;
+        let lists: Vec<Cow<'a, PostingList>> = terms
+            .iter()
+            .map(|t| self.fetch_term_list(&t.text, xpath).0)
+            .collect();
+        for posting in lists[0].items() {
+            if self.index.doc_of_row(posting.doc_id) != Some(doc_id) {
+                continue;
+            }
+            let row_id = posting.doc_id;
+            let word_postings: Vec<Option<Posting>> = lists
+                .iter()
+                .map(|l| Self::posting_for(l, row_id).cloned())
+                .collect();
+            Self::push_phrase_matches(terms, xpath, Some(row_id), &word_postings, out);
         }
     }
 

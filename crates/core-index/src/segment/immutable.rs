@@ -47,6 +47,10 @@ impl SearchIndex for ImmutableSegment {
             .collect()
     }
 
+    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
+        self.array_row_index.rows_of_doc(doc_id)
+    }
+
     fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
         rows.iter()
             .filter_map(|&r| self.array_row_index.doc_of(r))

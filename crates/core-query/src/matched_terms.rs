@@ -8,6 +8,9 @@ use core_index::types::{ArrayRowId, Position, XPathId};
 pub struct MatchedTerm {
     pub xpath: XPathId,
     pub positions: Vec<Position>,
+    //for nested arrays
     pub row_id: Option<ArrayRowId>,
+    //in which of [0, 1, 2] appeared in for highlighting
+    pub row_path: Vec<u32>,
     pub offsets: Vec<(u32, u32)>,
 }

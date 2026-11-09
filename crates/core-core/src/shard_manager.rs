@@ -27,7 +27,10 @@ use core_query::dictionary::{
     DATABASE_FILE_NAME, DictionaryDocument, SynonymManager, SynonymRegistry,
 };
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
-use core_query::highlight::{field_texts, highlight_field, highlight_field_array};
+use core_query::highlight::{
+    field_texts, highlight_field, highlight_field_array, highlight_field_row_keyed,
+    highlight_field_row_keyed_flattened,
+};
 use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
     FieldQuery, QueryGroup, compile_query, field_analyzer, is_blank_query, parse_fuzziness,
@@ -2400,7 +2403,19 @@ impl ShardManager {
                             if field_matches.is_empty() {
                                 continue;
                             }
-                            if *flattened {
+
+                            //i love edgecases
+                            if *flattened && *row_keyed {
+                                //cast{name, surname, aliases:[..,..,..]}
+                                highlights.extend(highlight_field_row_keyed_flattened(
+                                    &value,
+                                    full_path,
+                                    analyzer,
+                                    &field_matches,
+                                    opts,
+                                ));
+                            } else if *flattened {
+                                //cast: ["tom holland", "kristians svikis"]
                                 let texts = field_texts(&value, full_path);
                                 highlights.extend(highlight_field_array(
                                     &texts,
@@ -2409,8 +2424,16 @@ impl ShardManager {
                                     opts,
                                 ));
                             } else if *row_keyed {
-                                //TODO: nested arrays a bit later
+                                //cast: [{name, surname}, {name, surnames}]
+                                highlights.extend(highlight_field_row_keyed(
+                                    &value,
+                                    full_path,
+                                    analyzer,
+                                    &field_matches,
+                                    opts,
+                                ));
                             } else {
+                                //name: "..."
                                 for text in field_texts(&value, full_path) {
                                     highlights.extend(highlight_field(
                                         &text,

@@ -289,6 +289,10 @@ impl SearchIndex for DiskSegment {
         self.array_row_index.doc_of(row)
     }
 
+    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
+        self.array_row_index.rows_of_doc(doc_id)
+    }
+
     fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
         self.bool_fields
             .get(&xpath)

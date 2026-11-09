@@ -50,6 +50,16 @@ impl ArrayRowIndex {
         }
     }
 
+    pub fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
+        let mut out = Vec::new();
+        for (i, &d) in self.row_to_doc.iter().enumerate() {
+            if d == doc_id {
+                out.push(self.base + i as ArrayRowId);
+            }
+        }
+        out
+    }
+
     pub fn parent_of(&self, array_row_id: ArrayRowId) -> Option<ArrayRowId> {
         let idx = array_row_id.checked_sub(self.base)?;
         let parent = *self.parent_row.get(idx as usize)?;

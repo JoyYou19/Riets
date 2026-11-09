@@ -46,6 +46,15 @@ impl SearchIndex for IndexSnapshot {
         out.into_iter().collect()
     }
 
+    fn rows_of_doc(&self, doc_id: DocId) -> Vec<ArrayRowId> {
+        let mut out = self.mem.rows_of_doc(doc_id);
+        for seg in self.segments.iter() {
+            out.extend(seg.rows_of_doc(doc_id));
+        }
+        out.sort_unstable();
+        out
+    }
+
     fn is_deleted(&self, doc_id: DocId) -> bool {
         self.deleted.is_deleted(doc_id)
     }
