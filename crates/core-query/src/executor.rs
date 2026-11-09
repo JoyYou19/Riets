@@ -667,7 +667,9 @@ where
         match query {
             Query::Term(_) | Query::Prefix(_) | Query::Wildcard(_) | Query::Exact(_) => {
                 for &ctx in ctxs {
-                    if let Some(leaf) = self.leaf(query, ctx) {
+                    if ctx.row_keyed {
+                        self.push_row_matches(query, doc_id, ctx, out);
+                    } else if let Some(leaf) = self.leaf(query, ctx) {
                         self.push_leaf_matches(&leaf.postings, doc_id, ctx.xpath, out);
                     }
                 }
@@ -717,9 +719,37 @@ where
                 //highlight.rs
                 out.push(MatchedTerm {
                     xpath,
+                    row_id: None,
                     positions: p.positions.to_vec(),
                     offsets: p.offsets.to_vec(),
                 });
+            }
+        }
+    }
+
+    //row-keyed postings have array_row_id we need to match it to the correct dovument
+    fn push_row_matches(
+        &self,
+        query: &Query,
+        doc_id: DocId,
+        ctx: FieldCtx,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        let Some((_, xpath)) = Self::leaf_key(query, ctx) else {
+            return;
+        };
+        let list = self.fetch_leaf(query, xpath);
+        for posting in list.items() {
+            //simple matching
+            if self.index.doc_of_row(posting.doc_id) == Some(doc_id) {
+                if !posting.positions.is_empty() {
+                    out.push(MatchedTerm {
+                        xpath: ctx.xpath,
+                        row_id: Some(posting.doc_id),
+                        positions: posting.positions.to_vec(),
+                        offsets: posting.offsets.to_vec(),
+                    });
+                }
             }
         }
     }
@@ -785,23 +815,25 @@ where
                     let last_enc = *matched.last().unwrap();
                     let first = word_postings[0].as_ref().unwrap();
                     let last = word_postings[last_idx].as_ref().unwrap();
-                    let (s0, _) = Self::offset_for(
+                    let (start, _) = Self::offset_for(
                         &first.positions,
                         &first.offsets,
                         position_start(first_enc),
                     )
                     .unwrap_or((0, 0));
-                    let (_, e_n) =
+                    let (_, end) =
                         Self::offset_for(&last.positions, &last.offsets, position_start(last_enc))
                             .unwrap_or((0, 0));
                     out.push(MatchedTerm {
                         xpath,
                         positions: Vec::new(),
-                        offsets: vec![(s0, e_n)],
+                        row_id: None,
+                        offsets: vec![(start, end)],
                     });
                 } else {
                     out.push(MatchedTerm {
                         xpath,
+                        row_id: None,
                         positions: matched,
                         offsets: Vec::new(),
                     });

@@ -1,4 +1,4 @@
-use core_index::types::{Position, XPathId};
+use core_index::types::{ArrayRowId, Position, XPathId};
 
 //term of a phrase that matched withing one docs one field
 //INFO: fast-path -> highlight reads the offests and reads the documents bytes to return the snippet
@@ -8,5 +8,6 @@ use core_index::types::{Position, XPathId};
 pub struct MatchedTerm {
     pub xpath: XPathId,
     pub positions: Vec<Position>,
+    pub row_id: Option<ArrayRowId>,
     pub offsets: Vec<(u32, u32)>,
 }
