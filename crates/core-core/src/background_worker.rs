@@ -36,7 +36,6 @@ use crate::{
     shard_worker::ShardCmd,
 };
 
-const MODEL_RETRY: Duration = Duration::from_secs(60);
 const MEASURE_EVERY: Duration = Duration::from_secs(60);
 /// How often a wait on the shard queue looks at the stop flag.
 const STOP_POLL: Duration = Duration::from_millis(100);
@@ -73,7 +72,7 @@ impl BackgroundWorker {
             reindex_rx,
             current: Arc::clone(&current),
             embedder: None,
-            last_model_attempt: None,
+            last_model_error: None,
             last_measure: None,
             measured: None,
         };
@@ -113,7 +112,7 @@ impl BackgroundWorker {
         Ok(())
     }
 
-    /// Signals the thread to stop without waiting for it.
+   
     pub fn stop_async(mut self) {
         self.signal_stop();
         self.handle.take();
@@ -130,7 +129,7 @@ struct BackgroundLoop {
     reindex_rx: Receiver<ReindexTask>,
     current: Arc<Mutex<Option<Arc<ReindexProgress>>>>,
     embedder: Option<Arc<Embedder>>,
-    last_model_attempt: Option<Instant>,
+    last_model_error: Option<String>,
     last_measure: Option<Instant>,
     measured: Option<(u64, u64)>,
     next_store_check: Instant,
@@ -139,8 +138,7 @@ struct BackgroundLoop {
 impl BackgroundLoop {
     fn run(mut self, stop: &AtomicBool) -> io::Result<()> {
         let result = self.run_loop(stop);
-        // a reindex queued but never started still has to be counted, or the database
-        // reports a reindex running forever
+       
         while let Ok(task) = self.reindex_rx.try_recv() {
             let _ = std::fs::remove_dir_all(task.params.shard_root.join("index.new"));
             task.stats.finish_shard_reindex(false, Duration::ZERO);
@@ -236,9 +234,7 @@ impl BackgroundLoop {
         result
     }
 
-    /// Sends a command to the shard thread and waits for the reply, giving up when stopping:
-    /// the shard thread may be the one stopping this worker, and would never answer.
-    fn ask_shard<T>(&self, stop: &AtomicBool, cmd: ShardCmd, rx: &Receiver<T>) -> Option<T> {
+     fn ask_shard<T>(&self, stop: &AtomicBool, cmd: ShardCmd, rx: &Receiver<T>) -> Option<T> {
         if !self.send_to_shard(stop, cmd) {
             return None;
         }
@@ -250,8 +246,7 @@ impl BackgroundLoop {
             }
         }
     }
-    /// Queues a command on the shard thread; false when stopping or the shard is gone. A full
-    /// queue is waited on, but never past a stop: the shard thread may be the one stopping us.
+  
     fn send_to_shard(&self, stop: &AtomicBool, cmd: ShardCmd) -> bool {
         let mut pending = cmd;
         loop {
@@ -286,8 +281,7 @@ impl BackgroundLoop {
             .stats
             .set_activity(BackgroundActivity::Reindexing);
 
-        // directly on this thread: the build already spreads over rayon and the background
-        // pool, and wrapping it in background_pool().install could starve its own segment writes
+       
         let built = build_staging_index(&params, &progress, &stats);
 
         self.config.stats.set_activity(BackgroundActivity::Idle);
@@ -297,8 +291,7 @@ impl BackgroundLoop {
 
         match built {
             Ok(done) => {
-                // The commit replaces this worker. Do nothing until it does: any step started
-                // now would run against the index the commit is about to close.
+              
                 let cmd = ShardCmd::CommitReindex {
                     done,
                     stats: Arc::clone(&stats),
@@ -367,14 +360,12 @@ impl BackgroundLoop {
         self.store_wait = self.config.interval;
         self.next_store_check = Instant::now() + self.store_wait;
     }
-    /// One embedding round if there is a job, no bulk load is running and the model is free.
-    /// Returns true when it did work.
+    
     fn embed_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
         if self.config.embedding.is_none() {
             return Ok(false);
         }
-        // Counting needs no model: progress is reported while the model loads, fails, or is
-        // busy with another shard.
+       
         let vector_id = self.config.models.default_vector_id();
         let dims = self.config.models.default_model().dims;
         if self
@@ -391,8 +382,7 @@ impl BackgroundLoop {
         let Some(embedder) = self.embedder() else {
             return Ok(false);
         };
-        // Never wait for the model: another shard is embedding, and waiting here would stall
-        // this shard's compaction.
+        
         let Some(mut lease) = embedder.try_lease()? else {
             return Ok(false);
         };
@@ -449,7 +439,7 @@ impl BackgroundLoop {
         let Some(task) = self
             .config
             .embedding
-            .as_ref()
+            .as_mut()
             .expect("checked above")
             .next_graph(&vector_id, dims)?
         else {
@@ -458,12 +448,11 @@ impl BackgroundLoop {
 
         let path = hnsw_file_path(&task.segment, task.xpath);
         let started = Instant::now();
-        // reported as embedding: it is the last stage of making the vectors searchable
+       
         self.config
             .stats
             .set_activity(BackgroundActivity::Embedding);
-        // the builder inserts nodes in parallel; on the background pool it shares the cores
-        // with the other shards' compaction instead of using rayon's global pool
+        
         let built = background_pool()
             .install(|| build_graph_file(&task.file, &path, &GraphBuildParams::default()));
         self.config.stats.set_activity(BackgroundActivity::Idle);
@@ -477,8 +466,7 @@ impl BackgroundLoop {
                         "rows" => task.file.len(),
                         "elapsed_ms" => started.elapsed().as_millis());
                 }
-                // not installed: the vector file changed meanwhile and the stale graph was
-                // removed; the new file is offered again once it is complete
+              
                 Ok(true)
             }
             Ok(false) => {
@@ -501,10 +489,7 @@ impl BackgroundLoop {
         }
     }
 
-    /// Whether embedding waits for a bulk load: the load is still settling into one segment
-    /// (`LsmIndex::settling`: documents arriving, being written, or about to be merged) and it
-    /// brings at least 1/`size_ratio` of this shard's documents, so the shard is embedded once,
-    /// from the merged segment. A trickle of new documents into an embedded shard never waits.
+  
     fn waiting_for_load(&self) -> io::Result<bool> {
         let (Some(compaction), Some(job)) =
             (self.config.compaction, self.config.embedding.as_ref())
@@ -537,10 +522,10 @@ impl BackgroundLoop {
     }
 
     fn measure(&mut self, vector_id: &str, dims: usize) {
-        let job = self
+         let job = self
             .config
             .embedding
-            .as_ref()
+            .as_mut()
             .expect("measure is only called with a job");
         match job.measure(vector_id, dims) {
             Ok((total, done)) => {
@@ -556,19 +541,11 @@ impl BackgroundLoop {
         if let Some(embedder) = &self.embedder {
             return Some(Arc::clone(embedder));
         }
-        if self
-            .last_model_attempt
-            .is_some_and(|attempt| attempt.elapsed() < MODEL_RETRY)
-        {
-            return None;
-        }
-        self.last_model_attempt = Some(Instant::now());
-        match self.config.models.default_embedder() {
-            Ok(embedder) => {
+       
+       
+        match self.config.models.try_get_default() {
+            Ok(Some(embedder)) => {
                 match embedder.cpu_fallback() {
-                    // `embedding-device = "auto"` on a machine with an NVIDIA driver, but CUDA did
-                    // not start (usually a missing CUDA or cuDNN library). The model still works,
-                    // on the CPU, so this is a warning and not an error.
                     Some(reason) => {
                         warn!(self.config.log, "embedding model ready on the CPU; CUDA did not start";
                     "model" => embedder.spec().id,
@@ -581,14 +558,19 @@ impl BackgroundLoop {
                     "instances" => embedder.instances()),
                 }
                 self.config.stats.set_embedding_error(None);
+                self.last_model_error = None;
                 self.embedder = Some(Arc::clone(&embedder));
                 Some(embedder)
             }
+            Ok(None)=>None,
             Err(e) => {
-                warn!(self.config.log, "embedding model unavailable; retrying later"; "error" => %e);
-                self.config
-                    .stats
-                    .set_embedding_error(Some(format!("embedding model unavailable: {e}")));
+                let message = e.to_string();
+                if self.last_model_error.as_deref() != Some(message.as_str()) {
+                    warn!(self.config.log, "embedding model unavailable; retrying later";
+                        "error" => %message);
+                }
+                self.config.stats.set_embedding_error(Some(message.clone()));
+                self.last_model_error = Some(message);
                 None
             }
         }

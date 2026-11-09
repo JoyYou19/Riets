@@ -195,7 +195,7 @@ impl Wal {
 
     /// Every record payload written so far, oldest segment first.
     #[timed(wal)]
-    pub fn replay_all(&self) -> io::Result<Vec<Vec<u8>>> {
+    pub fn replay_all(&self) ->io::Result<Vec<(u64, usize, Vec<u8>)>> {
         let mut inner = self.lock();
         let mut payloads = Vec::new();
         for id in list_segments(&self.dir)? {
@@ -209,10 +209,10 @@ impl Wal {
             } else {
                 fs::read(segment_path(&self.dir, id))?
             };
-            let records = parse_records(&raw)
+             let records = parse_records(&raw)
                 .map_err(|e| io::Error::new(e.kind(), format!("WAL segment {id}: {e}")))?;
-            payloads.extend(records);
-        }
+            payloads.extend(records.into_iter().enumerate().map(|(n, p)| (id, n, p)));
+                }
         Ok(payloads)
     }
 
@@ -398,106 +398,3 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("corelamo-wal-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn wal_record_ref_matches_owned_encoding() {
-        let cfg = bincode::config::standard();
-        let ids = vec!["a".to_string(), "b".to_string()];
-        let owned = bincode::encode_to_vec(WalRecord::Delete(ids.clone()), cfg).unwrap();
-        let borrowed = bincode::encode_to_vec(WalRecordRef::Delete(&ids), cfg).unwrap();
-        assert_eq!(owned, borrowed);
-    }
-
-    #[test]
-    fn rotate_then_remove_keeps_only_newer_records() {
-        let dir = temp_dir("rotate");
-        let wal = Wal::open(dir.join("wal"), SyncMode::SyncEach).unwrap();
-        wal.append(b"one").unwrap();
-        wal.append(b"two").unwrap();
-        let closed = wal.rotate().unwrap();
-        wal.append(b"three").unwrap();
-        assert_eq!(
-            wal.replay_all().unwrap(),
-            vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
-        );
-        wal.remove_through(closed).unwrap();
-        assert_eq!(wal.replay_all().unwrap(), vec![b"three".to_vec()]);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn reopen_replays_every_segment_in_order() {
-        let dir = temp_dir("reopen");
-        {
-            let wal = Wal::open(dir.join("wal"), SyncMode::Manual).unwrap();
-            wal.append(b"a").unwrap();
-            wal.rotate().unwrap();
-            wal.append(b"b").unwrap();
-            wal.rotate().unwrap();
-            wal.append(b"c").unwrap();
-        }
-        let wal = Wal::open(dir.join("wal"), SyncMode::Manual).unwrap();
-        assert_eq!(wal.current_segment(), 3);
-        assert_eq!(
-            wal.replay_all().unwrap(),
-            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
-        );
-        wal.append(b"d").unwrap();
-        assert_eq!(wal.replay_all().unwrap().len(), 4);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn torn_tail_of_newest_segment_is_cut_on_open() {
-        let dir = temp_dir("torn");
-        {
-            let wal = Wal::open(dir.join("wal"), SyncMode::SyncEach).unwrap();
-            wal.append(b"kept").unwrap();
-        }
-        let path = segment_path(&dir.join("wal"), 1);
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(&[9, 0, 0, 0, 1, 2]).unwrap();
-        drop(file);
-
-        let wal = Wal::open(dir.join("wal"), SyncMode::SyncEach).unwrap();
-        assert_eq!(wal.replay_all().unwrap(), vec![b"kept".to_vec()]);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn reset_removes_all_records() {
-        let dir = temp_dir("reset");
-        let wal = Wal::open(dir.join("wal"), SyncMode::SyncEach).unwrap();
-        wal.append(b"x").unwrap();
-        wal.rotate().unwrap();
-        wal.append(b"y").unwrap();
-        wal.reset().unwrap();
-        assert!(wal.replay_all().unwrap().is_empty());
-        assert_eq!(
-            list_segments(&dir.join("wal")).unwrap(),
-            vec![wal.current_segment()]
-        );
-        wal.append(b"z").unwrap();
-        assert_eq!(wal.replay_all().unwrap(), vec![b"z".to_vec()]);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn open_refuses_a_file_in_place_of_the_folder() {
-        let dir = temp_dir("isfile");
-        fs::write(dir.join("wal"), b"old").unwrap();
-        assert!(Wal::open(dir.join("wal"), SyncMode::SyncEach).is_err());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-}

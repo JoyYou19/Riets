@@ -189,10 +189,7 @@ impl IndexWorker {
         })
     }
 
-    pub fn add_indexed_document(&self, document: AnalyzedDocument) -> io::Result<()> {
-        self.add_indexed_documents(vec![document])
-    }
-    /// Sends a batch and returns immediately; call `wait()` on the result later.
+    
     pub fn add_indexed_documents_deferred(
         &self,
         documents: Receiver<Vec<AnalyzedDocument>>,
@@ -240,9 +237,6 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
-    pub fn add_indexed_document_wait(&self, document: AnalyzedDocument) -> io::Result<()> {
-        self.add_indexed_documents_wait(vec![document])
-    }
 
     #[timed(flushing)]
     pub fn flush_wait(&self) -> io::Result<PendingAck> {
@@ -288,6 +282,7 @@ impl IndexWorker {
     }
 
     pub fn install_compaction(&self, completed: CompletedCompaction) -> io::Result<()> {
+
         self.send(IndexCommand::InstallCompaction {
             completed,
             ack: None,
@@ -353,11 +348,6 @@ impl Drop for IndexWorker {
 const PUBLISH_DOC_THRESHOLD: u64 = 100;
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(20);
 
-/// How long the worker may wait for its next command: until the pending documents are due to
-/// be published, or indefinitely (`None`) when nothing is waiting to be published.
-///
-/// Waiting with a zero timeout while idle would make `recv_timeout` return immediately on every
-/// iteration, so an idle worker would spin on a full CPU core.
 fn publish_wait(docs_since_publish: u64, since_last_publish: Duration) -> Option<Duration> {
     (docs_since_publish > 0).then(|| PUBLISH_INTERVAL.saturating_sub(since_last_publish))
 }
@@ -468,7 +458,6 @@ fn run_index_worker(
                 // A compaction thread that stopped waiting must not stop the index worker.
                 let _ = reply.send(plan);
             }
-
             IndexCommand::InstallCompaction { completed, ack } => {
                 let outcome = index.install_compaction(completed);
                 let installed = matches!(&outcome, Ok(true));
@@ -479,6 +468,8 @@ fn run_index_worker(
                     docs_since_publish = 0;
                     last_publish = Instant::now();
                     stats.compactions_completed += 1;
+                    stats.segment_count=index.segment_count();
+                    published_stats.store(Arc::new(stats.clone()));
                 }
             }
             IndexCommand::SegmentCount { ack } => {
@@ -795,7 +786,6 @@ pub enum ReindexStatus {
     Failed,
     Cancelled,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct ReindexingStats {
     pub status: ReindexStatus,

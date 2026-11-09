@@ -518,10 +518,7 @@ impl DbStats {
             },
         }
     }
-}
 
-impl DbStats {
-    /// Whether every shard that embeds has counted its documents and has all their vectors.
     fn vectors_complete(&self) -> bool {
         self.shards.iter().all(|g| {
             !g.embedding_enabled.load(Relaxed)
@@ -530,6 +527,7 @@ impl DbStats {
         })
     }
 }
+
 
 /// What `DbStats::embedding_stats` reports from, summed over the shards.
 struct EmbeddingFigures {
@@ -585,9 +583,7 @@ impl ShardStatsHandle {
             .store(on, Relaxed);
     }
 
-    // ---- background worker ----
-
-    pub fn set_activity(&self, activity: BackgroundActivity) {
+     pub fn set_activity(&self, activity: BackgroundActivity) {
         self.stats.shards[self.index]
             .activity
             .store(activity as u8, Relaxed);
