@@ -12,6 +12,7 @@ pub struct RawToken {
 pub struct Token {
     pub text: String,
     pub position: Position,
+    pub position_length: u32, //for highlighting flattened araays mostly 1 tho
     pub start_byte: usize,
     pub end_byte: usize,
 }

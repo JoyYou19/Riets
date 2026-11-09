@@ -88,6 +88,48 @@ pub fn highlight_text(
     }
 }
 
+use core_index::document::policy::ARRAY_GAP;
+
+//we need to re-analyze flattened arrays cause the position and offsets dont match in them
+pub fn highlight_field_array(
+    texts: &[String],
+    analyzer: &Analyzer,
+    matched: &[&MatchedTerm],
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    let want: HashSet<u32> = matched
+        .iter()
+        .flat_map(|m| m.positions.iter().map(|&p| position_start(p)))
+        .collect();
+    if want.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut base = 0u32;
+    for text in texts {
+        let (filtered, tokens) = analyzer.analyze_text(text);
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut span = 0u32;
+        for token in &tokens {
+            if want.contains(&(base + token.position)) {
+                ranges.push((token.start_byte, token.end_byte));
+            }
+            span = span.max(token.position + token.position_length.max(1));
+        }
+        if !ranges.is_empty() {
+            let ranges = merge_ranges(ranges);
+            if opts.sentence {
+                out.extend(fragments_by_sentence(&filtered, &ranges, opts));
+            } else {
+                out.extend(fragments_by_chars(&filtered, &ranges, opts));
+            }
+        }
+        base += span + ARRAY_GAP;
+    }
+    out
+}
+
 /// Builds highlighted fragments for one field value from the spans that matched.
 /// Fast path (offsets stored) wraps byte spans on `text` directly; slow path
 /// (char-filtered field, no offsets) re-analyzes and maps positions to spans on the

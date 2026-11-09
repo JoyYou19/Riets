@@ -267,6 +267,7 @@ impl Analyzer {
                 output.push(Token {
                     text: token.text.clone(),
                     position: token.position as u32,
+                    position_length: token.position_length as u32,
                     start_byte: token.offset_from,
                     end_byte: token.offset_to,
                 });

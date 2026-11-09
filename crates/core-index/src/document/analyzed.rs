@@ -54,6 +54,7 @@ impl IndexedDocument {
                 &self.parts,
                 &self.numeric_points,
                 &self.bool_points,
+                false,
             ),
             array_rows: self
                 .array_rows
@@ -66,6 +67,7 @@ impl IndexedDocument {
                         &row.parts,
                         &row.numeric_points,
                         &row.bool_points,
+                        true,
                     ),
                 })
                 .collect(),
@@ -78,11 +80,12 @@ fn analyze_target(
     parts: &[DocumentPart],
     numeric_points: &[NumericPoint],
     bool_points: &[BoolPoint],
+    is_row_keyed: bool,
 ) -> AnalyzedTarget {
     AnalyzedTarget {
         fields: parts
             .iter()
-            .map(|part| add_weighted(analyzers, part))
+            .map(|part| add_weighted(analyzers, part, is_row_keyed))
             .collect(),
         numeric_points: numeric_points.to_vec(),
         bool_points: bool_points.to_vec(),
@@ -90,7 +93,7 @@ fn analyze_target(
 }
 
 //Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
-fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
+fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool) -> AnalyzedField {
     let field_analyzer = part
         .analyzer
         .as_deref()
@@ -105,7 +108,7 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
     let gap = if part.is_flattened() { part.gap } else { 0 };
 
     //when no char filters
-    let store_offsets = !field_analyzer.has_char_filters();
+    let store_offsets = !field_analyzer.has_char_filters() && !is_row_keyed;
 
     let mut occurrences: AHashMap<String, (Vec<u32>, Vec<(u32, u32)>)> = AHashMap::new();
     let mut total_words_len = 0u32;

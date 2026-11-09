@@ -32,6 +32,7 @@ impl WeightInterval {
     }
 }
 
+//TODO: make configurable?
 pub const ARRAY_GAP: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

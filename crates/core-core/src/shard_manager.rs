@@ -27,7 +27,7 @@ use core_query::dictionary::{
     DATABASE_FILE_NAME, DictionaryDocument, SynonymManager, SynonymRegistry,
 };
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
-use core_query::highlight::{field_texts, highlight_field};
+use core_query::highlight::{field_texts, highlight_field, highlight_field_array};
 use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
     FieldQuery, QueryGroup, compile_query, field_analyzer, is_blank_query, parse_fuzziness,
@@ -2265,7 +2265,7 @@ impl ShardManager {
         more: bool,
         command: &SearchCommand,
         policy: &IndexPolicy,
-        highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions)>>,
+        highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
         groups: Arc<Vec<QueryGroup>>,
         prepared: &[Arc<PreparedShardSearch>],
         corpus: Option<Arc<CorpusStats>>,
@@ -2389,19 +2389,31 @@ impl ShardManager {
                                 Err(_) => continue,
                             },
                         };
-                        for (xpath, full_path, analyzer, opts) in &fields {
+                        for (xpath, full_path, analyzer, opts, flattened, row_keyed) in &fields {
                             let field_matches: Vec<&MatchedTerm> =
                                 matched.iter().filter(|m| m.xpath == *xpath).collect();
                             if field_matches.is_empty() {
                                 continue;
                             }
-                            for text in field_texts(&value, full_path) {
-                                highlights.extend(highlight_field(
-                                    &text,
+                            if *flattened {
+                                let texts = field_texts(&value, full_path);
+                                highlights.extend(highlight_field_array(
+                                    &texts,
                                     analyzer,
                                     &field_matches,
                                     opts,
                                 ));
+                            } else if *row_keyed {
+                                //TODO: nested arrays a bit later
+                            } else {
+                                for text in field_texts(&value, full_path) {
+                                    highlights.extend(highlight_field(
+                                        &text,
+                                        analyzer,
+                                        &field_matches,
+                                        opts,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -2666,6 +2678,7 @@ struct PageRequest {
 }
 
 /// Everything a search decides before it asks a shard anything.
+/// holly porno
 struct CompiledSearch {
     policy: IndexPolicy,
     groups: Arc<Vec<QueryGroup>>,
@@ -2673,7 +2686,8 @@ struct CompiledSearch {
     sorts: Option<ResolvedSort>,
     sort_xpaths: Option<Arc<Vec<XPathId>>>,
     semantic: Option<(String, Vec<XPathId>)>,
-    highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions)>>,
+    //the bools are anything related to arrays
+    highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
     plans_full: Arc<Vec<RankPlan>>,
     plans_no_fuzzy: Arc<Vec<RankPlan>>,
     match_mode: MatchMode,
@@ -2740,7 +2754,10 @@ fn highlight_request(
     command: &SearchCommand,
     policy: &IndexPolicy,
     analyzers: &AnalyzerSet,
-) -> Result<Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions)>>, CorelamoError> {
+) -> Result<
+    Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
+    CorelamoError,
+> {
     let Some(cmd) = &command.highlight else {
         return Ok(None);
     };
@@ -2751,7 +2768,16 @@ fn highlight_request(
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
         let xpath = field.xpath(policy);
         let analyzer = field_analyzer(field, analyzers).clone();
-        fields.push((xpath, field.full_path.clone(), analyzer, opts.clone()));
+        let flattened = field.repeated;
+        let row_keyed = field.row_keyed;
+        fields.push((
+            xpath,
+            field.full_path.clone(),
+            analyzer,
+            opts.clone(),
+            flattened,
+            row_keyed,
+        ));
     }
     Ok(Some(fields))
 }
