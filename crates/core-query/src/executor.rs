@@ -677,12 +677,13 @@ where
                     self.collect_phrase(terms, doc_id, ctx.xpath, out);
                 }
             }
+
             // WARN: fuzzy is the one leaf that re-runs per doc. Cuz PreparedQuery caches the fuzzy
             // candidates, but not the fuzzy union, i was told that this optimization migh bee
             // negligable, we can cache it if needed - norca
-            Query::Fuzzy(v, fz, spec) => {
+            Query::Fuzzy(raw, fuzziness, fuzzy_spec) => {
                 for &ctx in ctxs {
-                    let list = self.execute_fuzzy(v, ctx.xpath, *fz, *spec);
+                    let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
                     self.push_leaf_matches(&list, doc_id, ctx.xpath, out);
                 }
             }
@@ -712,6 +713,8 @@ where
     ) {
         if let Some(p) = Self::posting_for(list, doc_id) {
             if !p.positions.is_empty() {
+                //offsets migh be empty here, the re-analyzing and all the magic happens later in
+                //highlight.rs
                 out.push(MatchedTerm {
                     xpath,
                     positions: p.positions.to_vec(),

@@ -341,6 +341,7 @@ impl ShardHandle {
         }
         Ok(per_word)
     }
+
     /// Pins the snapshot the search reads and reads the query from it once: the posting lists
     /// ranking needs, and from them what this shard adds to the statistics of the search.
     //INFO:  changed to &[querygroup]
@@ -748,22 +749,25 @@ impl ShardHandle {
             // the fuzzy (and other tier) queries live in the plan, not in group.query
             let tier_queries: Vec<&Query> = plan
                 .queries()
-                .filter(|q| Some(*q) != group.query.as_ref())
+                .filter(|quer| Some(*quer) != group.query.as_ref())
                 .collect();
 
             for (i, hit) in hits.iter().enumerate() {
-                let mut m = executor.matched_terms(query, hit.doc_id, &group.ctxs);
-                for tq in &tier_queries {
-                    m.extend(executor.matched_terms(tq, hit.doc_id, &group.ctxs));
+                //all tiers
+                let mut matches = executor.matched_terms(query, hit.doc_id, &group.ctxs);
+                //matches from typos or missing shit
+                for tier_query in &tier_queries {
+                    matches.extend(executor.matched_terms(tier_query, hit.doc_id, &group.ctxs));
                 }
-                if !m.is_empty() {
-                    out[i].extend(m);
+                if !matches.is_empty() {
+                    out[i].extend(matches);
                 }
             }
         }
 
         out
     }
+
     pub(crate) fn send_raw(&self, cmd: ShardCmd) -> Result<(), (CorelamoError, ShardCmd)> {
         self.tx.send(cmd).map_err(|e| (self.dead(), e.0))
     }

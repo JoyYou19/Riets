@@ -1293,6 +1293,7 @@ impl ShardManager {
                 .search_vectors_only(command, request, page.fetch, page.offset, page.limit)
                 .await;
         }
+
         let search = self.compile_search(command, page)?;
         let stats = self.collect_statistics(&search, &command.query).await?;
 
@@ -1351,7 +1352,7 @@ impl ShardManager {
         Ok((docs, total, suggestion))
     }
 
-    /// Turns the request into analyzed queries, filters, sorts, highlighting and rank plans.
+    //Turns the request into analyzed queries, filters, sorts, highlighting and rank plans.
     fn compile_search(
         &self,
         command: &SearchCommand,
