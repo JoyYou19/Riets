@@ -33,8 +33,7 @@ use core_query::highlight::{
 };
 use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
-    FieldQuery, QueryGroup, compile_query, field_analyzer, is_blank_query, parse_fuzziness,
-    resolve_suggest_xpaths,
+    FieldQuery, QueryGroup, compile_query, field_analyzer, parse_fuzziness, resolve_suggest_xpaths,
 };
 use core_query::{CorpusStats, MatchedTerm, SearchHit, rank_order};
 use core_storage::document_projections::id_path_to_strip;
