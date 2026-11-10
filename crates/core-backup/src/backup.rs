@@ -1,5 +1,4 @@
 use crate::progress::BackupProgress;
-use core_logs::logger;
 use core_storage::binary_store::BinaryDocumentStore;
 use core_timing::timed;
 use flate2::Compression;
@@ -115,15 +114,14 @@ impl BackupManager {
     }
     #[timed(database_lifecycle)]
     pub fn new(
-        shard_root: &Path,
         backup_dir: PathBuf,
         shard_name: String,
         last_segment_id: u32,
-        last_segment_offset: u64
+        last_segment_offset: u64,
+        log:Logger
     ) -> Self {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
-        let name = shard_name.clone();
-        let log = logger::shard_logger(shard_root, &name);
+      
 
         let (last_segment_id, last_segment_offset, last_backup_id) = if
             let Ok(state) = fs::read_to_string(&state_path)
