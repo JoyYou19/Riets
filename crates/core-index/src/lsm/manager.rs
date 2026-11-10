@@ -43,11 +43,11 @@ pub struct LsmIndex {
     next_segment_id: u64,
     next_doc_id: DocId,
     next_compaction_job_id: u64,
-    max_array_row: ArrayRowId, 
+    max_array_row: ArrayRowId,
     last_ingest: Option<Instant>,
     vectors: Arc<Vec<SegmentVectors>>,
-    lost_segments:Vec<PathBuf>,
-    removed_leftovers:Vec<PathBuf>
+    lost_segments: Vec<PathBuf>,
+    removed_leftovers: Vec<PathBuf>,
 }
 
 pub struct FlushJob {
@@ -70,7 +70,6 @@ impl FlushJob {
         DiskSegment::open(&self.path).map_err(with_path)
     }
 }
-
 
 struct PendingFlush {
     seq: u64,
@@ -125,12 +124,10 @@ impl FlushQueue {
         }
     }
 
-  
     fn flushed_through(&self) -> u64 {
         self.next_seq - (self.pending.len() as u64)
     }
 
-  
     fn writes_in_flight(&self) -> bool {
         self.pending.len() > self.made_not_flushed.len()
     }
@@ -227,7 +224,7 @@ impl SearchNumeric for LsmIndex {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
+    ) -> RoaringTreemap {
         self.snapshot().numeric_range(xpath, lo, hi)
     }
 
@@ -278,8 +275,8 @@ impl LsmIndex {
             max_array_row: ArrayRowId::from_raw(0),
             last_ingest: None,
             vectors: Arc::new(Vec::new()),
-            lost_segments:Vec::new(),
-            removed_leftovers:Vec::new()
+            lost_segments: Vec::new(),
+            removed_leftovers: Vec::new(),
         }
     }
 
@@ -300,7 +297,7 @@ impl LsmIndex {
         // let mut deleted_generation=
         let mut vectors: Vec<SegmentVectors> = Vec::new();
         for path in segment_paths {
-           let disk = match DiskSegment::open(&path) {
+            let disk = match DiskSegment::open(&path) {
                 Ok(disk) => disk,
                 // derived data: start without it, a reindex rebuilds it from the store
                 Err(e)
@@ -367,7 +364,7 @@ impl LsmIndex {
             query_segments.push(disk);
         }
 
-       Ok(Self {
+        Ok(Self {
             mem: MemIndex::new(),
             generations: Vec::new(),
             segment_handles,
@@ -617,7 +614,7 @@ impl LsmIndex {
     pub fn flush_health(&self) -> io::Result<()> {
         self.flush_queue.health()
     }
- 
+
     #[timed(indexing_documents)]
     pub fn add_immutable_segment(&mut self, segments: Vec<ImmutableSegment>) -> io::Result<()> {
         self.last_ingest = Some(Instant::now());
@@ -646,7 +643,7 @@ impl LsmIndex {
     pub fn segment_count(&self) -> usize {
         self.segment_handles.len()
     }
-     pub fn lost_segments(&self) -> &[PathBuf] {
+    pub fn lost_segments(&self) -> &[PathBuf] {
         &self.lost_segments
     }
 
@@ -810,8 +807,7 @@ impl LsmIndex {
                 end += 1;
             }
 
-            if end - start >= min_width
-                && best.is_none_or(|(_, _, best_total)| total < best_total)
+            if end - start >= min_width && best.is_none_or(|(_, _, best_total)| total < best_total)
             {
                 best = Some((start, end, total));
             }

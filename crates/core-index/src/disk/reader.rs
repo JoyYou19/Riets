@@ -65,13 +65,8 @@ impl SearchNumeric for DiskSegment {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
-        let docs = self.numeric_fields.range(xpath, lo, hi);
-        PostingList::from_items(
-            docs.into_iter()
-                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
-        )
+    ) -> RoaringTreemap {
+        self.numeric_fields.range(xpath, lo, hi)
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {

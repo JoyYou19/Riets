@@ -614,7 +614,7 @@ where
             Query::Range(r) => {
                 let mut out = HashSet::new();
                 for &ctx in ctxs {
-                    out.extend(self.posting_ids(&self.index.numeric_range(ctx.xpath, r.lo, r.hi)));
+                    out.extend(self.index.numeric_range(ctx.xpath, r.lo, r.hi));
                 }
                 EvalOutcome::Docs(out)
             }

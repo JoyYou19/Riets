@@ -35,8 +35,7 @@ impl SearchIndex for ImmutableSegment {
     }
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
-        self.lookup(term, xpath)
-            .map_or(0, |list| list.len() as u32)
+        self.lookup(term, xpath).map_or(0, |list| list.len() as u32)
     }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.terms
@@ -103,13 +102,8 @@ impl SearchNumeric for ImmutableSegment {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
-        let docs = self.numeric_fields.range(xpath, lo, hi);
-        PostingList::from_items(
-            docs.into_iter()
-                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
-        )
+    ) -> RoaringTreemap {
+        self.numeric_fields.range(xpath, lo, hi)
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -127,15 +121,11 @@ impl SearchStats for ImmutableSegment {
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.doc_count)
+        self.field_stats.get(&xpath).map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.total_doc_len)
+        self.field_stats.get(&xpath).map_or(0, |s| s.total_doc_len)
     }
 
     fn doc_range(&self) -> Option<(DocId, DocId)> {

@@ -131,7 +131,7 @@ pub trait SearchNumeric {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList;
+    ) -> RoaringTreemap;
 
     //quick docid+xpath->numeric_value
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue>;

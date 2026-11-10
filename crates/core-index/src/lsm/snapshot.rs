@@ -169,16 +169,13 @@ impl SearchNumeric for IndexSnapshot {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
-        let mut lists = Vec::new();
-
-        lists.push(self.mem.numeric_range(xpath, lo, hi));
-
+    ) -> RoaringTreemap {
+        let mut out = self.mem.numeric_range(xpath, lo, hi);
         for segment in self.segments.iter() {
-            lists.push(segment.numeric_range(xpath, lo, hi));
+            out |= segment.numeric_range(xpath, lo, hi);
         }
-
-        self.apply_deletes(union_many(lists.iter()))
+        self.deleted.remove_from(&mut out);
+        out
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {

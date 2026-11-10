@@ -158,13 +158,8 @@ impl SearchNumeric for MemIndex {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
-        let docs = self.numeric_points.range(xpath, lo, hi);
-        PostingList::from_items(
-            docs.into_iter()
-                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
-        )
+    ) -> RoaringTreemap {
+        self.numeric_points.range(xpath, lo, hi)
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -182,15 +177,11 @@ impl SearchStats for MemIndex {
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.doc_count)
+        self.field_stats.get(&xpath).map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.total_doc_len)
+        self.field_stats.get(&xpath).map_or(0, |s| s.total_doc_len)
     }
     fn doc_range(&self) -> Option<(DocId, DocId)> {
         self.doc_id_range()
