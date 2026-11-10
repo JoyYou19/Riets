@@ -498,11 +498,7 @@ fn run_index_worker(
                 }
                 release_flush_waiters(&mut flush_waiters, &index)?;
             }
-            IndexCommand::Shutdown => {
-                index.flush()?;
-                shared.publish(index.publish_snapshot());
-                return Ok(index);
-            }
+            IndexCommand::Shutdown => break,
             IndexCommand::GetStats { reply } => {
                 stats.segment_count = index.segment_count();
                 stats.memtable_term_count = index.memtable_term_count();

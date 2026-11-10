@@ -267,6 +267,7 @@ impl BackgroundLoop {
     fn run_reindex(&mut self, task: ReindexTask, stop: &AtomicBool) {
         let ReindexTask {
             params,
+            store,
             progress,
             stats,
         } = task;
@@ -282,7 +283,7 @@ impl BackgroundLoop {
             .set_activity(BackgroundActivity::Reindexing);
 
        
-        let built = build_staging_index(&params, &progress, &stats);
+        let built = build_staging_index(&params, store,&progress, &stats);
 
         self.config.stats.set_activity(BackgroundActivity::Idle);
         if let Ok(mut current) = self.current.lock() {

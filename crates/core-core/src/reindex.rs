@@ -1,4 +1,4 @@
-use std::io;
+use std::{fs, io};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use core_index::lsm::LsmIndex;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_storage::binary_store::BinaryDocumentStore;
+use core_storage::binary_store::StoreSnapshot;
 use core_storage::search_database::SearchDatabase;
 use core_timing::timed;
 
@@ -37,25 +37,31 @@ pub struct CompletedShardReindex {
 }
 pub struct ReindexTask {
     pub params: ReindexParams,
+    pub store:StoreSnapshot,
     pub progress: Arc<ReindexProgress>,
     pub stats: Arc<DbStats>,
 }
-
+pub(crate) const REINDEX_COMPLETE:&str = "REINDEX_COMPELTE";
+fn mark_complete(dir:&Path)->io::Result<()>{
+    fs::File::create(dir.join(REINDEX_COMPLETE))?.sync_all()?;
+    fs::File::open(dir)?.sync_all()
+}
 /// Builds a fresh index into index.new. Reads the shard's document store but
 /// touches nothing the shard thread owns.
 #[timed(reindex)]
 pub(crate) fn build_staging_index(
     params: &ReindexParams,
+    store:StoreSnapshot,
     progress: &ReindexProgress,
     _stats: &DbStats,
 ) -> Result<CompletedShardReindex, CorelamoError> {
     let staging_root = params.shard_root.join("index.new");
     if staging_root.exists() {
-        std::fs::remove_dir_all(&staging_root)?;
+        fs::remove_dir_all(&staging_root)?;
     }
-    std::fs::create_dir_all(&staging_root)?;
+    fs::create_dir_all(&staging_root)?;
 
-    let store = BinaryDocumentStore::open(params.shard_root.join("documents"))?;
+    
     let index = LsmIndex::persistent(&staging_root, params.options.runtime.flush_threshold)?;
     let mut staging = SearchDatabase::with_shard_policy(
         store,
@@ -85,6 +91,7 @@ pub(crate) fn build_staging_index(
             params.shard_id
         );
     }
+    mark_complete(&staging_root)?;
     Ok(CompletedShardReindex {
         shard_id: params.shard_id,
         staging_root,
@@ -176,7 +183,7 @@ fn write_carried(
 /// `segment-N.idx` files of an index directory, by name.
 fn segment_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
-    for entry in std::fs::read_dir(root)? {
+    for entry in fs::read_dir(root)? {
         let path = entry?.path();
         let is_segment = path
             .file_name()
