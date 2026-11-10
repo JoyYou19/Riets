@@ -94,12 +94,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             return false;
         };
 
-        let hashed = match Argon2::default().hash_password(hashed.as_bytes()) {
-            Ok(hash) => hash.to_string(),
-            Err(_) => {
-                return false;
-            }
-        };
+       
         self.put_user(username, hashed, &roles).is_ok()
     }
 

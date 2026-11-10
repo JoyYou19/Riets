@@ -134,7 +134,7 @@ impl BackupManager {
                     .as_u64()
                     .unwrap_or(u64::from(last_segment_id)) as u32;
                 let offset = parsed["last_segment_offset"].as_u64().unwrap_or(0);
-                let id = parsed["last_backup_id"].as_str().map(std::string::ToString::to_string);
+                let id = parsed["last_backup_id"].as_str().map(ToString::to_string);
                 (segment, offset, id)
             } else {
                 (last_segment_id, last_segment_offset, None)
@@ -146,7 +146,7 @@ impl BackupManager {
                 .ok()
                 .into_iter()
                 .flatten()
-                .filter_map(std::result::Result::ok)
+                .filter_map(Result::ok)
                 .filter_map(|e| {
                     let manifest_path = e.path().join(&shard_name).join("manifest.json");
                     let text = fs::read_to_string(&manifest_path).ok()?;
@@ -546,7 +546,7 @@ impl BackupManager {
         // Collect every backup on disk.
         let all_manifests: Vec<BackupManifest> = fs
             ::read_dir(&self.backup_dir)?
-            .filter_map(std::result::Result::ok)
+            .filter_map(Result::ok)
             .filter_map(|e| {
                 let manifest_path = e.path().join(&self.shard_name).join("manifest.json");
                 let text = fs::read_to_string(&manifest_path).ok()?;
@@ -586,7 +586,7 @@ impl BackupManager {
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, BackupError> {
         let mut all: Vec<BackupManifest> = fs
             ::read_dir(&self.backup_dir)?
-            .filter_map(std::result::Result::ok)
+            .filter_map(Result::ok)
             .filter_map(|e| {
                 let text = fs
                     ::read_to_string(e.path().join(&self.shard_name).join("manifest.json"))
@@ -686,7 +686,7 @@ fn tar_dir(
     let mut builder = tar::Builder::new(writer);
     builder.append_dir_all(entry_name, src)?;
     let writer = builder.into_inner()?; // tar end-of-archive blocks
-    let encoder = writer.inner.into_inner().map_err(std::io::IntoInnerError::into_error)?; // buffered bytes
+    let encoder = writer.inner.into_inner().map_err(io::IntoInnerError::into_error)?; // buffered bytes
     let file = encoder.finish()?; // gzip trailer
     file.sync_all()
 }

@@ -2440,6 +2440,7 @@ impl ShardManager {
                                 }
                             }
                         }
+                    }
                     hit.highlights = highlights;
                 }
                 resolved
