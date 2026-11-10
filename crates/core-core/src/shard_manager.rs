@@ -1375,16 +1375,20 @@ impl ShardManager {
             )?;
             (groups, compile_filters(&analyzers, command, &policy)?)
         };
+
         let sorts = resolve_sorts(command, &policy)?;
         let strict_sort = sorts
             .as_ref()
             .is_some_and(|s| matches!(s.mode, SortMode::Strict));
+
         let semantic = self.semantic_fields(&command.query, command, &policy, strict_sort);
+
         let word_fetch = if semantic.is_some() {
             page.fetch.max(FUSION_DEPTH)
         } else {
             page.fetch
         };
+
         let window = page.fetch.saturating_mul(50).clamp(1000, 5_000);
         let (plans_full, plans_no_fuzzy) = Self::build_plans(
             &command.query,
@@ -2762,6 +2766,7 @@ fn requested_page(command: &SearchCommand) -> Result<Option<PageRequest>, Corela
             "docs may be at most {MAX_RESULTS_SIZE}, got {limit}"
         )));
     }
+
     let offset = command.offset.unwrap_or(0);
     let fetch = offset.saturating_add(limit);
     Ok((fetch > 0).then_some(PageRequest {
