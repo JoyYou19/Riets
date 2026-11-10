@@ -62,11 +62,12 @@ fn format_unknown_field(err_str: &str) -> Option<String> {
         if let Some(best_match) = expected_fields
             .iter()
             .min_by_key(|field| levenshtein(bad_field, field))
-            && levenshtein(bad_field, best_match) <= 3 {
-                return Some(format!(
-                    "Unknown field '{bad_field}'. Did you mean '{best_match}'?"
-                ));
-            }
+            && levenshtein(bad_field, best_match) <= 3
+        {
+            return Some(format!(
+                "Unknown field '{bad_field}'. Did you mean '{best_match}'?"
+            ));
+        }
     }
 
     Some(format!("Unknown field '{bad_field}'."))
@@ -103,6 +104,7 @@ pub trait ResponseData {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SearchCommand {
+    #[serde(default = "blank_query")]
     pub query: OwnedValue,
     pub filters: Option<IndexMap<String, OwnedValue>>,
     pub search_fields: Option<Vec<String>>,
@@ -120,6 +122,10 @@ pub struct SearchCommand {
     /// false: never.
     #[serde(default)]
     pub semantic: Option<bool>,
+}
+
+fn blank_query() -> OwnedValue {
+    OwnedValue::String(String::new())
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

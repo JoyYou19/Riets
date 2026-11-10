@@ -58,7 +58,7 @@ struct UpdateRolesRequest {
 
 fn require_body(body: &str) -> Result<&str, CorelamoError> {
     let trimmed = body.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed == "{}" {
         Err(CorelamoError::InvalidData(
             "request body is empty".to_string(),
         ))
@@ -147,7 +147,9 @@ pub(crate) async fn list_users_handler(
 
     let auth = Arc::clone(&state.auth);
     let listed = tokio::task::spawn_blocking(move || {
-        let auth = auth.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let auth = auth
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.list_users()
     })
     .await;
@@ -210,10 +212,11 @@ pub(crate) async fn create_user_handler(
     let auth = Arc::clone(&state.auth);
     let username = req.username.clone();
     let created = tokio::task::spawn_blocking(move || {
-       
         let hash = hash_password(&req.password)?;
-       
-        let mut auth = auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let mut auth = auth
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.create_user(&principal, &req.username, hash, req.roles)
     })
     .await;
@@ -229,9 +232,6 @@ pub(crate) async fn create_user_handler(
     }
 }
 
-   
-
-
 pub(crate) async fn delete_user_handler(
     State(state): State<AppState>,
     Path(username): Path<String>,
@@ -241,7 +241,10 @@ pub(crate) async fn delete_user_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let mut auth = state.auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut auth = state
+        .auth
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match auth.delete_user(&principal, &username) {
         Ok(()) => HttpOk::new(format!("user '{username}' deleted"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -261,10 +264,11 @@ pub(crate) async fn update_user_password_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-     if principal.id.0 != username
-        && let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd) {
-            return HttpError::from_corelamo(e, &ctx).into_response();
-        }
+    if principal.id.0 != username
+        && let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd)
+    {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
     let mut buf = body.as_bytes().to_vec();
     let req: UpdatePasswordRequest = match simd_json::from_slice(&mut buf) {
         Ok(r) => r,
@@ -284,7 +288,9 @@ pub(crate) async fn update_user_password_handler(
         let hash = hash_password(&req.password)?;
         // short: the write lock only covers the store update; update_user_password checks
         // the permission again, since it may have changed while hashing
-        let mut auth = auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut auth = auth
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.update_user_password(&principal, &target, hash)
     })
     .await;
@@ -300,7 +306,6 @@ pub(crate) async fn update_user_password_handler(
         )
         .into_response(),
     }
-
 }
 
 pub(crate) async fn update_user_roles_handler(
@@ -332,7 +337,10 @@ pub(crate) async fn update_user_roles_handler(
         }
     };
 
-    let mut auth = state.auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut auth = state
+        .auth
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match auth.update_user_roles(&principal, &username, req.roles) {
         Ok(()) => HttpOk::new(format!("roles updated for '{username}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
