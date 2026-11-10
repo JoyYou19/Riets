@@ -1,5 +1,5 @@
-use ahash::HashSet;
 use core_timing::timed;
+use roaring::RoaringTreemap;
 
 use crate::{
     posting::{Posting, PostingList},
@@ -10,7 +10,7 @@ use crate::{
 // this means it won't apear in any queries, and won't be saved to the disk
 #[derive(Debug, Default, Clone)]
 pub struct DeleteSet {
-    deleted: HashSet<DocId>,
+    deleted: RoaringTreemap,
 }
 
 impl DeleteSet {
@@ -27,7 +27,7 @@ impl DeleteSet {
     }
 
     pub fn is_deleted(&self, doc_id: DocId) -> bool {
-        self.deleted.contains(&doc_id)
+        self.deleted.contains(doc_id)
     }
 
     pub fn filter_in_place(&self, list: &mut PostingList) {
@@ -53,9 +53,18 @@ impl DeleteSet {
     }
 
     pub fn contains(&self, doc_id: DocId) -> bool {
-        self.deleted.contains(&doc_id)
+        self.deleted.contains(doc_id)
     }
+
     pub fn iter(&self) -> impl Iterator<Item = DocId> + '_ {
-        self.deleted.iter().copied()
+        self.deleted.iter()
+    }
+
+    /// Removes every deleted doc id from `bitset` in one bulk pass.
+    pub fn remove_from(&self, bitset: &mut RoaringTreemap) {
+        if self.is_empty() {
+            return;
+        }
+        *bitset -= &self.deleted;
     }
 }

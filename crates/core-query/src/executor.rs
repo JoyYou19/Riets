@@ -230,10 +230,13 @@ where
     #[timed(search)]
     fn fetch_term_list(&self, term: &str, xpath: XPathId) -> (Cow<'a, PostingList>, u32) {
         let key = LeafKey::Term(term.to_string());
-        let (postings, local_doc_freq) = if let Some(list) = self.prepared.and_then(|p| p.list(xpath, &key)) { (Cow::Borrowed(list), list.len() as u32) } else {
-            let found = self.index.lookup_term(term, xpath);
-            (Cow::Owned(found.postings), found.doc_freq)
-        };
+        let (postings, local_doc_freq) =
+            if let Some(list) = self.prepared.and_then(|p| p.list(xpath, &key)) {
+                (Cow::Borrowed(list), list.len() as u32)
+            } else {
+                let found = self.index.lookup_term(term, xpath);
+                (Cow::Owned(found.postings), found.doc_freq)
+            };
         let doc_freq = self.leaf_doc_freq(xpath, &key, local_doc_freq as usize);
         (postings, doc_freq)
     }
@@ -258,22 +261,23 @@ where
 
         //conjunctive flat-term case (And) -> conjunctive top-k
         if let Query::And(parts) = query
-            && parts.iter().all(|p| matches!(p, Query::Term(_))) {
-                let terms: Vec<&str> = parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        Query::Term(t) => Some(t.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                let lists = self.fetch_field_lists(&terms, xpaths);
-                return Some(conjunctive_top_k_multi_field(
-                    &self.stats(),
-                    &field_terms(&lists),
-                    k,
-                    restrict,
-                ));
-            }
+            && parts.iter().all(|p| matches!(p, Query::Term(_)))
+        {
+            let terms: Vec<&str> = parts
+                .iter()
+                .filter_map(|p| match p {
+                    Query::Term(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let lists = self.fetch_field_lists(&terms, xpaths);
+            return Some(conjunctive_top_k_multi_field(
+                &self.stats(),
+                &field_terms(&lists),
+                k,
+                restrict,
+            ));
+        }
 
         None
     }
@@ -1146,7 +1150,10 @@ where
                             Some(cur) => cur.intersection(&docs).copied().collect(),
                             None => docs,
                         });
-                        if candidates.as_ref().is_some_and(std::collections::HashSet::is_empty) {
+                        if candidates
+                            .as_ref()
+                            .is_some_and(std::collections::HashSet::is_empty)
+                        {
                             return EvalOutcome::Docs(HashSet::new());
                         }
                     }
@@ -1349,7 +1356,10 @@ where
                 Some(cur) => cur.intersection(&matched).copied().collect(),
                 None => matched,
             });
-            if restrict.as_ref().is_some_and(std::collections::HashSet::is_empty) {
+            if restrict
+                .as_ref()
+                .is_some_and(std::collections::HashSet::is_empty)
+            {
                 return restrict;
             }
         }
@@ -1365,7 +1375,10 @@ where
         restrict: Option<&HashSet<DocId>>,
         match_mode: MatchMode, // plan: RankPlan
     ) -> Vec<SearchHit> {
-        if k == 0 || restrict.is_some_and(std::collections::HashSet::is_empty) || self.index.doc_range().is_none() {
+        if k == 0
+            || restrict.is_some_and(std::collections::HashSet::is_empty)
+            || self.index.doc_range().is_none()
+        {
             return Vec::new();
         }
 
@@ -1483,9 +1496,9 @@ where
                 if ctxs.iter().all(|ctx| !ctx.row_keyed)
                     && let Some(hits) =
                         self.execute_grouped_retrieval(query, ctxs, k, restrict, true, None)
-                    {
-                        return hits.into_iter().map(wand_hit_to_search_hit).collect();
-                    }
+                {
+                    return hits.into_iter().map(wand_hit_to_search_hit).collect();
+                }
                 return top_k_from_hits(self.cross_field_hits(query, ctxs, restrict), k);
             }
         }
@@ -2197,20 +2210,21 @@ where
         by_doc: &mut HashMap<DocId, SearchHit>,
     ) {
         if !ctx.row_keyed
-            && let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
-                for h in hits {
-                    let hit = wand_hit_to_search_hit(h);
-                    by_doc
-                        .entry(hit.doc_id)
-                        .and_modify(|e| {
-                            e.score += hit.score;
-                            e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                            e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                        })
-                        .or_insert(hit);
-                }
-                return;
+            && let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict)
+        {
+            for h in hits {
+                let hit = wand_hit_to_search_hit(h);
+                by_doc
+                    .entry(hit.doc_id)
+                    .and_modify(|e| {
+                        e.score += hit.score;
+                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                    })
+                    .or_insert(hit);
             }
+            return;
+        }
 
         let EvalOutcome::Scored(scored) = self.evaluate(query, &[ctx], EvalMode::Rank) else {
             return;

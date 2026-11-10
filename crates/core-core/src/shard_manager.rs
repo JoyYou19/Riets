@@ -881,7 +881,6 @@ impl ShardManager {
             ));
         }
         policy.resolve(&self.root)?;
-       
 
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -926,7 +925,8 @@ impl ShardManager {
         *self.policy.write() = policy;
         self.update_all_fields_from_policy()?;
 
-        Ok(changed.then(|| "policy changed; reindex required to apply to existing documents".to_string()))
+        Ok(changed
+            .then(|| "policy changed; reindex required to apply to existing documents".to_string()))
     }
 
     #[timed(database_lifecycle)]
@@ -945,8 +945,6 @@ impl ShardManager {
             .search
             .validate()
             .map_err(CorelamoError::InvalidData)?;
-        
-        
 
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -981,7 +979,7 @@ impl ShardManager {
                 .err()
                 .map(CorelamoError::from),
         };
-        
+
         if let Some(e) = failure {
             for handle in &self.shards {
                 let _ = handle.set_config(previous.clone(), user.clone()).await;

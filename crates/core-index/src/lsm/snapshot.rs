@@ -240,9 +240,10 @@ impl SearchStats for IndexSnapshot {
         }
         for segment in self.segments.iter().rev() {
             if let Some((lo, hi)) = segment.doc_range()
-                && (doc_id < lo || doc_id > hi) {
-                    continue;
-                }
+                && (doc_id < lo || doc_id > hi)
+            {
+                continue;
+            }
             if let Some(len) = segment.doc_len(doc_id, xpath) {
                 return Some(len);
             }
@@ -302,12 +303,7 @@ impl IndexSnapshot {
     }
 
     fn apply_deletes_to_bitset(&self, mut bitset: RoaringTreemap) -> RoaringTreemap {
-        if self.deleted.is_empty() {
-            return bitset;
-        }
-        for doc_id in self.deleted.iter() {
-            bitset.remove(doc_id);
-        }
+        self.deleted.remove_from(&mut bitset);
         bitset
     }
 

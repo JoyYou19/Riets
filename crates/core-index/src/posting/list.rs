@@ -104,19 +104,19 @@ impl PostingList {
             }
             merged.push(item);
         }
-    }
+
         let max_weight = merged
             .iter()
             .map(|posting| posting.weight)
             .max()
             .unwrap_or(0);
-        
+
         Self {
             items: merged,
             max_weight,
         }
     }
-    
+
     // Creates a posting list that is already sorted and max weight was peristed in the segment
     // meta
     //
