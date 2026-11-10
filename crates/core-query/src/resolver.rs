@@ -12,7 +12,7 @@ use core_index::{
 };
 use core_protocol::{command_reponse_definitions::Fuzziness, errors::CorelamoError};
 use indexmap::IndexMap;
-use simd_json::{OwnedValue, StaticNode, base::ValueAsScalar};
+use simd_json::{OwnedValue, StaticNode, base::TypedValue};
 
 use crate::{
     Query,
@@ -277,6 +277,7 @@ pub fn compile_filters(
 }
 
 //single core: OwnedValue + field context -> resolved Query (non-same_element)
+//single core: OwnedValue + field context -> resolved Query (non-same_element)
 fn build_node(
     v: &OwnedValue,
     field: &FieldPolicy,
@@ -285,7 +286,7 @@ fn build_node(
     if let OwnedValue::Object(obj) = v
         && let Some(inner) = obj.get("range")
     {
-        return resolve_range(field, inner);
+        return resolve_numeric_filter(field, inner);
     }
 
     //          sis bisk porno bet simd sitaada strukturs
@@ -300,29 +301,50 @@ fn build_node(
         return Ok(Some(Query::Bool(*b)));
     }
 
+    // a numeric field takes a bare number or numeric string as a range:
+    // {"year": 2000}, {"year": "2000"}, {"year": ">=1990"} — no {"range": ...} wrapper
+    if field.kind.is_numeric() {
+        return resolve_numeric_filter(field, v);
+    }
+
     let node = parse_json_query(v)?;
     Ok(analyze_query(node, field_analyzer(field, analyzers)))
 }
 
-fn resolve_range(field: &FieldPolicy, inner: &OwnedValue) -> Result<Option<Query>, CorelamoError> {
-    let s = inner.as_str().ok_or_else(|| {
-        CorelamoError::InvalidData("'range' must be a string like '30..40'".into())
-    })?;
-
+fn resolve_numeric_filter(
+    field: &FieldPolicy,
+    v: &OwnedValue,
+) -> Result<Option<Query>, CorelamoError> {
     let parse: fn(&str) -> Option<NumericValue> = match field.kind {
         FieldKind::Integer => parse_integer,
         FieldKind::Float => parse_float,
         _ => {
             return Err(CorelamoError::InvalidData(format!(
-                "field '{}' is {} — 'range' only applies to numeric fields",
+                "field '{}' is {} — numeric filters only apply to numeric fields",
                 field.name,
                 field.kind.label()
             )));
         }
     };
 
-    let r = parse_numeric_range(s, parse).map_err(|e| {
-        CorelamoError::InvalidData(format!("invalid range on '{}': {e}", field.name))
+    // a bare number or a numeric string
+    let text: String = match v {
+        OwnedValue::String(s) => s.clone(),
+        OwnedValue::Static(StaticNode::I64(n)) => n.to_string(),
+        OwnedValue::Static(StaticNode::U64(n)) => n.to_string(),
+        OwnedValue::Static(StaticNode::F64(n)) => n.to_string(),
+        other => {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{}' is {} — filter with a number or a range string like '30..40' (got {})",
+                field.name,
+                field.kind.label(),
+                other.value_type()
+            )));
+        }
+    };
+
+    let r = parse_numeric_range(&text, parse).map_err(|e| {
+        CorelamoError::InvalidData(format!("invalid filter on '{}': {e}", field.name))
     })?;
     Ok(Some(Query::Range(r)))
 }
