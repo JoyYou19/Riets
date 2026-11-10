@@ -4,7 +4,7 @@ Endpoint: `POST /api/databases/<db>/search`
 
 ```json
 {
-  "query": "...",          // main query (see below)
+  "query": "...",          // optional — see "Match-all" below
   "filters": { ... },      // optional
   "search_fields": [...],  // optional
   "docs": 10,              // optional (default 10)
@@ -20,22 +20,25 @@ Endpoint: `POST /api/databases/<db>/search`
 
 | JSON | meaning |
 |---|---|
-| `"word"` | term (single word; auto-detects wildcard/prefix) |
-| `{"term": "word"}` | term (single word) |
-| `{"exact": "word words"}` | exact (multi-word OK, case-sensitive, phrase-matched) |
+| `"word"` | single word; auto-detects wildcard/prefix |
+| `"word1 word2"` | multi-word → `WAND` (weakAnd): any word may match, docs matching more words rank higher |
+| `{"term": "word"}` | term (single word only — multi-word is rejected) |
+| `{"exact": "word words"}` | exact whole value (multi-word OK, case-insensitive) |
 | `{"fuzzy": "word"}` | fuzzy, default options |
 | `{"fuzzy": {"value": "word words", "fuzziness": "auto", "prefix_length": 2, "max_expansions": 50}}` | fuzzy with options |
-| `{"phrase": ["new", "york"]}` | phrase |
-| `"match_all"` | match all documents |
+| `{"phrase": "new york"}` / `{"phrase": ["new", "york"]}` | phrase (adjacent, in order) |
 
-### Wildcard / prefix (auto-detected inside term)
+### Wildcard / prefix (auto-detected)
 
 | input | result |
 |---|---|
+| `"g*"` | prefix `g` |
 | `{"term": "g*"}` | prefix `g` |
 | `{"term": "*verse"}` | wildcard (ends in "verse") |
 | `{"term": "m?ry"}` | wildcard (single char) |
 | `{"term": "coo[pr]er"}` | wildcard (char class) |
+
+Detection runs per word, so a bare multi-word string classifies each word: `"g* verse"` → `WAND(prefix g, term verse)`.
 
 ### Combinators
 
@@ -48,27 +51,38 @@ Endpoint: `POST /api/databases/<db>/search`
 { "query": { "WAND": "comedy romance drama" } }
 ```
 
-- `AND` — all must match (conjunctive).
-- `OR` / `WAND` — any matches (disjunctive, additive scoring). `WAND` is the "relevance" alias.
+- `AND` — all must match.
+- `OR` — any matches (additive scoring).
+- `WAND` — weakAnd (Vespa's default): any word may match, scored by which/how many; also the default for a bare multi-word string.
 
-Multi-word strings inside an array are split into words (`"into *verse"` → `into` AND `*verse`).
+Words inside an array or string are split on whitespace (`"into *verse"` → `into` + prefix `verse`).
 
-### Empty query
+### Match-all (empty query)
+
+`query` is optional. Any of these means "match all documents":
 
 ```json
-{ "query": "" }
-{ "query": {} }
+{ }                    // no query key at all
+{ "query": "" }        // empty string
+{ "query": {} }        // empty object
+{ "query": null }      // null
 ```
 
-Blank query = filter-only. Errors `400` if `filters` is also empty. (Use `"match_all"` to return everything.)
+- nothing else → returns the first `docs` (default 10) by doc-id, score 0.
+- `+ filters` → filter-only.
+- `+ sort` → sort-only.
+
+There is no `"match_all"` keyword anymore — `"match_all"` is just an ordinary word to search for.
 
 ## 2. filters
 
 Filter values use the same leaf operators as query, plus `range`, `same_element`, and `bool`.
+Unlike the main query, a **bare multi-word filter string is an `AND`** (every word must match).
 
 ```json
-// leaf (term/exact/fuzzy/phrase)
-{ "filters": { "genres": "Drama" } }
+// text (term/exact/fuzzy/phrase)
+{ "filters": { "genres": "Drama" } }                 // term
+{ "filters": { "genres": "Drama Comedy" } }          // AND of the two words
 { "filters": { "genres": { "exact": "Drama" } } }
 { "filters": { "title": { "fuzzy": "braev" } } }
 
@@ -76,19 +90,32 @@ Filter values use the same leaf operators as query, plus `range`, `same_element`
 { "filters": { "featured": true } }
 { "filters": { "featured": false } }
 
-// numeric range
-{ "filters": { "year": { "range": "1929..1931" } } }
-{ "filters": { "year": { "range": ">=1930" } } }
-{ "filters": { "year": { "range": "1982" } } }   // exact value
+// numeric — bare number, numeric string, or range string (no wrapper needed)
+{ "filters": { "year": 2000 } }
+{ "filters": { "year": "2000" } }                    // exact value
+{ "filters": { "year": ">=1990" } }
+{ "filters": { "year": "1990..1995" } }
+{ "filters": { "year": { "range": "1929..1931" } } } // explicit alias
 
 // same_element (same array element)
 { "filters": { "cast": { "same_element": { "name": { "exact": "Gary" }, "surname": { "exact": "Cooper" } } } } }
-{ "filters": { "random_nums": { "same_element": { "num1": { "range": "30..70" }, "num2": { "range": "50..100" } } } } }
+{ "filters": { "random_nums": { "same_element": { "num1": { "range": "30..70" }, "num2": ">=50" } } } }
 ```
 
-### Range syntax
+### Numeric filters
 
-`a..b` (inclusive), `>=a`, `>a`, `<=a`, `<a`, `=a`, `a` (exact).
+`Integer` and `Float` fields accept a bare number, a numeric string, or a range string:
+
+```json
+{ "filters": { "year": 2000 } }      // JSON number → exact
+{ "filters": { "year": "2000" } }    // exact
+{ "filters": { "year": ">2000" } }   // strictly greater
+{ "filters": { "price": 9.99 } }     // float
+```
+
+Range string syntax: `a..b` (inclusive), `>=a`, `>a`, `<=a`, `<a`, `=a`, `a` (exact).
+
+A numeric string that isn't a valid number/range (`"year": "hello"`) is a `400`.
 
 ### Bool
 
@@ -96,16 +123,13 @@ A bare `true` / `false` matches docs where the field equals that value.
 
 A doc where the bool field is **absent** matches **neither** `true` **nor** `false` — missing ≠ false.
 
-### Numeric values in same_element
+### same_element
 
-Numeric clauses inside `same_element` use the `{"range": ...}` form. A bare number is rejected:
+Numeric clauses inside `same_element` also accept bare numbers / numeric strings:
 
 ```json
-// WRONG — 400 "query node must be a string or object, found u64"
 { "filters": { "grid": { "same_element": { "is_hot": true, "value": 5 } } } }
-
-// RIGHT
-{ "filters": { "grid": { "same_element": { "is_hot": true, "value": { "range": "5" } } } } }
+{ "filters": { "grid": { "same_element": { "is_hot": true, "value": ">=5" } } } }
 ```
 
 Multiple filters are AND-ed together.
@@ -140,12 +164,14 @@ or inside an optional `fields` wrapper — use this when a document field is lit
 
 - `mode`: `"blend"` (default) | `"strict"`.
 - `order`: `"asc"` | `"desc"` (default `desc`).
-- `ratio`: 0–100. **Blend only** — ratios must sum to ≤ 100 (the rest is relevance). A single blend field may omit `ratio` (defaults to 100).
+- `ratio`: 0–100. **Blend only** — ratios must sum to ≤ 100 (the rest is relevance). A single blend field may omit `ratio` (defaults to 40).
 - **Strict** ignores `ratio` entirely; fields are applied in declaration order as lexicographic keys, then relevance, then `doc_id` as tiebreakers.
+
+A `sort` alone (blank query, no filters) is valid — it returns the top `docs` ordered by the sort key.
 
 Supported field kinds: numeric (`Integer`/`Float`) and `Bool`.
 
-Bool sort: `true` = 1.0, `false` = 0.0, missing sorts last (in both `asc` and `desc`).
+Bool sort: `true` = 1.0, `false` = 0.0, missing sorts last (strict mode; in blend mode this currently holds only for `desc`).
 
 ## 5. return_fields
 

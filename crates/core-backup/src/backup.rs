@@ -4,12 +4,12 @@ use core_timing::timed;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 use simd_json::prelude::*;
-use slog::{ Logger, error, info };
-use std::fs::{ self, File, OpenOptions };
-use std::io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write };
-use std::path::{ Path, PathBuf };
+use slog::{Logger, error, info};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 const COPY_BUF_SIZE: usize = 1024 * 1024;
 
@@ -99,11 +99,15 @@ impl std::fmt::Display for BackupError {
                 write!(f, "Could not resolve a full backup at chain root")
             }
             BackupError::NoBaseBackup => write!(f, "No full backup exists to base an increment on"),
-            BackupError::ChainGap { parent_id, parent_end, child_id, child_start } =>
-                write!(
-                    f,
-                    "Gap in chain: {parent_id} ends at {parent_end} but {child_id} starts at {child_start}"
-                ),
+            BackupError::ChainGap {
+                parent_id,
+                parent_end,
+                child_id,
+                child_start,
+            } => write!(
+                f,
+                "Gap in chain: {parent_id} ends at {parent_end} but {child_id} starts at {child_start}"
+            ),
         }
     }
 }
@@ -123,8 +127,8 @@ impl BackupManager {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
       
 
-        let (last_segment_id, last_segment_offset, last_backup_id) = if
-            let Ok(state) = fs::read_to_string(&state_path)
+        let (last_segment_id, last_segment_offset, last_backup_id) = if let Ok(state) =
+            fs::read_to_string(&state_path)
         {
             let mut buf = state.into_bytes();
             if let Ok(parsed) = simd_json::from_slice::<simd_json::OwnedValue>(&mut buf) {
@@ -139,8 +143,7 @@ impl BackupManager {
             }
         } else {
             // State file doesn't exist; scan disk for latest backup
-            let best = fs
-                ::read_dir(&backup_dir)
+            let best = fs::read_dir(&backup_dir)
                 .ok()
                 .into_iter()
                 .flatten()
@@ -154,7 +157,11 @@ impl BackupManager {
                 .max_by_key(|m| m.created_at);
 
             match best {
-                Some(m) => (m.last_backup_segment, m.last_backup_offset, Some(m.backup_id)),
+                Some(m) => (
+                    m.last_backup_segment,
+                    m.last_backup_offset,
+                    Some(m.backup_id),
+                ),
                 None => (last_segment_id, last_segment_offset, None),
             }
         };
@@ -171,10 +178,11 @@ impl BackupManager {
 
     #[timed(writing_files)]
     fn save_state(&self) -> Result<(), BackupError> {
-        let dst = self.backup_dir.join(format!("backup_state_{}.json", self.shard_name));
+        let dst = self
+            .backup_dir
+            .join(format!("backup_state_{}.json", self.shard_name));
         let tmp = dst.with_extension("json.tmp");
-        let state =
-            simd_json::json!({
+        let state = simd_json::json!({
             "last_backup_id": self.last_backup_id,
             "last_segment_id": self.last_segment_id,
             "last_segment_offset": &self.last_segment_offset,
@@ -193,16 +201,18 @@ impl BackupManager {
 
         progress: &BackupProgress,
         document_count: usize,
-        record_count: usize
+        record_count: usize,
     ) -> Result<BackupManifest, BackupError> {
         let store_dir = shard_root.join("documents");
         let ids = BinaryDocumentStore::list_segment_ids(&store_dir)?;
         let Some(&last_segment) = ids.last() else {
-            return Err(BackupError::IoError(io::Error::other("no document segments to back up")));
+            return Err(BackupError::IoError(io::Error::other(
+                "no document segments to back up",
+            )));
         };
-        let last_segment_offset = fs
-            ::metadata(store_dir.join(BinaryDocumentStore::segment_filename(last_segment)))?
-            .len();
+        let last_segment_offset =
+            fs::metadata(store_dir.join(BinaryDocumentStore::segment_filename(last_segment)))?
+                .len();
 
         fs::create_dir_all(backup_path)?;
 
@@ -216,7 +226,7 @@ impl BackupManager {
                         &shard_root.join("index"),
                         &backup_path.join("index.tar.gz"),
                         "index",
-                        Some(progress)
+                        Some(progress),
                     )
                 });
                 let doc = s.spawn(|| {
@@ -224,7 +234,7 @@ impl BackupManager {
                         &store_dir,
                         &backup_path.join("documents.tar.gz"),
                         "documents",
-                        Some(progress)
+                        Some(progress),
                     )
                 });
                 (idx.join(), doc.join())
@@ -275,7 +285,7 @@ impl BackupManager {
     fn read_segment_diff(
         store_dir: &Path,
         last_segment_id: u32,
-        last_segment_offset: u64
+        last_segment_offset: u64,
     ) -> io::Result<Vec<SegmentDiff>> {
         let mut deltas = Vec::new();
         for id in BinaryDocumentStore::list_segment_ids(store_dir)? {
@@ -284,7 +294,11 @@ impl BackupManager {
             }
             let seg_path = store_dir.join(BinaryDocumentStore::segment_filename(id));
             let end = fs::metadata(&seg_path)?.len();
-            let start = if id == last_segment_id { last_segment_offset } else { 0 };
+            let start = if id == last_segment_id {
+                last_segment_offset
+            } else {
+                0
+            };
             if end > start {
                 deltas.push(SegmentDiff { id, start, end });
             }
@@ -298,21 +312,23 @@ impl BackupManager {
         backup_id: &str,
         segment_dir: &Path,
         document_count: usize,
-        progress: &BackupProgress
+        progress: &BackupProgress,
     ) -> Result<Option<BackupManifest>, BackupError> {
-        let parent_id = self.last_backup_id.clone().ok_or(BackupError::NoBaseBackup)?;
+        let parent_id = self
+            .last_backup_id
+            .clone()
+            .ok_or(BackupError::NoBaseBackup)?;
 
-        let diff = Self::read_segment_diff(
-            segment_dir,
-            self.last_segment_id,
-            self.last_segment_offset
-        )?;
+        let diff =
+            Self::read_segment_diff(segment_dir, self.last_segment_id, self.last_segment_offset)?;
         if diff.is_empty() {
             return Ok(None);
         }
 
         let Some(last_delta) = diff.last() else {
-            return Err(BackupError::IoError(io::Error::other("no segment diff to commit")));
+            return Err(BackupError::IoError(io::Error::other(
+                "no segment diff to commit",
+            )));
         };
         let (new_segment_id, new_segment_offset) = (last_delta.id, last_delta.end);
 
@@ -332,8 +348,7 @@ impl BackupManager {
                 let copied = io::copy(&mut src, &mut dst)?;
                 total += copied;
                 dst.flush()?;
-                dst
-                    .into_inner()
+                dst.into_inner()
                     .map_err(|e| BackupError::IoError(e.into_error()))?
                     .sync_all()?;
             }
@@ -386,7 +401,10 @@ impl BackupManager {
                 BackupType::Incremental => {
                     let path = self.shard_backup_path(&current_id);
                     if let Err(e) = fs::remove_dir_all(&path) {
-                        error!(self.log, "failed to delete old incremental {current_id}: {e}");
+                        error!(
+                            self.log,
+                            "failed to delete old incremental {current_id}: {e}"
+                        );
                     }
                     match manifest.parent_backup_id {
                         Some(parent_id) => {
@@ -416,30 +434,28 @@ impl BackupManager {
                 fs::create_dir_all(target_dir)?;
                 let (idx_result, doc_result) = std::thread::scope(|s| {
                     let idx = s.spawn(|| {
-                        tar::Archive
-                            ::new(GzDecoder::new(File::open(backup_path.join("index.tar.gz"))?))
-                            .unpack(target_dir)
+                        tar::Archive::new(GzDecoder::new(File::open(
+                            backup_path.join("index.tar.gz"),
+                        )?))
+                        .unpack(target_dir)
                     });
                     let doc = s.spawn(|| {
-                        tar::Archive
-                            ::new(GzDecoder::new(File::open(backup_path.join("documents.tar.gz"))?))
-                            .unpack(target_dir)
+                        tar::Archive::new(GzDecoder::new(File::open(
+                            backup_path.join("documents.tar.gz"),
+                        )?))
+                        .unpack(target_dir)
                     });
                     (idx.join(), doc.join())
                 });
 
-                if
-                    let Err(e) = idx_result.map_err(|_|
-                        io::Error::other("index tar thread panicked")
-                    )?
+                if let Err(e) =
+                    idx_result.map_err(|_| io::Error::other("index tar thread panicked"))?
                 {
                     error!(self.log, "restore: failed to unpack index.tar.gz"; "target" => %target_dir.display(), "error" => %e);
                     return Err(BackupError::IoError(e));
                 }
-                if
-                    let Err(e) = doc_result.map_err(|_|
-                        io::Error::other("documents tar thread panicked")
-                    )?
+                if let Err(e) =
+                    doc_result.map_err(|_| io::Error::other("documents tar thread panicked"))?
                 {
                     error!(self.log, "restore: failed to unpack documents.tar.gz"; "target" => %target_dir.display(), "error" => %e);
                     return Err(BackupError::IoError(e));
@@ -456,11 +472,9 @@ impl BackupManager {
                 let src_dir = backup_path.join("documents");
                 let dst_dir = target_dir.join("documents");
                 fs::create_dir_all(&dst_dir)?;
-                let parent_id = manifest.parent_backup_id
-                    .as_ref()
-                    .ok_or_else(|| {
-                        BackupError::IoError(io::Error::other("incremental backup missing parent"))
-                    })?;
+                let parent_id = manifest.parent_backup_id.as_ref().ok_or_else(|| {
+                    BackupError::IoError(io::Error::other("incremental backup missing parent"))
+                })?;
                 let parent_manifest = self.load_manifest(parent_id)?;
 
                 if src_dir.exists() {
@@ -476,7 +490,10 @@ impl BackupManager {
                         };
 
                         let mut src = File::open(&src_path)?;
-                        let mut dst = OpenOptions::new().create(true).write(true).open(&dst_path)?;
+                        let mut dst = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .open(&dst_path)?;
                         dst.seek(SeekFrom::Start(start_offset))?;
                         io::copy(&mut src, &mut dst)?;
                     }
@@ -495,27 +512,26 @@ impl BackupManager {
     #[timed(restore)]
     pub fn restore_chain(&mut self, backup_id: &str, target_dir: &Path) -> Result<(), BackupError> {
         if !is_valid_backup_id(backup_id) {
-            return Err(
-                BackupError::IoError(
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid backup id '{backup_id}'")
-                    )
-                )
-            );
+            return Err(BackupError::IoError(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid backup id '{backup_id}'"),
+            )));
         }
         let mut chain = vec![self.load_manifest(backup_id)?];
         while let Some(last) = chain.last() {
             if last.backup_type != BackupType::Incremental {
                 break;
             }
-            let parent_id = last.parent_backup_id.clone().ok_or(BackupError::NoBackupChain)?;
+            let parent_id = last
+                .parent_backup_id
+                .clone()
+                .ok_or(BackupError::NoBackupChain)?;
             chain.push(self.load_manifest(&parent_id)?);
         }
         chain.reverse();
         // Verify contiguity before touching target_dir. A gap found mid-apply
         // would leave the shard in an undefined state.
-       for window in chain.windows(2) {
+        for window in chain.windows(2) {
             let parent = &window[0];
             let child = &window[1];
             if child.last_backup_segment < parent.last_backup_segment
@@ -529,7 +545,7 @@ impl BackupManager {
                     child_start: child.start_offset,
                 });
             }
-       }
+        }
 
         for manifest in &chain {
             self.restore(&manifest.backup_id, target_dir)?;
@@ -555,9 +571,8 @@ impl BackupManager {
         // Delete any incremental whose start_offset is >= the restored point.
         // These were built on state that no longer exists after the restore.
         for manifest in all_manifests {
-            if
-                manifest.backup_type == BackupType::Incremental &&
-                manifest.start_offset >= restored_manifest.last_backup_offset
+            if manifest.backup_type == BackupType::Incremental
+                && manifest.start_offset >= restored_manifest.last_backup_offset
             {
                 let path = self.shard_backup_path(&manifest.backup_id);
                 if let Err(e) = fs::remove_dir_all(&path) {
@@ -586,9 +601,9 @@ impl BackupManager {
             ::read_dir(&self.backup_dir)?
             .filter_map(Result::ok)
             .filter_map(|e| {
-                let text = fs
-                    ::read_to_string(e.path().join(&self.shard_name).join("manifest.json"))
-                    .ok()?;
+                let text =
+                    fs::read_to_string(e.path().join(&self.shard_name).join("manifest.json"))
+                        .ok()?;
                 let mut buf = text.into_bytes();
                 simd_json::from_slice(&mut buf).ok()
             })
@@ -610,22 +625,18 @@ impl BackupManager {
         }
         Ok(())
     }
-    //when segments rewritten 
-    pub fn require_full_backup(&mut self) -> Result<(),BackupError>{
+    //when segments rewritten
+    pub fn require_full_backup(&mut self) -> Result<(), BackupError> {
         self.last_backup_id = None;
         self.save_state()
     }
     #[timed(backup)]
     pub fn delete_backup(&self, backup_id: &str) -> Result<(), BackupError> {
         if !is_valid_backup_id(backup_id) {
-            return Err(
-                BackupError::IoError(
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid backup id '{backup_id}'")
-                    )
-                )
-            );
+            return Err(BackupError::IoError(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid backup id '{backup_id}'"),
+            )));
         }
         fs::remove_dir_all(self.shard_backup_path(backup_id))?;
         Ok(())
@@ -636,7 +647,7 @@ impl BackupManager {
 fn copy_with_progress<R: Read, W: Write>(
     mut reader: R,
     mut writer: W,
-    progress: &BackupProgress
+    progress: &BackupProgress,
 ) -> io::Result<()> {
     let mut buf = vec![0u8; COPY_BUF_SIZE];
     loop {
@@ -664,9 +675,11 @@ fn dir_size(path: &Path) -> io::Result<u64> {
     Ok(total)
 }
 pub fn is_valid_backup_id(id: &str) -> bool {
-    !id.is_empty() &&
-        id.len() <= 128 &&
-        id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 //directory zipping
 #[timed(writing_files)]
@@ -674,7 +687,7 @@ fn tar_dir(
     src: &Path,
     dst: &Path,
     entry_name: &str,
-    progress: Option<&BackupProgress>
+    progress: Option<&BackupProgress>,
 ) -> io::Result<()> {
     let encoder = GzEncoder::new(File::create(dst)?, Compression::fast());
     let writer = ProgressWriter {

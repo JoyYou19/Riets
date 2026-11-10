@@ -33,8 +33,7 @@ use core_query::highlight::{
 };
 use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
-    FieldQuery, QueryGroup, compile_query, field_analyzer, is_blank_query, parse_fuzziness,
-    resolve_suggest_xpaths,
+    FieldQuery, QueryGroup, compile_query, field_analyzer, parse_fuzziness, resolve_suggest_xpaths,
 };
 use core_query::{CorpusStats, MatchedTerm, SearchHit, rank_order};
 use core_storage::document_projections::id_path_to_strip;
@@ -396,7 +395,9 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
-        let wanted: Vec<(&String, FieldKind)> = fields.keys().map(|xpath| {
+        let wanted: Vec<(&String, FieldKind)> = fields
+            .keys()
+            .map(|xpath| {
                 let kind = policy
                     .fields
                     .iter()
@@ -1074,10 +1075,11 @@ impl ShardManager {
 
         for (xpath, kind) in all_fields.get_fields_mut().iter_mut() {
             if let Some(field) = policy.fields.iter().find(|f| f.name == *xpath)
-                && *kind != field.kind {
-                    *kind = field.kind;
-                    changed = true;
-                }
+                && *kind != field.kind
+            {
+                *kind = field.kind;
+                changed = true;
+            }
         }
 
         if changed {
@@ -1354,11 +1356,6 @@ impl ShardManager {
         command: &SearchCommand,
         page: PageRequest,
     ) -> Result<CompiledSearch, CorelamoError> {
-        if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(indexmap::IndexMap::is_empty) {
-            return Err(CorelamoError::InvalidData(
-                "Search for something not nothing....".into(),
-            ));
-        }
         let policy = self.policy.read().clone();
         let cascade_order = self.options.read().search.cascade_order();
         let dictionary = self.synonyms.snapshot();
@@ -1374,16 +1371,20 @@ impl ShardManager {
             )?;
             (groups, compile_filters(&analyzers, command, &policy)?)
         };
+
         let sorts = resolve_sorts(command, &policy)?;
         let strict_sort = sorts
             .as_ref()
             .is_some_and(|s| matches!(s.mode, SortMode::Strict));
+
         let semantic = self.semantic_fields(&command.query, command, &policy, strict_sort);
+
         let word_fetch = if semantic.is_some() {
             page.fetch.max(FUSION_DEPTH)
         } else {
             page.fetch
         };
+
         let window = page.fetch.saturating_mul(50).clamp(1000, 5_000);
         let (plans_full, plans_no_fuzzy) = Self::build_plans(
             &command.query,
@@ -2761,6 +2762,7 @@ fn requested_page(command: &SearchCommand) -> Result<Option<PageRequest>, Corela
             "docs may be at most {MAX_RESULTS_SIZE}, got {limit}"
         )));
     }
+
     let offset = command.offset.unwrap_or(0);
     let fetch = offset.saturating_add(limit);
     Ok((fetch > 0).then_some(PageRequest {

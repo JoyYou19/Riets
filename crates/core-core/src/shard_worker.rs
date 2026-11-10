@@ -235,14 +235,9 @@ impl ShardHandle {
 
     pub fn word_missing(&self, word: &str, xpaths: &[XPathId]) -> bool {
         let snapshot = self.shared.snapshot.get();
-        xpaths.iter().all(|&xpath| {
-            snapshot
-                .lookup(word, xpath)
-                .items()
-                .iter()
-                .next()
-                .is_none()
-        })
+        xpaths
+            .iter()
+            .all(|&xpath| snapshot.lookup(word, xpath).items().iter().next().is_none())
     }
 
     /// For each candidate, the documents of this shard holding it together with every context
@@ -469,7 +464,10 @@ impl ShardHandle {
         let allowed = filters.and_then(|filters| {
             QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(filters)
         });
-        if allowed.as_ref().is_some_and(std::collections::HashSet::is_empty) {
+        if allowed
+            .as_ref()
+            .is_some_and(std::collections::HashSet::is_empty)
+        {
             return Ok(Vec::new());
         }
         let mut lists = Vec::with_capacity(xpaths.len());
@@ -526,7 +524,10 @@ impl ShardHandle {
             .iter()
             .map(|&x| {
                 let (min, max) = snapshot.numeric_bounds(x);
-                (min.map(core_index::numeric_values::NumericValue::as_f64), max.map(core_index::numeric_values::NumericValue::as_f64))
+                (
+                    min.map(core_index::numeric_values::NumericValue::as_f64),
+                    max.map(core_index::numeric_values::NumericValue::as_f64),
+                )
             })
             .collect();
 
@@ -1169,7 +1170,8 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     *shared
                         .last_backup_id
                         .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(manifest.backup_id.clone());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(manifest.backup_id.clone());
                     shared
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);
@@ -1202,7 +1204,8 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     *shared
                         .last_backup_id
                         .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(manifest.backup_id.clone());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(manifest.backup_id.clone());
                     shared
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);
