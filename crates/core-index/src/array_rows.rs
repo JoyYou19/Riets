@@ -39,6 +39,7 @@ pub struct ArrayRowIndex {
     row_to_doc: Vec<DocId>,
     //rowid -> parent id
     parent_row: Vec<ArrayRowId>,
+    //in which [i] of the parent was this element in
     element_index: Vec<u32>,
 }
 
