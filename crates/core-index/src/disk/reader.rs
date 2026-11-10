@@ -172,6 +172,7 @@ impl DiskSegment {
     }
 
     //Reads posting the same way as the original function, but into a buffer
+
     fn read_postings_into(&self, meta: TermMeta, out: &mut Vec<Posting>) {
         let start = meta.postings_offset as usize;
         let len = meta.postings_len as usize;

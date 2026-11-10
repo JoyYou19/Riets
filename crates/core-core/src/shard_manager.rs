@@ -873,6 +873,7 @@ impl ShardManager {
         mut policy: IndexPolicy,
         user: String,
     ) -> Result<Option<String>, CorelamoError> {
+        let previous = self.policy.read().clone();
         policy.validate()?;
         if self.db_stats.reindex_running() {
             return Err(CorelamoError::Busy(
@@ -880,7 +881,7 @@ impl ShardManager {
             ));
         }
         policy.resolve(&self.root)?;
-        let previous = self.policy.read().clone();
+       
 
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -919,18 +920,13 @@ impl ShardManager {
             return Err(e);
         }
 
-        let changed = {
-            let old = self.policy.read();
-            old.analyzers != policy.analyzers || old.fields != policy.fields
-        };
+        let changed = previous.analyzers != policy.analyzers || previous.fields != policy.fields;
 
-        policy.save(&self.root)?;
         *self.analyzer_set.write() = AnalyzerSet::from_policy(&policy.analyzers);
         *self.policy.write() = policy;
         self.update_all_fields_from_policy()?;
 
-        Ok(changed
-            .then(|| "policy changed; reindex required to apply to existing documents".to_string()))
+        Ok(changed.then(|| "policy changed; reindex required to apply to existing documents".to_string()))
     }
 
     #[timed(database_lifecycle)]
@@ -939,6 +935,7 @@ impl ShardManager {
         options: DatabaseOptions,
         user: String,
     ) -> Result<(), CorelamoError> {
+        let previous = self.options.read().clone();
         if self.db_stats.reindex_running() {
             return Err(CorelamoError::Busy(
                 "a reindex is running; change the config when it has finished".into(),
@@ -948,8 +945,8 @@ impl ShardManager {
             .search
             .validate()
             .map_err(CorelamoError::InvalidData)?;
-        options.save_to_file(&self.root)?;
-        *self.options.write() = options.clone();
+        
+        
 
         let mut set = JoinSet::new();
         for h in &self.shards {
@@ -984,8 +981,7 @@ impl ShardManager {
                 .err()
                 .map(CorelamoError::from),
         };
-        let previous = self.options.read().clone();
-
+        
         if let Some(e) = failure {
             for handle in &self.shards {
                 let _ = handle.set_config(previous.clone(), user.clone()).await;
@@ -2441,8 +2437,8 @@ impl ShardManager {
                                 }
                             }
                         }
-                        hit.highlights = highlights;
                     }
+                    hit.highlights = highlights;
                 }
                 resolved
             })

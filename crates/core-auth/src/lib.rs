@@ -7,7 +7,7 @@ mod users;
 
 use std::io;
 
-use argon2::{Argon2, PasswordHasher};
+use argon2::{ Argon2, PasswordHasher };
 pub use bootstrap::default_policy;
 use core_protocol::errors::CorelamoError;
 use core_storage::binary_store::BinaryDocumentStore;
@@ -19,25 +19,27 @@ pub use token::{ Token, TokenStore };
 pub use users::UserDatabase;
 
 use crate::users::ListUsers;
-pub const SUPERUSER:&str = "corelamo";
-pub const MIN_PASSWORD_LEN:usize=8;
+pub const SUPERUSER: &str = "corelamo";
+pub const MIN_PASSWORD_LEN: usize = 8;
 pub fn generate_password() -> Result<String, CorelamoError> {
     let mut bytes = [0u8; 16];
-    SysRng
-        .try_fill_bytes(&mut bytes)
-        .map_err(|e| CorelamoError::Internal(format!("generating a password: {e}")))?;
+    SysRng.try_fill_bytes(&mut bytes).map_err(|e|
+        CorelamoError::Internal(format!("generating a password: {e}"))
+    )?;
     Ok(hex::encode(bytes))
 }
-pub fn hash_password(password:&str) -> io::Result<String> {
+pub fn hash_password(password: &str) -> io::Result<String> {
     if password.chars().count() < MIN_PASSWORD_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("password must be at least {MIN_PASSWORD_LEN} characters"),
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("password must be at least {MIN_PASSWORD_LEN} characters")
+            )
+        );
     }
-     Argon2::default()
-            .hash_password(password.as_bytes())
-          .map(|hash| hash.to_string())
+    Argon2::default()
+        .hash_password(password.as_bytes())
+        .map(|hash| hash.to_string())
         .map_err(|e| io::Error::other(format!("password hashing failed: {e}")))
 }
 pub struct AuthService {
@@ -58,8 +60,8 @@ impl AuthService {
             users,
         }
     }
-   pub fn bootstrap(
-        mut users: UserDatabase<BinaryDocumentStore>,
+    pub fn bootstrap(
+        mut users: UserDatabase<BinaryDocumentStore>
     ) -> Result<(Self, Option<String>), CorelamoError> {
         let mut created = None;
         if users.is_empty() {
@@ -72,16 +74,16 @@ impl AuthService {
         Ok((Self::new(default_policy(), TokenStore::new(), users), created))
     }
     pub fn set_initial_password(&mut self, password: &str) -> Result<(), CorelamoError> {
-        let hash = hash_password(password).map_err(|e| match e.kind() {
-            io::ErrorKind::InvalidInput => CorelamoError::InvalidData(e.to_string()),
-            _ => CorelamoError::Internal(e.to_string()),
+        let hash = hash_password(password).map_err(|e| {
+            match e.kind() {
+                io::ErrorKind::InvalidInput => CorelamoError::InvalidData(e.to_string()),
+                _ => CorelamoError::Internal(e.to_string()),
+            }
         })?;
         if self.users.update_password(SUPERUSER, hash) {
             Ok(())
         } else {
-            Err(CorelamoError::Internal(format!(
-                "could not set the password of '{SUPERUSER}'"
-            )))
+            Err(CorelamoError::Internal(format!("could not set the password of '{SUPERUSER}'")))
         }
     }
     pub fn create_user(
@@ -89,7 +91,7 @@ impl AuthService {
         requester: &Principal,
         username: &str,
         password_hash: String,
-        roles: Vec<String>,
+        roles: Vec<String>
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::CreateUser)?;
 
@@ -113,9 +115,10 @@ impl AuthService {
         username: &str
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::DeleteUser)?;
-        if username==SUPERUSER{
-           Err(CorelamoError::NotFound("superuser cannot be deleted".to_string())) 
-        }else if self.users.remove_user(username) && username!=SUPERUSER {
+        if username == SUPERUSER {
+            Err(CorelamoError::NotFound("superuser cannot be deleted".to_string()))
+        } else if self.users.remove_user(username) && username != SUPERUSER {
+            self.tokens.revoke_user(username);
             Ok(())
         } else {
             Err(CorelamoError::NotFound(format!("user '{username}' not found")))
@@ -125,18 +128,17 @@ impl AuthService {
         &mut self,
         requester: &Principal,
         username: &str,
-        new_hashed:String
+        new_hashed: String
     ) -> Result<(), CorelamoError> {
         let is_self = requester.id.0 == username;
         if !is_self {
             self.check(requester, Permission::UpdatePwd)?;
         }
         if self.users.update_password(username, new_hashed) {
+            self.tokens.revoke_user(username);
             Ok(())
         } else {
-            Err(CorelamoError::NotFound(format!(
-                "user '{username}' not found"
-            )))
+            Err(CorelamoError::NotFound(format!("user '{username}' not found")))
         }
     }
     pub fn update_user_roles(
@@ -147,6 +149,7 @@ impl AuthService {
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::UpdateRole)?;
         if self.users.update_roles(username, new_roles) {
+            self.tokens.revoke_user(username);
             Ok(())
         } else {
             Err(CorelamoError::NotFound(format!("user '{username}'not found ")))
@@ -159,6 +162,9 @@ impl AuthService {
             return Ok(None);
         }
         self.tokens.issue(username.to_string()).map(Some)
+    }
+    pub fn logout(&self, token: &Token) -> bool {
+        self.tokens.revoke(token)
     }
     pub fn authenticate(&self, token: &Token) -> Option<Principal> {
         let username = self.tokens.resolve_username(token)?;

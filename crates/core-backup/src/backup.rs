@@ -1,5 +1,4 @@
 use crate::progress::BackupProgress;
-use core_logs::logger;
 use core_storage::binary_store::BinaryDocumentStore;
 use core_timing::timed;
 use flate2::Compression;
@@ -119,15 +118,14 @@ impl BackupManager {
     }
     #[timed(database_lifecycle)]
     pub fn new(
-        shard_root: &Path,
         backup_dir: PathBuf,
         shard_name: String,
         last_segment_id: u32,
         last_segment_offset: u64,
+        log:Logger
     ) -> Self {
         let state_path = backup_dir.join(format!("backup_state_{shard_name}.json"));
-        let name = shard_name.clone();
-        let log = logger::shard_logger(shard_root, &name);
+      
 
         let (last_segment_id, last_segment_offset, last_backup_id) = if let Ok(state) =
             fs::read_to_string(&state_path)
@@ -560,7 +558,8 @@ impl BackupManager {
         let restored_manifest = self.load_manifest(restored_backup_id)?;
 
         // Collect every backup on disk.
-        let all_manifests: Vec<BackupManifest> = fs::read_dir(&self.backup_dir)?
+        let all_manifests: Vec<BackupManifest> = fs
+            ::read_dir(&self.backup_dir)?
             .filter_map(Result::ok)
             .filter_map(|e| {
                 let manifest_path = e.path().join(&self.shard_name).join("manifest.json");
@@ -598,7 +597,8 @@ impl BackupManager {
     }
     #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, BackupError> {
-        let mut all: Vec<BackupManifest> = fs::read_dir(&self.backup_dir)?
+        let mut all: Vec<BackupManifest> = fs
+            ::read_dir(&self.backup_dir)?
             .filter_map(Result::ok)
             .filter_map(|e| {
                 let text =
@@ -697,10 +697,7 @@ fn tar_dir(
     let mut builder = tar::Builder::new(writer);
     builder.append_dir_all(entry_name, src)?;
     let writer = builder.into_inner()?; // tar end-of-archive blocks
-    let encoder = writer
-        .inner
-        .into_inner()
-        .map_err(io::IntoInnerError::into_error)?; // buffered bytes
+    let encoder = writer.inner.into_inner().map_err(io::IntoInnerError::into_error)?; // buffered bytes
     let file = encoder.finish()?; // gzip trailer
     file.sync_all()
 }

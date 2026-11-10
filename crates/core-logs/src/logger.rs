@@ -1,10 +1,6 @@
-use chrono::{Local, NaiveDate};
-use slog::{Drain, Duplicate, Logger, o};
-use std::{
-    fs::{File, OpenOptions},
-    io::{self, Write},
-    path::{Path, PathBuf},
-};
+use chrono::{ Local, NaiveDate };
+use slog::{ Drain, Duplicate, Logger, o };
+use std::{ fs::{ File, OpenOptions }, io::{ self, Write }, path::{ Path, PathBuf } };
 
 pub struct DailyLog {
     dir: PathBuf,
@@ -37,8 +33,16 @@ impl Write for DailyLog {
         if self.at_line_start {
             let today = Local::now().date_naive();
             if today != self.date {
-                self.file.flush()?;
-                self.file = Self::open(&self.dir, &self.name, today)?;
+                match Self::open(&self.dir, &self.name, today) {
+                    Ok(file) => {
+                        let _ = self.file.flush();
+                        self.file = file;
+                    }
+                    Err(e) =>
+                        eprintln!(
+                            "cannot open log for {today}: {e}; still writing to the previous file"
+                        ),
+                }
                 self.date = today;
             }
         }
@@ -56,27 +60,40 @@ fn timestamp(w: &mut dyn Write) -> io::Result<()> {
     write!(w, "{}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f%:z"))
 }
 pub fn shard_logger(root: &Path, name: &str) -> Logger {
-    let file = DailyLog::new(root.join("logs"), name)
-        .unwrap_or_else(|e| panic!("Failed to open log file:{e}"));
-    let drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
-        .use_custom_timestamp(timestamp)
-        .build();
-    let drain = std::sync::Mutex::new(drain).fuse();
-    Logger::root(drain, o!())
+    match DailyLog::new(root.join("logs"), name) {
+        Ok(file) => {
+            let drain = slog_term::CompactFormat
+                ::new(slog_term::PlainDecorator::new(file))
+                .use_custom_timestamp(timestamp)
+                .build();
+            Logger::root(std::sync::Mutex::new(drain).fuse(), o!())
+        }
+        Err(e) => {
+            eprintln!("cannot open log file in {}: {e}; logging to stderr", root.display());
+            let drain = slog_term::CompactFormat
+                ::new(slog_term::PlainDecorator::new(io::stderr()))
+                .use_custom_timestamp(timestamp)
+                .build();
+            Logger::root(std::sync::Mutex::new(drain).fuse(), o!("shard" => name.to_owned()))
+        }
+    }
 }
-
 pub fn program_logger(root: &Path) -> (Logger, slog_async::AsyncGuard) {
-    let file = DailyLog::new(root.join("logs"), "program")
-        .unwrap_or_else(|e| panic!("Failed to open log file: {e}"));
-    let file_drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
+    let file = DailyLog::new(root.join("logs"), "program").unwrap_or_else(|e|
+        panic!("Failed to open log file: {e}")
+    );
+    let file_drain = slog_term::CompactFormat
+        ::new(slog_term::PlainDecorator::new(file))
         .use_custom_timestamp(timestamp)
         .build()
         .fuse();
-    let term_drain = slog_term::CompactFormat::new(slog_term::TermDecorator::new().build())
+    let term_drain = slog_term::CompactFormat
+        ::new(slog_term::TermDecorator::new().build())
         .build()
         .fuse();
     let both = Duplicate::new(file_drain, term_drain).fuse();
-    let (drain, guard) = slog_async::Async::new(both)
+    let (drain, guard) = slog_async::Async
+        ::new(both)
         .chan_size(65_536)
         .overflow_strategy(slog_async::OverflowStrategy::Block)
         .build_with_guard();

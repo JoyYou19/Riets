@@ -135,7 +135,7 @@ impl ShardDb {
         let backup_dir = db_root.as_ref().join("backups");
 
         fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(&root, backup_dir, name.clone(), 0, 0);
+        let backup = BackupManager::new( backup_dir, name.clone(), 0, 0,log.clone());
         Ok(Self {
             shard_id,
             shard_count,
@@ -207,7 +207,7 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let backup_dir = db_root.as_ref().join("backups");
         fs::create_dir_all(&backup_dir)?;
-        let backup = BackupManager::new(&root, backup_dir, name.clone(), 0, 0);
+        let backup = BackupManager::new(backup_dir, name.clone(), 0, 0,log.clone());
         Ok(Self {
             shard_id: ShardId::from(shard_id),
             shard_count,

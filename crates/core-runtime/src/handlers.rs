@@ -12,7 +12,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal, hash_password};
+use core_auth::{Permission, Principal, Token, hash_password};
 use core_backup::backup::{BackupType, is_valid_backup_id};
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
@@ -29,6 +29,8 @@ use core_protocol::{
 use core_query::dictionary::DictionaryDocument;
 use core_storage::document_projections::id_path_to_strip;
 use core_timing::timed;
+
+use hyper::HeaderMap;
 use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
 use slog::{error, info, o, warn};
@@ -136,6 +138,22 @@ pub(crate) async fn login_handler(
     }
 }
 
+pub(crate) async fn logout_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(token) = headers.get("X-Corelamo-Key").and_then(|v| v.to_str().ok()) else {
+        return HttpError::from_corelamo(
+            CorelamoError::Unauthorized("missing X-Corelamo-Key header".into()),
+            &ctx,
+        )
+        .into_response();
+    };
+    let auth = state.auth.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    auth.logout(&Token(token.to_string()));
+    HttpOk::new("logged out", &ctx).into_response()
+}
 pub(crate) async fn list_users_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
