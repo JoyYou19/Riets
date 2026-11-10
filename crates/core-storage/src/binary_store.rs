@@ -56,11 +56,11 @@ struct CompactionPermit;
 impl CompactionPermit {
     fn acquire() -> Self {
         let (lock, available) = &COMPACTION_SLOTS;
-        let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut running = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         while *running >= MAX_CONCURRENT_COMPACTIONS {
             running = available
                 .wait(running)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         *running += 1;
         CompactionPermit
@@ -70,7 +70,7 @@ impl CompactionPermit {
 impl Drop for CompactionPermit {
     fn drop(&mut self) {
         let (lock, available) = &COMPACTION_SLOTS;
-        let mut running = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut running = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *running -= 1;
         available.notify_one();
     }
@@ -97,7 +97,7 @@ impl Throttle {
             std::time::Duration::from_secs_f64((self.bytes as f64) / (self.bytes_per_sec as f64));
         let elapsed = self.started.elapsed();
         if due > elapsed {
-            std::thread::sleep(due - elapsed);
+            std::thread::sleep(due.checked_sub(elapsed).unwrap());
         }
     }
 }
@@ -206,11 +206,9 @@ impl BinaryDocumentStore {
             if let Some(rest) = name
                 .strip_prefix("seg_")
                 .and_then(|r| r.strip_suffix(".bin"))
-            {
-                if let Ok(id) = rest.parse::<u32>() {
+                && let Ok(id) = rest.parse::<u32>() {
                     ids.push(id);
                 }
-            }
         }
         ids.sort_unstable();
         Ok(ids)
@@ -313,7 +311,7 @@ impl BinaryDocumentStore {
             let location = entry.value();
             if location.segment < current {
                 *live_bytes_by_segment.entry(location.segment).or_default() +=
-                    (location.len as u64) + 1;
+                    u64::from(location.len) + 1;
             }
         }
 
@@ -395,14 +393,13 @@ impl BinaryDocumentStore {
 
         let mut installed = 0usize;
         for (external_id, new_location) in completed.new_locations {
-            if let Some(mut current) = self.locations.get_mut(&external_id) {
-                if completed.old_segment_ids.contains(&current.segment) {
+            if let Some(mut current) = self.locations.get_mut(&external_id)
+                && completed.old_segment_ids.contains(&current.segment) {
                     *current = new_location;
                     installed += 1;
                 }
-            }
         }
-
+        self.sync()?;
         // The persisted map must stop referencing the old segments before they are deleted.
         save_maps(
             &self.path,
@@ -411,12 +408,12 @@ impl BinaryDocumentStore {
         )?;
         for old_id in &completed.old_segment_ids {
             let old_path = self.path.join(Self::segment_filename(*old_id));
-            if let Err(err) = std::fs::remove_file(&old_path) {
-                if err.kind() != io::ErrorKind::NotFound {
+            if let Err(err) = std::fs::remove_file(&old_path)
+                && err.kind() != io::ErrorKind::NotFound {
                     return Err(with_path(err, &old_path));
                 }
-            }
         }
+
         save_maps(
             &self.path,
             &self.locations,
@@ -449,22 +446,19 @@ impl BinaryDocumentStore {
         // written whole and renamed into place, so a short record there is real damage
         let may_end_torn = segment_magic(&seg_path)? == *MAGIC;
         let mut file = File::open(&seg_path).map_err(|e| with_path(e, &seg_path))?;
-        let start = match from {
-            Some(offset) => {
-                file.seek(SeekFrom::Start(offset))?;
-                offset
+        let start = if let Some(offset) = from {
+            file.seek(SeekFrom::Start(offset))?;
+            offset
+        } else {
+            let mut magic = [0u8; 8];
+            file.read_exact(&mut magic)?;
+            if &magic != MAGIC && &magic != COMPACTED_MAGIC {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}: bad document store magic", seg_path.display()),
+                ));
             }
-            None => {
-                let mut magic = [0u8; 8];
-                file.read_exact(&mut magic)?;
-                if &magic != MAGIC && &magic != COMPACTED_MAGIC {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("{}: bad document store magic", seg_path.display()),
-                    ));
-                }
-                MAGIC.len() as u64
-            }
+            MAGIC.len() as u64
         };
         let mut reader = CountingReader::new(BufReader::new(file));
         let mut record_start = start;
@@ -485,6 +479,11 @@ impl BinaryDocumentStore {
                         self.highest_id
                             .fetch_max(doc.internal_id, Ordering::Relaxed);
                         let len = (start + reader.position() - doc_offset) as u32;
+                        let newer_than_current= self.locations.get(&doc.external_id).is_none_or(|current| current.internal_id <=doc.internal_id);
+                        let newer_than_delete= deleted_versions.get(&doc.external_id).is_none_or(|&deleted| doc.internal_id>deleted);
+                        if!(newer_than_current &&newer_than_delete){
+                            return;
+                        }
                         if let Some(old) = self.locations.insert(
                             doc.external_id.clone(),
                             DocLocation {
@@ -493,11 +492,10 @@ impl BinaryDocumentStore {
                                 segment: id,
                                 len,
                             },
-                        ) {
-                            if old.internal_id != doc.internal_id {
+                        )
+                            && old.internal_id != doc.internal_id {
                                 self.internal_to_external.remove(&old.internal_id);
                             }
-                        }
                         self.internal_to_external
                             .insert(doc.internal_id, doc.external_id.clone());
                         self.docs.invalidate(&doc.external_id);
@@ -510,11 +508,10 @@ impl BinaryDocumentStore {
                         .locations
                         .get(&external_id)
                         .is_some_and(|current| current.internal_id <= deleted);
-                    if is_current {
-                        if let Some((_, loc)) = self.locations.remove(&external_id) {
+                    if is_current
+                        && let Some((_, loc)) = self.locations.remove(&external_id) {
                             self.internal_to_external.remove(&loc.internal_id);
                         }
-                    }
                     let entry = deleted_versions
                         .entry(external_id.clone())
                         .or_insert(deleted);
@@ -640,7 +637,7 @@ impl BinaryDocumentStore {
     fn append_delete(&self, external_id: &str, internal_id: DocId) -> io::Result<()> {
         let file = OpenOptions::new()
             .append(true)
-            .open(&self.current_segment_path())?;
+            .open(self.current_segment_path())?;
         let mut writer = BufWriter::new(file);
 
         write_u8(&mut writer, OP_DELETE)?;
@@ -681,6 +678,7 @@ impl DocumentStore for BinaryDocumentStore {
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
             let len = (writer.position() - doc_offset) as u32;
+            self.highest_id.fetch_max( doc.internal_id, Ordering::Relaxed);
             self.internal_to_external
                 .insert(doc.internal_id, doc.external_id.clone());
             self.locations.insert(
@@ -692,8 +690,9 @@ impl DocumentStore for BinaryDocumentStore {
                     len,
                 },
             );
-
             self.docs.insert(doc.external_id.clone(), doc);
+        
+           
         }
 
         writer.flush()?;
@@ -731,6 +730,7 @@ impl DocumentStore for BinaryDocumentStore {
             self.internal_to_external.remove(&loc.internal_id);
         }
         self.docs.invalidate(external_id);
+        self.highest_id.fetch_max(internal_id, Ordering::Relaxed);
         Ok(())
     }
 
@@ -771,8 +771,7 @@ impl DocumentStore for BinaryDocumentStore {
                         let is_current = self
                             .locations
                             .get(&doc.external_id)
-                            .map(|loc| loc.segment == id && loc.offset == doc_offset)
-                            .unwrap_or(false);
+                            .is_some_and(|loc| loc.segment == id && loc.offset == doc_offset);
                         if is_current {
                             f(&doc)?;
                         }
@@ -955,7 +954,7 @@ pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<Completed
         }
         record.resize(location.len as usize, 0);
         reader.read_exact(&mut record)?;
-        *position += location.len as u64;
+        *position += u64::from(location.len);
 
         let id_bytes = external_id.as_bytes();
         let stored_id_len = record
@@ -976,7 +975,7 @@ pub fn run_segment_compaction(job: SegmentCompactionJob) -> io::Result<Completed
         write_u8(&mut writer, OP_PUT)?;
         let offset = writer.position();
         writer.write_all(&record)?;
-        throttle.consume((location.len as u64) + 1);
+        throttle.consume(u64::from(location.len) + 1);
 
         new_locations.push((
             external_id.clone(),

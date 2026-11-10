@@ -42,4 +42,12 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
     Ok(())
 }
+pub fn tmp_path_for(path: &Path) -> PathBuf {
+    with_suffix(path, ".tmp")
+}
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
 pub mod hash;

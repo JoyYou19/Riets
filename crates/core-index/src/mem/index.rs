@@ -141,8 +141,7 @@ impl SearchIndex for MemIndex {
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.terms
             .get(&TermKey::new(term, xpath))
-            .map(|list| list.len() as u32)
-            .unwrap_or(0)
+            .map_or(0, |list| list.len() as u32)
     }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
@@ -185,15 +184,13 @@ impl SearchStats for MemIndex {
     fn doc_count(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.doc_count)
-            .unwrap_or(0)
+            .map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.total_doc_len)
-            .unwrap_or(0)
+            .map_or(0, |s| s.total_doc_len)
     }
     fn doc_range(&self) -> Option<(DocId, DocId)> {
         self.doc_id_range()
@@ -386,15 +383,12 @@ impl MemIndex {
             .insert((doc_id, field.xpath), field.doc_len);
 
         let stats = self.field_stats.entry(field.xpath).or_default();
-        match old {
-            Some(old_len) => {
-                stats.total_doc_len =
-                    stats.total_doc_len - (old_len as u64) + (field.doc_len as u64);
-            }
-            None => {
-                stats.doc_count += 1;
-                stats.total_doc_len += field.doc_len as u64;
-            }
+        if let Some(old_len) = old {
+            stats.total_doc_len =
+                stats.total_doc_len - u64::from(old_len) + u64::from(field.doc_len);
+        } else {
+            stats.doc_count += 1;
+            stats.total_doc_len += u64::from(field.doc_len);
         }
 
         for term in field.terms {

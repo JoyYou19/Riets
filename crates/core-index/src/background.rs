@@ -10,7 +10,7 @@ static POOL: OnceLock<ThreadPool> = OnceLock::new();
 /// The shared background pool, one thread per core.
 pub fn background_pool() -> &'static ThreadPool {
     POOL.get_or_init(|| {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         ThreadPoolBuilder::new()
             .num_threads(threads)
             .thread_name(|i| format!("background-{i}"))

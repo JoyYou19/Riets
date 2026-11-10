@@ -121,7 +121,7 @@ pub(crate) async fn auth_middleware(
         .headers()
         .get("X-Corelamo-Key")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     let Some(token) = token else {
         warn!(log, "rejected request: missing auth token";
@@ -151,26 +151,23 @@ pub(crate) async fn auth_middleware(
         auth.authenticate(&Token(token))
     }; // <- auth (the lock guard) is dropped here, before any .await
 
-    match principal {
-        Some(principal) => {
-            request.extensions_mut().insert(principal);
-            next.run(request).await
-        }
-        None => {
-            // never log the request itself: its headers hold the key
-            warn!(log, "rejected request: invalid or expired token";
-        "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
-            let mut response = HttpError::from_corelamo(
-                CorelamoError::Unauthorized("invalid or expired token".to_string()),
-                &ctx,
-            )
-            .into_response();
-            response.headers_mut().insert(
-                header::WWW_AUTHENTICATE,
-                HeaderValue::from_static("Corelamo-Key"),
-            );
-            response
-        }
+    if let Some(principal) = principal {
+        request.extensions_mut().insert(principal);
+        next.run(request).await
+    } else {
+        // never log the request itself: its headers hold the key
+        warn!(log, "rejected request: invalid or expired token";
+    "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
+        let mut response = HttpError::from_corelamo(
+            CorelamoError::Unauthorized("invalid or expired token".to_string()),
+            &ctx,
+        )
+        .into_response();
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Corelamo-Key"),
+        );
+        response
     }
 }
 

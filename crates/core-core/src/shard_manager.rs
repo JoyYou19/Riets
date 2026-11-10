@@ -80,7 +80,7 @@ const MAX_RESULTS_SIZE: usize = 1000;
 /// replace the query on its own ("batmna" -> "batman"); below that it is only suggested.
 const CORRECTION_DOMINANCE: u32 = 20;
 /// True when `best` is clearly what was meant: every other candidate at the same or a smaller
-/// edit distance is in at most 1/CORRECTION_DOMINANCE as many documents.
+/// edit distance is in at most `1/CORRECTION_DOMINANCE` as many documents.
 const CONTEXT_CANDIDATES: usize = 8;
 /// A correction chosen by context is trusted when its documents with the other words
 /// outnumber the next candidate's this many times.
@@ -217,7 +217,7 @@ impl ShardManager {
         let synonyms = Arc::new(synonym_registry.open_database(&root)?);
 
         for shard_id in 0..shard_count {
-            let shard_root = shards_dir.join(format!("shard-{}", shard_id));
+            let shard_root = shards_dir.join(format!("shard-{shard_id}"));
             let db = ShardDb::create_shard(
                 shard_root,
                 &root,
@@ -396,15 +396,12 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
-        let wanted: Vec<(&String, FieldKind)> = fields
-            .iter()
-            .map(|(xpath, _)| {
+        let wanted: Vec<(&String, FieldKind)> = fields.keys().map(|xpath| {
                 let kind = policy
                     .fields
                     .iter()
                     .find(|f| f.name == *xpath)
-                    .map(|f| f.kind.clone())
-                    .unwrap_or(FieldKind::None);
+                    .map_or(FieldKind::None, |f| f.kind);
                 (xpath, kind)
             })
             .collect();
@@ -465,7 +462,7 @@ impl ShardManager {
             for entry in fs::read_dir(&logs_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_file() && path.extension().map_or(false, |e| e == "log") {
+                if path.is_file() && path.extension().is_some_and(|e| e == "log") {
                     fs::remove_file(&path)?;
                 }
             }
@@ -504,7 +501,7 @@ impl ShardManager {
     }
 
     pub fn all_running(&self) -> bool {
-        self.shards.iter().all(|h| h.is_running())
+        self.shards.iter().all(ShardHandle::is_running)
     }
 
     #[timed(database_lifecycle)]
@@ -1070,7 +1067,7 @@ impl ShardManager {
 
     pub fn stats(&self) -> DatabaseStats {
         let mut stats = self.db_stats.snapshot();
-        stats.restoring = self.shards.iter().any(|h| h.is_restoring());
+        stats.restoring = self.shards.iter().any(ShardHandle::is_restoring);
         stats
     }
 
@@ -1080,12 +1077,11 @@ impl ShardManager {
         let mut changed = false;
 
         for (xpath, kind) in all_fields.get_fields_mut().iter_mut() {
-            if let Some(field) = policy.fields.iter().find(|f| f.name == *xpath) {
-                if *kind != field.kind {
-                    *kind = field.kind.clone();
+            if let Some(field) = policy.fields.iter().find(|f| f.name == *xpath)
+                && *kind != field.kind {
+                    *kind = field.kind;
                     changed = true;
                 }
-            }
         }
 
         if changed {
@@ -1178,7 +1174,7 @@ impl ShardManager {
 
         let mut handles = Vec::new();
         for (idx, shard_ids) in by_shard {
-            let ids: Vec<String> = shard_ids.iter().map(|s| s.to_string()).collect();
+            let ids: Vec<String> = shard_ids.iter().map(|s| (*s).clone()).collect();
             let return_fields = command.return_fields.clone();
             let policy = policy.clone();
             let shard = self.shards[idx].clone();
@@ -1269,7 +1265,7 @@ impl ShardManager {
                 })
                 .collect(),
         );
-        let no_fuzzy = Arc::new(full.iter().map(|p| p.without_fuzzy()).collect());
+        let no_fuzzy = Arc::new(full.iter().map(RankPlan::without_fuzzy).collect());
         (full, no_fuzzy)
     }
 
@@ -1362,7 +1358,7 @@ impl ShardManager {
         command: &SearchCommand,
         page: PageRequest,
     ) -> Result<CompiledSearch, CorelamoError> {
-        if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(|f| f.is_empty()) {
+        if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(indexmap::IndexMap::is_empty) {
             return Err(CorelamoError::InvalidData(
                 "Search for something not nothing....".into(),
             ));
@@ -1743,7 +1739,7 @@ impl ShardManager {
         }
 
         // Nothing to back up (no shard produced a manifest): remove the empty directory.
-        if manifests.iter().all(|m| m.is_none()) {
+        if manifests.iter().all(Option::is_none) {
             let _ = fs::remove_dir_all(&backup_root);
         }
         Ok(manifests)
@@ -2444,7 +2440,6 @@ impl ShardManager {
                                 }
                             }
                         }
-                    }
                     hit.highlights = highlights;
                 }
                 resolved
@@ -2645,7 +2640,7 @@ fn fuse_keeping_named(
 }
 
 /// Reciprocal Rank Fusion of the word ranking and the vector ranking: every document scores
-/// Σ 1 / (RRF_K + rank) over the lists it appears in. It only uses ranks, so BM25 and cosine
+/// Σ 1 / (`RRF_K` + rank) over the lists it appears in. It only uses ranks, so BM25 and cosine
 /// scores never need to be on the same scale. `add_vector_only` adds documents only the vector
 /// side found (they carry no sort keys, so sorted searches pass false). Fused scores are
 /// scaled so the best is 1.0, the scale blended sorting expects; all hits share tier 0.

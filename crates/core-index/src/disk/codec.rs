@@ -16,11 +16,11 @@ pub fn push_var_u64(out: &mut Vec<u8>, mut value: u64) {
 }
 
 pub fn push_var_u32(out: &mut Vec<u8>, value: u32) {
-    push_var_u64(out, value as u64);
+    push_var_u64(out, u64::from(value));
 }
 
 pub fn push_var_u16(out: &mut Vec<u8>, value: u16) {
-    push_var_u64(out, value as u64);
+    push_var_u64(out, u64::from(value));
 }
 
 pub fn read_var_u64(input: &[u8], offset: &mut usize) -> io::Result<u64> {
@@ -38,7 +38,7 @@ pub fn read_var_u64(input: &[u8], offset: &mut usize) -> io::Result<u64> {
         let byte = input[*offset];
         *offset += 1;
 
-        value |= ((byte & 0x7f) as u64) << shift;
+        value |= u64::from(byte & 0x7f) << shift;
 
         if byte & 0x80 == 0 {
             return Ok(value);

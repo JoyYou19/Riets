@@ -64,7 +64,7 @@ struct ProgressWriter<'a, W> {
     inner: W,
     progress: Option<&'a BackupProgress>,
 }
-impl<'a, W: Write> Write for ProgressWriter<'a, W> {
+impl<W: Write> Write for ProgressWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let n = self.inner.write(buf)?;
         if let Some(progress) = self.progress {
@@ -91,11 +91,11 @@ impl From<simd_json::Error> for BackupError {
 impl std::fmt::Display for BackupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackupError::IoError(e) => write!(f, "IO error: {}", e),
-            BackupError::SerdeError(e) => write!(f, "Serde error: {}", e),
-            BackupError::BincodeError(e) => write!(f, "Bincode error: {}", e),
-            BackupError::WalError(e) => write!(f, "WAL error: {}", e),
-            BackupError::CorruptRecord(e) => write!(f, "Corrupt WAL record: {}", e),
+            BackupError::IoError(e) => write!(f, "IO error: {e}"),
+            BackupError::SerdeError(e) => write!(f, "Serde error: {e}"),
+            BackupError::BincodeError(e) => write!(f, "Bincode error: {e}"),
+            BackupError::WalError(e) => write!(f, "WAL error: {e}"),
+            BackupError::CorruptRecord(e) => write!(f, "Corrupt WAL record: {e}"),
             BackupError::NoBackupChain => {
                 write!(f, "Could not resolve a full backup at chain root")
             }
@@ -103,11 +103,7 @@ impl std::fmt::Display for BackupError {
             BackupError::ChainGap { parent_id, parent_end, child_id, child_start } =>
                 write!(
                     f,
-                    "Gap in chain: {} ends at {} but {} starts at {}",
-                    parent_id,
-                    parent_end,
-                    child_id,
-                    child_start
+                    "Gap in chain: {parent_id} ends at {parent_end} but {child_id} starts at {child_start}"
                 ),
         }
     }
@@ -136,9 +132,9 @@ impl BackupManager {
             if let Ok(parsed) = simd_json::from_slice::<simd_json::OwnedValue>(&mut buf) {
                 let segment = parsed["last_segment_id"]
                     .as_u64()
-                    .unwrap_or(last_segment_id as u64) as u32;
+                    .unwrap_or(u64::from(last_segment_id)) as u32;
                 let offset = parsed["last_segment_offset"].as_u64().unwrap_or(0);
-                let id = parsed["last_backup_id"].as_str().map(|s| s.to_string());
+                let id = parsed["last_backup_id"].as_str().map(std::string::ToString::to_string);
                 (segment, offset, id)
             } else {
                 (last_segment_id, last_segment_offset, None)
@@ -150,7 +146,7 @@ impl BackupManager {
                 .ok()
                 .into_iter()
                 .flatten()
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .filter_map(|e| {
                     let manifest_path = e.path().join(&shard_name).join("manifest.json");
                     let text = fs::read_to_string(&manifest_path).ok()?;
@@ -253,7 +249,7 @@ impl BackupManager {
                 last_backup_segment: last_segment,
                 last_backup_offset: last_segment_offset,
             };
-            write_manifest_atomic(&backup_path, &manifest)?;
+            write_manifest_atomic(backup_path, &manifest)?;
             Ok(manifest)
         })();
 
@@ -550,7 +546,7 @@ impl BackupManager {
         // Collect every backup on disk.
         let all_manifests: Vec<BackupManifest> = fs
             ::read_dir(&self.backup_dir)?
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|e| {
                 let manifest_path = e.path().join(&self.shard_name).join("manifest.json");
                 let text = fs::read_to_string(&manifest_path).ok()?;
@@ -590,7 +586,7 @@ impl BackupManager {
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, BackupError> {
         let mut all: Vec<BackupManifest> = fs
             ::read_dir(&self.backup_dir)?
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|e| {
                 let text = fs
                     ::read_to_string(e.path().join(&self.shard_name).join("manifest.json"))
@@ -690,7 +686,7 @@ fn tar_dir(
     let mut builder = tar::Builder::new(writer);
     builder.append_dir_all(entry_name, src)?;
     let writer = builder.into_inner()?; // tar end-of-archive blocks
-    let encoder = writer.inner.into_inner().map_err(|e| e.into_error())?; // buffered bytes
+    let encoder = writer.inner.into_inner().map_err(std::io::IntoInnerError::into_error)?; // buffered bytes
     let file = encoder.finish()?; // gzip trailer
     file.sync_all()
 }

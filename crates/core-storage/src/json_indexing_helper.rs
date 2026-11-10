@@ -202,7 +202,7 @@ fn index_leaves(
                     if field.searchable() {
                         parts.push(DocumentPart {
                             xpath: field.xpath(policy),
-                            text: raw.to_string(),
+                            text: raw.clone(),
                             analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,
@@ -222,7 +222,7 @@ fn index_leaves(
                     if field.searchable() {
                         parts.push(DocumentPart {
                             xpath: field.xpath(policy),
-                            text: raw.to_string(),
+                            text: raw.clone(),
                             analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,

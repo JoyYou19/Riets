@@ -4,13 +4,13 @@
 //! Layout (little-endian), every section starting on a 64-byte boundary:
 //! +----------------------+
 //! | header               |  magic[8] "CLHNSW02", u32 version, u32 reserved,
-//! |                      |  u64 vector_file_id, u32 node_count, u32 dims,
-//! |                      |  u16 max_links_upper, u16 max_links_level0, u32 entry_node,
-//! |                      |  u8 top_level, u8[3] reserved, u32 upper_slot_count
-//! | node levels          |  u8 * node_count            highest level of each node
-//! | upper slot starts    |  u32 * node_count           first upper slot of each node
-//! | level 0 lists        |  slot * node_count          slot = u32 len + u32[max_links_level0]
-//! | upper level lists    |  slot * upper_slot_count    slot = u32 len + u32[max_links_upper]
+//! |                      |  u64 `vector_file_id`, u32 `node_count`, u32 dims,
+//! |                      |  u16 `max_links_upper`, u16 `max_links_level0`, u32 `entry_node`,
+//! |                      |  u8 `top_level`, u8[3] reserved, u32 `upper_slot_count`
+//! | node levels          |  u8 * `node_count`            highest level of each node
+//! | upper slot starts    |  u32 * `node_count`           first upper slot of each node
+//! | level 0 lists        |  slot * `node_count`          slot = u32 len + u32[`max_links_level0`]
+//! | upper level lists    |  slot * `upper_slot_count`    slot = u32 len + u32[`max_links_upper`]
 //! +----------------------+
 //!
 //! A node at level L >= 1 owns L consecutive upper slots: its list on level l is at
@@ -35,8 +35,8 @@ pub(crate) const MAX_LEVEL: u8 = 16;
 /// Upper slot start of a node that only lives on level 0.
 pub(crate) const NO_UPPER_SLOTS: u32 = u32::MAX;
 
-/// magic + version + reserved + vector_file_id + node_count + dims + max_links_upper +
-/// max_links_level0 + entry_node + top_level + reserved + upper_slot_count
+/// magic + version + reserved + `vector_file_id` + `node_count` + dims + `max_links_upper` +
+/// `max_links_level0` + `entry_node` + `top_level` + reserved + `upper_slot_count`
 const HEADER_FIXED_LENGTH: usize = 8 + 4 + 4 + 8 + 4 + 4 + 2 + 2 + 4 + 1 + 3 + 4;
 
 /// Everything stored in the header.
@@ -143,9 +143,9 @@ pub(crate) struct GraphLayout {
     pub(crate) level0_lists_offset: usize,
     pub(crate) upper_lists_offset: usize,
     pub(crate) total_length: usize,
-    /// Bytes per level-0 slot: (1 + max_links_level0) * 4.
+    /// Bytes per level-0 slot: (1 + `max_links_level0`) * 4.
     pub(crate) level0_slot_length: usize,
-    /// Bytes per upper slot: (1 + max_links_upper) * 4.
+    /// Bytes per upper slot: (1 + `max_links_upper`) * 4.
     pub(crate) upper_slot_length: usize,
 }
 

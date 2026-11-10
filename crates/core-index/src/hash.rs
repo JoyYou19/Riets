@@ -1,6 +1,6 @@
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-/// Platform-independent 64-bit hash: FNV-1a followed by the MurmurHash3 finaliser, so every
+/// Platform-independent 64-bit hash: FNV-1a followed by the `MurmurHash3` finaliser, so every
 /// input bit affects every output bit.
 pub fn stable_hash64(bytes: &[u8]) -> u64 {
     fmix64(fnv1a64(bytes))

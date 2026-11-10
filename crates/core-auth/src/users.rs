@@ -53,14 +53,11 @@ impl<S: DocumentStore> UserDatabase<S> {
     pub fn add_user(
         &mut self,
         username: &str,
-        password: &str,
+        hashed: String,
         roles: Vec<String>,
     ) -> io::Result<()> {
-        // argon2 0.6 draws the salt from the OS RNG itself, so an RNG failure surfaces here
-        let hashed = Argon2::default()
-            .hash_password(password.as_bytes())
-            .map_err(|e| io::Error::other(format!("password hashing failed: {e}")))?
-            .to_string();
+  
+
         self.put_user(username, hashed, &roles)
     }
 
@@ -88,7 +85,7 @@ impl<S: DocumentStore> UserDatabase<S> {
         Some((password, roles))
     }
 
-    pub fn update_password(&mut self, username: &str, new_password: &str) -> bool {
+    pub fn update_password(&mut self, username: &str, hashed: String) -> bool {
         let Ok(Some(doc)) = self.db.get_document(username) else {
             return false;
         };
@@ -97,7 +94,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             return false;
         };
 
-        let hashed = match Argon2::default().hash_password(new_password.as_bytes()) {
+        let hashed = match Argon2::default().hash_password(hashed.as_bytes()) {
             Ok(hash) => hash.to_string(),
             Err(_) => {
                 return false;
@@ -124,15 +121,12 @@ impl<S: DocumentStore> UserDatabase<S> {
             .flatten()
             .and_then(|doc| Self::parse_user(&doc));
 
-        let (stored_hash, roles) = match user {
-            Some(user) => user,
-            None => {
-                // same work as a real check, so the time does not reveal whether the user exists
-                if let Some(parsed) = dummy_hash().and_then(|hash| PasswordHash::new(hash).ok()) {
-                    let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
-                }
-                return None;
+        let (stored_hash, roles) = if let Some(user) = user { user } else {
+            // same work as a real check, so the time does not reveal whether the user exists
+            if let Some(parsed) = dummy_hash().and_then(|hash| PasswordHash::new(hash).ok()) {
+                let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
             }
+            return None;
         };
 
         let parsed_hash = PasswordHash::new(&stored_hash).ok()?;

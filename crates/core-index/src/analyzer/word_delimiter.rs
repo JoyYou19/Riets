@@ -15,9 +15,9 @@
 //!   3. digit change — letter ↔ digit (only when `split_numerics`)
 //!
 //!   - all fragments are emitted (including 1-char); length filtering is a
-//!     separate post-split filter (min_length / max_length)
+//!     separate post-split filter (`min_length` / `max_length`)
 //!
-//! # Examples (literal_symbols = `_`)
+//! # Examples (`literal_symbols` = `_`)
 //!
 //! | input             | flags          | tokens                                        |
 //! |-------------------|----------------|-----------------------------------------------|
@@ -26,10 +26,10 @@
 //! | `king's`          | —              | `king's` `king` `kings`                       |
 //! | `o'clock`         | —              | `o'clock` `clock` `oclock`                    |
 //! | `C++`             | —              | `C++` `C`                                     |
-//! | `getHTTPResponse` | split_case     | `getHTTPResponse` `get` `HTTP` `Response`     |
-//! | `XMLHttpRequest`  | split_case     | `XMLHttpRequest` `XML` `Http` `Request`       |
-//! | `utf8`            | split_numerics | `utf8` `utf` '8'                              |
-//! | `page42`          | split_numerics | `page42` `page` `42`                          |
+//! | `getHTTPResponse` | `split_case`     | `getHTTPResponse` `get` `HTTP` `Response`     |
+//! | `XMLHttpRequest`  | `split_case`     | `XMLHttpRequest` `XML` `Http` `Request`       |
+//! | `utf8`            | `split_numerics` | `utf8` `utf` '8'                              |
+//! | `page42`          | `split_numerics` | `page42` `page` `42`                          |
 //!
 //! # Position layout
 //! `original` and `joined` sit at the chunk's position and span all parts;
@@ -78,7 +78,7 @@ fn split_on_case(segment: &str) -> Vec<(usize, usize)> {
         (prev.is_lowercase() && curr.is_uppercase())
             || (prev.is_uppercase()
                 && curr.is_uppercase()
-                && next.map_or(false, |c| c.is_lowercase()))
+                && next.is_some_and(char::is_lowercase))
     })
 }
 

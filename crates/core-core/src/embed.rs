@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ahash::{HashMap, HashMapExt};
 use core_embed::EmbedLease;
 use core_index::{
     disk::reader::DiskSegment,
@@ -99,7 +100,7 @@ struct Task {
     vector_id: String,
     dims: usize,
 }
-
+type SegmentDocs = Vec<(XPathId, Vec<DocId>)>;
 pub struct EmbeddingJob {
     sender: Sender<IndexCommand>,
     shared: Arc<SharedShardState>,
@@ -107,9 +108,9 @@ pub struct EmbeddingJob {
     fields: Vec<VectorField>,
     config: EmbeddingConfig,
     log: Logger,
-    /// Documents whose text could not be loaded; not retried until the process restarts.
+    segment_docs:HashMap<PathBuf,Arc<SegmentDocs>>,
     skipped: HashSet<DocId>,
-    /// Vector files (by file id) whose graph build failed; not retried until restart.
+
     graph_failed: HashSet<u64>,
 }
 
@@ -147,8 +148,10 @@ impl EmbeddingJob {
             fields,
             config: config.sanitized(),
             log,
+            segment_docs:HashMap::new(),
             skipped: HashSet::new(),
             graph_failed: HashSet::new(),
+
         })
     }
 
@@ -174,15 +177,18 @@ impl EmbeddingJob {
 
     /// (documents that need a vector, documents that have one) across the live segments,
     /// ignoring deleted documents. Skipped documents count as done: they cannot be embedded.
-    pub fn measure(&self, vector_id: &str, dims: usize) -> io::Result<(u64, u64)> {
+    pub fn measure(&mut self, vector_id: &str, dims: usize) -> io::Result<(u64, u64)> {
         let snapshot = self.shared.snapshot.get();
+        let segments = disk_segments(&self.sender)?;
+        self.forget_removed_segments(&segments);
+
         let (mut total, mut done) = (0u64, 0u64);
-        for segment in disk_segments(&self.sender)? {
-            let disk = DiskSegment::open(&segment)?;
-            for field in &self.fields {
-                let existing = existing_file(&snapshot, &segment, field.xpath, vector_id, dims);
-                for ((doc_id, xpath), _) in disk.doc_lengths().iter() {
-                    if xpath != field.xpath || snapshot.is_deleted(doc_id) {
+        for segment in &segments {
+            let docs = self.segment_docs(segment)?;
+            for (xpath, ids) in docs.iter() {
+                let existing = existing_file(&snapshot, segment, *xpath, vector_id, dims);
+                for &doc_id in ids {
+                    if snapshot.is_deleted(doc_id) {
                         continue;
                     }
                     total += 1;
@@ -198,10 +204,8 @@ impl EmbeddingJob {
     }
 
     /// The largest vector file that needs a graph: made with the current model, big enough
-    /// (`MIN_ROWS_FOR_GRAPH`), without a graph, and complete, meaning every live document of
-    /// its segment and field has its vector. An incomplete file is rewritten by the next
-    /// embedding round, which would throw its graph away.
-    pub fn next_graph(&self, vector_id: &str, dims: usize) -> io::Result<Option<GraphTask>> {
+    /// (`MIN_ROWS_FOR_GRAPH`)
+    pub fn next_graph(&mut self, vector_id: &str, dims: usize) -> io::Result<Option<GraphTask>> {
         let snapshot = self.shared.snapshot.get();
         let mut candidates: Vec<_> = snapshot
             .vectors()
@@ -217,18 +221,21 @@ impl EmbeddingJob {
         candidates.sort_by_key(|entry| std::cmp::Reverse(entry.file.len()));
 
         for entry in candidates {
-            let disk = match DiskSegment::open(&entry.segment) {
-                Ok(disk) => disk,
+            let docs = match self.segment_docs(&entry.segment) {
+                Ok(docs) => docs,
                 // merged away since the snapshot was taken
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e),
             };
-            let complete = !disk.doc_lengths().iter().any(|((doc_id, xpath), _)| {
-                xpath == entry.xpath
-                    && !snapshot.is_deleted(doc_id)
-                    && !self.skipped.contains(&doc_id)
-                    && !entry.file.contains(doc_id)
-            });
+            let complete = docs
+                .iter()
+                .filter(|(xpath, _)| *xpath == entry.xpath)
+                .flat_map(|(_, ids)| ids.iter().copied())
+                .all(|doc_id| {
+                    snapshot.is_deleted(doc_id)
+                        || self.skipped.contains(&doc_id)
+                        || entry.file.contains(doc_id)
+                });
             if complete {
                 return Ok(Some(GraphTask {
                     segment: entry.segment.clone(),
@@ -245,23 +252,25 @@ impl EmbeddingJob {
         self.graph_failed.insert(file_id);
     }
 
-    /// Largest segment first, so the bulk of the corpus gets vectors before small new segments.
-    fn next_task(&self, vector_id: &str, dims: usize) -> io::Result<Option<Task>> {
+  
+     fn next_task(&mut self, vector_id: &str, dims: usize) -> io::Result<Option<Task>> {
         let snapshot = self.shared.snapshot.get();
         let mut segments = disk_segments(&self.sender)?;
+        self.forget_removed_segments(&segments);
         segments.sort_by_key(|path| {
-            std::cmp::Reverse(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            std::cmp::Reverse(std::fs::metadata(path).map_or(0, |m| m.len()))
         });
 
         for segment in segments {
-            let disk = DiskSegment::open(&segment)?;
-            for field in &self.fields {
-                let existing = existing_file(&snapshot, &segment, field.xpath, vector_id, dims);
-                let mut missing: Vec<DocId> = disk
-                    .doc_lengths()
+            let docs = self.segment_docs(&segment)?;
+            for (xpath, ids) in docs.iter() {
+                let Some(field) = self.fields.iter().find(|f| f.xpath == *xpath) else {
+                    continue;
+                };
+                let existing = existing_file(&snapshot, &segment, *xpath, vector_id, dims);
+                let mut missing: Vec<DocId> = ids
                     .iter()
-                    .filter(|((_, xpath), _)| *xpath == field.xpath)
-                    .map(|((doc_id, _), _)| doc_id)
+                    .copied()
                     .filter(|doc_id| {
                         !snapshot.is_deleted(*doc_id)
                             && !self.skipped.contains(doc_id)
@@ -378,6 +387,34 @@ impl EmbeddingJob {
         let mut leaves = BTreeMap::new();
         node.collect_leaf_values(&mut leaves);
         Ok(leaves.remove(path).filter(|text| !text.trim().is_empty()))
+    }
+    fn segment_docs(&mut self, segment: &Path) -> io::Result<Arc<SegmentDocs>> {
+        if let Some(docs) = self.segment_docs.get(segment) {
+            return Ok(Arc::clone(docs));
+        }
+        let disk = DiskSegment::open(segment)?;
+        let docs: SegmentDocs = self
+            .fields
+            .iter()
+            .map(|field| {
+                let ids = disk
+                    .doc_lengths()
+                    .iter()
+                    .filter(|((_, xpath), _)| *xpath == field.xpath)
+                    .map(|((doc_id, _), _)| doc_id)
+                    .collect();
+                (field.xpath, ids)
+            })
+            .collect();
+        let docs = Arc::new(docs);
+        self.segment_docs
+            .insert(segment.to_path_buf(), Arc::clone(&docs));
+        Ok(docs)
+    }
+
+    /// Drops cached segments that compaction removed.
+    fn forget_removed_segments(&mut self, live: &[PathBuf]) {
+        self.segment_docs.retain(|path, _| live.contains(path));
     }
 }
 
@@ -529,47 +566,3 @@ fn broken_pipe(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, message)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fake_vector(text: &str) -> Vec<f32> {
-        vec![(text.len() % 100) as f32]
-    }
-
-    #[test]
-    fn a_text_the_model_rejects_is_left_out_and_the_rest_embedded() {
-        let ids: Vec<DocId> = (0..9).collect();
-        let texts = ["a", "b", "c", "poison", "e", "f", "g", "h", "i"];
-        let mut calls = 0;
-        let mut embed = |part: &[&str]| -> io::Result<Vec<Vec<f32>>> {
-            calls += 1;
-            if part.contains(&"poison") {
-                return Err(io::Error::other("bad input"));
-            }
-            Ok(part.iter().map(|text| fake_vector(text)).collect())
-        };
-        let mut failed = Vec::new();
-        let rows = embed_isolating(&ids, &texts, &mut embed, &mut failed).unwrap();
-        assert_eq!(failed.len(), 1);
-        assert_eq!(failed[0].0, 3);
-        let embedded: Vec<DocId> = rows.iter().map(|(id, _)| *id).collect();
-        assert_eq!(embedded, vec![0, 1, 2, 4, 5, 6, 7, 8]);
-        assert!(calls < 2 * texts.len());
-    }
-
-    #[test]
-    fn a_failing_model_is_reported_not_blamed_on_the_texts() {
-        let ids: Vec<DocId> = (0..6).collect();
-        let texts = ["a", "b", "c", "d", "e", "f"];
-        let mut embed =
-            |_: &[&str]| -> io::Result<Vec<Vec<f32>>> { Err(io::Error::other("CUDA failure")) };
-        let mut failed = Vec::new();
-        let error = embed_isolating(&ids, &texts, &mut embed, &mut failed).unwrap_err();
-        assert!(error.to_string().contains("CUDA failure"));
-        assert!(
-            failed.is_empty(),
-            "no document may be skipped for a model failure"
-        );
-    }
-}

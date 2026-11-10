@@ -15,7 +15,8 @@ use super::layout::{
 };
 use super::walk::{GraphWalk, NeighbourLists, ScoredNode, SimilarityToTarget, with_visited_set};
 use crate::hash::fmix64;
-use crate::vector::file::{VectorFile, tmp_path_for, write_zero_padding};
+use crate::tmp_path_for;
+use crate::vector::file::{VectorFile, write_zero_padding};
 use crate::vector::kernel::dot_f32;
 
 /// Files with fewer rows are scanned instead: an int8 scan of 20k rows takes about a
@@ -114,7 +115,7 @@ struct GraphUnderConstruction {
     entry_node: u32,
     /// Highest level of each node.
     node_levels: Vec<u8>,
-    /// `neighbour_lists[node][level]`, for levels 0..=node_levels[node].
+    /// `neighbour_lists[node][level]`, for levels `0..=node_levels`[node].
     neighbour_lists: Vec<Box<[Mutex<Vec<u32>>]>>,
 }
 

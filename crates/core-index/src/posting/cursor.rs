@@ -8,7 +8,7 @@ use crate::{
 /// WAND and other posting list algorithms need to move through multiple sorted posting lists
 /// independently without creating new postinglists
 ///
-/// I sort them by doc_id the cursor can never move backwards
+/// I sort them by `doc_id` the cursor can never move backwards
 pub struct PostingCursor<'a> {
     postings: &'a [Posting],
     index: usize,

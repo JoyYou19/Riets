@@ -87,7 +87,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
         let threshold = if heap.len() < k {
             0
         } else {
-            heap.peek().map(|hit| hit.score).unwrap_or(0)
+            heap.peek().map_or(0, |hit| hit.score)
         };
 
         let mut accumulated_upper_bound = 0u64;
@@ -363,7 +363,7 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
         .collect();
     let mut current: Vec<Option<DocId>> = conjunctions
         .iter_mut()
-        .map(|conjunction| conjunction.next_match())
+        .map(FieldConjunction::next_match)
         .collect();
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
@@ -405,7 +405,7 @@ pub struct FormRef<'a> {
 }
 
 /// The query clauses within one field: a word has one form, a synonym group several. A clause may
-/// also hold forms of several fields (a word that may match in any of them, cross_fields): the
+/// also hold forms of several fields (a word that may match in any of them, `cross_fields)`: the
 /// forms of one field are next to each other.
 pub struct FieldClauses<'a> {
     pub clauses: Vec<Vec<FormRef<'a>>>,
@@ -623,7 +623,7 @@ const DIRECT_RESTRICT_MAX: usize = 4096;
 /// over every field and clause, of the clause's best weighted form in that field.
 ///
 /// `coverage: Some(share)` ranks by how much of the query a document covers, with one clause per
-/// query word (cross_fields): a clause is worth its word's idf, a document must be on clauses
+/// query word (`cross_fields)`: a clause is worth its word's idf, a document must be on clauses
 /// worth at least `share` of all of them, and its score is multiplied by (covered / all)², so
 /// missing a rare word costs much more than missing a common one. `None` adds the clauses up as
 /// they are (any clause is enough).
@@ -706,7 +706,7 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         let threshold = if heap.len() < k {
             0
         } else {
-            heap.peek().map(|hit| hit.score).unwrap_or(0)
+            heap.peek().map_or(0, |hit| hit.score)
         };
 
         // the first clause where the clauses up to it can both beat the threshold and cover
@@ -734,11 +734,10 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         let smallest_doc = clauses[0].doc_id().unwrap();
 
         if smallest_doc == pivot_doc {
-            if restrict.is_none_or(|docs| docs.contains(&pivot_doc)) {
-                if let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc) {
+            if restrict.is_none_or(|docs| docs.contains(&pivot_doc))
+                && let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc) {
                     push_top_k(&mut heap, pivot_doc, score, raw, matched_terms, k);
                 }
-            }
 
             for clause in &mut clauses {
                 clause.step_past(pivot_doc);
