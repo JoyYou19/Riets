@@ -319,7 +319,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &self.policy,
                 &mut self.array_row_allocator,
             );
-             self.index_worker
+            self.index_worker
                 .add_indexed_documents_wait(vec![indexed.analyze(&self.analyzer_set)])?;
         }
         let doc = StoredDocument {
@@ -343,8 +343,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 "batch_size must be greater than zero",
             ));
         }
-
-
 
         Ok(IndexPipeline {
             db: self,
@@ -694,11 +692,11 @@ fn next_local_id_for_shard<S: DocumentStore>(
 
     let stored_shard = shard_of(max_global_id);
 
-    eprintln!(
-        "max_internal_id={} highest_known_doc_id={}",
-        store.max_internal_id(),
-        index.highest_known_doc_id(),
-    );
+    // eprintln!(
+    //     "max_internal_id={} highest_known_doc_id={}",
+    //     store.max_internal_id(),
+    //     index.highest_known_doc_id(),
+    // );
 
     if stored_shard != shard_id {
         return Err(io::Error::new(

@@ -101,7 +101,7 @@ impl PostingList {
                     last.weight = last.weight.max(item.weight);
                     continue;
                 }
-
+            }
             merged.push(item);
         }
 

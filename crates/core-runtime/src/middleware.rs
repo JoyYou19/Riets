@@ -121,7 +121,7 @@ pub(crate) async fn auth_middleware(
         .headers()
         .get("X-Corelamo-Key")
         .and_then(|v| v.to_str().ok())
-        .map(std::string::ToString::to_string);
+        .map(ToString::to_string);
 
     let Some(token) = token else {
         warn!(log, "rejected request: missing auth token";

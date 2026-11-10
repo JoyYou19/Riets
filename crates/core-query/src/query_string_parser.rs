@@ -197,7 +197,7 @@ pub fn parse_json_query(v: &OwnedValue) -> Result<Query, CorelamoError> {
                         .into(),
                 ));
             }
-            let keys: Vec<&str> = obj.keys().map(std::string::String::as_str).collect();
+            let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
             Err(CorelamoError::InvalidData(format!(
                 "unknown query operator(s): {} — expected one of term/exact/fuzzy/phrase/range/same_element/AND/OR/WAND",
                 keys.join(", ")

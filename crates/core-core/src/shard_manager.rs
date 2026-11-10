@@ -396,7 +396,9 @@ impl ShardManager {
         }
 
         let policy = self.policy.read().clone();
-        let wanted: Vec<(&String, FieldKind)> = fields.keys().map(|xpath| {
+        let wanted: Vec<(&String, FieldKind)> = fields
+            .keys()
+            .map(|xpath| {
                 let kind = policy
                     .fields
                     .iter()
@@ -1078,10 +1080,11 @@ impl ShardManager {
 
         for (xpath, kind) in all_fields.get_fields_mut().iter_mut() {
             if let Some(field) = policy.fields.iter().find(|f| f.name == *xpath)
-                && *kind != field.kind {
-                    *kind = field.kind;
-                    changed = true;
-                }
+                && *kind != field.kind
+            {
+                *kind = field.kind;
+                changed = true;
+            }
         }
 
         if changed {
@@ -1358,7 +1361,12 @@ impl ShardManager {
         command: &SearchCommand,
         page: PageRequest,
     ) -> Result<CompiledSearch, CorelamoError> {
-        if is_blank_query(&command.query) && command.filters.as_ref().is_none_or(indexmap::IndexMap::is_empty) {
+        if is_blank_query(&command.query)
+            && command
+                .filters
+                .as_ref()
+                .is_none_or(indexmap::IndexMap::is_empty)
+        {
             return Err(CorelamoError::InvalidData(
                 "Search for something not nothing....".into(),
             ));
@@ -2440,7 +2448,8 @@ impl ShardManager {
                                 }
                             }
                         }
-                    hit.highlights = highlights;
+                        hit.highlights = highlights;
+                    }
                 }
                 resolved
             })
