@@ -12,7 +12,7 @@ use core_index::{
         index_worker::{IndexCommand, IndexingStats, ReindexProgress, ReindexingStats},
     },
     search::SearchIndex,
-    types::{DocId, ShardId},
+    types::{ARRAY_ROW_FLAG, DocId, ShardId},
 };
 use core_protocol::{
     command_reponse_definitions::{LookupCommand, LookupResponse},
@@ -192,7 +192,7 @@ impl ShardDb {
             })?;
 
         let log = logger::shard_logger(&root, &name);
-         match recover_interrupted_restore(&root) {
+        match recover_interrupted_restore(&root) {
             Ok(true) => warn!(log, "finished a restore interrupted by a crash"; "shard" => &name),
             Ok(false) => {}
             Err(e) => {
@@ -457,8 +457,8 @@ impl ShardDb {
             let segment = DiskSegment::open(&path)
                 .map_err(|e| CorelamoError::Internal(format!("reading segment failed: {e}")))?;
             for ((doc_id, _), _) in segment.doc_lengths().iter() {
-                if segment.doc_of_row(doc_id).is_some() {
-                    continue; // an array row of a document, not a document
+                if doc_id & ARRAY_ROW_FLAG != 0 {
+                    continue; // array row id, not a document id
                 }
                 if !live.contains(&doc_id) && !snapshot.is_deleted(doc_id) {
                     stale.insert(doc_id);
@@ -1465,6 +1465,7 @@ impl ShardDb {
         self.failed = false;
         Ok(())
     }
+
     
     fn publish_stats(&self) {
         let Ok(db) = self.db_ref() else {

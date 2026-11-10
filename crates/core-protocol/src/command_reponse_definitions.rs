@@ -322,7 +322,7 @@ impl ResponseData for SearchResponse {
             .docs
             .iter()
             .map(|(id, score, doc, highlights)| {
-                let data = doc.to_value(self.strip_id.as_deref())?;
+                let data = doc.value()?;
                 Ok(json!({ "id": id, "score": score, "data": data, "highlights": highlights }))
             })
             .collect::<Result<_, CorelamoError>>()?;
@@ -480,7 +480,7 @@ impl ResponseData for LookupResponse {
             .docs
             .iter()
             .map(|(id, doc)| {
-                let data = doc.to_value(self.strip_id.as_deref())?;
+                let data = doc.value()?;
                 Ok(json!({ "id": id, "data": data }))
             })
             .collect::<Result<_, CorelamoError>>()?;

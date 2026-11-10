@@ -6,9 +6,10 @@ use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
 use ahash::{HashMap, HashMapExt};
-use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::backup::{BackupManifest, BackupType};
+use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
+use core_index::analyzer::Analyzer;
 use core_index::analyzer::analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
@@ -27,13 +28,15 @@ use core_query::dictionary::{
 };
 use core_query::executor::{DidYouMeanReport, WordSuggestions};
 use core_query::highlight::{
-    HighlightMatcher, collect_highlight_matchers, field_texts, highlight_text,
+    field_texts, highlight_field, highlight_field_array, highlight_field_row_keyed,
+    highlight_field_row_keyed_flattened,
 };
 use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
-    FieldQuery, QueryGroup, compile_query, is_blank_query, parse_fuzziness, resolve_suggest_xpaths,
+    FieldQuery, QueryGroup, compile_query, field_analyzer, is_blank_query, parse_fuzziness,
+    resolve_suggest_xpaths,
 };
-use core_query::{CorpusStats, SearchHit, rank_order};
+use core_query::{CorpusStats, MatchedTerm, SearchHit, rank_order};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
@@ -42,6 +45,7 @@ use core_timing::timed;
 use crossbeam_channel::bounded;
 use parking_lot::{Mutex, RwLock};
 use simd_json::OwnedValue;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -1283,11 +1287,13 @@ impl ShardManager {
         let Some(page) = requested_page(command)? else {
             return Ok((Vec::new(), TotalHits::default(), None));
         };
+
         if let Some(request) = vector_request(&command.query)? {
             return self
                 .search_vectors_only(command, request, page.fetch, page.offset, page.limit)
                 .await;
         }
+
         let search = self.compile_search(command, page)?;
         let stats = self.collect_statistics(&search, &command.query).await?;
 
@@ -1322,6 +1328,7 @@ impl ShardManager {
 
         let more = shard_hits.some_full || shard_hits.items.len() > page.fetch;
         let mut items = merge_and_sort(&search, &stats.plans, shard_hits, vectors.as_deref());
+        let groups = Arc::clone(&search.groups);
         items.truncate(page.fetch);
         let hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
         let CompiledSearch {
@@ -1336,12 +1343,16 @@ impl ShardManager {
                 command,
                 &policy,
                 highlight,
+                groups,
+                &stats.shards,
+                Some(Arc::clone(&stats.corpus)),
+                Arc::clone(&stats.plans),
             )
             .await?;
         Ok((docs, total, suggestion))
     }
 
-    /// Turns the request into analyzed queries, filters, sorts, highlighting and rank plans.
+    //Turns the request into analyzed queries, filters, sorts, highlighting and rank plans.
     fn compile_search(
         &self,
         command: &SearchCommand,
@@ -1386,7 +1397,15 @@ impl ShardManager {
             window,
             word_fetch,
         );
-        let highlight = highlight_request(command, &policy, &groups)?;
+
+        let searched: HashSet<XPathId> = groups
+            .iter()
+            .flat_map(|g| g.ctxs.iter().map(|c| c.xpath))
+            .collect();
+        let highlight = {
+            let analyzers = self.analyzer_set.read();
+            highlight_request(command, &policy, &analyzers, &searched)?
+        };
         let sort_xpaths = sorts
             .as_ref()
             .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
@@ -2070,7 +2089,7 @@ impl ShardManager {
         .await
     }
     #[timed(restore)]
-        pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
         if !is_valid_backup_id(backup_id) {
             return Err(CorelamoError::InvalidData(format!(
                 "invalid backup id '{backup_id}'"
@@ -2084,16 +2103,15 @@ impl ShardManager {
 
         // 1. every shard unpacks into its staging folder; live data untouched
         let mut failures = Vec::new();
-         for shard in &self.shards {
+        for shard in &self.shards {
             if let Err(e) = shard.prepare_restore(backup_id, user.clone()).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
-        
         }
         if !failures.is_empty() {
             // 2. any failure: every shard drops its staging and runs on its old data again
             for shard in &self.shards {
-                 let _ = shard.abort_restore().await;
+                let _ = shard.abort_restore().await;
             }
             self.start().await?;
             return Err(CorelamoError::Internal(format!(
@@ -2107,7 +2125,7 @@ impl ShardManager {
         // 3. all prepared: swap in on every shard
         let mut failures = Vec::new();
         for shard in &self.shards {
-            if let Err(e) = shard.commit_restore(backup_id).await{
+            if let Err(e) = shard.commit_restore(backup_id).await {
                 failures.push(format!("shard {}: {}", shard.id(), e));
             }
         }
@@ -2136,7 +2154,7 @@ impl ShardManager {
         self.db_stats.finish_backup(ok);
     }
     //to check before restore if there are any backups
-     pub fn has_backup(&self, backup_id: &str) -> bool {
+    pub fn has_backup(&self, backup_id: &str) -> bool {
         is_valid_backup_id(backup_id) && self.backup_dir.join(backup_id).is_dir()
     }
 
@@ -2225,13 +2243,24 @@ impl ShardManager {
             })
             .collect();
         let (hits, total) = self
-            .resolve_page(just_hits, offset, limit, more, command, &policy, None)
+            .resolve_page(
+                just_hits,
+                offset,
+                limit,
+                more,
+                command,
+                &policy,
+                None,
+                Arc::new(Vec::new()),
+                &[],
+                None,
+                Arc::new(Vec::new()),
+            )
             .await?;
         Ok((hits, total, None))
     }
 
-    /// Loads the requested page of ranked hits as documents, with highlights when asked.
-    /// Shared by word, fused and vector-only searches.
+    //loads the requested page of ranked hits as documents, with highlights when asked.
     async fn resolve_page(
         &self,
         just_hits: Vec<SearchHit>,
@@ -2240,7 +2269,11 @@ impl ShardManager {
         more: bool,
         command: &SearchCommand,
         policy: &IndexPolicy,
-        highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)>,
+        highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
+        groups: Arc<Vec<QueryGroup>>,
+        prepared: &[Arc<PreparedShardSearch>],
+        corpus: Option<Arc<CorpusStats>>,
+        plans: Arc<Vec<RankPlan>>,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
         if offset >= just_hits.len() {
             return Ok((
@@ -2269,35 +2302,60 @@ impl ShardManager {
                 .push((pos, hit));
         }
 
-        //sorted hits -> full documents for pretty results :)
+        //recover matched spans only when the caller asked to highlight
+        let want_matches = highlight.is_some();
+
+        //sorted hits -> full documents + matched spans for pretty results :)
         let mut set = JoinSet::new();
         for (idx, hits) in by_shard {
             let handle = self.shards[idx].clone();
             let return_fields = command.return_fields.clone();
             let policy = policy.clone();
+            let groups = Arc::clone(&groups);
+            let prepared = prepared.get(idx).cloned();
+            let corpus = corpus.as_ref().map(Arc::clone);
             let positions: Vec<usize> = hits.iter().map(|(pos, _)| *pos).collect();
             let bare_hits: Vec<SearchHit> = hits.into_iter().map(|(_, h)| h).collect();
+            let plans = Arc::clone(&plans);
             set.spawn(async move {
-                (
-                    positions,
-                    handle
-                        .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
-                        .await,
-                )
+                let matched = if want_matches {
+                    match (&prepared, &corpus) {
+                        (Some(prep), Some(corp)) => handle.matched_terms_for(
+                            &bare_hits,
+                            groups.as_slice(),
+                            &plans,
+                            prep,
+                            corp,
+                        ),
+                        _ => vec![Vec::new(); bare_hits.len()],
+                    }
+                } else {
+                    vec![Vec::new(); bare_hits.len()]
+                };
+                let resolved = handle
+                    .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
+                    .await;
+
+                (positions, resolved, matched)
             });
         }
 
         //join results
         let mut resolved: Vec<Option<SearchDocumentHit>> = vec![None; page_len];
+        let mut matched_by_doc: HashMap<DocId, Vec<MatchedTerm>> = HashMap::new();
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
-                Ok((positions, Ok(hits))) => {
-                    for (pos, hit) in positions.into_iter().zip(hits) {
-                        resolved[pos] = hit;
+                Ok((positions, Ok(hits), matched)) => {
+                    for (pos, (hit, m)) in positions.into_iter().zip(hits.into_iter().zip(matched))
+                    {
+                        if let Some(h) = hit {
+                            matched_by_doc.insert(h.internal_id, m);
+                            resolved[pos] = Some(h);
+                        }
                     }
                 }
-                Ok((_, Err(e))) if first_err.is_none() => {
+                Ok((_, Err(e), _)) if first_err.is_none() => {
                     first_err = Some(e);
                 }
                 Err(je) if first_err.is_none() => {
@@ -2312,23 +2370,73 @@ impl ShardManager {
             return Err(e);
         }
 
-        //populate highlights
-        if let Some((fields, matchers)) = &highlight {
+        //populate highlights from the matched spans
+        if let Some(fields) = &highlight {
             let fields = fields.clone();
-            let matchers = matchers.clone();
-            let analyzer = self.analyzer_set.read().default_analyzer().clone();
+            let matched_by_doc = matched_by_doc;
             resolved = tokio::task::spawn_blocking(move || {
                 for slot in &mut resolved {
                     let Some(hit) = slot else {
                         continue;
                     };
+                    let matched = matched_by_doc
+                        .get(&hit.internal_id)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
                     let mut highlights = Vec::new();
-                    if !matchers.is_empty()
-                        && let Ok(value) = hit.doc.to_value(None) {
-                            for (full_path, opts) in &fields {
+                    if !matched.is_empty() {
+                        let value = match &hit.full_doc {
+                            //smart shit to highlight non-returned fields
+                            Some(full) => Cow::Borrowed(full),
+                            None => match hit.doc.value() {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            },
+                        };
+                        for (xpath, full_path, analyzer, opts, flattened, row_keyed) in &fields {
+                            let field_matches: Vec<&MatchedTerm> =
+                                matched.iter().filter(|m| m.xpath == *xpath).collect();
+                            if field_matches.is_empty() {
+                                continue;
+                            }
+
+                            //i love edgecases
+                            if *flattened && *row_keyed {
+                                //cast{name, surname, aliases:[..,..,..]}
+                                highlights.extend(highlight_field_row_keyed_flattened(
+                                    &value,
+                                    full_path,
+                                    analyzer,
+                                    &field_matches,
+                                    opts,
+                                ));
+                            } else if *flattened {
+                                //cast: ["tom holland", "kristians svikis"]
+                                let texts = field_texts(&value, full_path);
+                                highlights.extend(highlight_field_array(
+                                    &texts,
+                                    analyzer,
+                                    &field_matches,
+                                    opts,
+                                ));
+                            } else if *row_keyed {
+                                //cast: [{name, surname}, {name, surnames}]
+                                highlights.extend(highlight_field_row_keyed(
+                                    &value,
+                                    full_path,
+                                    analyzer,
+                                    &field_matches,
+                                    opts,
+                                ));
+                            } else {
+                                //name: "..."
                                 for text in field_texts(&value, full_path) {
-                                    highlights
-                                        .extend(highlight_text(&text, &analyzer, &matchers, opts));
+                                    highlights.extend(highlight_field(
+                                        &text,
+                                        analyzer,
+                                        &field_matches,
+                                        opts,
+                                    ));
                                 }
                             }
                         }
@@ -2347,6 +2455,7 @@ impl ShardManager {
         };
         Ok((resolved, total))
     }
+
     #[timed(backup)]
     pub fn delete_backups_old(&self, lifetime: Duration) -> Result<(), CorelamoError> {
         let cutoff = SystemTime::now() - lifetime;
@@ -2592,6 +2701,7 @@ struct PageRequest {
 }
 
 /// Everything a search decides before it asks a shard anything.
+/// holly porno
 struct CompiledSearch {
     policy: IndexPolicy,
     groups: Arc<Vec<QueryGroup>>,
@@ -2599,7 +2709,8 @@ struct CompiledSearch {
     sorts: Option<ResolvedSort>,
     sort_xpaths: Option<Arc<Vec<XPathId>>>,
     semantic: Option<(String, Vec<XPathId>)>,
-    highlight: Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)>,
+    //the bools are anything related to arrays
+    highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
     plans_full: Arc<Vec<RankPlan>>,
     plans_no_fuzzy: Arc<Vec<RankPlan>>,
     match_mode: MatchMode,
@@ -2662,12 +2773,15 @@ fn requested_page(command: &SearchCommand) -> Result<Option<PageRequest>, Corela
     }))
 }
 
-/// The fields to highlight and the query's matchers, each group's with its own analyzer.
 fn highlight_request(
     command: &SearchCommand,
     policy: &IndexPolicy,
-    groups: &[QueryGroup],
-) -> Result<Option<(Vec<(String, HighlightFieldOptions)>, Vec<HighlightMatcher>)>, CorelamoError> {
+    analyzers: &AnalyzerSet,
+    searched: &HashSet<XPathId>,
+) -> Result<
+    Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
+    CorelamoError,
+> {
     let Some(cmd) = &command.highlight else {
         return Ok(None);
     };
@@ -2676,14 +2790,28 @@ fn highlight_request(
         let field = policy
             .field_by_path(name)
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
-        fields.push((field.full_path.clone(), opts.clone()));
+        let xpath = field.xpath(policy);
+
+        //a field can only be highlighted if the query actually searched it
+        if !searched.contains(&xpath) {
+            return Err(CorelamoError::InvalidData(format!(
+                "cannot highlight '{name}': it is not a searched field"
+            )));
+        }
+
+        let analyzer = field_analyzer(field, analyzers).clone();
+        let flattened = field.repeated;
+        let row_keyed = field.row_keyed;
+        fields.push((
+            xpath,
+            field.full_path.clone(),
+            analyzer,
+            opts.clone(),
+            flattened,
+            row_keyed,
+        ));
     }
-    let matchers = groups
-        .iter()
-        .filter_map(|group| group.query.as_ref().map(|query| (query, &group.analyzer)))
-        .flat_map(|(query, analyzer)| collect_highlight_matchers(query, analyzer))
-        .collect();
-    Ok(Some((fields, matchers)))
+    Ok(Some(fields))
 }
 
 /// A typed word, analyzed by a group's analyzer, is in no document of that group's fields.

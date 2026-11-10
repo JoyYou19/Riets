@@ -1,4 +1,4 @@
-```markdown
+analyzer```markdown
 # Analyzers in the policy
 
 Text analysis is configured **per field**. You define named **analyzers** in one

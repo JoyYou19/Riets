@@ -37,7 +37,9 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_query::{CorpusStats, PreparedQuery, QueryExecutor, SearchHit, fuzzable_words};
+use core_query::{
+    CorpusStats, MatchedTerm, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words,
+};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
@@ -339,6 +341,7 @@ impl ShardHandle {
         }
         Ok(per_word)
     }
+
     /// Pins the snapshot the search reads and reads the query from it once: the posting lists
     /// ranking needs, and from them what this shard adds to the statistics of the search.
     //INFO:  changed to &[querygroup]
@@ -660,7 +663,8 @@ impl ShardHandle {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
                     project_document(&doc, policy, return_fields)
-                        .map_err(|e| CorelamoError::Internal(e.to_string()))?,
+                        .map_err(|e| CorelamoError::Internal(e.to_string()))?
+                        .0,
                 )),
                 None => not_found.push(id.clone()),
             }
@@ -707,17 +711,89 @@ impl ShardHandle {
             let Some(doc) = res.map_err(|e| CorelamoError::Internal(e.to_string()))? else {
                 continue;
             };
+            let (doc_out, full_doc) = project_document(&doc, policy, return_fields)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             results[i] = Some(SearchDocumentHit {
                 external_id: doc.external_id.clone(),
                 internal_id: doc.internal_id,
                 score: hits[i].score,
-                doc: project_document(&doc, policy, return_fields)
-                    .map_err(|e| CorelamoError::Internal(e.to_string()))?,
+                doc: doc_out,
+                full_doc,
                 highlights: Vec::new(),
             });
         }
 
         Ok(results)
+    }
+
+    //reusing the cached snapshots so no index reads for the final document highlights
+    #[timed(highlight)]
+    pub fn matched_terms_for(
+        &self,
+        hits: &[SearchHit],
+        groups: &[QueryGroup],
+        plans: &[RankPlan],
+        prepared: &PreparedShardSearch,
+        corpus: &CorpusStats,
+    ) -> Vec<Vec<MatchedTerm>> {
+        let mut out: Vec<Vec<MatchedTerm>> = vec![Vec::new(); hits.len()];
+
+        let mut prepared_iter = prepared.prepared.iter();
+        for (group, plan) in groups.iter().zip(plans) {
+            let Some(query) = group.query.as_ref() else {
+                continue;
+            };
+            let Some(prepared_group) = prepared_iter.next() else {
+                break;
+            };
+            let executor = QueryExecutor::new(&*prepared.snapshot, &group.analyzer)
+                .with_corpus(corpus)
+                .with_prepared(prepared_group);
+
+            // the fuzzy (and other tier) queries live in the plan, not in group.query
+            let tier_queries: Vec<&Query> = plan
+                .queries()
+                .filter(|quer| Some(*quer) != group.query.as_ref())
+                .collect();
+
+            for (i, hit) in hits.iter().enumerate() {
+                //all tiers
+                let mut matches = executor.matched_terms(query, hit.doc_id, &group.ctxs);
+                //matches from typos or missing shit
+                for tier_query in &tier_queries {
+                    matches.extend(executor.matched_terms(tier_query, hit.doc_id, &group.ctxs));
+                }
+                if !matches.is_empty() {
+                    out[i].extend(matches);
+                }
+            }
+        }
+
+        //adds the array[index] so that highlighter can find the precise place where search found it
+        for matches in out.iter_mut() {
+            Self::fill_row_paths(prepared.snapshot.as_ref(), matches);
+        }
+
+        out
+    }
+
+    fn fill_row_paths(snapshot: &IndexSnapshot, matches: &mut [MatchedTerm]) {
+        for m in matches.iter_mut() {
+            let Some(row_id) = m.row_id else {
+                continue;
+            };
+            let mut path = Vec::new();
+            let mut cur = Some(row_id);
+            while let Some(r) = cur {
+                let Some(idx) = snapshot.element_index_of_row(r) else {
+                    break;
+                };
+                path.push(idx);
+                cur = snapshot.parent_of_row(r);
+            }
+            path.reverse();
+            m.row_path = path;
+        }
     }
 
     pub(crate) fn send_raw(&self, cmd: ShardCmd) -> Result<(), (CorelamoError, ShardCmd)> {
@@ -900,7 +976,11 @@ impl ShardHandle {
     }
 
     #[timed(restore)]
-    pub async fn prepare_restore(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn prepare_restore(
+        &self,
+        backup_id: &str,
+        user: String,
+    ) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
         self.call(move |resp| ShardCmd::PrepareRestore {
             user,
@@ -1130,7 +1210,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let _ = resp.send(result);
             }
 
-           ShardCmd::PrepareRestore {
+            ShardCmd::PrepareRestore {
                 user,
                 backup_id,
                 resp,
@@ -1155,7 +1235,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::AbortRestore { resp } => {
                 let result = shard.abort_restore();
                 let _ = resp.send(result);
-            } 
+            }
 
             ShardCmd::ListBackups { resp } => {
                 let _ = resp.send(shard.list_backups());

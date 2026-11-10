@@ -71,9 +71,9 @@ fn index_arrays(
         }
 
         // struct (or repeated numeric/bool) -> row-keyed, unchanged
-        for element in &array_field.elements {
+        for (element_index, element) in array_field.elements.iter().enumerate() {
             let row_id = allocator.alloc();
-            let mut row = ArrayRow::new(row_id, parent_row);
+            let mut row = ArrayRow::new(row_id, parent_row, element_index as u32);
             index_leaves(
                 &element.leaves,
                 &mut row.parts,

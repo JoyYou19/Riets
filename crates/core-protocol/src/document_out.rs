@@ -1,5 +1,6 @@
 use simd_json::OwnedValue;
 use simd_json::owned::Object;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::errors::CorelamoError;
@@ -18,15 +19,11 @@ impl DocumentOut {
         }
     }
 
-    pub fn to_value(&self, strip_id: Option<&str>) -> Result<OwnedValue, CorelamoError> {
-        let mut value = match self {
-            DocumentOut::Raw(bytes) => parse_source(bytes)?,
-            DocumentOut::Json(value) => value.clone(),
-        };
-        if let Some(path) = strip_id {
-            strip_field_path(&mut value, path);
+    pub fn value(&self) -> Result<Cow<'_, OwnedValue>, CorelamoError> {
+        match self {
+            DocumentOut::Raw(bytes) => Ok(Cow::Owned(parse_source(bytes)?)),
+            DocumentOut::Json(value) => Ok(Cow::Borrowed(value)),
         }
-        Ok(value)
     }
 }
 

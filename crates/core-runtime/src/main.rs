@@ -135,7 +135,9 @@ fn ask_to_set_password() -> io::Result<Option<String>> {
 }
 
 fn print_password(password: &str) {
-    eprintln!("\n  user:     {SUPERUSER}\n  password: {password}\n  Shown once, keep it safe, the password cannot be recovered\n");
+    eprintln!(
+        "\n  user:     {SUPERUSER}\n  password: {password}\n  Shown once, keep it safe, the password cannot be recovered\n"
+    );
 }
 #[derive(Clone)]
 pub struct AppState {
@@ -348,7 +350,9 @@ async fn run() -> io::Result<()> {
                     },
                     Ok(Ok(None)) => {}
                     Ok(Err(e)) => eprintln!("error: {e}; the printed password stays valid"),
-                    Err(e) => eprintln!("error: password prompt failed: {e}; the printed password stays valid"),
+                    Err(e) => eprintln!(
+                        "error: password prompt failed: {e}; the printed password stays valid"
+                    ),
                 }
             }
             Arc::new(RwLock::new(auth))
@@ -654,3 +658,4 @@ async fn run() -> io::Result<()> {
     info!(log, "Goodbye");
     Ok(())
 }
+

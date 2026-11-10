@@ -20,7 +20,10 @@ use core_index::{
         index_worker::{IndexCommand, IndexWorker, IndexingStats, PendingAck, ReindexProgress},
         snapshot::SharedIndexSnapshot,
     },
-    types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
+    types::{
+        ARRAY_ROW_FLAG, ArrayRowId, DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of,
+        make_doc_id, shard_of,
+    },
 };
 
 use ahash::{HashSet, HashSetExt};
@@ -35,6 +38,7 @@ use core_protocol::{
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use simd_json::OwnedValue;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,
@@ -143,6 +147,8 @@ pub struct SearchDocumentHit {
     pub score: f32,
     pub doc: DocumentOut,
     pub highlights: Vec<String>,
+    //full doc for highlights
+    pub full_doc: Option<OwnedValue>,
 }
 
 impl<S: DocumentStore> SearchDatabase<S> {
@@ -217,7 +223,13 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shard_id: ShardId,
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, &index, shard_id)?;
-        let next_array_row = index.max_array_row().saturating_add(1);
+        let next_array_row = ArrayRowId::from_raw(
+            index
+                .max_array_row()
+                .raw()
+                .saturating_add(1)
+                .max(ARRAY_ROW_FLAG),
+        );
 
         let snapshot = SharedIndexSnapshot::empty();
         let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone());
@@ -246,7 +258,13 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shared_snapshot: SharedIndexSnapshot,
     ) -> io::Result<Self> {
         let next_local_id = next_local_id_for_shard(&store, &index, shard_id)?;
-        let next_array_row = index.max_array_row().saturating_add(1);
+        let next_array_row = ArrayRowId::from_raw(
+            index
+                .max_array_row()
+                .raw()
+                .saturating_add(1)
+                .max(ARRAY_ROW_FLAG),
+        );
 
         let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone());
         let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
@@ -420,7 +438,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             match self.get_document(id)? {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
-                    project_document(&doc, &self.policy, return_fields)?,
+                    project_document(&doc, &self.policy, return_fields)?.0,
                 )),
                 None => not_found.push(id.clone()),
             }
@@ -675,6 +693,12 @@ fn next_local_id_for_shard<S: DocumentStore>(
     }
 
     let stored_shard = shard_of(max_global_id);
+
+    eprintln!(
+        "max_internal_id={} highest_known_doc_id={}",
+        store.max_internal_id(),
+        index.highest_known_doc_id(),
+    );
 
     if stored_shard != shard_id {
         return Err(io::Error::new(

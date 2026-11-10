@@ -159,7 +159,7 @@ impl Default for AnalyzerConfig {
             lowercase: true,
             ascii_folding: false,
             stopwords: None,
-            min_length: Some(2),
+            min_length: Some(1),
             max_length: Some(40),
             preserve_original: true,
             literal_symbols: HashSet::from(['_']),

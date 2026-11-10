@@ -61,6 +61,10 @@ impl SearchIndex for MemIndex {
         self.array_row_index.parent_of(row)
     }
 
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        self.array_row_index.element_index_of(row)
+    }
+
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
         self.array_row_index.doc_of(row)
     }
@@ -301,19 +305,23 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         positions: Vec<u32>,
+        offsets: Vec<(u32, u32)>,
         weight: u16,
     ) {
-        self.estimated_bytes +=
-            size_of::<DocId>() + size_of::<u16>() + positions.len() * size_of::<u32>();
+        self.estimated_bytes += size_of::<DocId>()
+            + size_of::<u16>()
+            + positions.len() * size_of::<u32>()
+            + offsets.len() * size_of::<(u32, u32)>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             Entry::Occupied(mut slot) => {
-                slot.get_mut().insert_posting(doc_id, positions, weight);
+                slot.get_mut()
+                    .insert_posting(doc_id, positions, offsets, weight);
             }
             Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + size_of::<TermKey>();
                 slot.insert(PostingList::new())
-                    .insert_posting(doc_id, positions, weight);
+                    .insert_posting(doc_id, positions, offsets, weight);
             }
         }
     }
@@ -341,9 +349,13 @@ impl MemIndex {
         self.apply_target(document.doc_id, document.main);
 
         for row in document.array_rows {
-            self.array_row_index
-                .push_row(row.array_row_id, document.doc_id, row.parent);
-            self.apply_target(row.array_row_id, row.target);
+            self.array_row_index.push_row(
+                row.array_row_id,
+                document.doc_id,
+                row.parent,
+                row.element_index,
+            );
+            self.apply_target(row.array_row_id.raw(), row.target);
         }
     }
 
@@ -380,7 +392,14 @@ impl MemIndex {
         }
 
         for term in field.terms {
-            self.add_posting_weighted(term.term, field.xpath, doc_id, term.positions, term.weight);
+            self.add_posting_weighted(
+                term.term,
+                field.xpath,
+                doc_id,
+                term.positions,
+                term.offsets,
+                term.weight,
+            );
         }
     }
 

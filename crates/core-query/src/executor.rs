@@ -2,15 +2,15 @@ use core_index::{
     analyzer::analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
     fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions},
     posting::{
-        PostingList,
+        Posting, PostingList,
         ops::{intersection, union_many},
     },
     search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{DocId, XPathId, position_span, position_start},
+    types::{ArrayRowId, DocId, XPathId, position_span, position_start},
 };
 use std::{
     borrow::Cow,
-    collections::{BinaryHeap, HashMap, hash_map::Entry}
+    collections::{BinaryHeap, HashMap, hash_map::Entry},
 };
 
 use ahash::{HashSet, HashSetExt};
@@ -19,7 +19,7 @@ use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 use core_timing::timed;
 
 use crate::{
-    ScoredPosting, SearchHit, TopHit,
+    MatchedTerm, ScoredPosting, SearchHit, TopHit,
     ast::{PhraseTerm, Query, SynonymAlternative},
     corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
     planner::{RankPlan, Tier},
@@ -182,7 +182,7 @@ where
     //row-keyed postings are per element/row fold a hit onto its document
     fn fold_to_doc(&self, ctx: FieldCtx, id: DocId) -> Option<DocId> {
         if ctx.row_keyed {
-            self.index.doc_of_row(id)
+            self.index.doc_of_row(ArrayRowId::from_raw(id))
         } else {
             Some(id)
         }
@@ -576,7 +576,7 @@ where
         self.index.lookup(raw, xpath)
     }
 
-    fn ascend(&self, rows: HashSet<DocId>, levels: u32) -> HashSet<DocId> {
+    fn ascend(&self, rows: HashSet<ArrayRowId>, levels: u32) -> HashSet<ArrayRowId> {
         let mut rows = rows;
         for _ in 0..levels {
             rows = rows
@@ -639,6 +639,273 @@ where
                     .collect(),
                 None => HashSet::new(),
             }),
+        }
+    }
+
+    #[timed(highlight)]
+    pub fn matched_terms(
+        &self,
+        query: &Query,
+        doc_id: DocId,
+        ctxs: &[FieldCtx],
+    ) -> Vec<MatchedTerm> {
+        let mut out = Vec::new();
+        self.collect_matched(query, doc_id, ctxs, &mut out);
+        out
+    }
+
+    #[timed(highlight)]
+    fn collect_matched(
+        &self,
+        query: &Query,
+        doc_id: DocId,
+        ctxs: &[FieldCtx],
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        match query {
+            Query::Term(_) | Query::Prefix(_) | Query::Wildcard(_) | Query::Exact(_) => {
+                for &ctx in ctxs {
+                    if ctx.row_keyed {
+                        self.push_row_matches(query, doc_id, ctx, out);
+                    } else if let Some(leaf) = self.leaf(query, ctx) {
+                        self.push_leaf_matches(&leaf.postings, doc_id, ctx.xpath, out);
+                    }
+                }
+            }
+            Query::Phrase(terms) => {
+                for &ctx in ctxs {
+                    if ctx.row_keyed {
+                        self.collect_phrase_row_keyed(terms, doc_id, ctx, out);
+                    } else {
+                        self.collect_phrase(terms, doc_id, ctx.xpath, out);
+                    }
+                }
+            }
+
+            // WARN: fuzzy is the one leaf that re-runs per doc. Cuz PreparedQuery caches the fuzzy
+            // candidates, but not the fuzzy union, i was told that this optimization migh bee
+            // negligable, we can cache it if needed - norca
+            Query::Fuzzy(raw, fuzziness, fuzzy_spec) => {
+                for &ctx in ctxs {
+                    let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
+                    if ctx.row_keyed {
+                        for posting in list.items() {
+                            if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id))
+                                == Some(doc_id)
+                            {
+                                if !posting.positions.is_empty() {
+                                    out.push(MatchedTerm {
+                                        xpath: ctx.xpath,
+                                        row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
+                                        row_path: Vec::new(),
+                                        positions: posting.positions.to_vec(),
+                                        offsets: posting.offsets.to_vec(),
+                                    });
+                                }
+                            }
+                        }
+                    } else {
+                        self.push_leaf_matches(&list, doc_id, ctx.xpath, out);
+                    }
+                }
+            }
+            Query::Wand(children)
+            | Query::And(children)
+            | Query::Or(children)
+            | Query::SameElement(children) => {
+                for child in children {
+                    self.collect_matched(child, doc_id, ctxs, out);
+                }
+            }
+            Query::Synonym(forms) => {
+                for form in forms {
+                    self.collect_matched(&form.query, doc_id, ctxs, out);
+                }
+            }
+            Query::Range(_) | Query::Bool(_) | Query::MatchAll => {}
+        }
+    }
+
+    fn push_leaf_matches(
+        &self,
+        list: &PostingList,
+        doc_id: DocId,
+        xpath: XPathId,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if let Some(p) = Self::posting_for(list, doc_id) {
+            if !p.positions.is_empty() {
+                //offsets migh be empty here, the re-analyzing and all the magic happens later in
+                //highlight.rs
+                out.push(MatchedTerm {
+                    xpath,
+                    row_id: None,
+                    positions: p.positions.to_vec(),
+                    row_path: Vec::new(),
+                    offsets: p.offsets.to_vec(),
+                });
+            }
+        }
+    }
+
+    //row-keyed postings have array_row_id we need to match it to the correct dovument
+    #[timed(highlight)]
+    fn push_row_matches(
+        &self,
+        query: &Query,
+        doc_id: DocId,
+        ctx: FieldCtx,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        let Some(leaf) = self.leaf(query, ctx) else {
+            return;
+        };
+        for posting in leaf.postings.items() {
+            if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) == Some(doc_id) {
+                if !posting.positions.is_empty() {
+                    out.push(MatchedTerm {
+                        xpath: ctx.xpath,
+                        row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
+                        row_path: Vec::new(),
+                        positions: posting.positions.to_vec(),
+                        offsets: posting.offsets.to_vec(),
+                    });
+                }
+            }
+        }
+    }
+
+    //kind of stupid that we need this, but a phrase match needs to return offsets as a single byte span
+    //not multiple ones
+    fn push_phrase_matches(
+        terms: &[PhraseTerm],
+        xpath: XPathId,
+        row_id: Option<ArrayRowId>,
+        word_postings: &[Option<Posting>],
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if word_postings.iter().any(Option::is_none) {
+            return;
+        }
+        let position_lists: Vec<&[u32]> = word_postings
+            .iter()
+            .map(|p| p.as_ref().unwrap().positions.as_slice())
+            .collect();
+        let phrase_offsets: Vec<u32> = terms.iter().map(|t| t.offset).collect();
+        let has_offsets = !word_postings[0].as_ref().unwrap().offsets.is_empty();
+        let last_idx = terms.len() - 1;
+
+        for &first_pos in position_lists[0] {
+            let mut matched: Vec<u32> = Vec::with_capacity(terms.len());
+            matched.push(first_pos);
+            let mut next = position_start(first_pos) + position_span(first_pos);
+            let mut ok = true;
+
+            for i in 1..terms.len() {
+                let gap = phrase_offsets[i]
+                    .saturating_sub(phrase_offsets[i - 1])
+                    .saturating_sub(1);
+                let want = next + gap;
+                let at = position_lists[i].partition_point(|&p| position_start(p) < want);
+                match position_lists[i].get(at) {
+                    Some(&p) if position_start(p) == want => {
+                        matched.push(p);
+                        next = want + position_span(p);
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+
+            if ok {
+                if has_offsets {
+                    let first_enc = matched[0];
+                    let last_enc = *matched.last().unwrap();
+                    let first = word_postings[0].as_ref().unwrap();
+                    let last = word_postings[last_idx].as_ref().unwrap();
+                    let (start, _) = Self::offset_for(
+                        &first.positions,
+                        &first.offsets,
+                        position_start(first_enc),
+                    )
+                    .unwrap_or((0, 0));
+                    let (_, end) =
+                        Self::offset_for(&last.positions, &last.offsets, position_start(last_enc))
+                            .unwrap_or((0, 0));
+                    out.push(MatchedTerm {
+                        xpath,
+                        positions: Vec::new(),
+                        row_path: Vec::new(),
+                        row_id,
+                        offsets: vec![(start, end)],
+                    });
+                } else {
+                    out.push(MatchedTerm {
+                        xpath,
+                        row_id,
+                        row_path: Vec::new(),
+                        positions: matched,
+                        offsets: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    #[timed(highlight)]
+    fn collect_phrase(
+        &self,
+        terms: &[PhraseTerm],
+        doc_id: DocId,
+        xpath: XPathId,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if terms.is_empty() {
+            return;
+        }
+        let word_postings: Vec<Option<Posting>> = terms
+            .iter()
+            .map(|t| {
+                let (list, _) = self.fetch_term_list(&t.text, xpath);
+                Self::posting_for(&list, doc_id).cloned()
+            })
+            .collect();
+        Self::push_phrase_matches(terms, xpath, None, &word_postings, out);
+    }
+
+    fn collect_phrase_row_keyed(
+        &self,
+        terms: &[PhraseTerm],
+        doc_id: DocId,
+        ctx: FieldCtx,
+        out: &mut Vec<MatchedTerm>,
+    ) {
+        if terms.is_empty() {
+            return;
+        }
+        let xpath = ctx.xpath;
+        let lists: Vec<Cow<'a, PostingList>> = terms
+            .iter()
+            .map(|t| self.fetch_term_list(&t.text, xpath).0)
+            .collect();
+        for posting in lists[0].items() {
+            if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) != Some(doc_id) {
+                continue;
+            }
+            let row_id = posting.doc_id;
+            let word_postings: Vec<Option<Posting>> = lists
+                .iter()
+                .map(|l| Self::posting_for(l, row_id).cloned())
+                .collect();
+            Self::push_phrase_matches(
+                terms,
+                xpath,
+                Some(ArrayRowId::from_raw(row_id)),
+                &word_postings,
+                out,
+            );
         }
     }
 
@@ -946,10 +1213,10 @@ where
         &self,
         children: &[Query],
         binding: &SameElementBinding,
-    ) -> HashSet<DocId> {
-        let mut rows: Option<HashSet<DocId>> = None;
+    ) -> HashSet<ArrayRowId> {
+        let mut rows: Option<HashSet<ArrayRowId>> = None;
         for (child, clause) in children.iter().zip(&binding.clauses) {
-            let r: HashSet<DocId> = match &clause.nested {
+            let r: HashSet<ArrayRowId> = match &clause.nested {
                 Some(nested) => {
                     let Query::SameElement(inner_children) = child else {
                         continue;
@@ -957,7 +1224,7 @@ where
                     self.same_element_rows(inner_children, nested)
                 }
                 None => match self.evaluate(child, &[clause.ctx], EvalMode::Filter) {
-                    EvalOutcome::Docs(d) => d,
+                    EvalOutcome::Docs(d) => d.iter().map(|&id| ArrayRowId::from_raw(id)).collect(),
                     _ => HashSet::new(),
                 },
             };
@@ -1053,23 +1320,28 @@ where
 
         let mut restrict: Option<HashSet<DocId>> = None;
         for fq in filters.values() {
-            let matched: HashSet<DocId> = if let Query::SameElement(children) = &fq.query {
-                let binding = fq
-                    .same_element
-                    .as_ref()
-                    .expect("same_element binding missing");
-                let rows = self.same_element_rows(children, binding);
-                self.index.resolve_array_rows(&rows)
-            } else {
-                let EvalOutcome::Docs(raw) =
-                    self.evaluate(&fq.query, &[fq.ctx], EvalMode::Filter)
-                else {
-                    continue;
-                };
-                if fq.row_keyed {
-                    self.index.resolve_array_rows(&raw)
-                } else {
-                    raw
+            let matched: HashSet<DocId> = match &fq.query {
+                Query::SameElement(children) => {
+                    let binding = fq
+                        .same_element
+                        .as_ref()
+                        .expect("same_element binding missing");
+                    let rows = self.same_element_rows(children, binding);
+                    self.index.resolve_array_rows(&rows)
+                }
+                _ => {
+                    let EvalOutcome::Docs(raw) =
+                        self.evaluate(&fq.query, &[fq.ctx], EvalMode::Filter)
+                    else {
+                        continue;
+                    };
+                    if fq.row_keyed {
+                        let rows: HashSet<ArrayRowId> =
+                            raw.iter().map(|&r| ArrayRowId::from_raw(r)).collect();
+                        self.index.resolve_array_rows(&rows)
+                    } else {
+                        raw
+                    }
                 }
             };
 
@@ -1998,6 +2270,23 @@ where
                 .any(|&xpath| self.fetch_term_list(word, xpath).1 > 0)
         })
     }
+
+    //helpers for highlights
+    fn posting_for(list: &PostingList, doc_id: DocId) -> Option<&Posting> {
+        let idx = list
+            .items()
+            .binary_search_by_key(&doc_id, |p| p.doc_id)
+            .ok()?;
+        list.items().get(idx)
+    }
+
+    fn offset_for(positions: &[u32], offsets: &[(u32, u32)], pos: u32) -> Option<(u32, u32)> {
+        let idx = positions
+            .binary_search_by_key(&pos, |p| position_start(*p))
+            .ok()?;
+        offsets.get(idx).copied()
+    }
+
     #[timed(search)]
     fn execute_scored_fuzzy(
         &self,

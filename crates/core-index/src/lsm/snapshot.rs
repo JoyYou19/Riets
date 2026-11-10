@@ -46,6 +46,15 @@ impl SearchIndex for IndexSnapshot {
         out.into_iter().collect()
     }
 
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        if let Some(e) = self.mem.element_index_of_row(row) {
+            return Some(e);
+        }
+        self.segments
+            .iter()
+            .find_map(|seg| seg.element_index_of_row(row))
+    }
+
     fn is_deleted(&self, doc_id: DocId) -> bool {
         self.deleted.is_deleted(doc_id)
     }

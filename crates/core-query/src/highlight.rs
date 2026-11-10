@@ -1,162 +1,220 @@
-use core_index::{analyzer::Analyzer, fuzzy::FuzzyMatcher, wildcard::WildcardPattern};
+use crate::MatchedTerm;
+use ahash::{HashMap, HashMapExt, HashSet};
+use core_index::analyzer::Analyzer;
+use core_index::document::policy::ARRAY_GAP;
+use core_index::types::position_start;
 use core_protocol::command_reponse_definitions::HighlightFieldOptions;
+use core_timing::timed;
 use simd_json::OwnedValue;
 
-use crate::Query;
-
-#[derive(Debug, Clone)]
-pub enum HighlightMatcher {
-    Prefix(String),
-    Wildcard(WildcardPattern),
-    Exact(String),
-    Phrase(Vec<String>),
-    Fuzzy(FuzzyMatcher),
+//we need to re-analyze flattened arrays cause the position and offsets dont match in them
+#[timed(highlight)]
+pub fn highlight_field_array(
+    texts: &[String],
+    analyzer: &Analyzer,
+    matched: &[&MatchedTerm],
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    let want: HashSet<u32> = matched
+        .iter()
+        .flat_map(|m| m.positions.iter().map(|&p| position_start(p)))
+        .collect();
+    if want.is_empty() {
+        return Vec::new();
+    }
+    highlight_flattened_texts(texts, analyzer, &want, opts)
 }
 
-use crate::fuzzable_words;
+//                                  this bs:
+//like ummm cast: {name, surname, aliases["", "", ""],}
+#[timed(highlight)]
+pub fn highlight_field_row_keyed_flattened(
+    value: &OwnedValue,
+    full_path: &str,
+    analyzer: &Analyzer,
+    matched: &[&MatchedTerm],
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    let mut by_row: HashMap<Vec<u32>, HashSet<u32>> = HashMap::new();
+    for m in matched {
+        by_row
+            .entry(m.row_path.clone())
+            .or_default()
+            .extend(m.positions.iter().map(|&p| position_start(p)));
+    }
 
-pub fn collect_highlight_matchers(query: &Query, analyzer: &Analyzer) -> Vec<HighlightMatcher> {
     let mut out = Vec::new();
-    collect(query, analyzer, &mut out);
+    for (row_path, want) in by_row {
+        let Some(OwnedValue::Array(items)) = value_for_row(value, full_path, &row_path) else {
+            continue;
+        };
+        let texts: Vec<String> = items
+            .iter()
+            .filter_map(|v| match v {
+                OwnedValue::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        if texts.is_empty() {
+            continue;
+        }
+        out.extend(highlight_flattened_texts(&texts, analyzer, &want, opts));
+    }
     out
 }
 
-fn collect(query: &Query, analyzer: &Analyzer, out: &mut Vec<HighlightMatcher>) {
-    match query {
-        Query::Term(s) | Query::Prefix(s) => {
-            out.push(HighlightMatcher::Prefix(s.to_lowercase()));
-        }
-        Query::Wildcard(p) => {
-            out.push(HighlightMatcher::Wildcard(WildcardPattern::parse(
-                &p.to_lowercase(),
-            )));
-        }
-        Query::Phrase(phrase_terms) => {
-            out.push(HighlightMatcher::Phrase(
-                phrase_terms
-                    .iter()
-                    .map(|pt| pt.text.to_lowercase())
-                    .collect(),
-            ));
-        }
-        Query::Exact(s) => out.push(HighlightMatcher::Exact(s.clone())),
-        Query::Fuzzy(s, fuzziness, spec) => {
-            // split multi-word fuzzy into words, fuzz each — mirrors the executor
-            for word in fuzzable_words(analyzer, s) {
-                let max_edits = fuzziness.resolve(&word);
-                out.push(HighlightMatcher::Fuzzy(FuzzyMatcher::new(
-                    &word,
-                    max_edits,
-                    spec.prefix_length,
-                )));
-            }
-        }
-        Query::Wand(children)
-        | Query::And(children)
-        | Query::Or(children)
-        | Query::SameElement(children) => {
-            for c in children {
-                collect(c, analyzer, out);
-            }
-        }
-        Query::Synonym(forms) => {
-            for form in forms {
-                collect(&form.query, analyzer, out);
-            }
-        }
-        Query::Range(_) | Query::Bool(_) | Query::MatchAll => {}
-    }
-}
-
-pub fn highlight_text(
+//Builds highlighted fragments for one field value from the spans that matched.
+//Fast path (offsets stored) wraps byte spans on `text` directly; slow path
+//(char-filtered field, no offsets) re-analyzes and maps positions to spans on the
+//filtered text.
+#[timed(highlight)]
+pub fn highlight_field(
     text: &str,
     analyzer: &Analyzer,
-    matchers: &[HighlightMatcher],
+    matched: &[&MatchedTerm],
     opts: &HighlightFieldOptions,
 ) -> Vec<String> {
-    let ranges = merge_ranges(find_ranges(text, matchers, analyzer));
+    if matched.is_empty() {
+        return Vec::new();
+    }
+
+    let fast = matched.iter().any(|m| !m.offsets.is_empty());
+
+    if fast {
+        let ranges: Vec<(usize, usize)> = matched
+            .iter()
+            .flat_map(|m| m.offsets.iter().map(|&(s, e)| (s as usize, e as usize)))
+            .collect();
+        if ranges.is_empty() {
+            return Vec::new();
+        }
+        let ranges = merge_ranges(ranges);
+        return if opts.sentence {
+            fragments_by_sentence(text, &ranges, opts)
+        } else {
+            fragments_by_chars(text, &ranges, opts)
+        };
+    }
+
+    //slow branch: re-analyze once then map each matched position to its byte span
+    let (filtered, tokens) = analyzer.analyze_text(text);
+    let want: HashSet<u32> = matched
+        .iter()
+        .flat_map(|m| m.positions.iter().map(|&p| position_start(p)))
+        .collect();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for token in &tokens {
+        if want.contains(&token.position) {
+            ranges.push((token.start_byte, token.end_byte));
+        }
+    }
     if ranges.is_empty() {
         return Vec::new();
     }
+    let ranges = merge_ranges(ranges);
     if opts.sentence {
-        fragments_by_sentence(text, &ranges, opts)
+        fragments_by_sentence(&filtered, &ranges, opts)
     } else {
-        fragments_by_chars(text, &ranges, opts)
+        fragments_by_chars(&filtered, &ranges, opts)
     }
 }
 
-fn words(text: &str, analyzer: &Analyzer) -> Vec<(String, usize, usize)> {
+#[timed(highlight)]
+fn highlight_flattened_texts(
+    texts: &[String],
+    analyzer: &Analyzer,
+    want: &HashSet<u32>,
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
     let mut out = Vec::new();
-    let mut word = String::new();
-    let mut start = 0usize;
-    for (i, c) in text.char_indices() {
-        if analyzer.is_word_char(c) {
-            if word.is_empty() {
-                start = i;
+    let mut base = 0u32;
+    for text in texts {
+        let (filtered, tokens) = analyzer.analyze_text(text);
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut span = 0u32;
+        for token in &tokens {
+            if want.contains(&(base + token.position)) {
+                ranges.push((token.start_byte, token.end_byte));
             }
-            word.push(c.to_ascii_lowercase());
-        } else if !word.is_empty() {
-            out.push((std::mem::take(&mut word), start, i));
+            span = span.max(token.position + token.position_length.max(1));
         }
-    }
-    if !word.is_empty() {
-        out.push((word, start, text.len()));
+        if !ranges.is_empty() {
+            let ranges = merge_ranges(ranges);
+            if opts.sentence {
+                out.extend(fragments_by_sentence(&filtered, &ranges, opts));
+            } else {
+                out.extend(fragments_by_chars(&filtered, &ranges, opts));
+            }
+        }
+        base += span + ARRAY_GAP;
     }
     out
 }
 
-fn find_ranges(
-    text: &str,
-    matchers: &[HighlightMatcher],
+//rewalks the json to get the precise element from the [index] of the array
+#[timed(highlight)]
+pub fn highlight_field_row_keyed(
+    value: &OwnedValue,
+    full_path: &str,
     analyzer: &Analyzer,
-) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let ws = words(text, analyzer);
-
-    // single-word matchers
-    for (word, start, end) in &ws {
-        for m in matchers {
-            let hit = match m {
-                HighlightMatcher::Prefix(p) => word.starts_with(p),
-                HighlightMatcher::Wildcard(pat) => pat.matches(word),
-                HighlightMatcher::Fuzzy(f) => f.matches(word),
-                HighlightMatcher::Exact(_) | HighlightMatcher::Phrase(_) => false,
-            };
-            if hit {
-                ranges.push((*start, *end));
-                break;
-            }
-        }
+    matched: &[&MatchedTerm],
+    opts: &HighlightFieldOptions,
+) -> Vec<String> {
+    //group positions by row, so each array element is highlighted once
+    let mut by_row: HashMap<Vec<u32>, HashSet<u32>> = HashMap::new();
+    for m in matched {
+        by_row
+            .entry(m.row_path.clone())
+            .or_default()
+            .extend(m.positions.iter().map(|&p| position_start(p)));
     }
 
-    // phrase matchers — consecutive words → one span
-    for m in matchers {
-        if let HighlightMatcher::Phrase(phrase) = m {
-            if phrase.len() < 2 {
-                continue;
-            }
-            for i in 0..ws.len().saturating_sub(phrase.len() - 1) {
-                let ok = phrase
-                    .iter()
-                    .enumerate()
-                    .all(|(k, p)| ws[i + k].0.starts_with(p));
-                if ok {
-                    ranges.push((ws[i].1, ws[i + phrase.len() - 1].2));
-                }
+    let mut out = Vec::new();
+    for (row_path, want) in by_row {
+        let Some(OwnedValue::String(text)) = value_for_row(value, full_path, &row_path) else {
+            continue;
+        };
+        let (filtered, tokens) = analyzer.analyze_text(&text);
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for token in &tokens {
+            if want.contains(&token.position) {
+                ranges.push((token.start_byte, token.end_byte));
             }
         }
-    }
-
-    // exact substring matches
-    for m in matchers {
-        if let HighlightMatcher::Exact(s) = m {
-            for (start, _) in text.match_indices(s.as_str()) {
-                ranges.push((start, start + s.len()));
-            }
+        if ranges.is_empty() {
+            continue;
+        }
+        let ranges = merge_ranges(ranges);
+        if opts.sentence {
+            out.extend(fragments_by_sentence(&filtered, &ranges, opts));
+        } else {
+            out.extend(fragments_by_chars(&filtered, &ranges, opts));
         }
     }
+    out
+}
 
-    ranges
+//recursive walkt to get the Balue in the precise row and precise [index]
+//basically: "given those indices, what Value is actually there?"
+#[timed(highlight)]
+fn value_for_row<'a>(
+    value: &'a OwnedValue,
+    path: &str,
+    row_path: &[u32],
+) -> Option<&'a OwnedValue> {
+    let segs: Vec<&str> = path.split('/').collect();
+    let mut cur = value;
+    let mut row_iter = row_path.iter();
+    for &seg in &segs {
+        if let OwnedValue::Array(items) = cur {
+            cur = items.get(*row_iter.next()? as usize)?;
+        }
+        let OwnedValue::Object(obj) = cur else {
+            return None;
+        };
+        cur = obj.get(seg)?;
+    }
+    Some(cur)
 }
 
 fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {

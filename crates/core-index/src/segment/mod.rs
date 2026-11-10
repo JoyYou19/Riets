@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     numeric_values::NumericFields,
-    types::{DocId, FieldStats, XPathId},
+    types::{ARRAY_ROW_FLAG, DocId, FieldStats, XPathId},
 };
 
 /// Compute the min/max `DocId` present in a segment from both text
@@ -20,15 +20,20 @@ pub fn compute_doc_id_range(
     let mut range: Option<(DocId, DocId)> = None;
 
     for &(doc_id, _) in doc_lengths.keys() {
+        if doc_id & ARRAY_ROW_FLAG != 0 {
+            continue; // array row id, not a document id
+        }
         range = Some(match range {
             None => (doc_id, doc_id),
             Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
         });
     }
 
-    // numeric-only docs don't appear in doc_lengths
     for (_, field) in numeric_fields.iter() {
         for &(_, doc_id) in field.bkd.points() {
+            if doc_id & ARRAY_ROW_FLAG != 0 {
+                continue;
+            }
             range = Some(match range {
                 None => (doc_id, doc_id),
                 Some((min, max)) => (min.min(doc_id), max.max(doc_id)),
