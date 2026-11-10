@@ -1,6 +1,8 @@
 use core_timing::timed;
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::SeekFrom;
+
 use std::{
     fs::File,
     io::{self, BufWriter, Seek, Write},
@@ -9,6 +11,7 @@ use std::{
 
 use crate::array_rows::ArrayRowIndex;
 use crate::document::document::BoolField;
+use crate::tmp_path_for;
 use crate::{
     disk::{
         codec::{push_var_u16, push_var_u32, push_var_u64},
@@ -23,7 +26,7 @@ use crate::{
 };
 
 /// Tracks the write position itself, so `stream_position()` never flushes
-/// the BufWriter or makes a syscall.
+/// the `BufWriter` or makes a syscall.
 struct PositionWriter<W> {
     inner: W,
     pos: u64,
@@ -242,10 +245,17 @@ fn write_bool_fields(
 
 #[timed(writing_files)]
 pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::Result<()> {
-    let file = File::create(path)?;
-    let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
-    write_segment_to(&mut out, segment)?;
-    finish_file(out)
+    let path = path.as_ref();
+    let tmp = tmp_path_for(path);
+    let written = File::create(&tmp).and_then(|file| {
+        let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
+        write_segment_to(&mut out, segment)?;
+        finish_file(out, &tmp, path)
+    });
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 #[timed(writing_files)]
@@ -325,11 +335,17 @@ fn write_doc_lengths(
 }
 
 fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Result<()> {
-    write_u64(out, idx.base())?;
+    write_u64(out, idx.base().raw())?;
     write_u32(out, idx.len() as u32)?;
-    for (&doc, &parent) in idx.row_to_doc().iter().zip(idx.parent_rows().iter()) {
+    for ((&doc, &parent), &element) in idx
+        .row_to_doc()
+        .iter()
+        .zip(idx.parent_rows().iter())
+        .zip(idx.element_indices().iter())
+    {
         write_u64(out, doc)?;
-        write_u64(out, parent)?;
+        write_u64(out, parent.raw())?;
+        write_u32(out, element)?;
     }
     Ok(())
 }
@@ -346,12 +362,23 @@ fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
         push_var_u16(out, posting.weight);
         push_var_u32(out, posting.positions.len() as u32);
 
+        let has_offsets = !posting.offsets.is_empty();
+        debug_assert!(!has_offsets || posting.offsets.len() == posting.positions.len());
+        out.push(has_offsets as u8);
+
         let mut last_position = 0u32;
 
         for &position in &posting.positions {
             let position_delta = position - last_position;
             last_position = position;
             push_var_u32(out, position_delta);
+        }
+
+        if has_offsets {
+            for &(start, end) in &posting.offsets {
+                push_var_u32(out, start);
+                push_var_u32(out, end - start);
+            }
         }
     }
 }
@@ -365,18 +392,24 @@ pub fn write_merged_segment(
     array_row_index: &ArrayRowIndex,
     bool_fields: &BTreeMap<XPathId, BoolField>,
 ) -> io::Result<()> {
-    let file = File::create(path)?;
-    let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
-    write_merged_segment_to(
-        &mut out,
-        terms,
-        doc_lengths,
-        numeric_fields,
-        array_row_index,
-        bool_fields,
-    )?;
-
-    finish_file(out)
+    let path = path.as_ref();
+    let tmp = tmp_path_for(path);
+    let written = File::create(&tmp).and_then(|file| {
+        let mut out = PositionWriter::new(BufWriter::with_capacity(1 << 20, file));
+        write_merged_segment_to(
+            &mut out,
+            terms,
+            doc_lengths,
+            numeric_fields,
+            array_row_index,
+            bool_fields,
+        )?;
+        finish_file(out, &tmp, path)
+    });
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 #[timed(writing_files)]
@@ -438,10 +471,12 @@ pub fn write_merged_segment_to<W: Write + Seek>(
 
     write_footer(out, &footer)
 }
-//TEST
-/// Flushes the buffer and fsyncs, so the file is on disk before the
-/// manifest (or a WAL reset) depends on it.
-fn finish_file(out: PositionWriter<BufWriter<File>>) -> io::Result<()> {
-    let file = out.into_inner().into_inner().map_err(|e| e.into_error())?;
-    file.sync_all()
+
+fn finish_file(out: PositionWriter<BufWriter<File>>, tmp: &Path, path: &Path) -> io::Result<()> {
+    let file = out.into_inner().into_inner().map_err(io::IntoInnerError::into_error)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(tmp, path)?;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    File::open(dir)?.sync_all()
 }

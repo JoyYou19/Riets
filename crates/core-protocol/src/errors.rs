@@ -64,7 +64,6 @@ impl CorelamoError {
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
             CorelamoError::Busy(_) => "Process is already happening", //mosk janomaina
             CorelamoError::FailedToEx(_) => "Failed to execute the task",
-            
         }
     }
 

@@ -80,6 +80,12 @@ pub enum IndexCommand {
         xpath: XPathId,
         reply: InstallVectorsReply,
     },
+    /// Attaches a built HNSW graph to the segment's current vector file.
+    InstallGraph {
+        segment: PathBuf,
+        xpath: XPathId,
+        reply: InstallVectorsReply,
+    },
     /// Whether a load is still settling into its final segment (`LsmIndex::settling`).
     Settling {
         config: CompactionConfig,
@@ -97,7 +103,7 @@ impl PendingAck {
         let rx = self
             .0
             .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         wait_for_acknowledgement(rx)
     }
 
@@ -183,10 +189,7 @@ impl IndexWorker {
         })
     }
 
-    pub fn add_indexed_document(&self, document: AnalyzedDocument) -> io::Result<()> {
-        self.add_indexed_documents(vec![document])
-    }
-    /// Sends a batch and returns immediately; call `wait()` on the result later.
+    
     pub fn add_indexed_documents_deferred(
         &self,
         documents: Receiver<Vec<AnalyzedDocument>>,
@@ -234,9 +237,6 @@ impl IndexWorker {
         wait_for_acknowledgement(rx)
     }
 
-    pub fn add_indexed_document_wait(&self, document: AnalyzedDocument) -> io::Result<()> {
-        self.add_indexed_documents_wait(vec![document])
-    }
 
     #[timed(flushing)]
     pub fn flush_wait(&self) -> io::Result<PendingAck> {
@@ -282,6 +282,7 @@ impl IndexWorker {
     }
 
     pub fn install_compaction(&self, completed: CompletedCompaction) -> io::Result<()> {
+
         self.send(IndexCommand::InstallCompaction {
             completed,
             ack: None,
@@ -347,11 +348,6 @@ impl Drop for IndexWorker {
 const PUBLISH_DOC_THRESHOLD: u64 = 100;
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(20);
 
-/// How long the worker may wait for its next command: until the pending documents are due to
-/// be published, or indefinitely (`None`) when nothing is waiting to be published.
-///
-/// Waiting with a zero timeout while idle would make `recv_timeout` return immediately on every
-/// iteration, so an idle worker would spin on a full CPU core.
 fn publish_wait(docs_since_publish: u64, since_last_publish: Duration) -> Option<Duration> {
     (docs_since_publish > 0).then(|| PUBLISH_INTERVAL.saturating_sub(since_last_publish))
 }
@@ -462,7 +458,6 @@ fn run_index_worker(
                 // A compaction thread that stopped waiting must not stop the index worker.
                 let _ = reply.send(plan);
             }
-
             IndexCommand::InstallCompaction { completed, ack } => {
                 let outcome = index.install_compaction(completed);
                 let installed = matches!(&outcome, Ok(true));
@@ -473,6 +468,8 @@ fn run_index_worker(
                     docs_since_publish = 0;
                     last_publish = Instant::now();
                     stats.compactions_completed += 1;
+                    stats.segment_count=index.segment_count();
+                    published_stats.store(Arc::new(stats.clone()));
                 }
             }
             IndexCommand::SegmentCount { ack } => {
@@ -480,19 +477,16 @@ fn run_index_worker(
             }
             IndexCommand::Flush { ack } => {
                 let queued = index.queue_flush().and_then(|()| writer.submit(&mut index));
-                match queued {
-                    Err(e) => send_acknowledgement(ack, Err(e))?,
-                    Ok(()) => {
-                        shared.publish(index.publish_snapshot());
-                        docs_since_publish = 0;
-                        last_publish = Instant::now();
-                        stats.segment_count = index.segment_count();
-                        stats.memtable_term_count = index.memtable_term_count();
-                        published_stats.store(Arc::new(stats.clone()));
-                        // Acknowledged once every segment queued so far is on disk.
-                        flush_waiters.push_back((index.flush_target(), ack));
-                        release_flush_waiters(&mut flush_waiters, &index)?;
-                    }
+                if let Err(e) = queued { send_acknowledgement(ack, Err(e))? } else {
+                    shared.publish(index.publish_snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                    stats.segment_count = index.segment_count();
+                    stats.memtable_term_count = index.memtable_term_count();
+                    published_stats.store(Arc::new(stats.clone()));
+                    // Acknowledged once every segment queued so far is on disk.
+                    flush_waiters.push_back((index.flush_target(), ack));
+                    release_flush_waiters(&mut flush_waiters, &index)?;
                 }
             }
             IndexCommand::SegmentWritten { seq, replay } => {
@@ -530,6 +524,20 @@ fn run_index_worker(
                 reply,
             } => {
                 let outcome = index.install_vectors(&segment, xpath);
+                let installed = matches!(&outcome, Ok(true));
+                let _ = reply.send(outcome);
+                if installed {
+                    shared.publish(index.publish_snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
+            }
+            IndexCommand::InstallGraph {
+                segment,
+                xpath,
+                reply,
+            } => {
+                let outcome = index.install_graph(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
                 let _ = reply.send(outcome);
                 if installed {
@@ -592,11 +600,10 @@ fn stage_and_merge(
 
         if staging.estimated_size_bytes() >= staging_cap {
             index.merge_into_memtable(std::mem::take(&mut staging));
-            if index.should_flush() {
-                if let Err(error) = index.queue_flush() {
+            if index.should_flush()
+                && let Err(error) = index.queue_flush() {
                     return (added, Err(error));
                 }
-            }
         }
     }
 
@@ -775,7 +782,6 @@ pub enum ReindexStatus {
     Failed,
     Cancelled,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct ReindexingStats {
     pub status: ReindexStatus,
@@ -1010,7 +1016,7 @@ impl ReindexProgress {
 }
 
 fn round_eta(secs: f64) -> u64 {
-    let s = secs.ceil().clamp(0.0, u32::MAX as f64) as u64;
+    let s = secs.ceil().clamp(0.0, f64::from(u32::MAX)) as u64;
     match s {
         0..=30 => s,
         31..=300 => s.div_ceil(5) * 5,

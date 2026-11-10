@@ -64,7 +64,7 @@ fn generate_routing_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-impl<'a> DocumentConversion for Json<'a> {
+impl DocumentConversion for Json<'_> {
     #[timed(json_parsing)]
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError> {
         //If an array was given

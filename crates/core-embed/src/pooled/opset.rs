@@ -102,4 +102,3 @@ fn invalid_onnx(reason: &str) -> io::Error {
         format!("not a valid ONNX model: {reason}"),
     )
 }
-

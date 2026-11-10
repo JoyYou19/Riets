@@ -206,7 +206,7 @@ fn run_tool(command: &mut Command, tool: &str) -> io::Result<()> {
 fn runtime_package(cuda_major: Option<u32>) -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH, cuda_major) {
         ("linux", "x86_64", Some(12)) => Some("onnxruntime-linux-x64-gpu_cuda12"),
-        ("linux", "x86_64", Some(13)) => Some("onnxruntime-linux-x64-gpu_cuda13"), 
+        ("linux", "x86_64", Some(13)) => Some("onnxruntime-linux-x64-gpu_cuda13"),
         ("macos", "aarch64", None) => Some("onnxruntime-osx-arm64"),
         ("macos", "x86_64", None) => Some("onnxruntime-osx-x86_64"),
         ("linux", "x86_64", None) => Some("onnxruntime-linux-x64"),

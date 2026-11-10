@@ -30,9 +30,7 @@ pub fn lookup_key(analyzer: &Analyzer, token: &str) -> String {
     analyzer
         .analyze(token)
         .into_iter()
-        .next()
-        .map(|token| token.text)
-        .unwrap_or_else(|| token.to_lowercase())
+        .next().map_or_else(|| token.to_lowercase(), |token| token.text)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,14 +421,11 @@ impl DictionaryBuilder {
                 let mut node = 0;
                 for key in variant.key(analyzer) {
                     let existing = nodes[node].children.get(&key).copied();
-                    node = match existing {
-                        Some(next) => next,
-                        None => {
-                            let id = nodes.len();
-                            nodes.push(TrieNode::default());
-                            nodes[node].children.insert(key, id);
-                            id
-                        }
+                    node = if let Some(next) = existing { next } else {
+                        let id = nodes.len();
+                        nodes.push(TrieNode::default());
+                        nodes[node].children.insert(key, id);
+                        id
                     };
                 }
                 nodes[node].terminals.push(VariantRef {

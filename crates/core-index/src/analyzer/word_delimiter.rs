@@ -15,9 +15,9 @@
 //!   3. digit change — letter ↔ digit (only when `split_numerics`)
 //!
 //!   - all fragments are emitted (including 1-char); length filtering is a
-//!     separate post-split filter (min_length / max_length)
+//!     separate post-split filter (`min_length` / `max_length`)
 //!
-//! # Examples (literal_symbols = `_`)
+//! # Examples (`literal_symbols` = `_`)
 //!
 //! | input             | flags          | tokens                                        |
 //! |-------------------|----------------|-----------------------------------------------|
@@ -26,10 +26,10 @@
 //! | `king's`          | —              | `king's` `king` `kings`                       |
 //! | `o'clock`         | —              | `o'clock` `clock` `oclock`                    |
 //! | `C++`             | —              | `C++` `C`                                     |
-//! | `getHTTPResponse` | split_case     | `getHTTPResponse` `get` `HTTP` `Response`     |
-//! | `XMLHttpRequest`  | split_case     | `XMLHttpRequest` `XML` `Http` `Request`       |
-//! | `utf8`            | split_numerics | `utf8` `utf` '8'                              |
-//! | `page42`          | split_numerics | `page42` `page` `42`                          |
+//! | `getHTTPResponse` | `split_case`     | `getHTTPResponse` `get` `HTTP` `Response`     |
+//! | `XMLHttpRequest`  | `split_case`     | `XMLHttpRequest` `XML` `Http` `Request`       |
+//! | `utf8`            | `split_numerics` | `utf8` `utf` '8'                              |
+//! | `page42`          | `split_numerics` | `page42` `page` `42`                          |
 //!
 //! # Position layout
 //! `original` and `joined` sit at the chunk's position and span all parts;
@@ -45,10 +45,13 @@ use std::collections::HashSet;
 
 use tantivy::tokenizer::{BoxTokenStream, Token, TokenStream, Tokenizer};
 
-fn split_where(segment: &str, boundary: impl Fn(char, char, Option<char>) -> bool) -> Vec<&str> {
+fn split_where(
+    segment: &str,
+    boundary: impl Fn(char, char, Option<char>) -> bool,
+) -> Vec<(usize, usize)> {
     let chars: Vec<(usize, char)> = segment.char_indices().collect();
     if chars.len() < 2 {
-        return vec![segment];
+        return vec![(0, segment.len())];
     }
 
     let mut bounds = vec![0usize];
@@ -63,27 +66,45 @@ fn split_where(segment: &str, boundary: impl Fn(char, char, Option<char>) -> boo
 
     let mut out = Vec::with_capacity(bounds.len());
     for w in bounds.windows(2) {
-        out.push(&segment[w[0]..w[1]]);
+        out.push((w[0], w[1]));
     }
-    out.push(&segment[*bounds.last().unwrap()..]);
+    out.push((*bounds.last().unwrap(), segment.len()));
     out
 }
 
-// "getHTTPResponse" -> ["get", "HTTP", "Response"]
-fn split_on_case(segment: &str) -> Vec<&str> {
+//getHTTPResponse -> get HTTP Response getHTTPResponse
+fn split_on_case(segment: &str) -> Vec<(usize, usize)> {
     split_where(segment, |prev, curr, next| {
         (prev.is_lowercase() && curr.is_uppercase())
             || (prev.is_uppercase()
                 && curr.is_uppercase()
-                && next.map_or(false, |c| c.is_lowercase()))
+                && next.is_some_and(char::is_lowercase))
     })
 }
 
-// "utf8" -> ["utf", "8"]
-fn split_on_numerics(segment: &str) -> Vec<&str> {
+//utf8 -> utf8 utf 8
+fn split_on_numerics(segment: &str) -> Vec<(usize, usize)> {
     split_where(segment, |prev, curr, _| {
         prev.is_alphabetic() != curr.is_alphabetic()
     })
+}
+
+fn split_on_delims(chunk: &str, is_delim: impl Fn(char) -> bool) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for (idx, ch) in chunk.char_indices() {
+        if is_delim(ch) {
+            if let Some(s) = start.take() {
+                out.push((s, idx));
+            }
+        } else if start.is_none() {
+            start = Some(idx);
+        }
+    }
+    if let Some(s) = start {
+        out.push((s, chunk.len()));
+    }
+    out
 }
 
 fn split_forms(
@@ -91,22 +112,39 @@ fn split_forms(
     literal_symbols: &HashSet<char>,
     split_case: bool,
     split_numerics: bool,
-) -> (String, Vec<String>, String) {
+) -> (String, Vec<(String, usize, usize)>, String) {
     let is_delim = |c: char| !c.is_alphanumeric() && !literal_symbols.contains(&c);
 
-    let mut parts: Vec<String> = Vec::new();
-    for segment in chunk.split(is_delim).filter(|s| !s.is_empty()) {
-        let mut sub: Vec<&str> = vec![segment];
+    let mut parts: Vec<(String, usize, usize)> = Vec::new();
+    for (seg_start, seg_end) in split_on_delims(chunk, is_delim) {
+        let mut sub: Vec<(usize, usize)> = vec![(seg_start, seg_end)];
+        //yeah \/
         if split_case {
-            sub = sub.into_iter().flat_map(split_on_case).collect();
+            sub = sub
+                .into_iter()
+                .flat_map(|(s, e)| {
+                    split_on_case(&chunk[s..e])
+                        .into_iter()
+                        .map(move |(a, b)| (s + a, s + b))
+                })
+                .collect();
         }
         if split_numerics {
-            sub = sub.into_iter().flat_map(split_on_numerics).collect();
+            sub = sub
+                .into_iter()
+                .flat_map(|(s, e)| {
+                    split_on_numerics(&chunk[s..e])
+                        .into_iter()
+                        .map(move |(a, b)| (s + a, s + b))
+                })
+                .collect();
         }
-        parts.extend(sub.into_iter().map(str::to_string));
+        for (s, e) in sub {
+            parts.push((chunk[s..e].to_string(), s, e));
+        }
     }
 
-    let joined = parts.concat();
+    let joined: String = parts.iter().map(|(p, _, _)| p.as_str()).collect();
     (chunk.to_string(), parts, joined)
 }
 
@@ -123,7 +161,8 @@ pub fn expand_word_delimiters(
     }
 
     let mut out = vec![original];
-    out.extend(parts.iter().filter(|p| p.chars().count() > 1).cloned());
+    out.extend(parts.iter().map(|(p, _, _)| p.clone()));
+
     if !joined.is_empty() && joined != out[0] {
         out.push(joined);
     }
@@ -172,32 +211,37 @@ impl WordDelimiterTokenizer {
             self.split_numerics,
         );
 
-        let parts_to_emit: Vec<&String> = if parts.len() > 1 {
-            parts.iter().filter(|p| p.chars().count() > 1).collect()
+        let parts_to_emit: Vec<&(String, usize, usize)> = if parts.len() > 1 {
+            parts.iter().collect()
         } else {
             Vec::new()
         };
         let span = parts_to_emit.len().max(1);
         let start = *position;
 
-        let mut push = |text: &str, position: usize, position_length: usize| {
-            tokens.push(Token {
-                offset_from: from,
-                offset_to: to,
-                position,
-                text: text.to_string(),
-                position_length,
-            });
-        };
+        let mut push =
+            |text: &str, from: usize, to: usize, position: usize, position_length: usize| {
+                tokens.push(Token {
+                    offset_from: from,
+                    offset_to: to,
+                    position,
+                    text: text.to_string(),
+                    position_length,
+                });
+            };
 
         if self.preserve_original {
-            push(&original, start, span);
+            push(&original, from, to, start, span);
         }
+
         if !joined.is_empty() && joined != original {
-            push(&joined, start, span);
+            let j_from = from + parts.first().map(|(_, s, _)| *s).unwrap_or(0);
+            let j_to = from + parts.last().map(|(_, _, e)| *e).unwrap_or(0);
+            push(&joined, j_from, j_to, start, span);
         }
+
         for (index, part) in parts_to_emit.iter().enumerate() {
-            push(part, start + index, 1);
+            push(&part.0, from + part.1, from + part.2, start + index, 1);
         }
 
         *position = start + span;
@@ -308,7 +352,42 @@ mod tests {
     fn code_split_drops_one_char_fragment() {
         assert_eq!(
             expand_word_delimiters("utf8", &syms(&['_']), true, true),
-            vec!["utf8", "utf"]
+            vec!["utf8", "utf", "8"]
+        );
+    }
+
+    #[test]
+    fn split_forms_offsets_delimiter() {
+        let syms = syms(&['_']);
+        let (_orig, parts, _joined) = split_forms("spider-man", &syms, false, false);
+        assert_eq!(
+            parts,
+            vec![("spider".to_string(), 0, 6), ("man".to_string(), 7, 10),]
+        );
+    }
+
+    #[test]
+    fn split_forms_offsets_case() {
+        let syms = syms(&['_']);
+        let (_orig, parts, _joined) = split_forms("getHTTPResponse", &syms, true, false);
+        assert_eq!(
+            parts,
+            vec![
+                ("get".to_string(), 0, 3),
+                ("HTTP".to_string(), 3, 7),
+                ("Response".to_string(), 7, 15),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_forms_offsets_utf8_bytes() {
+        let syms = syms(&['_']);
+        // 'ģ' is 2 UTF-8 bytes, so "ģimene" is bytes 0..7, not 0..6.
+        let (_orig, parts, _joined) = split_forms("ģimene-ozols", &syms, false, false);
+        assert_eq!(
+            parts,
+            vec![("ģimene".to_string(), 0, 7), ("ozols".to_string(), 8, 13),]
         );
     }
 }

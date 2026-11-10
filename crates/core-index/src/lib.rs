@@ -1,7 +1,12 @@
-use std::{fs::{self, File}, io::{self, Write}, path::{Path, PathBuf}};
+use std::{
+    fs::{self, File},
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
 
 pub mod analyzer;
 pub mod array_rows;
+pub mod background;
 pub mod bkd;
 pub mod disk;
 pub mod document;
@@ -17,7 +22,6 @@ pub mod term_dict;
 pub mod types;
 pub mod vector;
 pub mod wildcard;
-pub mod background;
 
 pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
@@ -37,5 +41,13 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
         File::open(dir)?.sync_all()?;
     }
     Ok(())
+}
+pub fn tmp_path_for(path: &Path) -> PathBuf {
+    with_suffix(path, ".tmp")
+}
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 pub mod hash;

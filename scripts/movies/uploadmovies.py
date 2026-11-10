@@ -44,13 +44,13 @@ POLICY = """\
           "$type": "text",
           "$analyzer": "name",
           "$exact": true,
-          "$weight": { "min": 20, "max": 60 }
+          "$weight": { "min": 60, "max": 80 }
         },
         "surname": {
           "$type": "text",
           "$analyzer": "name",
           "$exact": true,
-          "$weight": { "min": 20, "max": 60 }
+          "$weight": { "min": 60, "max": 80 }
         }
       }
     ],

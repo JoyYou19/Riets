@@ -74,7 +74,7 @@ pub enum ConfigError {
         line: Option<usize>,
         source: DictionaryError,
     },
-    /// Valid shape, impossible values (min_value above max_value, ...).
+    /// Valid shape, impossible values (`min_value` above `max_value`, ...).
     Invalid {
         message: String,
     },

@@ -103,27 +103,38 @@ pub fn order_blended(
         return;
     }
 
-    let total_ratio: f32 = specs.iter().map(|s| s.ratio as f32).sum::<f32>().min(100.0);
+    let total_ratio: f32 = specs.iter().map(|s| f32::from(s.ratio)).sum::<f32>().min(100.0);
     let relevance_weight = 100.0 - total_ratio;
 
-    let max_score = items
-        .iter()
-        .map(|(h, _)| h.score)
-        .fold(0.0f32, f32::max)
-        .max(1.0);
-
-    //normalize the tier and relevance_final is relevance_norm + (1 - rank_norm)
-    let max_tier = items.iter().map(|(h, _)| h.tier).max().unwrap_or(0).max(1) as f32;
+    // tiers are ranked by their place among the (tier, level) pairs present, not by value.
+    // Scores are compared within one pair only: named hits keep their BM25 while fused hits
+    // carry RRF scores of at most 1
+    let mut ranks: Vec<(u8, u8)> = items.iter().map(|(h, _)| (h.tier, h.level)).collect();
+    ranks.sort_unstable();
+    ranks.dedup();
+    let last_rank = ranks.len().saturating_sub(1).max(1) as f32;
+    let mut best_in_rank: HashMap<(u8, u8), f32> = HashMap::with_capacity(ranks.len());
+    for (hit, _) in items.iter() {
+        let best = best_in_rank.entry((hit.tier, hit.level)).or_insert(0.0);
+        *best = best.max(hit.score);
+    }
 
     let blends: Vec<f32> = items
         .iter()
         .map(|(hit, keys)| {
-            //relevance is now rank (tier) + score, both on 0..1
-            let rank_norm = 1.0 - (hit.tier as f32 / max_tier); // 1.0 best tier, 0.0 worst
-            let score_norm = hit.score / max_score; // 0..1
+            //relevance is rank (tier) + score, both on 0..1
+            let key = (hit.tier, hit.level);
+            let position = ranks.binary_search(&key).unwrap_or(0) as f32;
+            let rank_norm = 1.0 - position / last_rank; // 1.0 best tier, 0.0 worst
+            let best = best_in_rank.get(&key).copied().unwrap_or(0.0);
+            let score_norm = if best > 0.0 {
+                (hit.score / best).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
 
             //we do / 2 so that final relevance is [0...1] not [0....2]
-            let relevance = ((rank_norm + score_norm) / 2.0) * relevance_weight;
+            let relevance = f32::midpoint(rank_norm, score_norm) * relevance_weight;
 
             let mut field = 0.0f32;
             for (index, spec) in specs.iter().enumerate() {
@@ -147,7 +158,7 @@ pub fn order_blended(
                         _ => 1.0,
                     },
                 };
-                field += spec.ratio as f32 * component;
+                field += f32::from(spec.ratio) * component;
             }
 
             relevance + field
@@ -157,8 +168,7 @@ pub fn order_blended(
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_unstable_by(|&a, &b| {
         blends[b]
-            .partial_cmp(&blends[a])
-            .unwrap_or(Ordering::Equal)
+            .total_cmp(&blends[a])
             .then_with(|| items[a].0.doc_id.cmp(&items[b].0.doc_id))
     });
 
@@ -225,7 +235,7 @@ pub fn resolve_sorts(
                         "sort ratio for '{name}' must be between 0 and 100"
                     )));
                 }
-                total_ratio += r as u32;
+                total_ratio += u32::from(r);
                 if total_ratio > 100 {
                     return Err(CorelamoError::InvalidData(
                         "sort ratios must add up to at most 100 (the rest is relevance)"
@@ -237,7 +247,7 @@ pub fn resolve_sorts(
         };
 
         fields.push(SortField {
-            xpath: field_pol.xpath(&policy),
+            xpath: field_pol.xpath(policy),
             order: spec.order,
             ratio,
             is_bool: field_pol.kind.is_bool(),

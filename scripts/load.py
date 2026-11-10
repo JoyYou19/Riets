@@ -11,32 +11,40 @@ BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
 SHARD_COUNT = 4
 
-BATCH_SIZE = 70_000   # documents per insert request
-IN_FLIGHT = 12      # insert requests running at the same time
+BATCH_SIZE = 50000   # documents per insert request
+IN_FLIGHT = 8     # insert requests running at the same time
 
-POLICY = """\
-{
-  "_id": {
-    "$type": "id_auto",
-    "$list": true,
-    "$weight": { "min": 90, "max": 95 }
-  },
-  "title": {
-    "$type": "text",
-    "$list": true,
-    "$exact": true,
-    "$stemming": "english",
-    "$weight": { "min": 40, "max": 80 }
-  },
-  "text": {
-    "$type": "text",
-    "$list": true,
-    "$stemming": "english",
-    "$weight": { "min": 20, "max": 30 },
-    "$vector":true
-  }
-}
-"""
+# Policy format since the analyzer refactor: named analyzers + a "document" schema.
+# "$stemming" on a field is gone; a field picks an analyzer with "$analyzer"
+# (fields without one use "$default"). See docs/analyzers.md.
+POLICY = json.dumps({
+    "analyzers": {
+        "$default": {"stemming": "english", "min_length": 1,"stopwords": [
+      "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
+      "into", "is", "it", "of", "on", "or", "such", "that", "the", "their", "then",
+      "there", "these", "they", "this", "to", "was", "will", "with",
+      "has", "have", "had", "were", "been",
+      "which", "from", "also", "an", "than"
+    ]}},
+    "document": {
+        "_id": {
+            "$type": "id_auto",
+            "$list": True,
+            "$weight": {"min": 90, "max": 95},
+        },
+        "title": {
+            "$type": "text",
+            "$list": True,
+            "$exact": True,
+            "$weight": {"min": 40, "max": 80},
+        },
+        "text": {
+            "$type": "text",
+            "$list": True,
+            "$weight": {"min": 20, "max": 30}
+        },
+    },
+})
 
 
 def post(path, body):
@@ -60,6 +68,14 @@ def post(path, body):
         return json.loads(text)
     except json.JSONDecodeError:
         return {"error": text}
+
+
+def failed(reply):
+    """True when the server rejected the request (transport error or non-2xx status)."""
+    if "error" in reply:
+        return True
+    status = reply.get("status")
+    return isinstance(status, int) and status >= 400
 
 
 def batches_from_jsonl(path, batch_size):
@@ -107,7 +123,11 @@ def main():
     print(post(f"/api/databases/{DB_NAME}/start-database", "").get("title"))
 
     print("[INFO] Setting policy...")
-    print(post(f"/api/databases/{DB_NAME}/set-policy", POLICY).get("title"))
+    reply = post(f"/api/databases/{DB_NAME}/set-policy", POLICY)
+    print(reply.get("title"))
+    if failed(reply):
+        # inserting without the policy would index everything with the wrong fields/analyzers
+        raise SystemExit(f"[ERROR] set-policy failed, not inserting: {reply}")
 
     sent = 0
     inserted = 0

@@ -205,17 +205,16 @@ impl Analyzer {
             builder = builder.filter_dynamic(LowerCaser);
         }
 
-        //
+        //Jānis -> Janis
         if config.ascii_folding {
             builder = builder.filter_dynamic(AsciiFoldingFilter);
         }
 
         //stopwordi
-        if let Some(stop) = &config.stopwords {
-            if let Some(filter) = stopword_filter(stop) {
+        if let Some(stop) = &config.stopwords
+            && let Some(filter) = stopword_filter(stop) {
                 builder = builder.filter_dynamic(filter);
             }
-        }
 
         //stemming
         if let Some(lang) = &config.stemming {
@@ -223,6 +222,7 @@ impl Analyzer {
                 builder.filter_dynamic(CachedStemmer::new(lang.algorithm(), STEM_CACHE_CAPACITY));
         }
 
+        //<title>penis</title> -> penis
         let char_filters: Vec<CompiledCharFilter> = config
             .char_filters
             .iter()
@@ -266,6 +266,7 @@ impl Analyzer {
                 output.push(Token {
                     text: token.text.clone(),
                     position: token.position as u32,
+                    position_length: token.position_length as u32,
                     start_byte: token.offset_from,
                     end_byte: token.offset_to,
                 });
@@ -285,6 +286,10 @@ impl Analyzer {
                 .or_insert_with(|| self.analyzer.clone());
             f(analyzer)
         })
+    }
+
+    pub fn has_char_filters(&self) -> bool {
+        !self.char_filters.is_empty()
     }
 
     pub fn is_word_char(&self, c: char) -> bool {
@@ -327,6 +332,12 @@ impl Analyzer {
         Some(key)
     }
 
+    pub fn analyze_text(&self, input: &str) -> (String, Vec<Token>) {
+        let filtered = self.apply_char_filters(input);
+        let tokens = self.tokenize(&filtered);
+        (filtered, tokens)
+    }
+
     /// The name terms a field value is filed under: the whole value, and the value without a
     /// trailing "(qualifier)" or ", qualifier". Long values get none.
     pub fn name_terms(&self, value: &str) -> Vec<String> {
@@ -349,7 +360,12 @@ impl Analyzer {
         terms
     }
 
-    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
+    //now with byte offsets, //WARN: only words when !has_char_filters() cause it removes like <title> Hello </title> -> Hello
+    pub fn for_each_token_with_offsets(
+        &self,
+        input: &str,
+        mut f: impl FnMut(&str, u32, u32, u32, u32),
+    ) -> u32 {
         let filtered = self.apply_char_filters(input);
         self.with_text_analyzer(|analyzer| {
             let mut stream = analyzer.token_stream(&filtered);
@@ -360,6 +376,8 @@ impl Analyzer {
                     &token.text,
                     token.position as u32,
                     token.position_length.max(1) as u32,
+                    token.offset_from as u32,
+                    token.offset_to as u32,
                 );
                 if token.position >= next_unseen {
                     count = count.saturating_add(1);
@@ -368,6 +386,11 @@ impl Analyzer {
             }
             count
         })
+    }
+
+    //es godigi sakot hujpis kapec sis helper ir vajadzigs, bet nu nevajag renamot pusi codebase
+    pub fn for_each_token(&self, input: &str, mut f: impl FnMut(&str, u32, u32)) -> u32 {
+        self.for_each_token_with_offsets(input, |term, pos, len, _start, _end| f(term, pos, len))
     }
 
     #[timed(indexing_documents)]
@@ -384,7 +407,7 @@ impl Analyzer {
             .filter(|c| {
                 c.is_alphanumeric()
                     || c.is_whitespace()
-                    || self.literal_symbols.contains(&c)
+                    || self.literal_symbols.contains(c)
                     || !(c.is_ascii() || is_unicode_punctuation(*c))
             })
             .collect();
@@ -412,9 +435,7 @@ impl AnalyzerSet {
             analyzers.insert(name.clone(), Analyzer::from_config(config));
         }
         let default = configs
-            .get("$default")
-            .map(Analyzer::from_config)
-            .unwrap_or_else(|| Analyzer::from_config(&AnalyzerConfig::builtin_default()));
+            .get("$default").map_or_else(|| Analyzer::from_config(&AnalyzerConfig::builtin_default()), Analyzer::from_config);
         Self { analyzers, default }
     }
 
@@ -430,14 +451,13 @@ impl AnalyzerSet {
 /// `value` without a trailing "(...)" and without everything from its first ", ".
 fn unqualified(value: &str) -> Vec<&str> {
     let mut out = Vec::with_capacity(2);
-    if value.ends_with(')') {
-        if let Some(open) = value.rfind(" (") {
+    if value.ends_with(')')
+        && let Some(open) = value.rfind(" (") {
             let head = value[..open].trim_end();
             if !head.is_empty() {
                 out.push(head);
             }
         }
-    }
     if let Some(comma) = value.find(", ") {
         let head = value[..comma].trim_end();
         if !head.is_empty() && !out.contains(&head) {

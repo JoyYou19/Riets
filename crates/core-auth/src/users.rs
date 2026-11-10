@@ -5,7 +5,6 @@ use core_storage::document_store::StoredDocument;
 use core_storage::json_parse::ParsedNode;
 use simd_json::{json, prelude::*, OwnedValue};
 
-use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use core_index::{analyzer::analyzer::Analyzer, lsm::LsmIndex};
 use core_storage::{document_store::DocumentStore, search_database::SearchDatabase};
@@ -15,6 +14,7 @@ use core_storage::search_database::{DocumentInput, IndexMode};
 
 use crate::Principal;
 
+pub(crate) type ListUsers =(String,Result<Vec<String>, String>);
 pub struct UserDatabase<S: DocumentStore> {
     db: SearchDatabase<S>,
 }
@@ -42,7 +42,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             format: Format::JSON,
         };
         self.db.put_document(input, IndexMode::StoreOnly)?;
-        
+
         Ok(())
     }
     /// True when no user has been created yet: a fresh installation.
@@ -53,14 +53,11 @@ impl<S: DocumentStore> UserDatabase<S> {
     pub fn add_user(
         &mut self,
         username: &str,
-        password: &str,
+        hashed: String,
         roles: Vec<String>,
     ) -> io::Result<()> {
-        let salt = SaltString::generate(&mut OsRng);
-        let hashed = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .map_err(|_| io::Error::other("password hashing failed"))?
-            .to_string();
+  
+
         self.put_user(username, hashed, &roles)
     }
 
@@ -88,7 +85,7 @@ impl<S: DocumentStore> UserDatabase<S> {
         Some((password, roles))
     }
 
-    pub fn update_password(&mut self, username: &str, new_password: &str) -> bool {
+    pub fn update_password(&mut self, username: &str, hashed: String) -> bool {
         let Ok(Some(doc)) = self.db.get_document(username) else {
             return false;
         };
@@ -97,8 +94,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             return false;
         };
 
-        let salt = SaltString::generate(&mut OsRng);
-        let hashed = match Argon2::default().hash_password(new_password.as_bytes(), &salt) {
+        let hashed = match Argon2::default().hash_password(hashed.as_bytes()) {
             Ok(hash) => hash.to_string(),
             Err(_) => {
                 return false;
@@ -116,39 +112,34 @@ impl<S: DocumentStore> UserDatabase<S> {
         };
         self.put_user(username, hash, &new_roles).is_ok()
     }
-    /// A hash of a random password, built once with the same Argon2 settings as real users.
-/// Checked when the user does not exist, so both cases cost one Argon2 verify.
 
     pub fn verify(&self, username: &str, password: &str) -> Option<Principal> {
-    let user = self
-        .db
-        .get_document(username)
-        .ok()
-        .flatten()
-        .and_then(|doc| Self::parse_user(&doc));
+        let user = self
+            .db
+            .get_document(username)
+            .ok()
+            .flatten()
+            .and_then(|doc| Self::parse_user(&doc));
 
-    let (stored_hash, roles) = match user {
-        Some(user) => user,
-        None => {
+        let (stored_hash, roles) = if let Some(user) = user { user } else {
             // same work as a real check, so the time does not reveal whether the user exists
-            if let Ok(parsed) = PasswordHash::new(dummy_hash()) {
+            if let Some(parsed) = dummy_hash().and_then(|hash| PasswordHash::new(hash).ok()) {
                 let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
             }
             return None;
+        };
+
+        let parsed_hash = PasswordHash::new(&stored_hash).ok()?;
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .ok()?;
+
+        let mut principal = Principal::new(username);
+        for role in roles {
+            principal = principal.with_role(role);
         }
-    };
-
-    let parsed_hash = PasswordHash::new(&stored_hash).ok()?;
-    Argon2::default()
-        .verify_password(password.as_bytes(), &parsed_hash)
-        .ok()?;
-
-    let mut principal = Principal::new(username);
-    for role in roles {
-        principal = principal.with_role(role);
+        Some(principal)
     }
-    Some(principal)
-}
 
     pub fn load_principal(&self, username: &str) -> Option<Principal> {
         let doc = self.db.get_document(username).ok()??;
@@ -163,30 +154,33 @@ impl<S: DocumentStore> UserDatabase<S> {
     pub fn user_exists(&mut self, username: &str) -> bool {
         matches!(self.db.get_document(username), Ok(Some(_)))
     }
-    pub fn all_usernames(&self) -> Vec<String> {
-        self.db
-            .store()
-            .all_documents()
-            .map(|docs| docs.into_iter().map(|d| d.external_id).collect())
-            .unwrap_or_default()
-    }
-    pub fn all_users_with_roles(&self) -> Vec<(String, Vec<String>)> {
-        self.all_usernames()
+     pub fn all_users_with_roles(&self) -> io::Result<Vec<ListUsers>> {
+        let docs = self.db.store().all_documents()?;
+        Ok(docs
             .into_iter()
-            .filter_map(|username| {
-                let principal = self.load_principal(&username)?;
-                Some((username, principal.roles.into_iter().collect()))
+            .map(|doc| {
+                let roles = Self::parse_user(&doc)
+                    .map(|(_, roles)| roles)
+                    .ok_or_else(|| "user record is not valid JSON or has no password".to_string());
+                (doc.external_id, roles)
             })
-            .collect()
+            .collect())
     }
 }
-fn dummy_hash() -> &'static str {
-    static DUMMY: OnceLock<String> = OnceLock::new();
-    DUMMY.get_or_init(|| {
-        let salt = SaltString::generate(&mut OsRng);
-        Argon2::default()
-            .hash_password(b"corelamo-no-such-user", &salt)
-            .expect("hashing a constant password cannot fail")
-            .to_string()
-    })
+/// Salt of the dummy hash. It is never compared with a real password, so a fixed salt is
+/// fine, and it keeps the dummy hash independent of the RNG.
+const DUMMY_SALT: &[u8; 16] = b"corelamo-dummy-s";
+
+/// A hash of a fixed password, built once with the same Argon2 settings as real users.
+/// Checked when the user does not exist, so both cases cost one Argon2 verify.
+fn dummy_hash() -> Option<&'static str> {
+    static DUMMY: OnceLock<Option<String>> = OnceLock::new();
+    DUMMY
+        .get_or_init(|| {
+            Argon2::default()
+                .hash_password_with_salt(b"corelamo-no-such-user", DUMMY_SALT)
+                .ok()
+                .map(|hash| hash.to_string())
+        })
+        .as_deref()
 }

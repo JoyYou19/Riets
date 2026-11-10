@@ -25,7 +25,7 @@ impl QuantRange {
 
     /// Learns the range from a sample of components (reordered in place).
     /// An empty or all-zero sample gets range 1.0: any range encodes zeros exactly.
-        pub(crate) fn learn(sample: &mut Vec<f32>) -> Self {
+    pub(crate) fn learn(sample: &mut Vec<f32>) -> Self {
         sample.retain(|v| v.is_finite());
         sample.iter_mut().for_each(|v| *v = v.abs());
         if sample.is_empty() {
@@ -51,7 +51,6 @@ impl QuantRange {
     }
 }
 
-
 /// A quantised query and its own scale.
 #[derive(Debug, Clone)]
 pub(crate) struct QueryCodes {
@@ -74,16 +73,24 @@ pub(crate) fn quantize_query(query: &[f32]) -> QueryCodes {
 fn encode_with_scale(values: &[f32], scale: f32, out: &mut Vec<u8>) {
     out.clear();
     out.extend(values.iter().map(|&v| {
-        let code = if v.is_finite() { (v * scale).round().clamp(-CODE_MAX, CODE_MAX) } else { 0.0 };
+        let code = if v.is_finite() {
+            (v * scale).round().clamp(-CODE_MAX, CODE_MAX)
+        } else {
+            0.0
+        };
         code as i8 as u8
     }));
 }
 
 /// Dot product of two int8 code vectors stored as bytes, in i32.
-/// max |sum| = dims × 127², so it cannot overflow for dims < 130_000.
+/// max |sum| = dims × 127², so it cannot overflow for dims < `130_000`.
 #[inline]
 pub(crate) fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
-    debug_assert_eq!(a.len(), b.len(), "dot product of vectors with different dims");
+    debug_assert_eq!(
+        a.len(),
+        b.len(),
+        "dot product of vectors with different dims"
+    );
     let mut lanes = [0i32; DOT_LANES];
     let a_chunks = a.chunks_exact(DOT_LANES);
     let b_chunks = b.chunks_exact(DOT_LANES);
@@ -110,7 +117,11 @@ pub(crate) fn approx_cosine(dot: i32, row_scale: f32, query_scale: f32) -> f32 {
 /// Exact dot product of two f32 vectors (cosine when both are L2-normalized).
 #[inline]
 pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len(), "dot product of vectors with different dims");
+    debug_assert_eq!(
+        a.len(),
+        b.len(),
+        "dot product of vectors with different dims"
+    );
     let mut lanes = [0f32; DOT_LANES];
     let a_chunks = a.chunks_exact(DOT_LANES);
     let b_chunks = b.chunks_exact(DOT_LANES);
@@ -132,7 +143,10 @@ mod tests {
     use super::*;
 
     fn naive_i8(a: &[i8], b: &[i8]) -> i32 {
-        a.iter().zip(b).map(|(&x, &y)| i32::from(x) * i32::from(y)).sum()
+        a.iter()
+            .zip(b)
+            .map(|(&x, &y)| i32::from(x) * i32::from(y))
+            .sum()
     }
 
     #[test]
@@ -141,7 +155,11 @@ mod tests {
             let a: Vec<i8> = (0..len).map(|i| ((i * 37) % 255) as i8).collect();
             let b: Vec<i8> = (0..len).map(|i| ((i * 91 + 7) % 255) as i8).collect();
             let bytes = |v: &[i8]| v.iter().map(|&x| x as u8).collect::<Vec<u8>>();
-            assert_eq!(dot_i8(&bytes(&a), &bytes(&b)), naive_i8(&a, &b), "len {len}");
+            assert_eq!(
+                dot_i8(&bytes(&a), &bytes(&b)),
+                naive_i8(&a, &b),
+                "len {len}"
+            );
         }
     }
 
@@ -159,7 +177,11 @@ mod tests {
         sample.push(50.0);
         sample.push(f32::NAN);
         let range = QuantRange::learn(&mut sample);
-        assert!(range.absmax() < 0.1, "outlier set the range: {}", range.absmax());
+        assert!(
+            range.absmax() < 0.1,
+            "outlier set the range: {}",
+            range.absmax()
+        );
     }
 
     #[test]

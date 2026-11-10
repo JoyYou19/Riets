@@ -6,7 +6,14 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions}, mem::MemIndex, numeric_values::{NumericBound, NumericValue}, posting::{DeleteSet, PostingList, ops::union_many}, search::{SearchIndex, SearchNumeric, SearchReader, SearchStats}, types::{ArrayRowId, DocId, XPathId}, vector::{SegmentVectors, VectorFilter, VectorHit, search_segments}, wildcard::WildcardPattern,
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
+    mem::MemIndex,
+    numeric_values::{NumericBound, NumericValue},
+    posting::{DeleteSet, PostingList, ops::union_many},
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
+    types::{ArrayRowId, DocId, XPathId},
+    vector::{SegmentVectors, VectorFilter, VectorHit, search_segments},
+    wildcard::WildcardPattern,
 };
 
 /*
@@ -37,6 +44,15 @@ impl SearchIndex for IndexSnapshot {
             out.extend(seg.terms(xpath));
         }
         out.into_iter().collect()
+    }
+
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        if let Some(e) = self.mem.element_index_of_row(row) {
+            return Some(e);
+        }
+        self.segments
+            .iter()
+            .find_map(|seg| seg.element_index_of_row(row))
     }
 
     fn is_deleted(&self, doc_id: DocId) -> bool {
@@ -223,11 +239,10 @@ impl SearchStats for IndexSnapshot {
             return Some(len);
         }
         for segment in self.segments.iter().rev() {
-            if let Some((lo, hi)) = segment.doc_range() {
-                if doc_id < lo || doc_id > hi {
+            if let Some((lo, hi)) = segment.doc_range()
+                && (doc_id < lo || doc_id > hi) {
                     continue;
                 }
-            }
             if let Some(len) = segment.doc_len(doc_id, xpath) {
                 return Some(len);
             }
@@ -246,7 +261,7 @@ impl SearchStats for IndexSnapshot {
             .deleted
             .iter()
             .filter_map(|doc_id| self.doc_len(doc_id, xpath))
-            .map(|len| len as u64)
+            .map(u64::from)
             .sum();
         raw.saturating_sub(deleted)
     }

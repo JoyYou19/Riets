@@ -1,10 +1,30 @@
 use crate::{
-    array_rows::ArrayRowIndex, background::background_pool, disk::{reader::DiskSegment, writer::write_merged_segment}, document::document::BoolField, lsm::index_worker::IndexCommand, numeric_values::{NumericFields, NumericPoints, unpack}, posting::{DeleteSet, PostingList}, segment::{ImmutableSegment, SegmentHandle}, types::{DocId, TermKey, XPathId}, vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
+    array_rows::ArrayRowIndex,
+    background::background_pool,
+    disk::{reader::DiskSegment, writer::write_merged_segment},
+    document::document::BoolField,
+    lsm::index_worker::IndexCommand,
+    numeric_values::{NumericFields, NumericPoints, unpack},
+    posting::{DeleteSet, PostingList},
+    segment::{ImmutableSegment, SegmentHandle},
+    types::{DocId, TermKey, XPathId},
+    vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
 };
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Reverse, collections::{BTreeMap, BinaryHeap}, fs, io, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::Sender}, thread, time::{Duration, Instant}};
-
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap},
+    fs, io,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
 
@@ -91,7 +111,7 @@ impl<'a> MergedTerms<'a> {
         list
     }
 }
-impl<'a> Iterator for MergedTerms<'a> {
+impl Iterator for MergedTerms<'_> {
     type Item = (TermKey, PostingList);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -131,13 +151,17 @@ pub struct CompactionConfig {
 }
 impl Default for CompactionConfig {
     fn default() -> Self {
-       Self {
+        Self {
             max_segments_per_compaction: 16,
+            //when this much never merge below
             compact_when_segments_at_least: 2,
+            //segment similarity sratio
             size_ratio: 2,
+            //similar sized segements worth to merge
             min_width: 4,
+            //max segements forces merge
             max_segments: 10,
-            idle_merge_after: Duration::from_secs(30),
+            idle_merge_after: Duration::from_secs(10),
         }
     }
 }
@@ -202,13 +226,13 @@ pub fn compact_segments_streaming(
         for (xpath, field) in segment.bool_fields() {
             let slot = merged_bool_fields
                 .entry(*xpath)
-                .or_insert_with(BoolField::default);
-            for id in field.true_ids.iter() {
+                .or_default();
+            for id in &field.true_ids {
                 if !deleted.contains(id) {
                     slot.true_ids.insert(id);
                 }
             }
-            for id in field.false_ids.iter() {
+            for id in &field.false_ids {
                 if !deleted.contains(id) {
                     slot.false_ids.insert(id);
                 }
@@ -287,14 +311,16 @@ pub fn run_compaction_cycle(
     let completed = match background_pool().install(|| run_compaction_job(job)) {
         Ok(completed) => completed,
         Err(err) => {
-            if let Err(remove_err) = fs::remove_file(&output_path) {
-                if remove_err.kind() != io::ErrorKind::NotFound {
+            if let Err(remove_err) = fs::remove_file(&output_path)
+                && remove_err.kind() != io::ErrorKind::NotFound {
                     slog::warn!(log, "failed to remove partial compaction output";
                         "path" => %output_path.display(),
                         "error" => %remove_err);
                 }
-            }
-            return Err(io::Error::new(err.kind(), format!("{}: {}", output_path.display(), err)));
+            return Err(io::Error::new(
+                err.kind(),
+                format!("{}: {}", output_path.display(), err),
+            ));
         }
     };
 
@@ -305,7 +331,7 @@ pub fn run_compaction_cycle(
             ack: Some(ack),
         })
         .map_err(|_| broken_pipe("index worker stopped"))?;
-    let _ = install_rx
+    let () = install_rx
         .recv()
         .map_err(|_| broken_pipe("index worker dropped install acknowledgement"))??;
 

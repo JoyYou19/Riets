@@ -4,13 +4,13 @@
 //! Layout (little-endian), every section starting on a 64-byte boundary:
 //! +----------------------+
 //! | header               |  magic[8] "CLHNSW02", u32 version, u32 reserved,
-//! |                      |  u64 vector_file_id, u32 node_count, u32 dims,
-//! |                      |  u16 max_links_upper, u16 max_links_level0, u32 entry_node,
-//! |                      |  u8 top_level, u8[3] reserved, u32 upper_slot_count
-//! | node levels          |  u8 * node_count            highest level of each node
-//! | upper slot starts    |  u32 * node_count           first upper slot of each node
-//! | level 0 lists        |  slot * node_count          slot = u32 len + u32[max_links_level0]
-//! | upper level lists    |  slot * upper_slot_count    slot = u32 len + u32[max_links_upper]
+//! |                      |  u64 `vector_file_id`, u32 `node_count`, u32 dims,
+//! |                      |  u16 `max_links_upper`, u16 `max_links_level0`, u32 `entry_node`,
+//! |                      |  u8 `top_level`, u8[3] reserved, u32 `upper_slot_count`
+//! | node levels          |  u8 * `node_count`            highest level of each node
+//! | upper slot starts    |  u32 * `node_count`           first upper slot of each node
+//! | level 0 lists        |  slot * `node_count`          slot = u32 len + u32[`max_links_level0`]
+//! | upper level lists    |  slot * `upper_slot_count`    slot = u32 len + u32[`max_links_upper`]
 //! +----------------------+
 //!
 //! A node at level L >= 1 owns L consecutive upper slots: its list on level l is at
@@ -35,8 +35,8 @@ pub(crate) const MAX_LEVEL: u8 = 16;
 /// Upper slot start of a node that only lives on level 0.
 pub(crate) const NO_UPPER_SLOTS: u32 = u32::MAX;
 
-/// magic + version + reserved + vector_file_id + node_count + dims + max_links_upper +
-/// max_links_level0 + entry_node + top_level + reserved + upper_slot_count
+/// magic + version + reserved + `vector_file_id` + `node_count` + dims + `max_links_upper` +
+/// `max_links_level0` + `entry_node` + `top_level` + reserved + `upper_slot_count`
 const HEADER_FIXED_LENGTH: usize = 8 + 4 + 4 + 8 + 4 + 4 + 2 + 2 + 4 + 1 + 3 + 4;
 
 /// Everything stored in the header.
@@ -104,7 +104,9 @@ impl GraphHeader {
     pub(crate) fn validate(&self) -> Result<(), String> {
         let upper = usize::from(self.max_links_upper);
         if !(2..=MAX_LINKS_LIMIT).contains(&upper) {
-            return Err(format!("max_links_upper {upper} outside 2..={MAX_LINKS_LIMIT}"));
+            return Err(format!(
+                "max_links_upper {upper} outside 2..={MAX_LINKS_LIMIT}"
+            ));
         }
         if usize::from(self.max_links_level0) != upper * 2 {
             return Err(format!(
@@ -116,7 +118,10 @@ impl GraphHeader {
             return Err("graph has no nodes".to_string());
         }
         if self.entry_node >= self.node_count {
-            return Err(format!("entry node {} outside {} nodes", self.entry_node, self.node_count));
+            return Err(format!(
+                "entry node {} outside {} nodes",
+                self.entry_node, self.node_count
+            ));
         }
         if self.top_level > MAX_LEVEL {
             return Err(format!("top level {} above {MAX_LEVEL}", self.top_level));
@@ -138,9 +143,9 @@ pub(crate) struct GraphLayout {
     pub(crate) level0_lists_offset: usize,
     pub(crate) upper_lists_offset: usize,
     pub(crate) total_length: usize,
-    /// Bytes per level-0 slot: (1 + max_links_level0) * 4.
+    /// Bytes per level-0 slot: (1 + `max_links_level0`) * 4.
     pub(crate) level0_slot_length: usize,
-    /// Bytes per upper slot: (1 + max_links_upper) * 4.
+    /// Bytes per upper slot: (1 + `max_links_upper`) * 4.
     pub(crate) upper_slot_length: usize,
 }
 
@@ -152,13 +157,11 @@ impl GraphLayout {
         let upper_slot_length = (1 + usize::from(header.max_links_upper)) * 4;
 
         let node_levels_offset = header_length();
-        let upper_slot_starts_offset =
-            next_section(node_levels_offset.checked_add(nodes)?)?;
+        let upper_slot_starts_offset = next_section(node_levels_offset.checked_add(nodes)?)?;
         let level0_lists_offset =
             next_section(upper_slot_starts_offset.checked_add(nodes.checked_mul(4)?)?)?;
-        let upper_lists_offset = next_section(
-            level0_lists_offset.checked_add(nodes.checked_mul(level0_slot_length)?)?,
-        )?;
+        let upper_lists_offset =
+            next_section(level0_lists_offset.checked_add(nodes.checked_mul(level0_slot_length)?)?)?;
         let total_length = upper_lists_offset
             .checked_add((header.upper_slot_count as usize).checked_mul(upper_slot_length)?)?;
 
@@ -264,7 +267,10 @@ mod tests {
             let err = GraphHeader::read_from(&case, path).expect_err(name);
             assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{name}");
         }
-        assert!(GraphHeader::read_from(&bytes[..10], path).is_err(), "truncated");
+        assert!(
+            GraphHeader::read_from(&bytes[..10], path).is_err(),
+            "truncated"
+        );
     }
 
     #[test]
@@ -281,14 +287,23 @@ mod tests {
         assert!(offsets.iter().all(|o| o % SECTION_ALIGNMENT == 0));
         assert!(layout.upper_slot_starts_offset >= layout.node_levels_offset + nodes);
         assert!(layout.level0_lists_offset >= layout.upper_slot_starts_offset + nodes * 4);
-        assert!(layout.upper_lists_offset >= layout.level0_lists_offset + nodes * layout.level0_slot_length);
-        assert_eq!(layout.total_length, layout.upper_lists_offset + 70 * layout.upper_slot_length);
+        assert!(
+            layout.upper_lists_offset
+                >= layout.level0_lists_offset + nodes * layout.level0_slot_length
+        );
+        assert_eq!(
+            layout.total_length,
+            layout.upper_lists_offset + 70 * layout.upper_slot_length
+        );
     }
 
     #[test]
     fn slot_offsets_follow_the_layout() {
         let layout = GraphLayout::new(&sample_header()).expect("layout");
-        assert_eq!(layout.slot_offset(0, 0, NO_UPPER_SLOTS), layout.level0_lists_offset);
+        assert_eq!(
+            layout.slot_offset(0, 0, NO_UPPER_SLOTS),
+            layout.level0_lists_offset
+        );
         assert_eq!(
             layout.slot_offset(2, 0, NO_UPPER_SLOTS),
             layout.level0_lists_offset + 2 * layout.level0_slot_length

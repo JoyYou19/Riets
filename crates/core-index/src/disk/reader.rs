@@ -18,6 +18,7 @@ use crate::{
     document_values::DocValues,
     fuzzy::{FuzzyExpansion, FuzzyOptions},
     numeric_values::{NumericBound, NumericField, NumericFields, NumericKind, NumericValue},
+    posting::item::Offsets,
     posting::{Posting, PostingList},
     search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
     segment::build_field_stats,
@@ -44,15 +45,13 @@ impl SearchStats for DiskSegment {
     fn doc_count(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.doc_count)
-            .unwrap_or(0)
+            .map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.total_doc_len)
-            .unwrap_or(0)
+            .map_or(0, |s| s.total_doc_len)
     }
 
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
@@ -158,7 +157,7 @@ impl DiskSegment {
         })
     }
 
-    // Decodes the postings, specifically for the purpose of reading what is inside the actual data
+    //Decodes the postings and offsets
     fn read_postings(&self, meta: TermMeta) -> PostingList {
         let start = meta.postings_offset as usize;
         let len = meta.postings_len as usize;
@@ -175,7 +174,7 @@ impl DiskSegment {
             .unwrap_or_default()
     }
 
-    // Reads posting the same way as the original function, but into a buffer
+    //Reads posting the same way as the original function, but into a buffer
     fn read_postings_into(&self, meta: TermMeta, out: &mut Vec<Posting>) {
         let start = meta.postings_offset as usize;
         let len = meta.postings_len as usize;
@@ -192,10 +191,12 @@ impl DiskSegment {
     }
 }
 
+//gramatu tarps:
 fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -> io::Result<()> {
     let mut offset = 0;
     let count = doc_freq as usize;
 
+    //add more space for out
     out.reserve(count);
 
     let mut last_doc_id = 0u64;
@@ -208,6 +209,16 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
         let weight = read_var_u16(bytes, &mut offset)?;
         let position_count = read_var_u32(bytes, &mut offset)? as usize;
 
+        //per-posting offsets flag
+        if offset >= bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "missing offsets flag",
+            ));
+        }
+        let present = bytes[offset] != 0;
+        offset += 1;
+
         let mut positions = crate::posting::Positions::with_capacity(position_count);
         let mut last_position = 0u32;
 
@@ -218,7 +229,19 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
             positions.push(position);
         }
 
-        out.push(Posting::with_weight(doc_id, positions, weight));
+        let mut offsets = Offsets::new();
+        if present {
+            offsets = Offsets::with_capacity(position_count);
+            for _ in 0..position_count {
+                let start = read_var_u32(bytes, &mut offset)?;
+                let len = read_var_u32(bytes, &mut offset)?;
+                offsets.push((start, start + len));
+            }
+        }
+
+        out.push(Posting::with_weight_and_offsets(
+            doc_id, positions, offsets, weight,
+        ));
     }
 
     Ok(())
@@ -260,6 +283,10 @@ impl SearchIndex for DiskSegment {
         self.array_row_index.parent_of(row)
     }
 
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        self.array_row_index.element_index_of(row)
+    }
+
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
         self.array_row_index.doc_of(row)
     }
@@ -292,8 +319,7 @@ impl SearchIndex for DiskSegment {
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.dictionary
             .get(xpath, term)
-            .map(|meta| meta.doc_freq)
-            .unwrap_or(0)
+            .map_or(0, |meta| meta.doc_freq)
     }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.dictionary
@@ -646,16 +672,18 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
-    let base = cursor.read_u64()?;
+    let base = ArrayRowId::from_raw(cursor.read_u64()?);
     let count = cursor.read_u32()? as usize;
     let mut idx = ArrayRowIndex::new(base);
     for i in 0..count {
         let doc = cursor.read_u64()?;
         let parent = cursor.read_u64()?;
+        let element = cursor.read_u32()?;
         idx.push_row(
-            base + (i as u64),
+            ArrayRowId::from_raw(base.raw() + i as u64),
             doc,
-            (parent != NO_PARENT_ROW).then_some(parent),
+            (parent != NO_PARENT_ROW.raw()).then_some(ArrayRowId::from_raw(parent)),
+            element,
         );
     }
     Ok(idx)

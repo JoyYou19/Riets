@@ -51,8 +51,7 @@ impl NumericFields {
 
     pub fn bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
         self.field(xpath)
-            .map(NumericField::bounds)
-            .unwrap_or((None, None))
+            .map_or((None, None), NumericField::bounds)
     }
 
     pub fn field(&self, xpath: XPathId) -> Option<&NumericField> {

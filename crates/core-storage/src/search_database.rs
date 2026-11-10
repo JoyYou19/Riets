@@ -20,7 +20,10 @@ use core_index::{
         index_worker::{IndexCommand, IndexWorker, IndexingStats, PendingAck, ReindexProgress},
         snapshot::SharedIndexSnapshot,
     },
-    types::{DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of, make_doc_id, shard_of},
+    types::{
+        ARRAY_ROW_FLAG, ArrayRowId, DocId, LocalDocId, MAX_LOCAL_DOC_ID, ShardId, local_of,
+        make_doc_id, shard_of,
+    },
 };
 
 use ahash::{HashSet, HashSetExt};
@@ -35,6 +38,7 @@ use core_protocol::{
 use core_timing::timed;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use simd_json::OwnedValue;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     StoreOnly,
@@ -143,6 +147,8 @@ pub struct SearchDocumentHit {
     pub score: f32,
     pub doc: DocumentOut,
     pub highlights: Vec<String>,
+    //full doc for highlights
+    pub full_doc: Option<OwnedValue>,
 }
 
 impl<S: DocumentStore> SearchDatabase<S> {
@@ -216,8 +222,14 @@ impl<S: DocumentStore> SearchDatabase<S> {
         policy: IndexPolicy,
         shard_id: ShardId,
     ) -> io::Result<Self> {
-        let next_local_id = next_local_id_for_shard(&store, &index,shard_id)?;
-        let next_array_row = index.max_array_row().saturating_add(1);
+        let next_local_id = next_local_id_for_shard(&store, &index, shard_id)?;
+        let next_array_row = ArrayRowId::from_raw(
+            index
+                .max_array_row()
+                .raw()
+                .saturating_add(1)
+                .max(ARRAY_ROW_FLAG),
+        );
 
         let snapshot = SharedIndexSnapshot::empty();
         let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone());
@@ -245,8 +257,14 @@ impl<S: DocumentStore> SearchDatabase<S> {
         shard_id: ShardId,
         shared_snapshot: SharedIndexSnapshot,
     ) -> io::Result<Self> {
-        let next_local_id = next_local_id_for_shard(&store,&index, shard_id)?;
-        let next_array_row = index.max_array_row().saturating_add(1);
+        let next_local_id = next_local_id_for_shard(&store, &index, shard_id)?;
+        let next_array_row = ArrayRowId::from_raw(
+            index
+                .max_array_row()
+                .raw()
+                .saturating_add(1)
+                .max(ARRAY_ROW_FLAG),
+        );
 
         let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone());
         let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
@@ -301,8 +319,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &self.policy,
                 &mut self.array_row_allocator,
             );
-            self.index_worker
-                .add_indexed_document_wait(indexed.analyze(&self.analyzer_set))?;
+             self.index_worker
+                .add_indexed_documents_wait(vec![indexed.analyze(&self.analyzer_set)])?;
         }
         let doc = StoredDocument {
             external_id: input.external_id,
@@ -326,12 +344,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             ));
         }
 
-        // if window_size == 0 {
-        //     return Err(io::Error::new(
-        //         io::ErrorKind::InvalidInput,
-        //         "window_size must be greater than zero",
-        //     ));
-        // }
+
 
         Ok(IndexPipeline {
             db: self,
@@ -363,9 +376,6 @@ impl<S: DocumentStore> SearchDatabase<S> {
         pipeline.finish()
     }
 
-    // Update creates a new internal version, the old internal_id is tombstoned, while the
-    // external_id points to the latest version
-    // INFO: changed the name cuz upsert is more precise here
     #[timed(modifying_documents)]
     pub fn upsert_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
         let internal_id = self.allocate_internal_id()?;
@@ -388,7 +398,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 &mut self.array_row_allocator,
             );
             self.index_worker
-                .add_indexed_document_wait(indexed.analyze(&self.analyzer_set))?;
+                .add_indexed_documents_wait(vec![indexed.analyze(&self.analyzer_set)])?;
         }
 
         let doc = StoredDocument {
@@ -428,7 +438,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
             match self.get_document(id)? {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
-                    project_document(&doc, &self.policy, return_fields)?,
+                    project_document(&doc, &self.policy, return_fields)?.0,
                 )),
                 None => not_found.push(id.clone()),
             }
@@ -536,7 +546,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
     }
 }
 
-impl<'a, S: DocumentStore> IndexPipeline<'a, S> {
+impl<S: DocumentStore> IndexPipeline<'_, S> {
     #[timed(inserting)]
     pub fn push(&mut self, input: DocumentInput, input_index: usize) -> io::Result<()> {
         let external_id = input.external_id;
@@ -673,16 +683,22 @@ fn send_reindex_batch(
 #[timed(database_lifecycle)]
 fn next_local_id_for_shard<S: DocumentStore>(
     store: &S,
-    index:&LsmIndex,
-    shard_id: ShardId
+    index: &LsmIndex,
+    shard_id: ShardId,
 ) -> io::Result<LocalDocId> {
-     let max_global_id = store.max_internal_id().max(index.highest_known_doc_id());
+    let max_global_id = store.max_internal_id().max(index.highest_known_doc_id());
 
     if max_global_id == 0 {
         return Ok(1);
     }
 
     let stored_shard = shard_of(max_global_id);
+
+    eprintln!(
+        "max_internal_id={} highest_known_doc_id={}",
+        store.max_internal_id(),
+        index.highest_known_doc_id(),
+    );
 
     if stored_shard != shard_id {
         return Err(io::Error::new(

@@ -12,8 +12,8 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use core_auth::{Permission, Principal};
-use core_backup::backup::BackupType;
+use core_auth::{Permission, Principal, hash_password};
+use core_backup::backup::{BackupType, is_valid_backup_id};
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
@@ -31,7 +31,7 @@ use core_storage::document_projections::id_path_to_strip;
 use core_timing::timed;
 use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
-use slog::{error, info, o};
+use slog::{error, info, o, warn};
 use std::{collections::HashMap, sync::Arc};
 
 //authorizations
@@ -123,15 +123,16 @@ pub(crate) async fn login_handler(
     };
 
     match token {
-        Some(token) => {
+        Ok(Some(token)) => {
             let resp = LoginResponse { token: token.0 };
             HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
         }
-        None => HttpError::from_corelamo(
+        Ok(None) => HttpError::from_corelamo(
             CorelamoError::Unauthorized("invalid username or password".to_string()),
             &ctx,
         )
         .into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -144,14 +145,34 @@ pub(crate) async fn list_users_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let auth = state.auth.read().unwrap_or_else(|e| e.into_inner());
-    let users = auth.list_users();
-
+    let auth = Arc::clone(&state.auth);
+    let listed = tokio::task::spawn_blocking(move || {
+        let auth = auth.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        auth.list_users()
+    })
+    .await;
+    let users = match listed {
+        Ok(Ok(users)) => users,
+        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(_) => {
+            return HttpError::from_corelamo(
+                CorelamoError::Internal("auth service unavailable".to_string()),
+                &ctx,
+            )
+            .into_response();
+        }
+    };
+    let log = slog_scope::logger().new(o!("component" => "handlers"));
     let data: Vec<_> = users
         .into_iter()
-        .map(|(username, roles)| json!({ "username": username, "roles": roles }))
+        .map(|(username, roles)| match roles {
+            Ok(roles) => json!({ "username": username, "roles": roles }),
+            Err(reason) => {
+                warn!(log, "user record cannot be read"; "username" => &username, "error" => &reason);
+                json!({ "username": username, "roles": [], "error": reason })
+            }
+        })
         .collect();
-
     HttpOk::with_data(
         format!("{} user(s)", data.len()),
         json!({ "users": data }),
@@ -186,19 +207,30 @@ pub(crate) async fn create_user_handler(
             .into_response();
         }
     };
+    let auth = Arc::clone(&state.auth);
+    let username = req.username.clone();
+    let created = tokio::task::spawn_blocking(move || {
+       
+        let hash = hash_password(&req.password)?;
+       
+        let mut auth = auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        auth.create_user(&principal, &req.username, hash, req.roles)
+    })
+    .await;
 
-    let Ok(mut auth) = state.auth.write() else {
-        return HttpError::from_corelamo(
-            CorelamoError::Internal("auth service lock poisoned".to_string()),
+    match created {
+        Ok(Ok(())) => HttpOk::new(format!("user '{username}' created"), &ctx).into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(_) => HttpError::from_corelamo(
+            CorelamoError::Internal("auth service unavailable".to_string()),
             &ctx,
         )
-        .into_response();
-    };
-    match auth.create_user(&principal, &req.username, &req.password, req.roles) {
-        Ok(()) => HttpOk::new(format!("user '{}' created", req.username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+        .into_response(),
     }
 }
+
+   
+
 
 pub(crate) async fn delete_user_handler(
     State(state): State<AppState>,
@@ -209,9 +241,9 @@ pub(crate) async fn delete_user_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
+    let mut auth = state.auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     match auth.delete_user(&principal, &username) {
-        Ok(()) => HttpOk::new(format!("user '{}' deleted", username), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("user '{username}' deleted"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -229,6 +261,10 @@ pub(crate) async fn update_user_password_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
+     if principal.id.0 != username
+        && let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd) {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     let mut buf = body.as_bytes().to_vec();
     let req: UpdatePasswordRequest = match simd_json::from_slice(&mut buf) {
         Ok(r) => r,
@@ -241,11 +277,30 @@ pub(crate) async fn update_user_password_handler(
         }
     };
 
-    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
-    match auth.update_user_password(&principal, &username, &req.password) {
-        Ok(()) => HttpOk::new(format!("password updated for '{}'", username), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    let auth = Arc::clone(&state.auth);
+    let target = username.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        // slow (Argon2), no lock held
+        let hash = hash_password(&req.password)?;
+        // short: the write lock only covers the store update; update_user_password checks
+        // the permission again, since it may have changed while hashing
+        let mut auth = auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        auth.update_user_password(&principal, &target, hash)
+    })
+    .await;
+
+    match updated {
+        Ok(Ok(())) => {
+            HttpOk::new(format!("password updated for '{username}'"), &ctx).into_response()
+        }
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(_) => HttpError::from_corelamo(
+            CorelamoError::Internal("auth service unavailable".to_string()),
+            &ctx,
+        )
+        .into_response(),
     }
+
 }
 
 pub(crate) async fn update_user_roles_handler(
@@ -277,9 +332,9 @@ pub(crate) async fn update_user_roles_handler(
         }
     };
 
-    let mut auth = state.auth.write().unwrap_or_else(|e| e.into_inner());
+    let mut auth = state.auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     match auth.update_user_roles(&principal, &username, req.roles) {
-        Ok(()) => HttpOk::new(format!("roles updated for '{}'", username), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("roles updated for '{username}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -446,8 +501,8 @@ pub(crate) async fn get_all_fields_handler(
     let all_fields = handle.all_fields();
 
     let mut fields_json = Object::new();
-    for (xpath, kind) in all_fields.get_fields().iter() {
-        fields_json.insert(xpath.clone().into(), simd_json::json!(kind.label()));
+    for (xpath, kind) in all_fields.get_fields() {
+        fields_json.insert(xpath.clone(), simd_json::json!(kind.label()));
     }
     let fields_json = OwnedValue::Object(fields_json.into());
 
@@ -745,7 +800,7 @@ pub(crate) async fn clear_database_handler(
     };
 
     match handle.clear_all().await {
-        Ok(_) => HttpOk::new(
+        Ok(()) => HttpOk::new(
             format!("database: {db_name}, is cleared of data and index"),
             &ctx,
         )
@@ -810,7 +865,7 @@ pub(crate) async fn clear_logs_handler(
     };
 
     match handle.clear_logs() {
-        Ok(_) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -1731,7 +1786,7 @@ pub(crate) async fn set_config_handler(
         .set_options_all(options, principal.id.0.clone())
         .await
     {
-        Ok(_) => HttpOk::new(format!("config updated for '{db_name}'"), &ctx).into_response(),
+        Ok(()) => HttpOk::new(format!("config updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(
             CorelamoError::Internal(format!("failed to update config for '{db_name}': {e}")),
             &ctx,
@@ -1874,6 +1929,13 @@ pub(crate) async fn backup_restore_handler(
         Ok(x) => x,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
+    if !is_valid_backup_id(&backup_id) {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData(format!("invalid backup id '{backup_id}'")),
+            &ctx,
+        )
+        .into_response();
+    }
 
     if !handle.has_backup(&backup_id) {
         return HttpError::from_corelamo(

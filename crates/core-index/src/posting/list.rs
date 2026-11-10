@@ -1,7 +1,7 @@
 use core_timing::timed;
 
 use crate::{
-    posting::{Positions, Posting},
+    posting::{Positions, Posting, item::Offsets},
     types::{DocId, Position},
 };
 
@@ -26,18 +26,53 @@ impl PostingList {
         }
     }
 
-    /// Appends extra positions and keeps the list ascending + unique.
-    fn extend_positions_sorted(positions: &mut Positions, extra: &[Position]) {
-        if positions
-            .last()
-            .is_none_or(|last| extra.first().is_some_and(|first| last <= first))
-        {
-            positions.extend_from_slice(extra);
+    fn merge_occurrences(
+        positions: &mut Positions,
+        offsets: &mut Offsets,
+        extra_positions: &[Position],
+        extra_offsets: &[(u32, u32)],
+    ) {
+        debug_assert!(extra_offsets.is_empty() || extra_offsets.len() == extra_positions.len());
+        debug_assert!(offsets.is_empty() || offsets.len() == positions.len());
+
+        // No offsets anywhere: plain position merge.
+        if offsets.is_empty() && extra_offsets.is_empty() {
+            positions.extend_from_slice(extra_positions);
+            positions.sort_unstable();
+            positions.dedup();
             return;
         }
-        positions.extend_from_slice(extra);
-        positions.sort_unstable();
-        positions.dedup();
+
+        // Fast path: strictly appended, no overlap.
+        if extra_positions
+            .first()
+            .is_none_or(|first| positions.last().is_some_and(|last| last < first))
+        {
+            positions.extend_from_slice(extra_positions);
+            offsets.extend_from_slice(extra_offsets);
+            return;
+        }
+
+        // Zip, sort by position, dedup by position.
+        let mut zipped: Vec<(Position, (u32, u32))> = positions
+            .iter()
+            .copied()
+            .zip(offsets.iter().copied())
+            .chain(
+                extra_positions
+                    .iter()
+                    .copied()
+                    .zip(extra_offsets.iter().copied()),
+            )
+            .collect();
+        zipped.sort_unstable_by_key(|(p, _)| *p);
+        zipped.dedup_by_key(|(p, _)| *p);
+        positions.clear();
+        offsets.clear();
+        for (p, o) in zipped {
+            positions.push(p);
+            offsets.push(o);
+        }
     }
 
     pub fn from_sorted(items: Vec<Posting>) -> Self {
@@ -57,13 +92,15 @@ impl PostingList {
         for item in items {
             if let Some(last) = merged.last_mut() {
                 if last.doc_id == item.doc_id {
-                    last.positions.extend_from_slice(&item.positions);
+                    Self::merge_occurrences(
+                        &mut last.positions,
+                        &mut last.offsets,
+                        &item.positions,
+                        &item.offsets,
+                    );
                     last.weight = last.weight.max(item.weight);
-                    last.positions.sort_unstable();
-                    last.positions.dedup();
                     continue;
                 }
-            }
 
             merged.push(item);
         }
@@ -130,41 +167,49 @@ impl PostingList {
         self.items.retain(|posting| keep(posting));
     }
 
-    pub fn insert_posting(&mut self, doc_id: DocId, mut positions: Vec<Position>, weight: u16) {
+    pub fn insert_posting(
+        &mut self,
+        doc_id: DocId,
+        positions: Vec<Position>,
+        offsets: Vec<(u32, u32)>,
+        weight: u16,
+    ) {
         if positions.is_empty() {
             return;
         }
 
-        //these two lines save us from spider-man -> (spider-man + spiderman + spider + man
-        //situation)
-        positions.sort_unstable();
-        positions.dedup();
+        // Normalize the incoming batch (sort + dedup, keeping offsets aligned).
+        let mut pos: Positions = Positions::new();
+        let mut off: Offsets = Offsets::new();
+        Self::merge_occurrences(&mut pos, &mut off, &positions, &offsets);
 
         // max_weight can only stay the same or increase on insertion
         self.max_weight = self.max_weight.max(weight);
         if let Some(last) = self.items.last_mut() {
             if last.doc_id == doc_id {
-                Self::extend_positions_sorted(&mut last.positions, &mut positions);
+                Self::merge_occurrences(&mut last.positions, &mut last.offsets, &pos, &off);
                 last.weight = last.weight.max(weight);
                 return;
             }
 
             if last.doc_id < doc_id {
                 self.items
-                    .push(Posting::with_weight(doc_id, positions, weight));
+                    .push(Posting::with_weight_and_offsets(doc_id, pos, off, weight));
                 return;
             }
         }
 
         match self.items.binary_search_by_key(&doc_id, |p| p.doc_id) {
             Ok(index) => {
-                Self::extend_positions_sorted(&mut self.items[index].positions, &mut positions);
-                self.items[index].weight = self.items[index].weight.max(weight);
+                let posting = &mut self.items[index];
+                Self::merge_occurrences(&mut posting.positions, &mut posting.offsets, &pos, &off);
+                posting.weight = posting.weight.max(weight);
             }
-
             Err(index) => {
-                self.items
-                    .insert(index, Posting::with_weight(doc_id, positions, weight));
+                self.items.insert(
+                    index,
+                    Posting::with_weight_and_offsets(doc_id, pos, off, weight),
+                );
             }
         }
     }

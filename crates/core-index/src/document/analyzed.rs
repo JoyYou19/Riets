@@ -12,6 +12,7 @@ use crate::types::{ArrayRowId, DocId, XPathId, encode_position};
 pub struct AnalyzedTerm {
     pub term: String,
     pub positions: Vec<u32>,
+    pub offsets: Vec<(u32, u32)>,
     pub weight: u16,
 }
 
@@ -34,6 +35,7 @@ pub struct AnalyzedArrayRow {
     pub array_row_id: ArrayRowId,
     pub parent: Option<ArrayRowId>,
     pub target: AnalyzedTarget,
+    pub element_index: u32,
 }
 
 pub struct AnalyzedDocument {
@@ -53,6 +55,7 @@ impl IndexedDocument {
                 &self.parts,
                 &self.numeric_points,
                 &self.bool_points,
+                false,
             ),
             array_rows: self
                 .array_rows
@@ -60,11 +63,13 @@ impl IndexedDocument {
                 .map(|row| AnalyzedArrayRow {
                     array_row_id: row.array_row_id,
                     parent: row.parent,
+                    element_index: row.element_index,
                     target: analyze_target(
                         analyzers,
                         &row.parts,
                         &row.numeric_points,
                         &row.bool_points,
+                        true,
                     ),
                 })
                 .collect(),
@@ -77,19 +82,20 @@ fn analyze_target(
     parts: &[DocumentPart],
     numeric_points: &[NumericPoint],
     bool_points: &[BoolPoint],
+    is_row_keyed: bool,
 ) -> AnalyzedTarget {
     AnalyzedTarget {
         fields: parts
             .iter()
-            .map(|part| add_weighted(analyzers, part))
+            .map(|part| add_weighted(analyzers, part, is_row_keyed))
             .collect(),
         numeric_points: numeric_points.to_vec(),
         bool_points: bool_points.to_vec(),
     }
 }
 
-/// Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
-fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
+//Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
+fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool) -> AnalyzedField {
     let field_analyzer = part
         .analyzer
         .as_deref()
@@ -103,45 +109,58 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
     };
     let gap = if part.is_flattened() { part.gap } else { 0 };
 
-    let mut token_positions: AHashMap<String, Vec<u32>> = AHashMap::new();
+    //when no char filters
+    let store_offsets = !field_analyzer.has_char_filters() && !is_row_keyed;
+
+    let mut occurrences: AHashMap<String, (Vec<u32>, Vec<(u32, u32)>)> = AHashMap::new();
     let mut total_words_len = 0u32;
     let mut cur_position = 0u32;
+
+    let mut push = |term: &str, encoded: u32, offset: (u32, u32)| {
+        let slot = occurrences.entry(term.to_owned()).or_default();
+        if slot.0.last() != Some(&encoded) {
+            slot.0.push(encoded);
+            if store_offsets {
+                slot.1.push(offset);
+            }
+        }
+    };
 
     for seg in &segments {
         let (words, span) = if part.exact {
             // whole value, lowercased, one term (nothing split/removed)
-            token_positions
-                .entry(seg.to_lowercase())
-                .or_default()
-                .push(encode_position(cur_position, 1));
+            //WARN: might not be the best way to store/analyze exact field, might change later :)
+            let offset = (0u32, seg.len() as u32);
+            push(
+                &seg.to_lowercase(),
+                encode_position(cur_position, 1),
+                offset,
+            );
             if part.names {
                 for term in field_analyzer.name_terms(seg) {
-                    token_positions
-                        .entry(term)
-                        .or_default()
-                        .push(encode_position(cur_position, 1));
+                    push(&term, encode_position(cur_position, 1), offset);
                 }
             }
             (1, 1)
         } else {
             let mut span = 0u32;
-            let words = field_analyzer.for_each_token(seg, |term, position, length| {
-                let encoded = encode_position(cur_position + position, length);
-                let positions = token_positions.entry(term.to_owned()).or_default();
-                if positions.last() != Some(&encoded) {
-                    positions.push(encoded);
-                }
-                span = span.max(position + length);
-            });
+            let words = field_analyzer.for_each_token_with_offsets(
+                seg,
+                |term, position, length, start, end| {
+                    let encoded = encode_position(cur_position + position, length);
+                    push(term, encoded, (start, end));
+                    span = span.max(position + length);
+                },
+            );
             (words, span)
         };
         total_words_len += words;
         cur_position += span + gap;
     }
 
-    let terms = token_positions
+    let terms = occurrences
         .into_iter()
-        .map(|(term, positions)| {
+        .map(|(term, (positions, offsets))| {
             let extra_hits = positions.len().saturating_sub(1);
             let weight = usize::from(part.weight.min)
                 .saturating_add(extra_hits)
@@ -149,6 +168,7 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
             AnalyzedTerm {
                 term,
                 positions,
+                offsets,
                 weight,
             }
         })
@@ -160,4 +180,3 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart) -> AnalyzedField {
         terms,
     }
 }
-

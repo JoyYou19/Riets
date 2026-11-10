@@ -15,6 +15,7 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
+use std::sync::Arc;
 
 // Memory inverted index, the core of the index
 #[derive(Debug, Clone)]
@@ -58,6 +59,10 @@ impl SearchIndex for MemIndex {
 
     fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId> {
         self.array_row_index.parent_of(row)
+    }
+
+    fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
+        self.array_row_index.element_index_of(row)
     }
 
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId> {
@@ -136,8 +141,7 @@ impl SearchIndex for MemIndex {
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.terms
             .get(&TermKey::new(term, xpath))
-            .map(|list| list.len() as u32)
-            .unwrap_or(0)
+            .map_or(0, |list| list.len() as u32)
     }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
@@ -180,15 +184,13 @@ impl SearchStats for MemIndex {
     fn doc_count(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.doc_count)
-            .unwrap_or(0)
+            .map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
         self.field_stats
             .get(&xpath)
-            .map(|s| s.total_doc_len)
-            .unwrap_or(0)
+            .map_or(0, |s| s.total_doc_len)
     }
     fn doc_range(&self) -> Option<(DocId, DocId)> {
         self.doc_id_range()
@@ -239,6 +241,51 @@ impl MemIndex {
             self.array_row_index,
         )
     }
+    /// One segment from memtable generations, oldest first (their doc ids ascend), read in
+    /// place: a published snapshot may still hold them, so nothing is unwrapped or cloned
+    /// whole. Each posting list is copied once, into the segment.
+    #[timed(indexing_documents)]
+    pub(crate) fn freeze_shared(generations: &[Arc<MemIndex>]) -> crate::segment::ImmutableSegment {
+        let mut terms: BTreeMap<TermKey, PostingList> = BTreeMap::new();
+        let mut doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
+        let mut field_stats: BTreeMap<XPathId, FieldStats> = BTreeMap::new();
+        let mut numeric_points = NumericPoints::default();
+        let mut bool_fields: BTreeMap<XPathId, BoolField> = BTreeMap::new();
+        let mut array_row_index = ArrayRowIndex::default();
+
+        for generation in generations {
+            for (key, list) in &generation.terms {
+                match terms.entry(key.clone()) {
+                    std::collections::btree_map::Entry::Occupied(mut slot) => {
+                        slot.get_mut().append(list.clone());
+                    }
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(list.clone());
+                    }
+                }
+            }
+            doc_lengths.extend(generation.doc_lengths.iter().map(|(&key, &len)| (key, len)));
+            for (&xpath, stats) in &generation.field_stats {
+                field_stats.entry(xpath).or_default().add(stats);
+            }
+            numeric_points.merge(generation.numeric_points.clone());
+            for (&xpath, field) in &generation.bool_fields {
+                let slot = bool_fields.entry(xpath).or_default();
+                slot.true_ids |= &field.true_ids;
+                slot.false_ids |= &field.false_ids;
+            }
+            array_row_index.merge_from(&generation.array_row_index);
+        }
+
+        crate::segment::ImmutableSegment::new(
+            terms,
+            doc_lengths,
+            field_stats,
+            numeric_points.build(),
+            bool_fields,
+            array_row_index,
+        )
+    }
     //tracks min and max doc id in this segment
     fn track_doc_id(&mut self, doc_id: DocId) {
         self.min_doc_id = Some(self.min_doc_id.map_or(doc_id, |m| m.min(doc_id)));
@@ -258,19 +305,23 @@ impl MemIndex {
         xpath: XPathId,
         doc_id: DocId,
         positions: Vec<u32>,
+        offsets: Vec<(u32, u32)>,
         weight: u16,
     ) {
-        self.estimated_bytes +=
-            size_of::<DocId>() + size_of::<u16>() + positions.len() * size_of::<u32>();
+        self.estimated_bytes += size_of::<DocId>()
+            + size_of::<u16>()
+            + positions.len() * size_of::<u32>()
+            + offsets.len() * size_of::<(u32, u32)>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             Entry::Occupied(mut slot) => {
-                slot.get_mut().insert_posting(doc_id, positions, weight);
+                slot.get_mut()
+                    .insert_posting(doc_id, positions, offsets, weight);
             }
             Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + size_of::<TermKey>();
                 slot.insert(PostingList::new())
-                    .insert_posting(doc_id, positions, weight);
+                    .insert_posting(doc_id, positions, offsets, weight);
             }
         }
     }
@@ -298,9 +349,13 @@ impl MemIndex {
         self.apply_target(document.doc_id, document.main);
 
         for row in document.array_rows {
-            self.array_row_index
-                .push_row(row.array_row_id, document.doc_id, row.parent);
-            self.apply_target(row.array_row_id, row.target);
+            self.array_row_index.push_row(
+                row.array_row_id,
+                document.doc_id,
+                row.parent,
+                row.element_index,
+            );
+            self.apply_target(row.array_row_id.raw(), row.target);
         }
     }
 
@@ -328,19 +383,23 @@ impl MemIndex {
             .insert((doc_id, field.xpath), field.doc_len);
 
         let stats = self.field_stats.entry(field.xpath).or_default();
-        match old {
-            Some(old_len) => {
-                stats.total_doc_len =
-                    stats.total_doc_len - (old_len as u64) + (field.doc_len as u64);
-            }
-            None => {
-                stats.doc_count += 1;
-                stats.total_doc_len += field.doc_len as u64;
-            }
+        if let Some(old_len) = old {
+            stats.total_doc_len =
+                stats.total_doc_len - u64::from(old_len) + u64::from(field.doc_len);
+        } else {
+            stats.doc_count += 1;
+            stats.total_doc_len += u64::from(field.doc_len);
         }
 
         for term in field.terms {
-            self.add_posting_weighted(term.term, field.xpath, doc_id, term.positions, term.weight);
+            self.add_posting_weighted(
+                term.term,
+                field.xpath,
+                doc_id,
+                term.positions,
+                term.offsets,
+                term.weight,
+            );
         }
     }
 

@@ -22,15 +22,17 @@ pub struct ArrayRow {
     pub parent: Option<ArrayRowId>,
     pub parts: Vec<DocumentPart>,
     pub numeric_points: Vec<NumericPoint>,
+    pub element_index: u32,
     pub bool_points: Vec<BoolPoint>,
 }
 
 impl ArrayRow {
-    pub fn new(array_row_id: ArrayRowId, parent: Option<ArrayRowId>) -> Self {
+    pub fn new(array_row_id: ArrayRowId, parent: Option<ArrayRowId>, element_index: u32) -> Self {
         Self {
             array_row_id,
             parent,
             parts: Vec::new(),
+            element_index,
             numeric_points: Vec::new(),
             bool_points: Vec::new(),
         }

@@ -9,26 +9,38 @@ use simd_json::owned::Object;
 
 use crate::document_store::StoredDocument;
 
+//INFO: updated this, cause a user could maybe ask for return_fields "text": false while still
+//wanting text highlights
 pub fn project_document(
     doc: &StoredDocument,
     policy: &IndexPolicy,
     return_fields: Option<&IndexMap<String, bool>>,
-) -> io::Result<DocumentOut> {
+) -> io::Result<(DocumentOut, Option<OwnedValue>)> {
     if return_fields.is_none() && !policy.has_hidden_fields() {
-        return Ok(DocumentOut::Raw(Arc::clone(&doc.source)));
+        return Ok((DocumentOut::Raw(Arc::clone(&doc.source)), None));
     }
     if doc.source.is_empty() {
-        return Ok(DocumentOut::Json(OwnedValue::Object(Box::new(
-            Object::new(),
-        ))));
+        return Ok((
+            DocumentOut::Json(OwnedValue::Object(Box::new(Object::new()))),
+            None,
+        ));
     }
 
     let mut buf = doc.source.to_vec();
-    let mut value = simd_json::to_owned_value(&mut buf)
+    let value = simd_json::to_owned_value(&mut buf)
         .map_err(|e| io::Error::other(format!("stored document is not valid JSON: {e}")))?;
 
-    prune(&mut value, "", return_fields, policy);
-    Ok(DocumentOut::Json(value))
+    if return_fields.is_none() {
+        let mut v = value;
+        prune(&mut v, "", None, policy);
+        return Ok((DocumentOut::Json(v), None));
+    }
+
+    let mut full = value;
+    prune(&mut full, "", None, policy);
+    let mut projected = full.clone();
+    prune(&mut projected, "", return_fields, policy);
+    Ok((DocumentOut::Json(projected), Some(full)))
 }
 
 fn prune(
@@ -74,11 +86,10 @@ fn include_path(
     return_fields: Option<&IndexMap<String, bool>>,
     policy: &IndexPolicy,
 ) -> bool {
-    if let Some(rf) = return_fields {
-        if let Some(&include) = lookup_up(rf, path) {
+    if let Some(rf) = return_fields
+        && let Some(&include) = lookup_up(rf, path) {
             return include;
         }
-    }
     if let Some(list) = policy_list(policy, path) {
         return list;
     }
@@ -91,9 +102,9 @@ fn lookup_up<'a>(map: &'a IndexMap<String, bool>, path: &str) -> Option<&'a bool
         if let Some(value) = map.get(candidate) {
             return Some(value);
         }
-        match candidate.rfind('/') {
-            Some(idx) => candidate = &candidate[..idx],
-            None => return None,
+        {
+            let idx = candidate.rfind('/')?;
+            candidate = &candidate[..idx]
         }
     }
 }
@@ -104,9 +115,9 @@ fn policy_list(policy: &IndexPolicy, path: &str) -> Option<bool> {
         if let Some(field) = policy.fields.iter().find(|f| f.name == candidate) {
             return Some(field.list);
         }
-        match candidate.rfind('/') {
-            Some(idx) => candidate = &candidate[..idx],
-            None => return None,
+        {
+            let idx = candidate.rfind('/')?;
+            candidate = &candidate[..idx]
         }
     }
 }

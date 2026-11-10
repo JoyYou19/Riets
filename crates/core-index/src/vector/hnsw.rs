@@ -22,8 +22,8 @@ use std::sync::Arc;
 use memmap2::Mmap;
 
 use super::file::VectorFile;
-use super::vector_hit::{TopK, VectorFilter, VectorHit};
 use super::kernel::{dot_f32, dot_i8, quantize_query};
+use super::vector_hit::{TopK, VectorFilter, VectorHit};
 use crate::types::XPathId;
 
 /// Smallest beam for a search; raised to `k * RESCORE_OVERSAMPLING` for larger `k`.
@@ -32,7 +32,7 @@ pub const DEFAULT_SEARCH_BEAM_WIDTH: usize = 64;
 /// The beam holds at least this many candidates per requested hit, so the f32 rescore has
 /// room to fix the int8 order.
 pub(crate) const RESCORE_OVERSAMPLING: usize = 3;
-/// A search computing more than node_count / this many similarities gives up and lets the
+/// A search computing more than `node_count` / this many similarities gives up and lets the
 /// exact scan answer: past that, the random-access walk costs as much as a sequential scan.
 const BUDGET_FRACTION_OF_NODES: usize = 4;
 /// Budget floor per beam slot, so small graphs still get a complete walk.
@@ -79,11 +79,15 @@ impl HnswGraph {
                 ),
             ));
         }
-        let layout = GraphLayout::new(&header).ok_or_else(|| corrupt(&path, "size overflows usize"))?;
+        let layout =
+            GraphLayout::new(&header).ok_or_else(|| corrupt(&path, "size overflows usize"))?;
         if layout.total_length != mmap.len() {
-            return Err(corrupt(&path, format!("length {} does not match its header", mmap.len())));
+            return Err(corrupt(
+                &path,
+                format!("length {} does not match its header", mmap.len()),
+            ));
         }
-        if (mmap.as_ptr() as usize) % 4 != 0 {
+        if !(mmap.as_ptr() as usize).is_multiple_of(4) {
             return Err(corrupt(&path, "mapping is not aligned"));
         }
 
@@ -111,16 +115,25 @@ impl HnswGraph {
         for node in 0..node_count {
             let level = self.node_level(node);
             if level > top_level {
-                return Err(corrupt(&self.path, format!("node {node} above the top level")));
+                return Err(corrupt(
+                    &self.path,
+                    format!("node {node} above the top level"),
+                ));
             }
             let slot_start = self.upper_slot_start(node);
             if level == 0 {
                 if slot_start != NO_UPPER_SLOTS {
-                    return Err(corrupt(&self.path, format!("level-0 node {node} owns upper slots")));
+                    return Err(corrupt(
+                        &self.path,
+                        format!("level-0 node {node} owns upper slots"),
+                    ));
                 }
             } else {
                 if slot_start as usize != next_upper_slot {
-                    return Err(corrupt(&self.path, format!("bad upper slot start for node {node}")));
+                    return Err(corrupt(
+                        &self.path,
+                        format!("bad upper slot start for node {node}"),
+                    ));
                 }
                 next_upper_slot += level;
             }
@@ -130,21 +143,32 @@ impl HnswGraph {
                 let offset = self.layout.slot_offset(node, list_level, slot_start);
                 let length = read_u32(&self.mmap, offset) as usize;
                 if length > max_links {
-                    return Err(corrupt(&self.path, format!("node {node} has {length} links")));
+                    return Err(corrupt(
+                        &self.path,
+                        format!("node {node} has {length} links"),
+                    ));
                 }
                 for &linked in self.neighbour_list(node, list_level) {
                     let linked = linked as usize;
-                    if linked >= node_count || linked == node || self.node_level(linked) < list_level {
+                    if linked >= node_count
+                        || linked == node
+                        || self.node_level(linked) < list_level
+                    {
                         return Err(corrupt(
                             &self.path,
-                            format!("node {node} links to invalid node {linked} on level {list_level}"),
+                            format!(
+                                "node {node} links to invalid node {linked} on level {list_level}"
+                            ),
                         ));
                     }
                 }
             }
         }
         if next_upper_slot != self.header.upper_slot_count as usize {
-            return Err(corrupt(&self.path, "upper slot count does not match node levels"));
+            return Err(corrupt(
+                &self.path,
+                "upper slot count does not match node levels",
+            ));
         }
         Ok(())
     }
@@ -181,7 +205,9 @@ impl HnswGraph {
     /// `node`'s links on `level`, read in place. `node` must be on `level`, and the length
     /// must have been checked (always true after `open`).
     fn neighbour_list(&self, node: usize, level: usize) -> &[u32] {
-        let offset = self.layout.slot_offset(node, level, self.upper_slot_start(node));
+        let offset = self
+            .layout
+            .slot_offset(node, level, self.upper_slot_start(node));
         let length = (read_u32(&self.mmap, offset) as usize).min(self.max_links_at(level));
         let bytes = &self.mmap[offset + 4..offset + 4 + length * 4];
         // SAFETY: every section starts on a 64-byte boundary of a mapping checked to be 4-byte
@@ -199,7 +225,12 @@ impl HnswGraph {
     /// Returns `None` when the walk cannot vouch for its answer: it used up its budget, or
     /// found fewer than `k` accepted rows. The caller then runs the exact scan.
     /// `query` must be L2-normalized.
-    pub fn search(&self, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Option<Vec<VectorHit>> {
+    pub fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: &VectorFilter<'_>,
+    ) -> Option<Vec<VectorHit>> {
         if k == 0 {
             return Some(Vec::new());
         }
@@ -225,8 +256,17 @@ impl HnswGraph {
         let level0 = with_visited_set(|visited| {
             let mut scratch = Vec::with_capacity(usize::from(self.header.max_links_level0));
             let start = walk.score(self.header.entry_node);
-            let closest = walk.greedy_descend(start, usize::from(self.header.top_level), 1, &mut scratch);
-            walk.search_level(&[closest], beam_width, 0, accept, budget, visited, &mut scratch)
+            let closest =
+                walk.greedy_descend(start, usize::from(self.header.top_level), 1, &mut scratch);
+            walk.search_level(
+                &[closest],
+                beam_width,
+                0,
+                accept,
+                budget,
+                visited,
+                &mut scratch,
+            )
         });
 
         if level0.stopped_by_budget || level0.best_first.len() < k.min(self.node_count()) {
@@ -236,7 +276,10 @@ impl HnswGraph {
         let mut top = TopK::new(k);
         for candidate in &level0.best_first {
             let row = candidate.node as usize;
-            top.offer(self.vectors.doc_id(row), dot_f32(self.vectors.original(row), query));
+            top.offer(
+                self.vectors.doc_id(row),
+                dot_f32(self.vectors.original(row), query),
+            );
         }
         Some(top.into_sorted())
     }
@@ -323,7 +366,12 @@ mod tests {
         HnswGraph::open(&graph_path, vectors).expect("open graph")
     }
 
-    fn exact_top(graph: &HnswGraph, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Vec<VectorHit> {
+    fn exact_top(
+        graph: &HnswGraph,
+        query: &[f32],
+        k: usize,
+        filter: &VectorFilter<'_>,
+    ) -> Vec<VectorHit> {
         let vectors = graph.vectors();
         let mut top = TopK::new(k);
         for row in 0..vectors.len() {
@@ -344,8 +392,13 @@ mod tests {
         let mut found = 0;
         for q in 0..100 {
             let query = clustered(1_000_000 + q);
-            let exact: HashSet<DocId> = exact_top(&graph, &query, 10, &filter).iter().map(|h| h.doc_id).collect();
-            let approx = graph.search(&query, 10, &filter).expect("unfiltered search answers");
+            let exact: HashSet<DocId> = exact_top(&graph, &query, 10, &filter)
+                .iter()
+                .map(|h| h.doc_id)
+                .collect();
+            let approx = graph
+                .search(&query, 10, &filter)
+                .expect("unfiltered search answers");
             found += approx.iter().filter(|h| exact.contains(&h.doc_id)).count();
         }
         let recall = found as f64 / 1_000.0;

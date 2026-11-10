@@ -1,4 +1,5 @@
 use ahash::HashMap as AHashMap;
+use core_query::ranking::{POOL_SIZE, finalize};
 use std::collections::HashMap;
 
 use std::path::PathBuf;
@@ -36,11 +37,15 @@ use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
 use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
-use core_query::{CorpusStats, PreparedQuery, QueryExecutor, SearchHit, fuzzable_words};
+use core_query::{
+    CorpusStats, MatchedTerm, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words,
+};
 use core_storage::search_database::{
     DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
 
+//how often the worker loop wakes up to run that check
+const IDLE_FLUSH_POLL: Duration = Duration::from_secs(1);
 //info: i genuenly made this so that the fucking function response isnt this:
 pub struct ShardRankedResult {
     pub total: usize,
@@ -141,9 +146,18 @@ pub enum ShardCmd {
     ListBackups {
         resp: oneshot::Sender<Result<Vec<BackupManifest>, CorelamoError>>,
     },
-    Restore {
+    PrepareRestore {
         user: String,
         backup_id: String,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
+    },
+    /// Swap the prepared data in.
+    CommitRestore {
+        backup_id: String,
+        resp: oneshot::Sender<Result<(), CorelamoError>>,
+    },
+    /// Throw the prepared data away and keep the old data.
+    AbortRestore {
         resp: oneshot::Sender<Result<(), CorelamoError>>,
     },
     DeleteBackup {
@@ -225,12 +239,50 @@ impl ShardHandle {
             snapshot
                 .lookup(word, xpath)
                 .items()
-                .into_iter()
+                .iter()
                 .next()
                 .is_none()
         })
     }
 
+    /// For each candidate, the documents of this shard holding it together with every context
+    /// word, each word in any of `xpaths`. No context: the documents holding the candidate.
+    pub fn co_occurrence_fuzzy(
+        &self,
+        candidates: &[String],
+        context: &[String],
+        xpaths: &[XPathId],
+    ) -> Vec<u64> {
+        let snapshot = self.shared.snapshot.get();
+        let docs_of = |term: &str| -> ahash::HashSet<DocId> {
+            xpaths
+                .iter()
+                .flat_map(|&xpath| {
+                    snapshot
+                        .lookup(term, xpath)
+                        .items()
+                        .iter()
+                        .map(|posting| posting.doc_id)
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let context_docs: Option<ahash::HashSet<DocId>> = context
+            .iter()
+            .map(|word| docs_of(word))
+            .reduce(|kept, next| kept.intersection(&next).copied().collect());
+        candidates
+            .iter()
+            .map(|candidate| {
+                let docs = docs_of(candidate);
+                let together = match &context_docs {
+                    Some(context) => docs.intersection(context).count(),
+                    None => docs.len(),
+                };
+                together as u64
+            })
+            .collect()
+    }
     // CHANGED: analyzes each word with each field's own analyzer, not one shared default.
     pub fn info_words_direct(
         &self,
@@ -274,17 +326,20 @@ impl ShardHandle {
         self.ensure_readable()?;
         let snapshot = self.shared.snapshot.get();
 
-        let mut per_field = Vec::with_capacity(xpaths.len());
+        // one list per typed word (the order the manager reads them in), holding the word's
+        // expansions from every field, each field analyzing the word its own way
+        let typed: Vec<&str> = raw.split_whitespace().collect();
+        let mut per_word: Vec<Vec<FuzzyExpansion>> = vec![Vec::new(); typed.len()];
         for &xpath in xpaths {
-            let analyzer = analyzers.get(&xpath).unwrap_or_else(|| &self.analyzer);
-            let mut expansions = Vec::new();
-            for word in fuzzable_words(analyzer, raw) {
-                let opts = core_query::fuzzy_options(&word, fuzziness, spec);
-                expansions.extend(snapshot.fuzzy_expansions(&word, xpath, opts));
+            let analyzer = analyzers.get(&xpath).unwrap_or(&self.analyzer);
+            for (index, piece) in typed.iter().enumerate() {
+                for word in fuzzable_words(analyzer, piece) {
+                    let opts = core_query::fuzzy_options(&word, fuzziness, spec);
+                    per_word[index].extend(snapshot.fuzzy_expansions(&word, xpath, opts));
+                }
             }
-            per_field.push(expansions);
         }
-        Ok(per_field)
+        Ok(per_word)
     }
 
     /// Pins the snapshot the search reads and reads the query from it once: the posting lists
@@ -318,8 +373,6 @@ impl ShardHandle {
         }
     }
 
-    //helper for the ranking
-    //INFO: changed so that it ranks every group with its own executor/analyzer, then merges hits by doc_id.
     fn rank_candidates(
         &self,
         snapshot: &IndexSnapshot,
@@ -334,51 +387,42 @@ impl ShardHandle {
         if k == 0 {
             return (0, Vec::new());
         }
-        let mut merged: HashMap<DocId, SearchHit> = HashMap::new();
+        // filters do not depend on the group's analyzer: evaluate them once
+        let restrict = filters.and_then(|f| {
+            QueryExecutor::new(snapshot, &self.analyzer)
+                .with_corpus(corpus)
+                .filter_doc_ids(f)
+        });
+        // each group sees only part of a document's evidence: keep more of its candidates, so
+        // documents strong across groups but middling in each survive until they are merged
+        let group_k = if groups.len() > 1 {
+            k.max(POOL_SIZE)
+        } else {
+            k
+        };
+        // `prepare_search` prepared only the groups that kept a query, in order
+        let searched = groups
+            .iter()
+            .zip(plans)
+            .filter_map(|(group, plan)| group.query.as_ref().map(|query| (group, plan, query)));
+        let mut ranked = Vec::with_capacity(groups.len());
         //WARN: this is done sequencially for each query group we might need to do some par_iter()
         //bs if slow
-        for ((group, plan), prepared_group) in groups.iter().zip(plans).zip(prepared) {
-            let Some(query) = group.query.as_ref() else {
-                continue;
-            };
+        for ((group, plan, query), prepared_group) in searched.zip(prepared) {
             let executor = QueryExecutor::new(snapshot, &group.analyzer)
                 .with_corpus(corpus)
                 .with_prepared(prepared_group);
-            let restrict = filters.and_then(|f| executor.filter_doc_ids(f));
-            for hit in executor.rank(
+            ranked.push(executor.rank_features(
                 Some(query),
                 &group.ctxs,
-                k,
+                group_k,
                 restrict.as_ref(),
                 mactmode,
                 plan,
-            ) {
-                merged
-                    .entry(hit.doc_id)
-                    .and_modify(|e| {
-                        e.score += hit.score;
-                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                        e.weight_sum = e.weight_sum.saturating_add(hit.weight_sum);
-                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                        e.tier = e.tier.min(hit.tier);
-                    })
-                    .or_insert(hit);
-            }
+            ));
         }
-        let mut hits: Vec<SearchHit> = merged.into_values().collect();
-        hits.sort_by(|a, b| {
-            b.tier
-                .cmp(&a.tier)
-                .then(
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal),
-                )
-                .then(a.doc_id.cmp(&b.doc_id))
-        });
-        hits.truncate(k);
-        let total = hits.len();
-        (total, hits)
+        let hits = finalize(ranked, k);
+        (hits.len(), hits)
     }
 
     #[timed(search)]
@@ -425,7 +469,7 @@ impl ShardHandle {
         let allowed = filters.and_then(|filters| {
             QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(filters)
         });
-        if allowed.as_ref().is_some_and(|set| set.is_empty()) {
+        if allowed.as_ref().is_some_and(std::collections::HashSet::is_empty) {
             return Ok(Vec::new());
         }
         let mut lists = Vec::with_capacity(xpaths.len());
@@ -482,7 +526,7 @@ impl ShardHandle {
             .iter()
             .map(|&x| {
                 let (min, max) = snapshot.numeric_bounds(x);
-                (min.map(|v| v.as_f64()), max.map(|v| v.as_f64()))
+                (min.map(core_index::numeric_values::NumericValue::as_f64), max.map(core_index::numeric_values::NumericValue::as_f64))
             })
             .collect();
 
@@ -505,7 +549,7 @@ impl ShardHandle {
                     .map(|&xpath| {
                         snapshot
                             .numeric_value(xpath, hit.doc_id)
-                            .map(|v| v.as_f64())
+                            .map(core_index::numeric_values::NumericValue::as_f64)
                             .or_else(|| {
                                 snapshot
                                     .bool_value(xpath, hit.doc_id)
@@ -619,7 +663,8 @@ impl ShardHandle {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
                     project_document(&doc, policy, return_fields)
-                        .map_err(|e| CorelamoError::Internal(e.to_string()))?,
+                        .map_err(|e| CorelamoError::Internal(e.to_string()))?
+                        .0,
                 )),
                 None => not_found.push(id.clone()),
             }
@@ -666,17 +711,89 @@ impl ShardHandle {
             let Some(doc) = res.map_err(|e| CorelamoError::Internal(e.to_string()))? else {
                 continue;
             };
+            let (doc_out, full_doc) = project_document(&doc, policy, return_fields)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             results[i] = Some(SearchDocumentHit {
                 external_id: doc.external_id.clone(),
                 internal_id: doc.internal_id,
                 score: hits[i].score,
-                doc: project_document(&doc, policy, return_fields)
-                    .map_err(|e| CorelamoError::Internal(e.to_string()))?,
+                doc: doc_out,
+                full_doc,
                 highlights: Vec::new(),
             });
         }
 
         Ok(results)
+    }
+
+    //reusing the cached snapshots so no index reads for the final document highlights
+    #[timed(highlight)]
+    pub fn matched_terms_for(
+        &self,
+        hits: &[SearchHit],
+        groups: &[QueryGroup],
+        plans: &[RankPlan],
+        prepared: &PreparedShardSearch,
+        corpus: &CorpusStats,
+    ) -> Vec<Vec<MatchedTerm>> {
+        let mut out: Vec<Vec<MatchedTerm>> = vec![Vec::new(); hits.len()];
+
+        let mut prepared_iter = prepared.prepared.iter();
+        for (group, plan) in groups.iter().zip(plans) {
+            let Some(query) = group.query.as_ref() else {
+                continue;
+            };
+            let Some(prepared_group) = prepared_iter.next() else {
+                break;
+            };
+            let executor = QueryExecutor::new(&*prepared.snapshot, &group.analyzer)
+                .with_corpus(corpus)
+                .with_prepared(prepared_group);
+
+            // the fuzzy (and other tier) queries live in the plan, not in group.query
+            let tier_queries: Vec<&Query> = plan
+                .queries()
+                .filter(|quer| Some(*quer) != group.query.as_ref())
+                .collect();
+
+            for (i, hit) in hits.iter().enumerate() {
+                //all tiers
+                let mut matches = executor.matched_terms(query, hit.doc_id, &group.ctxs);
+                //matches from typos or missing shit
+                for tier_query in &tier_queries {
+                    matches.extend(executor.matched_terms(tier_query, hit.doc_id, &group.ctxs));
+                }
+                if !matches.is_empty() {
+                    out[i].extend(matches);
+                }
+            }
+        }
+
+        //adds the array[index] so that highlighter can find the precise place where search found it
+        for matches in out.iter_mut() {
+            Self::fill_row_paths(prepared.snapshot.as_ref(), matches);
+        }
+
+        out
+    }
+
+    fn fill_row_paths(snapshot: &IndexSnapshot, matches: &mut [MatchedTerm]) {
+        for m in matches.iter_mut() {
+            let Some(row_id) = m.row_id else {
+                continue;
+            };
+            let mut path = Vec::new();
+            let mut cur = Some(row_id);
+            while let Some(r) = cur {
+                let Some(idx) = snapshot.element_index_of_row(r) else {
+                    break;
+                };
+                path.push(idx);
+                cur = snapshot.parent_of_row(r);
+            }
+            path.reverse();
+            m.row_path = path;
+        }
     }
 
     pub(crate) fn send_raw(&self, cmd: ShardCmd) -> Result<(), (CorelamoError, ShardCmd)> {
@@ -811,7 +928,7 @@ impl ShardHandle {
 
         let mut all: Vec<BackupManifest> = fs::read_dir(&backup_dir)
             .map_err(|e| CorelamoError::Internal(e.to_string()))?
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter_map(|e| {
                 let text =
                     fs::read_to_string(e.path().join(shard_name).join("manifest.json")).ok()?;
@@ -859,14 +976,29 @@ impl ShardHandle {
     }
 
     #[timed(restore)]
-    pub async fn restore_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+    pub async fn prepare_restore(
+        &self,
+        backup_id: &str,
+        user: String,
+    ) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
-        self.call(move |resp| ShardCmd::Restore {
+        self.call(move |resp| ShardCmd::PrepareRestore {
             user,
             backup_id,
             resp,
         })
         .await?
+    }
+
+    #[timed(restore)]
+    pub async fn commit_restore(&self, backup_id: &str) -> Result<(), CorelamoError> {
+        let backup_id = backup_id.to_string();
+        self.call(move |resp| ShardCmd::CommitRestore { backup_id, resp })
+            .await?
+    }
+
+    pub async fn abort_restore(&self) -> Result<(), CorelamoError> {
+        self.call(|resp| ShardCmd::AbortRestore { resp }).await?
     }
 }
 
@@ -902,7 +1034,7 @@ pub fn spawn(
     let alive_worker = alive.clone();
     let shared_worker = shared.clone();
     let join = thread::Builder::new()
-        .name(format!("shard-{}", id))
+        .name(format!("shard-{id}"))
         .spawn(move || {
             let _guard = AliveGuard(alive_worker);
 
@@ -931,9 +1063,6 @@ pub fn spawn(
         boot_rx,
     ))
 }
-
-//how often the worker loop wakes up to run that check
-const IDLE_FLUSH_POLL: Duration = Duration::from_secs(1);
 
 fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
     loop {
@@ -1040,7 +1169,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     *shared
                         .last_backup_id
                         .write()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(manifest.backup_id.clone());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(manifest.backup_id.clone());
                     shared
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);
@@ -1056,7 +1185,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 if shared
                     .last_backup_id
                     .read()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_none()
                 {
                     let _ = resp.send(Err(CorelamoError::Internal(
@@ -1073,7 +1202,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     *shared
                         .last_backup_id
                         .write()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(manifest.backup_id.clone());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(manifest.backup_id.clone());
                     shared
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);
@@ -1081,18 +1210,30 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let _ = resp.send(result);
             }
 
-            ShardCmd::Restore {
+            ShardCmd::PrepareRestore {
                 user,
-                resp,
                 backup_id,
+                resp,
             } => {
-                //salabots porniks ar vienkaris running/stopped/restoring/backing up....
                 shared.is_restoring.store(true, Ordering::Release);
-                let result = shard.restore_backup(&backup_id, user);
+                let result = shard.prepare_restore(&backup_id, user);
                 shared
                     .is_running
                     .store(shard.is_running(), Ordering::Release);
                 shared.is_restoring.store(false, Ordering::Release);
+                let _ = resp.send(result);
+            }
+            ShardCmd::CommitRestore { backup_id, resp } => {
+                shared.is_restoring.store(true, Ordering::Release);
+                let result = shard.commit_restore(&backup_id);
+                shared
+                    .is_running
+                    .store(shard.is_running(), Ordering::Release);
+                shared.is_restoring.store(false, Ordering::Release);
+                let _ = resp.send(result);
+            }
+            ShardCmd::AbortRestore { resp } => {
+                let result = shard.abort_restore();
                 let _ = resp.send(result);
             }
 

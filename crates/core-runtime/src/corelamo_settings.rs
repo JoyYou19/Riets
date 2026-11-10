@@ -83,8 +83,7 @@ pub(crate) fn default_value(key: &str) -> &'static str {
     DEFAULT_SETTINGS
         .iter()
         .find(|(k, _)| *k == key)
-        .map(|(_, v)| *v)
-        .unwrap_or("")
+        .map_or("", |(_, v)| *v)
 }
 
 pub(crate) fn valid_keys() -> Vec<&'static str> {
@@ -105,7 +104,7 @@ pub(crate) fn parse_args() -> Result<HashMap<String, String>, String> {
     let keys = valid_keys();
     while let Some(arg) = args.next() {
         if arg == "-h" || arg == "--help" || arg == "--h" || arg == "-help" {
-            println!("{}", HELP);
+            println!("{HELP}");
             process::exit(0);
         }
 
@@ -170,8 +169,7 @@ pub(crate) fn load_or_init_settings(
     // Check if user wants to overwrite config with CLI args
     let overwrite_config = cli_overrides
         .get("overwrite_config")
-        .map(|s| s == "true")
-        .unwrap_or(false);
+        .is_some_and(|s| s == "true");
 
     if overwrite_config {
         info!(
@@ -256,8 +254,7 @@ pub(crate) fn validate_settings(settings: &HashMap<String, String>) -> Result<()
 
     if max_payload_size < 1 {
         return Err(format!(
-            "invalid max_payload_size {}: must be at least 1 MB",
-            max_payload_size
+            "invalid max_payload_size {max_payload_size}: must be at least 1 MB"
         ));
     }
 
@@ -271,8 +268,7 @@ pub(crate) fn validate_settings(settings: &HashMap<String, String>) -> Result<()
 
     if max_request_timeout < 1 {
         return Err(format!(
-            "invalid max_request_timeout {}: must be at least 1s",
-            max_request_timeout
+            "invalid max_request_timeout {max_request_timeout}: must be at least 1s"
         ));
     }
 

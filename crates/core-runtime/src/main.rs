@@ -9,9 +9,10 @@ use core_core::shard_manager::ShardManager;
 use tower_http::{cors::CorsLayer, decompression::RequestDecompressionLayer};
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
-use core_auth::{AuthService, UserDatabase};
+use core_auth::{AuthService, MIN_PASSWORD_LEN, SUPERUSER, UserDatabase};
 use core_index::{
-    analyzer::analyzer::Analyzer, lsm::{LsmIndex, config::IndexRuntimeConfig},
+    analyzer::analyzer::Analyzer,
+    lsm::{LsmIndex, config::IndexRuntimeConfig},
 };
 
 use core_logs::logger;
@@ -19,8 +20,9 @@ use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::binary_store::BinaryDocumentStore;
 use slog::{debug, error, info, warn};
 use std::{
-    io,
-    path::PathBuf,
+    fs::{File, OpenOptions, TryLockError},
+    io::{self, Read, Seek, Write},
+    path::{Path, PathBuf},
     process,
     sync::{Arc, RwLock},
     time::Duration,
@@ -28,7 +30,7 @@ use std::{
 
 use tokio::{
     signal,
-    sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard},
+    sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, watch},
 };
 
 use crate::{
@@ -47,6 +49,96 @@ mod middleware;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// How long open HTTP connections get to finish after a shutdown signal before they are cut.
+const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the databases get to shut down. Writes are in the WAL before they are applied,
+/// so giving up here loses no acknowledged write; it only means more WAL replay at start.
+const DB_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the runtime waits for leftover blocking tasks (embedding, backups) at exit.
+const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Exit code for a forced exit on a second shutdown signal (128 + SIGINT).
+const FORCED_EXIT_CODE: i32 = 130;
+
+/// Takes an exclusive OS lock on `<root>/corelamo.lock` for the life of the process, so a
+/// second server on the same data cannot start
+fn lock_root(root: &Path) -> io::Result<File> {
+    std::fs::create_dir_all(root)?;
+    let path = root.join("corelamo.lock");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            let mut holder = String::new();
+            // the pid is only for the message; a failed read must not hide the real error
+            let _ = file.read_to_string(&mut holder);
+            let holder = holder.trim();
+            let holder = if holder.is_empty() { "unknown" } else { holder };
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "{} is locked by another corelamo process (pid {holder}); stop it first",
+                    path.display()
+                ),
+            ));
+        }
+        Err(TryLockError::Error(e)) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!("locking {}: {e}", path.display()),
+            ));
+        }
+    }
+    file.set_len(0)?;
+    file.rewind()?;
+    write!(file, "{}", process::id())?;
+    file.sync_all()?;
+    Ok(file)
+}
+fn prompt_new_password() -> io::Result<String> {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--reset-password interactive needs a terminal; use random",
+        ));
+    }
+    loop {
+        let first = rpassword::prompt_password(format!("New password for '{SUPERUSER}': "))?;
+        if first.chars().count() < MIN_PASSWORD_LEN {
+            eprintln!("Too short: use at least {MIN_PASSWORD_LEN} characters.");
+            continue;
+        }
+        let second = rpassword::prompt_password("Repeat it: ")?;
+        if first == second {
+            return Ok(first);
+        }
+        eprintln!("The passwords do not match, try again.");
+    }
+}
+fn ask_to_set_password() -> io::Result<Option<String>> {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    eprint!("Set your own password now? [y/N]: ");
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        return Ok(None);
+    }
+    prompt_new_password().map(Some)
+}
+
+fn print_password(password: &str) {
+    eprintln!(
+        "\n  user:     {SUPERUSER}\n  password: {password}\n  Shown once, keep it safe, the password cannot be recovered\n"
+    );
+}
 #[derive(Clone)]
 pub struct AppState {
     pub databases: Arc<Databases>,
@@ -117,17 +209,27 @@ async fn shutdown_signal() {
     let quit = std::future::pending::<()>();
 
     let reason = tokio::select! {
-        _ = ctrl_c => "SIGINT (Ctrl+C)",
-        _ = terminate => "SIGTERM",
-        _ = hangup => "SIGHUP",
-        _ = quit => "SIGQUIT",
+        () = ctrl_c => "SIGINT (Ctrl+C)",
+        () = terminate => "SIGTERM",
+        () = hangup => "SIGHUP",
+        () = quit => "SIGQUIT",
     };
 
     warn!(log,"Shutting down gracefully..."; "shutdown_signal"=>%reason,);
 }
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
+fn main() -> io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run());
+    // dropping the runtime would wait without limit for every spawn_blocking task still
+    // running (model load, embedding, backup), which kept the process alive after shutdown
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+    result
+}
+
+async fn run() -> io::Result<()> {
     //logging izmantojot slog lib
     let cli_overrides = match corelamo_settings::parse_args() {
         Ok(overrides) => overrides,
@@ -142,13 +244,23 @@ async fn main() -> io::Result<()> {
         }
     };
 
-    if let Err(_) = corelamo_settings::validate_settings(&settings) {
+    if corelamo_settings::validate_settings(&settings).is_err() {
         process::exit(1);
     }
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));
     let (log, _guard) = logger::program_logger(&root_path);
     let _slog_guard = slog_scope::set_global_logger(log.clone());
     info!(log, "Program started");
+
+    // held until the process exits; must be taken before any database file is touched
+    let _root_lock = match lock_root(&root_path) {
+        Ok(file) => file,
+        Err(e) => {
+            error!(log, "cannot start: data directory is in use"; "error" => %e);
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
 
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
@@ -220,7 +332,37 @@ async fn main() -> io::Result<()> {
     let analyzer = Analyzer::default(); // or however movies builds it
 
     let user_db = UserDatabase::new(store, index, analyzer);
-    let auth = Arc::new(RwLock::new(AuthService::bootstrap(user_db)));
+    let auth = match AuthService::bootstrap(user_db) {
+        Ok((mut auth, created)) => {
+            if let Some(password) = created {
+                eprintln!("\n Inital start: superuser created.");
+                print_password(&password);
+                warn!(log, "created the superuser with a generated password (printed on stderr)";
+                    "user" => SUPERUSER);
+                // first start only: offer to replace it while someone is at the terminal
+                match tokio::task::spawn_blocking(ask_to_set_password).await {
+                    Ok(Ok(Some(own))) => match auth.set_initial_password(&own) {
+                        Ok(()) => {
+                            eprintln!("Password for '{SUPERUSER}' updated.");
+                            info!(log, "superuser password set at first start"; "user" => SUPERUSER);
+                        }
+                        Err(e) => eprintln!("error: {e}; the printed password stays valid"),
+                    },
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => eprintln!("error: {e}; the printed password stays valid"),
+                    Err(e) => eprintln!(
+                        "error: password prompt failed: {e}; the printed password stays valid"
+                    ),
+                }
+            }
+            Arc::new(RwLock::new(auth))
+        }
+        Err(e) => {
+            error!(log, "cannot start: user bootstrap failed"; "error" => %e);
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
 
     let state = AppState {
         databases: Arc::new(databases_registry),
@@ -448,22 +590,67 @@ async fn main() -> io::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     debug!(log,"listening on";"address"=>%addr);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // first signal: graceful shutdown; a second signal: exit at once
+    let (stop_tx, stop_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop_tx.send(true);
+        shutdown_signal().await;
+        let log = slog_scope::logger();
+        error!(log, "second shutdown signal, exiting without waiting");
+        process::exit(FORCED_EXIT_CODE);
+    });
+
+    let mut graceful_rx = stop_rx.clone();
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = graceful_rx.wait_for(|stop| *stop).await;
+        })
+        .into_future();
+    tokio::pin!(server);
+
+    // graceful shutdown alone waits for every open connection, so one idle keep-alive client
+    // kept the process alive forever; after the drain timeout the remaining ones are cut
+    let mut deadline_rx = stop_rx;
+    tokio::select! {
+        served = &mut server => served?,
+        () = async {
+            let _ = deadline_rx.wait_for(|stop| *stop).await;
+            tokio::time::sleep(HTTP_DRAIN_TIMEOUT).await;
+        } => {
+            warn!(log, "connections still open after the drain timeout, closing them";
+                "timeout_secs" => HTTP_DRAIN_TIMEOUT.as_secs());
+        }
+    }
 
     //something or someone killed our beloved programm
     info!(log, "Server stopped, shutting down databases..");
 
-    for slot in state_for_shutdown.databases.list() {
-        let Ok(manager) = slot.manager() else {
-            info!(log, "skipping transient database at shutdown"; "db" => %slot.name);
-            continue;
-        };
-        info!(log, "shutting down database ..."; "database" => %slot.name);
-        if let Err(e) = manager.shutdown() {
-            error!(log, "error shutting down database";
-            "db" => %slot.name, "error" => %e);
+    // ShardManager::shutdown blocks (it waits for shard threads); run it off the runtime
+    // threads and stop waiting after a limit, so a stuck shard cannot keep the process alive
+    let shutdown_log = log.clone();
+    let databases = Arc::clone(&state_for_shutdown.databases);
+    let shutdown = tokio::task::spawn_blocking(move || {
+        for slot in databases.list() {
+            let Ok(manager) = slot.manager() else {
+                info!(shutdown_log, "skipping transient database at shutdown"; "db" => %slot.name);
+                continue;
+            };
+            info!(shutdown_log, "shutting down database ..."; "database" => %slot.name);
+            if let Err(e) = manager.shutdown() {
+                error!(shutdown_log, "error shutting down database";
+                "db" => %slot.name, "error" => %e);
+            }
+        }
+    });
+    match tokio::time::timeout(DB_SHUTDOWN_TIMEOUT, shutdown).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            error!(log, "database shutdown task failed"; "error" => %e);
+        }
+        Err(_) => {
+            error!(log, "databases did not shut down in time, exiting anyway";
+                "timeout_secs" => DB_SHUTDOWN_TIMEOUT.as_secs());
         }
     }
 
@@ -471,3 +658,4 @@ async fn main() -> io::Result<()> {
     info!(log, "Goodbye");
     Ok(())
 }
+

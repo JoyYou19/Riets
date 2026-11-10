@@ -58,8 +58,7 @@ pub(crate) fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
     }
     if name.len() > 30 {
         return Err(CorelamoError::InvalidData(format!(
-            "database name '{}' exceeds 30 characters",
-            name
+            "database name '{name}' exceeds 30 characters"
         )));
     }
     if !name
@@ -67,8 +66,7 @@ pub(crate) fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(CorelamoError::InvalidData(format!(
-            "database name '{}' contains invalid characters",
-            name
+            "database name '{name}' contains invalid characters"
         )));
     }
     Ok(())
@@ -96,8 +94,7 @@ pub(crate) fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> 
 pub(crate) fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     databases_dir.join(format!(
         "{TRASH_PREFIX}{db_name}-{}-{nanos}",
         std::process::id()
@@ -124,7 +121,6 @@ pub(crate) fn sweep_trash(databases_dir: &Path) {
         }
     }
 }
-
 
 //bellow are functions for determining what takes up how much disk space for a database
 fn file_size_opt(path: &Path) -> Result<Option<u64>, CorelamoError> {
@@ -228,11 +224,10 @@ pub(crate) fn compute_disk_usage(
         {
             let entry = entry
                 .map_err(|e| CorelamoError::Internal(format!("failed to read shard entry: {e}")))?;
-            if entry.path().is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
+            if entry.path().is_dir()
+                && let Some(name) = entry.file_name().to_str() {
                     shard_names.push(name.to_string());
                 }
-            }
         }
     }
     shard_names.sort_by_key(|name| {
@@ -258,8 +253,7 @@ pub(crate) fn compute_disk_usage(
         documents_total += doc_size;
         documents_per_shard.insert(shard_name.clone(), json!(format_size(doc_size)));
 
-       
-                let wal_shard_total = dir_total_size_opt(&shard_root.join("wal"))?.unwrap_or(0);
+        let wal_shard_total = dir_total_size_opt(&shard_root.join("wal"))?.unwrap_or(0);
         wal_total += wal_shard_total;
         wal_per_shard.insert(shard_name.clone(), json!(format_size(wal_shard_total)));
         let logs_size = dir_total_size_opt(&shard_root.join("logs"))?.unwrap_or(0);

@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 
 use ahash::HashSet;
 
-
 use crate::posting::DeleteSet;
 use crate::types::DocId;
 
@@ -81,11 +80,10 @@ impl TopK {
         self.hits.insert(pos, hit);
         self.hits.truncate(self.k);
     }
-     /// Score of the current k-th hit, once `k` hits are held; anything scoring below it
+    /// Score of the current k-th hit, once `k` hits are held; anything scoring below it
     /// cannot enter. Lets callers skip work for candidates that cannot make the cut.
 
     pub(crate) fn into_sorted(self) -> Vec<VectorHit> {
         self.hits
     }
 }
-

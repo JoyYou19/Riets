@@ -67,7 +67,7 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
     }
 }
 
-fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
+pub fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
     field
         .analyzer
         .as_deref()
@@ -281,11 +281,10 @@ fn build_node(
     field: &FieldPolicy,
     analyzers: &AnalyzerSet,
 ) -> Result<Option<Query>, CorelamoError> {
-    if let OwnedValue::Object(obj) = v {
-        if let Some(inner) = obj.get("range") {
+    if let OwnedValue::Object(obj) = v
+        && let Some(inner) = obj.get("range") {
             return resolve_range(field, inner);
         }
-    }
 
     //          sis bisk porno bet simd sitaada strukturs
     if let OwnedValue::Static(StaticNode::Bool(b)) = v {
@@ -356,8 +355,8 @@ fn resolve_same_element(
             .ok_or_else(|| CorelamoError::PathNotIndexed(full.clone()))?;
 
         //nested array-in-array
-        if let OwnedValue::Object(o) = sub_v {
-            if o.contains_key("same_element") {
+        if let OwnedValue::Object(o) = sub_v
+            && o.contains_key("same_element") {
                 let (sub_query, sub_binding) = resolve_same_element(
                     sub_field,
                     o.get("same_element").unwrap(),
@@ -378,15 +377,13 @@ fn resolve_same_element(
                 children.push(sub_query);
                 continue;
             }
-        }
 
         let sub = build_node(sub_v, sub_field, analyzers)?
             .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
 
         if tree_has_exact(&sub) && sub_field.exact_xpath(policy).is_none() {
             return Err(CorelamoError::InvalidData(format!(
-                "subfield '{}' has no exact index (add 'exact = true' to its policy)",
-                full
+                "subfield '{full}' has no exact index (add 'exact = true' to its policy)"
             )));
         }
 

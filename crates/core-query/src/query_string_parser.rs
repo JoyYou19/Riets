@@ -197,7 +197,7 @@ pub fn parse_json_query(v: &OwnedValue) -> Result<Query, CorelamoError> {
                         .into(),
                 ));
             }
-            let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+            let keys: Vec<&str> = obj.keys().map(std::string::String::as_str).collect();
             Err(CorelamoError::InvalidData(format!(
                 "unknown query operator(s): {} — expected one of term/exact/fuzzy/phrase/range/same_element/AND/OR/WAND",
                 keys.join(", ")
@@ -337,13 +337,11 @@ fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
             prefix_length: obj
                 .get("prefix_length")
                 .and_then(OwnedValue::as_u64)
-                .map(|n| n as usize)
-                .unwrap_or(DEFAULT_PREFIX_LENGTH),
+                .map_or(DEFAULT_PREFIX_LENGTH, |n| n as usize),
             max_expansions: obj
                 .get("max_expansions")
                 .and_then(OwnedValue::as_u64)
-                .map(|n| n as usize)
-                .unwrap_or(DEFAULT_MAX_EXPANSIONS),
+                .map_or(DEFAULT_MAX_EXPANSIONS, |n| n as usize),
         },
     ))
 }
