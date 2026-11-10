@@ -97,7 +97,7 @@ pub fn compile_query(
 
     reject_filter_only_operators(raw)?;
 
-    let raw_query = parse_json_query(raw)?;
+    let raw_query = parse_json_query(raw, Query::Wand)?;
     let needs_exact = tree_has_exact(&raw_query);
 
     let fields: Vec<&FieldPolicy> = match search_fields {
@@ -277,7 +277,6 @@ pub fn compile_filters(
 }
 
 //single core: OwnedValue + field context -> resolved Query (non-same_element)
-//single core: OwnedValue + field context -> resolved Query (non-same_element)
 fn build_node(
     v: &OwnedValue,
     field: &FieldPolicy,
@@ -307,7 +306,7 @@ fn build_node(
         return resolve_numeric_filter(field, v);
     }
 
-    let node = parse_json_query(v)?;
+    let node = parse_json_query(v, Query::And)?;
     Ok(analyze_query(node, field_analyzer(field, analyzers)))
 }
 

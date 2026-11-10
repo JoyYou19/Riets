@@ -12,13 +12,16 @@ use core_index::{
     wildcard::WildcardPattern,
 };
 
-//decide between prefix (dat*), a wildcard (da?ab*e), or just a word
+//decide between prefix (dat*), a wildcard (da?ab*e), or just a word.
+//`default` is the combinator a bare multi-word string gets: Query::Wand (query) or Query::And (filter).
 #[timed(search)]
-fn classify_word(word: &str) -> Query {
-    // a pattern is one word: text with spaces is a sentence, and its "[in Australia]" or
-    // "really?" are punctuation, not a pattern that has to match one whole indexed word
+fn classify_word(word: &str, default: fn(Vec<Query>) -> Query) -> Query {
     if word.trim().contains(char::is_whitespace) {
-        return Query::Term(word.to_string());
+        let parts: Vec<Query> = word
+            .split_whitespace()
+            .map(|w| classify_word(w, default))
+            .collect();
+        return default(parts);
     }
     let pattern = WildcardPattern::parse(word);
     if pattern.is_prefix_only() {
@@ -163,31 +166,27 @@ fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
 }
 
 //main entry point for parsing yeye
-#[timed(search)]
-pub fn parse_json_query(v: &OwnedValue) -> Result<Query, CorelamoError> {
+pub fn parse_json_query(
+    v: &OwnedValue,
+    default: fn(Vec<Query>) -> Query,
+) -> Result<Query, CorelamoError> {
     match v {
-        OwnedValue::String(s) => Ok(classify_word(s)),
+        OwnedValue::String(s) => Ok(classify_word(s, default)),
         OwnedValue::Object(obj) => {
             if let Some(inner) = obj.get("AND") {
-                return combinator(inner, Query::And);
+                return combinator(inner, Query::And, default);
             }
             if let Some(inner) = obj.get("OR") {
-                return combinator(inner, Query::Or);
+                return combinator(inner, Query::Or, default);
             }
             if let Some(inner) = obj.get("WAND") {
-                return combinator(inner, Query::Wand);
+                return combinator(inner, Query::Wand, default);
             }
             if let Some(inner) = obj.get("term") {
-                return leaf(inner, Leaf::Term);
+                return leaf(inner, Leaf::Term, default);
             }
             if let Some(inner) = obj.get("exact") {
-                return leaf(inner, Leaf::Exact);
-            }
-            if let Some(inner) = obj.get("phrase") {
-                return phrase(inner);
-            }
-            if let Some(inner) = obj.get("fuzzy") {
-                return fuzzy(inner);
+                return leaf(inner, Leaf::Exact, default);
             }
             if obj.contains_key("vector") {
                 return Err(CorelamoError::InvalidData(
@@ -214,23 +213,30 @@ enum Leaf {
     Exact,
 }
 
-fn combinator(inner: &OwnedValue, make: fn(Vec<Query>) -> Query) -> Result<Query, CorelamoError> {
+fn combinator(
+    inner: &OwnedValue,
+    make: fn(Vec<Query>) -> Query,
+    default: fn(Vec<Query>) -> Query,
+) -> Result<Query, CorelamoError> {
     match inner {
         OwnedValue::Array(items) => {
             let mut out = Vec::new();
             for item in items.iter() {
                 match item {
                     OwnedValue::String(s) => {
-                        out.extend(s.split_whitespace().map(classify_word));
+                        out.extend(s.split_whitespace().map(|w| classify_word(w, default)));
                     }
                     //recursion
-                    other => out.push(parse_json_query(other)?),
+                    other => out.push(parse_json_query(other, default)?),
                 }
             }
             Ok(make(out))
         }
         OwnedValue::String(s) => {
-            let items: Vec<Query> = s.split_whitespace().map(classify_word).collect();
+            let items: Vec<Query> = s
+                .split_whitespace()
+                .map(|w| classify_word(w, default))
+                .collect();
             Ok(make(items))
         }
         _ => Err(CorelamoError::InvalidData(
@@ -239,7 +245,11 @@ fn combinator(inner: &OwnedValue, make: fn(Vec<Query>) -> Query) -> Result<Query
     }
 }
 
-fn leaf(inner: &OwnedValue, kind: Leaf) -> Result<Query, CorelamoError> {
+fn leaf(
+    inner: &OwnedValue,
+    kind: Leaf,
+    default: fn(Vec<Query>) -> Query,
+) -> Result<Query, CorelamoError> {
     let s = inner
         .as_str()
         .ok_or_else(|| CorelamoError::InvalidData("leaf value must be a string".into()))?;
@@ -252,7 +262,7 @@ fn leaf(inner: &OwnedValue, kind: Leaf) -> Result<Query, CorelamoError> {
                     "term takes one word — combine with AND/OR/WAND for multiple".into(),
                 ));
             }
-            classify_word(s)
+            classify_word(s, default)
         }
     })
 }
