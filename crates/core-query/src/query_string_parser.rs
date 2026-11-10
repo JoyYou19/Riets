@@ -166,7 +166,6 @@ fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
 #[timed(search)]
 pub fn parse_json_query(v: &OwnedValue) -> Result<Query, CorelamoError> {
     match v {
-        OwnedValue::String(s) if s.trim() == "match_all" => Ok(Query::MatchAll),
         OwnedValue::String(s) => Ok(classify_word(s)),
         OwnedValue::Object(obj) => {
             if let Some(inner) = obj.get("AND") {

@@ -1361,16 +1361,6 @@ impl ShardManager {
         command: &SearchCommand,
         page: PageRequest,
     ) -> Result<CompiledSearch, CorelamoError> {
-        if is_blank_query(&command.query)
-            && command
-                .filters
-                .as_ref()
-                .is_none_or(indexmap::IndexMap::is_empty)
-        {
-            return Err(CorelamoError::InvalidData(
-                "Search for something not nothing....".into(),
-            ));
-        }
         let policy = self.policy.read().clone();
         let cascade_order = self.options.read().search.cascade_order();
         let dictionary = self.synonyms.snapshot();

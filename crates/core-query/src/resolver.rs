@@ -138,6 +138,7 @@ pub fn is_blank_query(v: &OwnedValue) -> bool {
     match v {
         OwnedValue::String(s) => s.trim().is_empty(),
         OwnedValue::Object(obj) => obj.is_empty(),
+        OwnedValue::Static(StaticNode::Null) => true,
         _ => false,
     }
 }
@@ -282,9 +283,10 @@ fn build_node(
     analyzers: &AnalyzerSet,
 ) -> Result<Option<Query>, CorelamoError> {
     if let OwnedValue::Object(obj) = v
-        && let Some(inner) = obj.get("range") {
-            return resolve_range(field, inner);
-        }
+        && let Some(inner) = obj.get("range")
+    {
+        return resolve_range(field, inner);
+    }
 
     //          sis bisk porno bet simd sitaada strukturs
     if let OwnedValue::Static(StaticNode::Bool(b)) = v {
@@ -356,27 +358,26 @@ fn resolve_same_element(
 
         //nested array-in-array
         if let OwnedValue::Object(o) = sub_v
-            && o.contains_key("same_element") {
-                let (sub_query, sub_binding) = resolve_same_element(
-                    sub_field,
-                    o.get("same_element").unwrap(),
-                    analyzers,
-                    policy,
-                )?
-                .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
+            && o.contains_key("same_element")
+        {
+            let (sub_query, sub_binding) =
+                resolve_same_element(sub_field, o.get("same_element").unwrap(), analyzers, policy)?
+                    .ok_or_else(|| {
+                        CorelamoError::InvalidData(format!("blank clause '{sub_name}'"))
+                    })?;
 
-                clauses.push(ClauseBinding {
-                    ctx: FieldCtx {
-                        xpath: 0,
-                        exact_xpath: None,
-                        row_keyed: false,
-                    },
-                    depth: sub_field.depth,
-                    nested: Some(Box::new(sub_binding)),
-                });
-                children.push(sub_query);
-                continue;
-            }
+            clauses.push(ClauseBinding {
+                ctx: FieldCtx {
+                    xpath: 0,
+                    exact_xpath: None,
+                    row_keyed: false,
+                },
+                depth: sub_field.depth,
+                nested: Some(Box::new(sub_binding)),
+            });
+            children.push(sub_query);
+            continue;
+        }
 
         let sub = build_node(sub_v, sub_field, analyzers)?
             .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;

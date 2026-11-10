@@ -43,15 +43,11 @@ pub struct DiskSegment {
 
 impl SearchStats for DiskSegment {
     fn doc_count(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.doc_count)
+        self.field_stats.get(&xpath).map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.total_doc_len)
+        self.field_stats.get(&xpath).map_or(0, |s| s.total_doc_len)
     }
 
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
@@ -158,6 +154,7 @@ impl DiskSegment {
     }
 
     //Decodes the postings and offsets
+    #[timed(search)]
     fn read_postings(&self, meta: TermMeta) -> PostingList {
         let start = meta.postings_offset as usize;
         let len = meta.postings_len as usize;
@@ -858,6 +855,7 @@ fn read_bool_points(
     Ok(fields)
 }
 
+#[timed(search)]
 fn read_posting_list(bytes: &[u8], doc_freq: u32, max_weight: u16) -> io::Result<PostingList> {
     let mut postings = Vec::new();
 
