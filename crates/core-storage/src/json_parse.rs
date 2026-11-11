@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use bincode::{Decode, Encode};
 use core_index::document::{
     IndexPolicy,
     policy::{FieldKind, FieldPolicy},
@@ -9,19 +8,19 @@ use core_protocol::errors::FailReason;
 use serde::{Deserialize, Serialize};
 use simd_json::OwnedValue;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LeafValue {
     pub path: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArrayField {
     pub path: String,
     pub elements: Vec<ParsedNode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ParsedNode {
     pub leaves: Vec<LeafValue>,
     pub arrays: Vec<ArrayField>,

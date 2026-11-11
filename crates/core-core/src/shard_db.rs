@@ -49,7 +49,7 @@ use core_storage::{
         save_maps,
     },
     document_store::{ DocumentStore, StoredDocument },
-    json_parse::parse_into_node,
+    json_parse::{ parse_into_node, parse_source_into_node },
     search_database::{
         DeleteReport,
         DocumentInput,
@@ -59,7 +59,7 @@ use core_storage::{
         ReplaceReport,
         SearchDatabase,
     },
-    wal::{ SyncMode, Wal, WalRecord, WalRecordRef },
+    wal::{ SyncMode, Wal, WalDocument, WalDocumentRef, WalRecord, WalRecordRef },
 };
 
 use crate::embed::EmbeddingJob;
@@ -326,7 +326,6 @@ impl ShardDb {
 
         let index = LsmIndex::persistent(&index_root, self.options.runtime.flush_threshold)?;
         if !index.removed_leftovers().is_empty() {
-            
             info!(self.log, "removed index files left over from an interrupted write";
                 "shard_id" => self.shard_id,
                 "files" => ?index.removed_leftovers());
@@ -374,7 +373,8 @@ impl ShardDb {
             };
             let applied = (|| -> Result<(), CorelamoError> {
                 match record {
-                    WalRecord::Create(inputs) => {
+                    WalRecord::Create(docs) => {
+                        let inputs = documents_from_wal(docs, &self.policy, &self.log);
                         info!(self.log, "WAL replay: Create"; "shard_id" => self.shard_id, "documents" => inputs.len());
                         let mut fresh = Vec::with_capacity(inputs.len());
                         let mut needs_indexing = Vec::new();
@@ -416,15 +416,17 @@ impl ShardDb {
                         );
                         }
                     }
-                    WalRecord::Upsert(inputs) => {
+                    WalRecord::Upsert(docs) => {
+                        let inputs = documents_from_wal(docs, &self.policy, &self.log);
                         info!(self.log, "WAL replay: Upsert"; "shard_id" => self.shard_id, "documents" => inputs.len());
                         db
                             .upsert_documents(keep_last_per_id(inputs), IndexMode::StoreAndIndex)
                             .map_err(|e|
-                                CorelamoError::Internal(format!("recovery apply failed:{e}"))
+                                CorelamoError::Internal(format!("recovery apply failed: {e}"))
                             )?;
                     }
-                    WalRecord::Replace(inputs) => {
+                    WalRecord::Replace(docs) => {
+                        let inputs = documents_from_wal(docs, &self.policy, &self.log);
                         info!(self.log, "WAL replay: Replace"; "shard_id" => self.shard_id, "documents" => inputs.len());
                         db
                             .upsert_documents(keep_last_per_id(inputs), IndexMode::StoreAndIndex)
@@ -769,14 +771,15 @@ impl ShardDb {
             .sum();
         core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
         let batch_size = self.options.runtime.indexing_batch_size;
-        let wal_record = WalRecord::Create(inputs);
-        // self.wal_append_record(&wal_record)?;
-        let WalRecord::Create(inputs) = wal_record else {
-            return Err(CorelamoError::Internal("unexpected WAL record".into()));
-        };
         let mut wal_touched = false;
         let result = (|| -> Result<InsertReport, CorelamoError> {
-            let encoded = Self::wal_encode_record(&WalRecordRef::Create(&inputs))?;
+            let encoded = {
+                let docs: Vec<WalDocumentRef<'_>> = inputs
+                    .iter()
+                    .map(WalDocumentRef::from)
+                    .collect();
+                Self::wal_encode_record(&WalRecordRef::Create(&docs))?
+            };
             wal_touched = true;
             self.wal_append_encoded(&encoded)?;
             self.pending += count as u32;
@@ -1126,10 +1129,8 @@ impl ShardDb {
         }
 
         // 2. WAL (fsync) only what will be applied
-        self
-            .wal_append_record(&WalRecordRef::Replace(&inputs))
-            .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
-
+       let docs: Vec<WalDocumentRef<'_>> = inputs.iter().map(WalDocumentRef::from).collect();
+        self.wal_append_record(&WalRecordRef::Replace(&docs))?;
         self.pending += inputs.len() as u32;
         let batch_size = self.options.runtime.indexing_batch_size;
         let should_checkpoint = self.pending >= (batch_size as u32);
@@ -1256,10 +1257,8 @@ impl ShardDb {
             return Ok(InsertReport { inserted: 0, failures });
         }
 
-        self
-            .wal_append_record(&WalRecordRef::Upsert(&inputs))
-            .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
-
+        let docs: Vec<WalDocumentRef<'_>> = inputs.iter().map(WalDocumentRef::from).collect();
+        self.wal_append_record(&&WalRecordRef::Upsert(&docs))?;
         self.pending += inputs.len() as u32;
         let batch_size = self.options.runtime.indexing_batch_size;
         let should_checkpoint = self.pending >= (batch_size as u32);
@@ -1773,6 +1772,7 @@ impl ShardDb {
         );
     }
 }
+//helper functions
 fn keep_last_per_id(inputs: Vec<DocumentInput>) -> Vec<DocumentInput> {
     let mut by_id: IndexMap<String, DocumentInput> = IndexMap::with_capacity(inputs.len());
     let mut generated = Vec::new();
@@ -1786,6 +1786,28 @@ fn keep_last_per_id(inputs: Vec<DocumentInput>) -> Vec<DocumentInput> {
     let mut out: Vec<DocumentInput> = by_id.into_values().collect();
     out.extend(generated);
     out
+}
+fn documents_from_wal(
+    docs: Vec<WalDocument>,
+    policy: &IndexPolicy,
+    log: &Logger
+) -> Vec<DocumentInput> {
+    let mut inputs = Vec::with_capacity(docs.len());
+    for doc in docs {
+        match parse_source_into_node(&doc.source, policy) {
+            Ok(parsed) =>
+                inputs.push(DocumentInput {
+                    external_id: doc.external_id,
+                    parsed,
+                    source: doc.source,
+                    format: doc.format,
+                }),
+            Err(reason) =>
+                warn!(log, "WAL replay: document no longer matches the policy, skipped";
+                "external_id" => %doc.external_id, "reason" => ?reason),
+        }
+    }
+    inputs
 }
 fn fail_batch(failiures: &mut Vec<DocFailure>, ids: Vec<String>, error: &io::Error) {
     for id in ids {

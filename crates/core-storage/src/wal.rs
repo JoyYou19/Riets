@@ -4,6 +4,7 @@
 //! Recovery replays every segment still present, oldest first.
 use crate::search_database::DocumentInput;
 use bincode::{Decode, Encode};
+use core_protocol::format::Format;
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -25,42 +26,54 @@ pub enum SyncMode {
     /// survives a crash or a power loss.
    // #[default] PRODCTION
     SyncEach,
-    /// No fsync on append: records survive a process crash (they are in the OS page cache)
-    /// but not a power loss. Use it only where losing the last writes is acceptable, such as
-    /// benchmarks.
+  
     #[default ]
     Manual,
 }
 
-#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone, PartialEq)]
+
+#[derive(Debug, Encode, Decode)]
+pub struct WalDocument {
+    pub external_id: String,
+    pub source: Vec<u8>,
+    pub format: Format,
+}
+
+#[derive(Encode)]
+pub struct WalDocumentRef<'a> {
+    pub external_id: &'a str,
+    pub source: &'a [u8],
+    pub format: Format,
+}
+
+impl<'a> From<&'a DocumentInput> for WalDocumentRef<'a> {
+    fn from(input: &'a DocumentInput) -> Self {
+        Self { external_id: &input.external_id, source: &input.source, format: input.format }
+    }
+}
+
+#[derive(Encode,Decode)]
 pub enum WalRecord {
-    Create(Vec<DocumentInput>),
-    Upsert(Vec<DocumentInput>),
-    Replace(Vec<DocumentInput>),
+    Create(Vec<WalDocument>),
+    Upsert(Vec<WalDocument>),
+    Replace(Vec<WalDocument>),
     Delete(Vec<String>),
     Clear,
 }
 
-/// Borrowed mirror of `WalRecord` for encoding without cloning. The variant order must match
-/// `WalRecord`, so both encode to the same bytes.
 #[derive(Encode)]
 pub enum WalRecordRef<'a> {
-    Create(&'a [DocumentInput]),
-    Upsert(&'a [DocumentInput]),
-    Replace(&'a [DocumentInput]),
+    Create(&'a [WalDocumentRef<'a>]),
+    Upsert(&'a [WalDocumentRef<'a>]),
+    Replace(&'a [WalDocumentRef<'a>]),
     Delete(&'a [String]),
     Clear,
 }
-
 struct Inner {
     file: File,
-    /// Number of the segment appends go to.
     segment: u64,
-    /// End of the last fsynced record in the newest segment.
     durable_offset: u64,
-    /// End of the last written record in the newest segment, durable or not.
     written_offset: u64,
-    /// Set when an fsync fails: the state on disk is unknown, so every later write is refused.
     poisoned: bool,
 }
 

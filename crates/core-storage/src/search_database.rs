@@ -30,7 +30,6 @@ use core_index::{
 
 use ahash::{ HashSet, HashSetExt };
 
-use bincode::{ Decode, Encode };
 use core_protocol::{
     command_reponse_definitions::LookupResponse,
     document_out::DocumentOut,
@@ -134,7 +133,7 @@ pub struct DeleteReport {
     pub failures: Vec<DocFailure>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct DocumentInput {
     pub external_id: String,
     pub parsed: ParsedNode,
