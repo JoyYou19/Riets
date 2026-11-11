@@ -212,9 +212,10 @@ impl Analyzer {
 
         //stopwordi
         if let Some(stop) = &config.stopwords
-            && let Some(filter) = stopword_filter(stop) {
-                builder = builder.filter_dynamic(filter);
-            }
+            && let Some(filter) = stopword_filter(stop)
+        {
+            builder = builder.filter_dynamic(filter);
+        }
 
         //stemming
         if let Some(lang) = &config.stemming {
@@ -434,8 +435,10 @@ impl AnalyzerSet {
         for (name, config) in configs {
             analyzers.insert(name.clone(), Analyzer::from_config(config));
         }
-        let default = configs
-            .get("$default").map_or_else(|| Analyzer::from_config(&AnalyzerConfig::builtin_default()), Analyzer::from_config);
+        let default = configs.get("$default").map_or_else(
+            || Analyzer::from_config(&AnalyzerConfig::builtin_default()),
+            Analyzer::from_config,
+        );
         Self { analyzers, default }
     }
 
@@ -452,12 +455,13 @@ impl AnalyzerSet {
 fn unqualified(value: &str) -> Vec<&str> {
     let mut out = Vec::with_capacity(2);
     if value.ends_with(')')
-        && let Some(open) = value.rfind(" (") {
-            let head = value[..open].trim_end();
-            if !head.is_empty() {
-                out.push(head);
-            }
+        && let Some(open) = value.rfind(" (")
+    {
+        let head = value[..open].trim_end();
+        if !head.is_empty() {
+            out.push(head);
         }
+    }
     if let Some(comma) = value.find(", ") {
         let head = value[..comma].trim_end();
         if !head.is_empty() && !out.contains(&head) {

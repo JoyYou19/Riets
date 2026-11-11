@@ -8,6 +8,7 @@ use core_index::{
     search::{SearchIndex, SearchNumeric, SearchStats},
     types::{ArrayRowId, DocId, XPathId, position_span, position_start},
 };
+use roaring::RoaringTreemap;
 use std::{
     borrow::Cow,
     collections::{BinaryHeap, HashMap, hash_map::Entry},
@@ -80,7 +81,7 @@ pub enum EvalMode {
 
 #[derive(Debug, Clone)]
 pub enum EvalOutcome {
-    Docs(HashSet<DocId>),
+    Docs(RoaringTreemap),
     Scored(Vec<ScoredPosting>),
 }
 
@@ -230,20 +231,24 @@ where
     #[timed(search)]
     fn fetch_term_list(&self, term: &str, xpath: XPathId) -> (Cow<'a, PostingList>, u32) {
         let key = LeafKey::Term(term.to_string());
-        let (postings, local_doc_freq) = if let Some(list) = self.prepared.and_then(|p| p.list(xpath, &key)) { (Cow::Borrowed(list), list.len() as u32) } else {
-            let found = self.index.lookup_term(term, xpath);
-            (Cow::Owned(found.postings), found.doc_freq)
-        };
+        let (postings, local_doc_freq) =
+            if let Some(list) = self.prepared.and_then(|p| p.list(xpath, &key)) {
+                (Cow::Borrowed(list), list.len() as u32)
+            } else {
+                let found = self.index.lookup_term(term, xpath);
+                (Cow::Owned(found.postings), found.doc_freq)
+            };
         let doc_freq = self.leaf_doc_freq(xpath, &key, local_doc_freq as usize);
         (postings, doc_freq)
     }
+
     //WAND/conjunctive fast path for flat term lists (skips the general traversal)
     fn execute_top_k_retrieval(
         &self,
         query: &Query,
         xpaths: &[XPathId],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
     ) -> Option<Vec<WandHit>> {
         //disjunctive flat-term cases (Term / Wand / Or) -> additive WAND
         if let Some(terms) = additive_terms(query) {
@@ -258,22 +263,23 @@ where
 
         //conjunctive flat-term case (And) -> conjunctive top-k
         if let Query::And(parts) = query
-            && parts.iter().all(|p| matches!(p, Query::Term(_))) {
-                let terms: Vec<&str> = parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        Query::Term(t) => Some(t.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                let lists = self.fetch_field_lists(&terms, xpaths);
-                return Some(conjunctive_top_k_multi_field(
-                    &self.stats(),
-                    &field_terms(&lists),
-                    k,
-                    restrict,
-                ));
-            }
+            && parts.iter().all(|p| matches!(p, Query::Term(_)))
+        {
+            let terms: Vec<&str> = parts
+                .iter()
+                .filter_map(|p| match p {
+                    Query::Term(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let lists = self.fetch_field_lists(&terms, xpaths);
+            return Some(conjunctive_top_k_multi_field(
+                &self.stats(),
+                &field_terms(&lists),
+                k,
+                restrict,
+            ));
+        }
 
         None
     }
@@ -292,7 +298,7 @@ where
         query: &Query,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
         cross_fields: bool,
         coverage: Option<f32>,
     ) -> Option<Vec<WandHit>> {
@@ -576,12 +582,13 @@ where
         self.index.lookup(raw, xpath)
     }
 
-    fn ascend(&self, rows: HashSet<ArrayRowId>, levels: u32) -> HashSet<ArrayRowId> {
+    fn ascend(&self, rows: RoaringTreemap, levels: u32) -> RoaringTreemap {
         let mut rows = rows;
         for _ in 0..levels {
             rows = rows
                 .into_iter()
-                .filter_map(|r| self.index.parent_of_row(r))
+                .filter_map(|raw| self.index.parent_of_row(ArrayRowId::from_raw(raw)))
+                .map(|row| row.raw())
                 .collect();
         }
         rows
@@ -597,9 +604,9 @@ where
             | Query::Exact(_) => self.eval_leaf(query, ctxs, mode),
             Query::Fuzzy(v, fz, spec) => match mode {
                 EvalMode::Filter => {
-                    let mut out = HashSet::new();
+                    let mut out = RoaringTreemap::new();
                     for &ctx in ctxs {
-                        out.extend(self.posting_ids(&self.execute_fuzzy(v, ctx.xpath, *fz, *spec)));
+                        out |= self.posting_ids(&self.execute_fuzzy(v, ctx.xpath, *fz, *spec));
                     }
                     EvalOutcome::Docs(out)
                 }
@@ -608,19 +615,19 @@ where
                 }
             },
             Query::Range(r) => {
-                let mut out = HashSet::new();
+                let mut out = RoaringTreemap::new();
                 for &ctx in ctxs {
-                    out.extend(self.posting_ids(&self.index.numeric_range(ctx.xpath, r.lo, r.hi)));
+                    out |= self.index.numeric_range(ctx.xpath, r.lo, r.hi);
                 }
                 EvalOutcome::Docs(out)
             }
             Query::Bool(b) => {
-                let mut out = HashSet::new();
+                let mut out = RoaringTreemap::new();
                 for &ctx in ctxs {
                     if *b {
-                        out.extend(self.index.bool_true_ids(ctx.xpath).iter());
+                        out |= self.index.bool_true_ids(ctx.xpath);
                     } else {
-                        out.extend(self.index.bool_false_ids(ctx.xpath).iter());
+                        out |= self.index.bool_false_ids(ctx.xpath);
                     }
                 }
                 EvalOutcome::Docs(out)
@@ -630,14 +637,14 @@ where
             Query::And(parts) => self.eval_and(parts, ctxs, mode),
             Query::Synonym(forms) => self.eval_synonym(forms, ctxs, mode),
 
-            Query::SameElement(_) => EvalOutcome::Docs(HashSet::new()),
+            Query::SameElement(_) => EvalOutcome::Docs(RoaringTreemap::new()),
 
             // every live document (inside an AND, a NOT or a filter it means "no restriction")
             Query::MatchAll => EvalOutcome::Docs(match self.index.doc_range() {
                 Some((min, max)) => (min..=max)
                     .filter(|id| !self.index.is_deleted(*id))
                     .collect(),
-                None => HashSet::new(),
+                None => RoaringTreemap::new(),
             }),
         }
     }
@@ -955,10 +962,10 @@ where
     fn eval_leaf(&self, query: &Query, ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match mode {
             EvalMode::Filter => {
-                let mut out = HashSet::new();
+                let mut out = RoaringTreemap::new();
                 for &ctx in ctxs {
                     if let Some(leaf) = self.leaf(query, ctx) {
-                        out.extend(self.posting_ids(&leaf.postings));
+                        out |= self.posting_ids(&leaf.postings);
                     }
                 }
                 EvalOutcome::Docs(out)
@@ -1043,11 +1050,11 @@ where
         mode: EvalMode,
     ) -> EvalOutcome {
         if mode == EvalMode::Filter {
-            let mut out = HashSet::new();
+            let mut out = RoaringTreemap::new();
             for form in forms {
                 if let EvalOutcome::Docs(docs) = self.evaluate(&form.query, ctxs, EvalMode::Filter)
                 {
-                    out.extend(docs);
+                    out |= docs;
                 }
             }
             return EvalOutcome::Docs(out);
@@ -1095,17 +1102,17 @@ where
         EvalOutcome::Scored(best.into_values().collect())
     }
 
-    fn posting_ids(&self, postings: &PostingList) -> HashSet<DocId> {
+    fn posting_ids(&self, postings: &PostingList) -> RoaringTreemap {
         postings.items().iter().map(|p| p.doc_id).collect()
     }
 
     fn eval_union(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match mode {
             EvalMode::Filter => {
-                let mut out = HashSet::new();
+                let mut out = RoaringTreemap::new();
                 for part in parts {
                     if let EvalOutcome::Docs(docs) = self.evaluate(part, ctxs, EvalMode::Filter) {
-                        out.extend(docs);
+                        out |= docs;
                     }
                 }
                 EvalOutcome::Docs(out)
@@ -1139,15 +1146,15 @@ where
     fn eval_and(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match mode {
             EvalMode::Filter => {
-                let mut candidates: Option<HashSet<DocId>> = None;
+                let mut candidates: Option<RoaringTreemap> = None;
                 for part in parts {
                     if let EvalOutcome::Docs(docs) = self.evaluate(part, ctxs, EvalMode::Filter) {
                         candidates = Some(match candidates {
-                            Some(cur) => cur.intersection(&docs).copied().collect(),
+                            Some(cur) => cur & docs,
                             None => docs,
                         });
-                        if candidates.as_ref().is_some_and(std::collections::HashSet::is_empty) {
-                            return EvalOutcome::Docs(HashSet::new());
+                        if candidates.as_ref().is_some_and(RoaringTreemap::is_empty) {
+                            return EvalOutcome::Docs(RoaringTreemap::new());
                         }
                     }
                 }
@@ -1213,10 +1220,10 @@ where
         &self,
         children: &[Query],
         binding: &SameElementBinding,
-    ) -> HashSet<ArrayRowId> {
-        let mut rows: Option<HashSet<ArrayRowId>> = None;
+    ) -> RoaringTreemap {
+        let mut rows: Option<RoaringTreemap> = None;
         for (child, clause) in children.iter().zip(&binding.clauses) {
-            let r: HashSet<ArrayRowId> = match &clause.nested {
+            let r: RoaringTreemap = match &clause.nested {
                 Some(nested) => {
                     let Query::SameElement(inner_children) = child else {
                         continue;
@@ -1224,13 +1231,13 @@ where
                     self.same_element_rows(inner_children, nested)
                 }
                 None => match self.evaluate(child, &[clause.ctx], EvalMode::Filter) {
-                    EvalOutcome::Docs(d) => d.iter().map(|&id| ArrayRowId::from_raw(id)).collect(),
-                    _ => HashSet::new(),
+                    EvalOutcome::Docs(d) => d,
+                    _ => RoaringTreemap::new(),
                 },
             };
             let r = self.ascend(r, clause.depth.saturating_sub(binding.depth));
             rows = Some(match rows {
-                Some(cur) => cur.intersection(&r).copied().collect(),
+                Some(cur) => cur & r,
                 None => r,
             });
         }
@@ -1313,14 +1320,14 @@ where
     }
 
     #[timed(search)]
-    pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldQuery>) -> Option<HashSet<DocId>> {
+    pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldQuery>) -> Option<RoaringTreemap> {
         if filters.is_empty() {
             return None;
         }
 
-        let mut restrict: Option<HashSet<DocId>> = None;
+        let mut restrict: Option<RoaringTreemap> = None;
         for fq in filters.values() {
-            let matched: HashSet<DocId> = match &fq.query {
+            let matched: RoaringTreemap = match &fq.query {
                 Query::SameElement(children) => {
                     let binding = fq
                         .same_element
@@ -1336,9 +1343,7 @@ where
                         continue;
                     };
                     if fq.row_keyed {
-                        let rows: HashSet<ArrayRowId> =
-                            raw.iter().map(|&r| ArrayRowId::from_raw(r)).collect();
-                        self.index.resolve_array_rows(&rows)
+                        self.index.resolve_array_rows(&raw)
                     } else {
                         raw
                     }
@@ -1346,10 +1351,10 @@ where
             };
 
             restrict = Some(match restrict {
-                Some(cur) => cur.intersection(&matched).copied().collect(),
+                Some(cur) => cur & matched,
                 None => matched,
             });
-            if restrict.as_ref().is_some_and(std::collections::HashSet::is_empty) {
+            if restrict.as_ref().is_some_and(RoaringTreemap::is_empty) {
                 return restrict;
             }
         }
@@ -1362,10 +1367,13 @@ where
         query: Option<&Query>,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
         match_mode: MatchMode, // plan: RankPlan
     ) -> Vec<SearchHit> {
-        if k == 0 || restrict.is_some_and(std::collections::HashSet::is_empty) || self.index.doc_range().is_none() {
+        if k == 0
+            || restrict.is_some_and(RoaringTreemap::is_empty)
+            || self.index.doc_range().is_none()
+        {
             return Vec::new();
         }
 
@@ -1374,7 +1382,7 @@ where
             //filter-only search
             return match restrict {
                 Some(allowed) => top_k_from_hits(
-                    allowed.iter().copied().map(|doc_id| SearchHit {
+                    allowed.iter().map(|doc_id| SearchHit {
                         doc_id,
                         matched_terms: 0,
                         weight_sum: 0,
@@ -1393,7 +1401,7 @@ where
         if let Query::MatchAll = query {
             return match restrict {
                 Some(allowed) => top_k_from_hits(
-                    allowed.iter().copied().map(|doc_id| SearchHit {
+                    allowed.iter().map(|doc_id| SearchHit {
                         doc_id,
                         matched_terms: 0,
                         weight_sum: 0,
@@ -1483,9 +1491,9 @@ where
                 if ctxs.iter().all(|ctx| !ctx.row_keyed)
                     && let Some(hits) =
                         self.execute_grouped_retrieval(query, ctxs, k, restrict, true, None)
-                    {
-                        return hits.into_iter().map(wand_hit_to_search_hit).collect();
-                    }
+                {
+                    return hits.into_iter().map(wand_hit_to_search_hit).collect();
+                }
                 return top_k_from_hits(self.cross_field_hits(query, ctxs, restrict), k);
             }
         }
@@ -1499,14 +1507,14 @@ where
         &self,
         query: &Query,
         ctxs: &[FieldCtx],
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
     ) -> Vec<SearchHit> {
         let EvalOutcome::Scored(scored) = self.evaluate(query, ctxs, EvalMode::Rank) else {
             return Vec::new();
         };
         let mut by_doc: HashMap<DocId, SearchHit> = HashMap::with_capacity(scored.len());
         for p in scored {
-            if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
+            if !restrict.is_none_or(|a| a.contains(p.doc_id)) {
                 continue;
             }
             let hit = SearchHit {
@@ -1563,7 +1571,7 @@ where
         plan: &RankPlan,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
         match_mode: MatchMode,
     ) -> RankedGroup {
         let plain_xpaths: Vec<XPathId> = ctxs
@@ -1606,7 +1614,7 @@ where
         let mut shared_hits: Option<Vec<SearchHit>> = None;
         let mut ranked = |query: &Query,
                           fetch: usize,
-                          allowed: Option<&HashSet<DocId>>|
+                          allowed: Option<&RoaringTreemap>|
          -> Vec<SearchHit> {
             match shared_query {
                 Some(shared) if shared == query => {
@@ -1615,7 +1623,7 @@ where
                     match allowed {
                         Some(allowed) => top_k_from_hits(
                             all.iter()
-                                .filter(|hit| allowed.contains(&hit.doc_id))
+                                .filter(|hit| allowed.contains(hit.doc_id))
                                 .cloned(),
                             fetch,
                         ),
@@ -1659,28 +1667,27 @@ where
                 Tier::Name { keys, score_with } => {
                     let mut named: HashSet<DocId> = HashSet::new();
                     for (level, qualified) in [(0u8, false), (1u8, true)] {
-                        let mut docs = self.name_docs(keys, ctxs, qualified);
-                        docs.retain(|doc| {
-                            !named.contains(doc) && restrict.is_none_or(|limit| limit.contains(doc))
-                        });
-                        if docs.is_empty() {
+                        let docs = self.name_docs(keys, ctxs, qualified);
+                        let fresh: RoaringTreemap = docs
+                            .into_iter()
+                            .filter(|doc| {
+                                !named.contains(doc)
+                                    && restrict.is_none_or(|limit| limit.contains(*doc))
+                            })
+                            .collect();
+                        if fresh.is_empty() {
                             continue;
                         }
-                        named.extend(docs.iter().copied());
-                        let wanted = docs.len().min(fetch);
-                        let mut level_hits = ranked(score_with, wanted, Some(&docs));
-                        // a name found only through its key (the query's words score nothing in
-                        // this document) still belongs here, after the scored ones
-                        if level_hits.len() < wanted {
+                        named.extend(fresh.iter());
+                        let wanted = fresh.len().min(fetch as u64);
+                        let mut level_hits = ranked(score_with, wanted as usize, Some(&fresh));
+                        if level_hits.len() < wanted as usize {
                             let scored: HashSet<DocId> =
                                 level_hits.iter().map(|hit| hit.doc_id).collect();
-                            let mut rest: Vec<DocId> = docs
-                                .iter()
-                                .copied()
-                                .filter(|doc| !scored.contains(doc))
-                                .collect();
+                            let mut rest: Vec<DocId> =
+                                fresh.iter().filter(|doc| !scored.contains(doc)).collect();
                             rest.sort_unstable();
-                            rest.truncate(wanted - level_hits.len());
+                            rest.truncate((wanted as usize - level_hits.len()) as usize);
                             level_hits.extend(rest.into_iter().map(|doc_id| SearchHit {
                                 doc_id,
                                 ..SearchHit::default()
@@ -1766,9 +1773,11 @@ where
                     }
                     Tier::Phrase { terms, score_with } => {
                         let matched = self.phrase_docs(terms, ctxs);
-                        let allowed: HashSet<DocId> = match restrict {
-                            Some(limit) => matched.intersection(limit).copied().collect(),
-                            None => matched,
+                        let allowed: RoaringTreemap = match restrict {
+                            Some(limit) => {
+                                matched.iter().filter(|doc| limit.contains(**doc)).collect()
+                            }
+                            None => matched.into_iter().collect(),
                         };
                         if allowed.is_empty() {
                             continue;
@@ -1797,7 +1806,7 @@ where
             // "Vera Wang was born in March" is about Vera Wang. Every candidate is checked,
             // wherever it came from, and named documents no source found are added.
             let shares = self.name_shares(plan, ctxs, restrict, relevance.keys().copied());
-            let missing: HashSet<DocId> = shares
+            let missing: RoaringTreemap = shares
                 .keys()
                 .copied()
                 .filter(|doc| !relevance.contains_key(doc))
@@ -1808,7 +1817,7 @@ where
                         .execute_grouped_retrieval(
                             &Query::Wand(parts.clone()),
                             ctxs,
-                            missing.len(),
+                            missing.len() as usize,
                             Some(&missing),
                             true,
                             None,
@@ -1817,23 +1826,23 @@ where
                         .unwrap_or_default(),
                     None if plan.clauses.len() >= 2 => ranked(
                         &Query::Wand(plan.clauses.clone()),
-                        missing.len(),
+                        missing.len() as usize,
                         Some(&missing),
                     ),
                     None => match plan.clauses.first() {
-                        Some(clause) => ranked(clause, missing.len(), Some(&missing)),
+                        Some(clause) => ranked(clause, missing.len() as usize, Some(&missing)),
                         None => Vec::new(),
                     },
                 };
                 let scored_docs: HashSet<DocId> = scored.iter().map(|hit| hit.doc_id).collect();
-                let unscored = missing
-                    .iter()
-                    .copied()
-                    .filter(|doc| !scored_docs.contains(doc))
-                    .map(|doc_id| SearchHit {
-                        doc_id,
-                        ..SearchHit::default()
-                    });
+                let unscored =
+                    missing
+                        .iter()
+                        .filter(|doc| !scored_docs.contains(doc))
+                        .map(|doc_id| SearchHit {
+                            doc_id,
+                            ..SearchHit::default()
+                        });
                 for mut hit in scored.into_iter().chain(unscored) {
                     hit.tier = plan.ranks.relevance;
                     hit.level = 0;
@@ -1863,7 +1872,7 @@ where
         &self,
         plan: &RankPlan,
         ctxs: &[FieldCtx],
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
         candidates: impl Iterator<Item = DocId>,
     ) -> HashMap<DocId, f32> {
         let mut shares: HashMap<DocId, f32> = HashMap::new();
@@ -1902,7 +1911,7 @@ where
                 let share = (held / total).min(1.0);
                 for qualified in [false, true] {
                     for doc in self.name_docs(std::slice::from_ref(key), ctxs, qualified) {
-                        if restrict.is_none_or(|limit| limit.contains(&doc)) {
+                        if restrict.as_ref().is_none_or(|limit| limit.contains(doc)) {
                             let best = shares.entry(doc).or_insert(0.0);
                             *best = best.max(share);
                         }
@@ -2149,7 +2158,7 @@ where
         query: Option<&Query>,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
         match_mode: MatchMode,
         plan: &RankPlan,
     ) -> Vec<SearchHit> {
@@ -2165,7 +2174,7 @@ where
         query: Option<&Query>,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
         match_mode: MatchMode,
         plan: &RankPlan,
     ) -> RankedGroup {
@@ -2188,36 +2197,38 @@ where
         }
         self.rank_cascade(plan, ctxs, k, restrict, match_mode)
     }
+
     fn rank_single_field(
         &self,
         query: &Query,
         ctx: FieldCtx,
         k: usize,
-        restrict: Option<&HashSet<DocId>>,
+        restrict: Option<&RoaringTreemap>,
         by_doc: &mut HashMap<DocId, SearchHit>,
     ) {
         if !ctx.row_keyed
-            && let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
-                for h in hits {
-                    let hit = wand_hit_to_search_hit(h);
-                    by_doc
-                        .entry(hit.doc_id)
-                        .and_modify(|e| {
-                            e.score += hit.score;
-                            e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                            e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                        })
-                        .or_insert(hit);
-                }
-                return;
+            && let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict)
+        {
+            for h in hits {
+                let hit = wand_hit_to_search_hit(h);
+                by_doc
+                    .entry(hit.doc_id)
+                    .and_modify(|e| {
+                        e.score += hit.score;
+                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                    })
+                    .or_insert(hit);
             }
+            return;
+        }
 
         let EvalOutcome::Scored(scored) = self.evaluate(query, &[ctx], EvalMode::Rank) else {
             return;
         };
 
         for p in scored {
-            if !restrict.is_none_or(|a| a.contains(&p.doc_id)) {
+            if !restrict.as_ref().is_none_or(|a| a.contains(p.doc_id)) {
                 continue;
             }
             let hit = SearchHit {
@@ -2240,29 +2251,6 @@ where
         }
     }
 
-    pub fn total_hit_count(
-        &self,
-        query: Option<&Query>,
-        plan: &RankPlan,
-        ctxs: &[FieldCtx],
-        restrict: Option<&HashSet<DocId>>,
-    ) -> usize {
-        let queries: Vec<&Query> = if plan.tiers.is_empty() {
-            query.into_iter().collect()
-        } else {
-            plan.queries().collect()
-        };
-        let mut matched: HashSet<DocId> = HashSet::new();
-        for query in queries {
-            if let EvalOutcome::Docs(docs) = self.evaluate(query, ctxs, EvalMode::Filter) {
-                matched.extend(docs.into_iter().filter(|doc_id| {
-                    !self.index.is_deleted(*doc_id)
-                        && restrict.is_none_or(|allowed| allowed.contains(doc_id))
-                }));
-            }
-        }
-        matched.len()
-    }
     fn all_words_known(&self, raw: &str, xpaths: &[XPathId]) -> bool {
         self.fuzzy_words(raw).iter().all(|word| {
             xpaths
@@ -2407,6 +2395,7 @@ where
             .collect()
     }
 }
+
 /// The postings of `list` for the given documents (sorted), found by binary search: the phrase
 /// matches are few, the word's list can be long.
 fn postings_of(list: &PostingList, docs: &[DocId]) -> PostingList {

@@ -1,3 +1,5 @@
+use roaring::RoaringTreemap;
+
 //K = 1 BKD tree for now, later need something smarter for multi-number values like (lat long)
 use crate::{
     numeric_values::{NumericBound, NumericKind, NumericValue, pack, unpack},
@@ -75,7 +77,7 @@ impl Bkd {
     }
 
     //Doc ids whose value lies inside the bounds, ascending and deduped.
-    pub fn range(&self, lo: Option<NumericBound>, hi: Option<NumericBound>) -> Vec<DocId> {
+    pub fn range(&self, lo: Option<NumericBound>, hi: Option<NumericBound>) -> RoaringTreemap {
         let start = match lo {
             Some(lo) => {
                 let bound = pack(lo.value);
@@ -101,17 +103,13 @@ impl Bkd {
         };
 
         if start >= end {
-            return Vec::new();
+            return RoaringTreemap::new();
         }
 
-        let mut docs: Vec<DocId> = self.points[start..end]
+        // docs are sorted here cuz the original array is sorted by value
+        self.points[start..end]
             .iter()
             .map(|point| point.1)
-            .collect();
-
-        // docs are sorted here cuz the original array is sorted by value
-        docs.sort_unstable();
-        docs.dedup();
-        docs
+            .collect()
     }
 }

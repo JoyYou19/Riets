@@ -1,12 +1,12 @@
 use std::{cmp::Ordering, collections::BinaryHeap};
 
-use ahash::HashSet;
 use core_index::{
     posting::{PostingList, cursor::PostingCursor},
     search::SearchStats,
     types::{DocId, XPathId},
 };
 use core_timing::timed;
+use roaring::RoaringTreemap;
 
 use crate::{
     ranking::COVERAGE_POWER,
@@ -40,7 +40,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
     stats: &S,
     fields: &[FieldTerms<'_>],
     k: usize,
-    restrict: Option<&HashSet<DocId>>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 || fields.is_empty() {
         return Vec::new();
@@ -107,7 +107,10 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
         let smallest_doc = terms[0].cursor.doc_id().unwrap();
 
         if smallest_doc == pivot_doc {
-            if restrict.is_none_or(|docs| docs.contains(&pivot_doc)) {
+            if restrict
+                .as_ref()
+                .is_none_or(|docs| docs.contains(pivot_doc))
+            {
                 doc_len_cache.fill(None);
                 let mut score = 0u64;
                 let mut matched_terms = 0usize;
@@ -351,7 +354,7 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
     stats: &S,
     fields: &[FieldTerms<'_>],
     k: usize,
-    restrict: Option<&HashSet<DocId>>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
@@ -369,7 +372,7 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
 
     while let Some(doc_id) = current.iter().flatten().min().copied() {
-        if restrict.is_none_or(|docs| docs.contains(&doc_id)) {
+        if restrict.as_ref().is_none_or(|docs| docs.contains(doc_id)) {
             let mut score = 0u64;
             let mut matched_terms = 0usize;
 
@@ -633,7 +636,7 @@ pub fn wand_top_k_grouped<S: SearchStats>(
     fields: &[FieldClauses<'_>],
     k: usize,
     coverage: Option<f32>,
-    restrict: Option<&HashSet<DocId>>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
@@ -682,8 +685,8 @@ pub fn wand_top_k_grouped<S: SearchStats>(
 
     // a few allowed documents: go to each of them (the cursors gallop) instead of walking every
     // posting of every clause to find them
-    if let Some(docs) = restrict.filter(|docs| docs.len() <= DIRECT_RESTRICT_MAX) {
-        let mut targets: Vec<DocId> = docs.iter().copied().collect();
+    if let Some(docs) = restrict.filter(|docs| docs.len() <= DIRECT_RESTRICT_MAX as u64) {
+        let mut targets: Vec<DocId> = docs.iter().collect();
         targets.sort_unstable();
         for doc in targets {
             for clause in &mut clauses {
@@ -734,10 +737,11 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         let smallest_doc = clauses[0].doc_id().unwrap();
 
         if smallest_doc == pivot_doc {
-            if restrict.is_none_or(|docs| docs.contains(&pivot_doc))
-                && let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc) {
-                    push_top_k(&mut heap, pivot_doc, score, raw, matched_terms, k);
-                }
+            if restrict.is_none_or(|docs| docs.contains(pivot_doc))
+                && let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc)
+            {
+                push_top_k(&mut heap, pivot_doc, score, raw, matched_terms, k);
+            }
 
             for clause in &mut clauses {
                 clause.step_past(pivot_doc);
@@ -760,7 +764,7 @@ pub fn conjunctive_top_k_grouped<S: SearchStats>(
     stats: &S,
     fields: &[FieldClauses<'_>],
     k: usize,
-    restrict: Option<&HashSet<DocId>>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
@@ -788,7 +792,7 @@ pub fn conjunctive_top_k_grouped<S: SearchStats>(
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
 
     while let Some(doc_id) = current.iter().flatten().min().copied() {
-        if restrict.is_none_or(|docs| docs.contains(&doc_id)) {
+        if restrict.as_ref().is_none_or(|docs| docs.contains(doc_id)) {
             let mut score = 0u64;
             let mut matched_terms = 0usize;
             for (clauses, at) in conjunctions.iter().zip(&current) {
