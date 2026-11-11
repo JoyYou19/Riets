@@ -30,6 +30,7 @@ slog-scope = "4.4.1"
 rayon = "1.12.0"
 simd-json = "0.19.0"
 ahash="0.8"
+roaring = "0.12.0"
 
 [features]
 timing = [

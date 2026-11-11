@@ -577,6 +577,7 @@ dependencies = [
  "moka",
  "parking_lot 0.13.0",
  "rayon",
+ "roaring",
  "serde",
  "simd-json 0.19.0",
  "slog",

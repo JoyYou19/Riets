@@ -210,11 +210,15 @@ impl LevenshteinAutomaton {
                     v = v.min(next[t - 1].saturating_add(1));
                 }
                 v = v.min(old[t].saturating_add(u8::from(self.query[j - 1] != c)));
-                if j >= 2 && state.chars >= 1
+                if j >= 2
+                    && state.chars >= 1
                     && let Some(p) = state.prev_char
-                        && c != p && c == self.query[j - 2] && p == self.query[j - 1] {
-                            v = v.min(state.prev_row[t].saturating_add(1));
-                        }
+                    && c != p
+                    && c == self.query[j - 2]
+                    && p == self.query[j - 1]
+                {
+                    v = v.min(state.prev_row[t].saturating_add(1));
+                }
             }
             let v = v.min(cap);
             next[t] = v;

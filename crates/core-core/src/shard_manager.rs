@@ -5,7 +5,9 @@ use crate::metrics::{DbStats, EmbeddingStatus};
 use crate::shard_db::DatabaseStats;
 use crate::shard_worker::{self, PreparedShardSearch, ShardCmd, ShardHandle};
 use crate::{DatabaseOptions, shard_for};
+
 use ahash::{HashMap, HashMapExt};
+
 use core_backup::backup::{BackupManifest, BackupType};
 use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
@@ -1306,7 +1308,7 @@ impl ShardManager {
 
         // started only now: a corrected re-run must not leave an embedding search running
         let vector_task = search.semantic.clone().map(|(text, xpaths)| {
-            self.spawn_vector_search(text, xpaths, FUSION_DEPTH, search.filters.clone())
+            self.spawn_vector_search(text, xpaths, FUSION_DEPTH, stats.shards.clone())
         });
         let shard_hits = match self.rank_on_shards(&search, &stats).await {
             Ok(shard_hits) => shard_hits,
@@ -1429,7 +1431,11 @@ impl ShardManager {
         typed: &OwnedValue,
     ) -> Result<ShardStatistics, CorelamoError> {
         let (corpus, shards) = self
-            .collect_statistics_once(&search.groups, &search.plans_no_fuzzy)
+            .collect_statistics_once(
+                &search.groups,
+                &search.plans_no_fuzzy,
+                search.filters.clone(),
+            )
             .await?;
         let unknown_word = has_unknown_word(typed, &search.groups, &corpus);
         let has_fuzzy = search
@@ -1446,7 +1452,7 @@ impl ShardManager {
             });
         }
         let (corpus, shards) = self
-            .collect_statistics_once(&search.groups, &search.plans_full)
+            .collect_statistics_once(&search.groups, &search.plans_full, search.filters.clone())
             .await?;
         Ok(ShardStatistics {
             corpus: Arc::new(corpus),
@@ -1461,13 +1467,20 @@ impl ShardManager {
         &self,
         groups: &Arc<Vec<QueryGroup>>,
         plans: &Arc<Vec<RankPlan>>,
+        filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
     ) -> Result<(CorpusStats, Vec<Arc<PreparedShardSearch>>), CorelamoError> {
         let mut set = JoinSet::new();
         for (index, handle) in self.shards.iter().enumerate() {
             let handle = handle.clone();
             let groups = Arc::clone(groups);
             let plans = Arc::clone(plans);
-            set.spawn_blocking(move || (index, handle.prepare_search(&groups, &plans)));
+            let filters = filters.clone();
+            set.spawn_blocking(move || {
+                (
+                    index,
+                    handle.prepare_search(&groups, &plans, filters.as_deref()),
+                )
+            });
         }
         let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
         let mut corpus = CorpusStats::new();
@@ -1537,7 +1550,6 @@ impl ShardManager {
             let corpus = Arc::clone(&stats.corpus);
             let groups = Arc::clone(&search.groups);
             let plans = Arc::clone(&stats.plans);
-            let filters = search.filters.clone();
             let sort_xpaths = search.sort_xpaths.clone();
             let (window, word_fetch, match_mode) =
                 (search.window, search.word_fetch, search.match_mode);
@@ -1547,20 +1559,13 @@ impl ShardManager {
                     &corpus,
                     &groups,
                     &plans,
-                    filters.as_deref(),
                     sort_xpaths,
                     window,
                     match_mode,
                 ),
-                None => handle.rank_top_k(
-                    &prepared,
-                    &corpus,
-                    &groups,
-                    &plans,
-                    filters.as_deref(),
-                    word_fetch,
-                    match_mode,
-                ),
+                None => {
+                    handle.rank_top_k(&prepared, &corpus, &groups, &plans, word_fetch, match_mode)
+                }
             });
         }
 
@@ -2213,8 +2218,14 @@ impl ShardManager {
         }
 
         let k = fetch.min(MAX_VECTOR_RESULTS);
+        //stupid but so that this works too insetead of passing filters
+        let empty_groups = Arc::new(Vec::<QueryGroup>::new());
+        let empty_plans = Arc::new(Vec::<RankPlan>::new());
+        let (_, prepared_shards) = self
+            .collect_statistics_once(&empty_groups, &empty_plans, filters)
+            .await?;
         let hits = self
-            .spawn_vector_search(request.text, xpaths, k, filters)
+            .spawn_vector_search(request.text, xpaths, k, prepared_shards)
             .await
             .map_err(|e| CorelamoError::Internal(format!("vector search task panicked: {e}")))?
             .ok_or_else(|| {
@@ -2222,6 +2233,7 @@ impl ShardManager {
                     "vector search unavailable: the embedding model could not be loaded".into(),
                 )
             })?;
+
         // one source: more exist if the vector search filled what it was asked for, or
         // returned more than this page needs
         let more = hits.len() >= k || hits.len() > fetch;
@@ -2577,20 +2589,20 @@ impl ShardManager {
         text: String,
         xpaths: Vec<XPathId>,
         k: usize,
-        filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
+        prepared_shards: Vec<Arc<PreparedShardSearch>>,
     ) -> tokio::task::JoinHandle<Option<Vec<VectorHit>>> {
         let models = Arc::clone(&self.models);
         let shards = self.shards.clone();
         tokio::task::spawn_blocking(move || {
             let embedder = models.default_embedder().ok()?;
             let query = embedder.embed_query(&text).ok()?;
-            let filters = filters.as_deref();
             let lists: Vec<Vec<VectorHit>> = std::thread::scope(|scope| {
                 let jobs: Vec<_> = shards
                     .iter()
-                    .map(|shard| {
+                    .zip(&prepared_shards)
+                    .map(|(shard, prepared)| {
                         let (query, xpaths) = (&query, &xpaths);
-                        scope.spawn(move || shard.vector_search(xpaths, query, k, filters))
+                        scope.spawn(move || shard.vector_search(xpaths, query, k, prepared))
                     })
                     .collect();
                 jobs.into_iter()
