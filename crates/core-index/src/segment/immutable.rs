@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use ahash::HashSet;
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
@@ -8,7 +7,7 @@ use crate::{
     array_rows::ArrayRowIndex,
     document::document::BoolField,
     numeric_values::{NumericBound, NumericFields, NumericValue},
-    posting::{Posting, PostingList},
+    posting::PostingList,
     search::{SearchIndex, SearchNumeric, SearchStats},
     segment::{build_field_stats, compute_doc_id_range},
     types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
@@ -49,9 +48,9 @@ impl SearchIndex for ImmutableSegment {
         self.array_row_index.element_index_of(row)
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap {
         rows.iter()
-            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .filter_map(|raw| self.array_row_index.doc_of(ArrayRowId::from_raw(raw)))
             .collect()
     }
 

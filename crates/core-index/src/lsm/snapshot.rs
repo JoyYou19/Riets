@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use ahash::HashSet;
 use arc_swap::ArcSwap;
 use core_timing::timed;
 use roaring::RoaringTreemap;
@@ -59,14 +58,12 @@ impl SearchIndex for IndexSnapshot {
         self.deleted.is_deleted(doc_id)
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
-        let mut out: HashSet<DocId> = self.mem.resolve_array_rows(rows);
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap {
+        let mut out = self.mem.resolve_array_rows(rows);
         for seg in self.segments.iter() {
-            out.extend(seg.resolve_array_rows(rows));
+            out |= seg.resolve_array_rows(rows);
         }
-
-        //filter deletes
-        out.retain(|doc| !self.deleted.contains(*doc));
+        self.deleted.remove_from(&mut out);
         out
     }
 
@@ -381,9 +378,9 @@ impl IndexSnapshot {
         xpath: XPathId,
         query: &[f32],
         k: usize,
-        allowed: Option<&HashSet<DocId>>,
+        allowed: Option<RoaringTreemap>,
     ) -> std::io::Result<Vec<VectorHit>> {
-        let filter = VectorFilter::new(&self.deleted, allowed);
+        let filter = VectorFilter::new(&self.deleted, allowed.as_ref());
         search_segments(&self.vectors, xpath, query, k, &filter)
     }
 }

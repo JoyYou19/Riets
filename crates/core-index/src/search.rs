@@ -1,4 +1,3 @@
-use ahash::HashSet;
 use roaring::RoaringTreemap;
 
 use crate::{
@@ -39,7 +38,7 @@ pub trait SearchIndex {
         false
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId>;
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap;
 
     fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32>;
 

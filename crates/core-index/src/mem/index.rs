@@ -5,12 +5,11 @@ use crate::document::analyzed::{AnalyzedDocument, AnalyzedField, AnalyzedTarget}
 use crate::document::document::BoolField;
 use crate::fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton};
 use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
-use crate::posting::{Posting, PostingList};
+use crate::posting::PostingList;
 use crate::search::{SearchIndex, SearchNumeric, SearchStats};
 use crate::types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId};
 use crate::wildcard::{WildcardPattern, capped_union};
 use ahash::AHashMap;
-use ahash::HashSet;
 use core_timing::timed;
 use roaring::RoaringTreemap;
 use std::collections::BTreeMap;
@@ -51,9 +50,9 @@ impl SearchIndex for MemIndex {
         self.lookup_or_empty(term, xpath)
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap {
         rows.iter()
-            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .filter_map(|raw| self.array_row_index.doc_of(ArrayRowId::from_raw(raw)))
             .collect()
     }
 

@@ -320,6 +320,7 @@ mod tests {
     use crate::types::DocId;
     use crate::vector::file::VectorFileWriter;
     use ahash::HashSet;
+    use roaring::RoaringTreemap;
     use std::fs;
 
     const DIMS: usize = 32;
@@ -428,7 +429,7 @@ mod tests {
         for doc in (10..=30_000).step_by(30) {
             deleted.delete(doc);
         }
-        let allowed: HashSet<DocId> = (10..=30_000).step_by(20).collect();
+        let allowed: RoaringTreemap = (10..=30_000).step_by(20).collect();
         let filter = VectorFilter::new(&deleted, Some(&allowed));
         for q in 0..20 {
             if let Some(hits) = graph.search(&clustered(500_000 + q), 10, &filter) {
@@ -444,7 +445,7 @@ mod tests {
         let dir = temp_dir("fallback");
         let graph = fixture(&dir, 2_000);
         let deleted = DeleteSet::new();
-        let allowed: HashSet<DocId> = [10, 20, 30].into_iter().collect();
+        let allowed: RoaringTreemap = [10, 20, 30].into_iter().collect();
         let filter = VectorFilter::new(&deleted, Some(&allowed));
         assert!(graph.search(&clustered(1), 10, &filter).is_none());
         let _ = fs::remove_dir_all(dir);

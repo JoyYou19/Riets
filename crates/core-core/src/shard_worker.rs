@@ -411,7 +411,7 @@ impl ShardHandle {
                 Some(query),
                 &group.ctxs,
                 group_k,
-                restrict.as_ref(),
+                restrict.clone(),
                 mactmode,
                 plan,
             ));
@@ -464,17 +464,14 @@ impl ShardHandle {
         let allowed = filters.and_then(|filters| {
             QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(filters)
         });
-        if allowed
-            .as_ref()
-            .is_some_and(std::collections::HashSet::is_empty)
-        {
+        if allowed.as_ref().is_some_and(|s| s.is_empty()) {
             return Ok(Vec::new());
         }
         let mut lists = Vec::with_capacity(xpaths.len());
         for &xpath in xpaths {
             lists.push(
                 snapshot
-                    .vector_search(xpath, query, k, allowed.as_ref())
+                    .vector_search(xpath, query, k, allowed.clone())
                     .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?,
             );
         }
