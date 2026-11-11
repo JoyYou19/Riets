@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use ahash::HashSet;
+use roaring::RoaringTreemap;
 
 use crate::posting::DeleteSet;
 use crate::types::DocId;
@@ -21,28 +21,29 @@ pub struct VectorHit {
 #[derive(Clone, Copy)]
 pub struct VectorFilter<'a> {
     deleted: &'a DeleteSet,
-    allowed: Option<&'a HashSet<DocId>>,
+    allowed: Option<&'a RoaringTreemap>,
 }
 
 impl<'a> VectorFilter<'a> {
-    pub fn new(deleted: &'a DeleteSet, allowed: Option<&'a HashSet<DocId>>) -> Self {
+    pub fn new(deleted: &'a DeleteSet, allowed: Option<&'a RoaringTreemap>) -> Self {
         Self { deleted, allowed }
     }
 
     pub fn accepts(&self, doc_id: DocId) -> bool {
         !self.deleted.contains(doc_id)
-            && self.allowed.is_none_or(|allowed| allowed.contains(&doc_id))
+            && self.allowed.is_none_or(|allowed| allowed.contains(doc_id))
     }
 
-    pub fn allowed(&self) -> Option<&'a HashSet<DocId>> {
+    pub fn allowed(&self) -> Option<&'a RoaringTreemap> {
         self.allowed
     }
 
     /// True when the filter keeps so few of `rows` documents that checking them one by one
     /// beats searching the whole segment.
     pub fn is_selective(&self, rows: usize) -> bool {
-        self.allowed
-            .is_some_and(|allowed| allowed.len().saturating_mul(SELECTIVE_FILTER_RATIO) < rows)
+        self.allowed.is_some_and(|allowed| {
+            allowed.len().saturating_mul(SELECTIVE_FILTER_RATIO as u64) < rows as u64
+        })
     }
 }
 

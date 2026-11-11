@@ -1,8 +1,8 @@
-use ahash::{ HashMap as AHashMap, HashSet };
-use core_query::ranking::{ POOL_SIZE, finalize };
-use simd_json::OwnedValue;
-use std::collections::HashMap;
+use ahash::HashMap as AHashMap;
+use core_query::ranking::{POOL_SIZE, finalize};
+use roaring::RoaringTreemap;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{ AtomicBool, Ordering };
@@ -72,6 +72,7 @@ pub struct PreparedShardSearch {
     pub snapshot: Arc<IndexSnapshot>,
     pub prepared: Vec<PreparedQuery>,
     stats: CorpusStats,
+    pub filter: Option<Arc<RoaringTreemap>>,
 }
 
 impl PreparedShardSearch {
@@ -349,7 +350,12 @@ impl ShardHandle {
     /// ranking needs, and from them what this shard adds to the statistics of the search.
     //INFO:  changed to &[querygroup]
     #[timed(search)]
-    pub fn prepare_search(&self, groups: &[QueryGroup], plans: &[RankPlan]) -> PreparedShardSearch {
+    pub fn prepare_search(
+        &self,
+        groups: &[QueryGroup],
+        plans: &[RankPlan],
+        filters: Option<&HashMap<String, FieldQuery>>,
+    ) -> PreparedShardSearch {
         let snapshot = self.shared.snapshot.get();
         let mut prepared = Vec::with_capacity(groups.len());
         for (group, plan) in groups.iter().zip(plans) {
@@ -368,10 +374,15 @@ impl ShardHandle {
             stats.merge(p.stats());
         }
 
+        let filter = filters
+            .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f))
+            .map(Arc::new);
+
         PreparedShardSearch {
             snapshot,
             prepared,
             stats,
+            filter,
         }
     }
 
@@ -382,18 +393,11 @@ impl ShardHandle {
         corpus: &CorpusStats,
         groups: &[QueryGroup],
         plans: &[RankPlan],
-        filters: Option<&HashMap<String, FieldQuery>>,
+        filters: Option<&RoaringTreemap>,
         k: usize,
         mactmode: MatchMode
     ) -> (usize, Vec<SearchHit>) {
         if k == 0 {
-            return (0, Vec::new());
-        }
-        // filters do not depend on the group's analyzer: evaluate them once
-        let restrict = filters.and_then(|f| {
-            QueryExecutor::new(snapshot, &self.analyzer).with_corpus(corpus).filter_doc_ids(f)
-        });
-        if restrict.as_ref().is_some_and(HashSet::is_empty) {
             return (0, Vec::new());
         }
         // each group sees only part of a document's evidence: keep more of its candidates, so
@@ -411,16 +415,14 @@ impl ShardHandle {
             let executor = QueryExecutor::new(snapshot, &group.analyzer)
                 .with_corpus(corpus)
                 .with_prepared(prepared_group);
-            ranked.push(
-                executor.rank_features(
-                    Some(query),
-                    &group.ctxs,
-                    group_k,
-                    restrict.as_ref(),
-                    mactmode,
-                    plan
-                )
-            );
+            ranked.push(executor.rank_features(
+                Some(query),
+                &group.ctxs,
+                group_k,
+                filters,
+                mactmode,
+                plan,
+            ));
         }
         let hits = finalize(ranked, k);
         (hits.len(), hits)
@@ -433,7 +435,6 @@ impl ShardHandle {
         corpus: &CorpusStats,
         groups: &[QueryGroup],
         plans: &[RankPlan],
-        filters: Option<&HashMap<String, FieldQuery>>,
         k: usize,
         mactmode: MatchMode
     ) -> Result<ShardRankedResult, CorelamoError> {
@@ -444,7 +445,7 @@ impl ShardHandle {
             corpus,
             groups,
             plans,
-            filters,
+            prepared.filter.as_deref(),
             k,
             mactmode
         );
@@ -465,27 +466,24 @@ impl ShardHandle {
         xpaths: &[XPathId],
         query: &[f32],
         k: usize,
-        filters: Option<&HashMap<String, FieldQuery>>
+        prepared: &PreparedShardSearch,
     ) -> Result<Vec<VectorHit>, CorelamoError> {
         self.ensure_readable()?;
-        // filters and vectors read one snapshot, so a concurrent write cannot split them
-        let snapshot = self.shared.snapshot.get();
-        let allowed = filters.and_then(|filters| {
-            QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(filters)
-        });
-        if allowed.as_ref().is_some_and(std::collections::HashSet::is_empty) {
+        if prepared.filter.as_ref().is_some_and(|f| f.is_empty()) {
             return Ok(Vec::new());
         }
         let mut lists = Vec::with_capacity(xpaths.len());
         for &xpath in xpaths {
             lists.push(
-                snapshot
-                    .vector_search(xpath, query, k, allowed.as_ref())
-                    .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?
+                prepared
+                    .snapshot
+                    .vector_search(xpath, query, k, prepared.filter.as_deref())
+                    .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?,
             );
         }
         Ok(merge_hits(lists, k))
     }
+
     #[timed(search)]
     pub fn rank_sorted(
         &self,
@@ -493,7 +491,6 @@ impl ShardHandle {
         corpus: &CorpusStats,
         query_groups: &[QueryGroup],
         plans: &[RankPlan],
-        filters: Option<&HashMap<String, FieldQuery>>,
         sort_xpaths: &[XPathId],
         window: usize,
         matchmode: MatchMode
@@ -513,7 +510,7 @@ impl ShardHandle {
             corpus,
             query_groups,
             plans,
-            filters,
+            prepared.filter.as_deref(),
             window,
             matchmode
         );

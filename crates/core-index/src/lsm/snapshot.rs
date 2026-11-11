@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use ahash::HashSet;
 use arc_swap::ArcSwap;
 use core_timing::timed;
 use roaring::RoaringTreemap;
@@ -59,14 +58,12 @@ impl SearchIndex for IndexSnapshot {
         self.deleted.is_deleted(doc_id)
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
-        let mut out: HashSet<DocId> = self.mem.resolve_array_rows(rows);
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap {
+        let mut out = self.mem.resolve_array_rows(rows);
         for seg in self.segments.iter() {
-            out.extend(seg.resolve_array_rows(rows));
+            out |= seg.resolve_array_rows(rows);
         }
-
-        //filter deletes
-        out.retain(|doc| !self.deleted.contains(*doc));
+        self.deleted.remove_from(&mut out);
         out
     }
 
@@ -169,16 +166,13 @@ impl SearchNumeric for IndexSnapshot {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
-        let mut lists = Vec::new();
-
-        lists.push(self.mem.numeric_range(xpath, lo, hi));
-
+    ) -> RoaringTreemap {
+        let mut out = self.mem.numeric_range(xpath, lo, hi);
         for segment in self.segments.iter() {
-            lists.push(segment.numeric_range(xpath, lo, hi));
+            out |= segment.numeric_range(xpath, lo, hi);
         }
-
-        self.apply_deletes(union_many(lists.iter()))
+        self.deleted.remove_from(&mut out);
+        out
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -240,9 +234,10 @@ impl SearchStats for IndexSnapshot {
         }
         for segment in self.segments.iter().rev() {
             if let Some((lo, hi)) = segment.doc_range()
-                && (doc_id < lo || doc_id > hi) {
-                    continue;
-                }
+                && (doc_id < lo || doc_id > hi)
+            {
+                continue;
+            }
             if let Some(len) = segment.doc_len(doc_id, xpath) {
                 return Some(len);
             }
@@ -302,12 +297,7 @@ impl IndexSnapshot {
     }
 
     fn apply_deletes_to_bitset(&self, mut bitset: RoaringTreemap) -> RoaringTreemap {
-        if self.deleted.is_empty() {
-            return bitset;
-        }
-        for doc_id in self.deleted.iter() {
-            bitset.remove(doc_id);
-        }
+        self.deleted.remove_from(&mut bitset);
         bitset
     }
 
@@ -388,7 +378,7 @@ impl IndexSnapshot {
         xpath: XPathId,
         query: &[f32],
         k: usize,
-        allowed: Option<&HashSet<DocId>>,
+        allowed: Option<&RoaringTreemap>,
     ) -> std::io::Result<Vec<VectorHit>> {
         let filter = VectorFilter::new(&self.deleted, allowed);
         search_segments(&self.vectors, xpath, query, k, &filter)

@@ -9,9 +9,8 @@ use core_query::SearchHit;
 use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
 use std::cmp::Ordering;
-use std::sync::Arc;
-
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct SortField {
@@ -168,7 +167,11 @@ pub fn order_blended(
         return;
     }
 
-    let total_ratio: f32 = specs.iter().map(|s| f32::from(s.ratio)).sum::<f32>().min(100.0);
+    let total_ratio: f32 = specs
+        .iter()
+        .map(|s| f32::from(s.ratio))
+        .sum::<f32>()
+        .min(100.0);
     let relevance_weight = 100.0 - total_ratio;
 
     // tiers are ranked by their place among the (tier, level) pairs present, not by value.

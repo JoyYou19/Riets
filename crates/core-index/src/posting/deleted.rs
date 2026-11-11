@@ -1,16 +1,12 @@
-use ahash::HashSet;
-use core_timing::timed;
+use roaring::RoaringTreemap;
 
-use crate::{
-    posting::{Posting, PostingList},
-    types::DocId,
-};
+use crate::{posting::PostingList, types::DocId};
 
 // Whenever a document gets deleted, a tombstone is created for it
 // this means it won't apear in any queries, and won't be saved to the disk
 #[derive(Debug, Default, Clone)]
 pub struct DeleteSet {
-    deleted: HashSet<DocId>,
+    deleted: RoaringTreemap,
 }
 
 impl DeleteSet {
@@ -27,7 +23,11 @@ impl DeleteSet {
     }
 
     pub fn is_deleted(&self, doc_id: DocId) -> bool {
-        self.deleted.contains(&doc_id)
+        self.deleted.contains(doc_id)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = DocId> + '_ {
+        self.deleted.iter()
     }
 
     pub fn filter_in_place(&self, list: &mut PostingList) {
@@ -37,25 +37,15 @@ impl DeleteSet {
         list.retain(|posting| !self.is_deleted(posting.doc_id));
     }
 
-    #[timed(search)]
-    pub fn filter(&self, list: &PostingList) -> PostingList {
-        if self.is_empty() {
-            return list.clone();
-        }
-        let items: Vec<Posting> = list
-            .items()
-            .iter()
-            .filter(|posting| !self.is_deleted(posting.doc_id))
-            .cloned()
-            .collect();
-
-        PostingList::from_sorted(items)
-    }
-
     pub fn contains(&self, doc_id: DocId) -> bool {
-        self.deleted.contains(&doc_id)
+        self.deleted.contains(doc_id)
     }
-    pub fn iter(&self) -> impl Iterator<Item = DocId> + '_ {
-        self.deleted.iter().copied()
+
+    /// Removes every deleted doc id from `bitset` in one bulk pass.
+    pub fn remove_from(&self, bitset: &mut RoaringTreemap) {
+        if self.is_empty() {
+            return;
+        }
+        *bitset -= &self.deleted;
     }
 }

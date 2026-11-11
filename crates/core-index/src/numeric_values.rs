@@ -6,6 +6,8 @@ use std::cmp::Ordering;
 
 use std::collections::BTreeMap;
 
+use roaring::RoaringTreemap;
+
 use crate::{
     bkd::Bkd,
     document_values::DocValues,
@@ -50,8 +52,7 @@ impl NumericFields {
     }
 
     pub fn bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
-        self.field(xpath)
-            .map_or((None, None), NumericField::bounds)
+        self.field(xpath).map_or((None, None), NumericField::bounds)
     }
 
     pub fn field(&self, xpath: XPathId) -> Option<&NumericField> {
@@ -64,7 +65,7 @@ impl NumericFields {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> Vec<DocId> {
+    ) -> RoaringTreemap {
         self.field(xpath)
             .map(|field| field.bkd.range(lo, hi))
             .unwrap_or_default()
@@ -126,22 +127,19 @@ impl NumericPoints {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> Vec<DocId> {
+    ) -> RoaringTreemap {
         let Some(points) = self.points.get(&xpath) else {
-            return Vec::new();
+            return RoaringTreemap::new();
         };
 
-        let mut docs: Vec<DocId> = points
-            .iter()
-            .filter(|(_, value)| in_bounds(*value, lo, hi))
-            .map(|(doc_id, _)| *doc_id)
-            .collect();
-
-        docs.sort_unstable();
-        docs.dedup();
-        docs
+        let mut out = RoaringTreemap::new();
+        for &(doc_id, value) in points {
+            if in_bounds(value, lo, hi) {
+                out.insert(doc_id);
+            }
+        }
+        out
     }
-    //TEST
 
     pub fn merge(&mut self, other: NumericPoints) {
         for (xpath, mut points) in other.points {

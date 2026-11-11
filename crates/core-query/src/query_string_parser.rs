@@ -188,6 +188,12 @@ pub fn parse_json_query(
             if let Some(inner) = obj.get("exact") {
                 return leaf(inner, Leaf::Exact, default);
             }
+            if let Some(inner) = obj.get("phrase") {
+                return phrase(inner);
+            }
+            if let Some(inner) = obj.get("fuzzy") {
+                return fuzzy(inner);
+            }
             if obj.contains_key("vector") {
                 return Err(CorelamoError::InvalidData(
                     "\"vector\" must be the whole query, e.g. {\"query\": {\"vector\": \"some text\"}}; \

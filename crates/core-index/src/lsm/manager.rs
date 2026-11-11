@@ -6,7 +6,6 @@ use std::{
     time::{ Duration, Instant },
 };
 
-use ahash::HashSet;
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
@@ -166,7 +165,7 @@ impl SearchIndex for LsmIndex {
         self.snapshot().lookup_prefix(prefix, xpath)
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap {
         self.snapshot().resolve_array_rows(rows)
     }
 
@@ -221,8 +220,8 @@ impl SearchNumeric for LsmIndex {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
-    ) -> PostingList {
+        hi: Option<NumericBound>,
+    ) -> RoaringTreemap {
         self.snapshot().numeric_range(xpath, lo, hi)
     }
 

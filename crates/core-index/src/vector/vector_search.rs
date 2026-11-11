@@ -11,12 +11,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ahash::HashSet;
+use roaring::RoaringTreemap;
 
 use super::file::VectorFile;
 use super::hnsw::{HnswGraph, RESCORE_OVERSAMPLING};
 use super::kernel::{approx_cosine, dot_f32, dot_i8, quantize_query};
 use super::vector_hit::{TopK, VectorFilter, VectorHit, hit_order};
-use crate::types::{DocId, XPathId};
+use crate::types::XPathId;
 
 /// The vectors of one vector field for one live segment, and its graph if one is built.
 #[derive(Debug, Clone)]
@@ -99,12 +100,12 @@ fn score_allowed_rows(
     query: &[f32],
     k: usize,
     filter: &VectorFilter<'_>,
-    allowed: &HashSet<DocId>,
+    allowed: &RoaringTreemap,
 ) -> Vec<VectorHit> {
     let mut rows: Vec<usize> = allowed
         .iter()
-        .filter(|&&doc_id| filter.accepts(doc_id))
-        .filter_map(|&doc_id| file.position(doc_id))
+        .filter(|&doc_id| filter.accepts(doc_id))
+        .filter_map(|doc_id| file.position(doc_id))
         .collect();
     // Row order is file order: reads move forward through the mapping.
     rows.sort_unstable();

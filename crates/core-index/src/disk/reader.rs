@@ -2,7 +2,6 @@
 
 use std::{collections::BTreeMap, io, path::Path};
 
-use ahash::HashSet;
 use core_timing::timed;
 use memmap2::Mmap;
 use roaring::RoaringTreemap;
@@ -65,13 +64,8 @@ impl SearchNumeric for DiskSegment {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
-        let docs = self.numeric_fields.range(xpath, lo, hi);
-        PostingList::from_items(
-            docs.into_iter()
-                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
-        )
+    ) -> RoaringTreemap {
+        self.numeric_fields.range(xpath, lo, hi)
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -271,9 +265,9 @@ impl SearchIndex for DiskSegment {
         }
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap {
         rows.iter()
-            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .filter_map(|raw| self.array_row_index.doc_of(ArrayRowId::from_raw(raw)))
             .collect()
     }
 

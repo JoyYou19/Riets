@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use ahash::HashSet;
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
@@ -8,7 +7,7 @@ use crate::{
     array_rows::ArrayRowIndex,
     document::document::BoolField,
     numeric_values::{NumericBound, NumericFields, NumericValue},
-    posting::{Posting, PostingList},
+    posting::PostingList,
     search::{SearchIndex, SearchNumeric, SearchStats},
     segment::{build_field_stats, compute_doc_id_range},
     types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
@@ -35,8 +34,7 @@ impl SearchIndex for ImmutableSegment {
     }
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
-        self.lookup(term, xpath)
-            .map_or(0, |list| list.len() as u32)
+        self.lookup(term, xpath).map_or(0, |list| list.len() as u32)
     }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.terms
@@ -50,9 +48,9 @@ impl SearchIndex for ImmutableSegment {
         self.array_row_index.element_index_of(row)
     }
 
-    fn resolve_array_rows(&self, rows: &HashSet<ArrayRowId>) -> HashSet<DocId> {
+    fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap {
         rows.iter()
-            .filter_map(|&r| self.array_row_index.doc_of(r))
+            .filter_map(|raw| self.array_row_index.doc_of(ArrayRowId::from_raw(raw)))
             .collect()
     }
 
@@ -103,13 +101,8 @@ impl SearchNumeric for ImmutableSegment {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> PostingList {
-        let docs = self.numeric_fields.range(xpath, lo, hi);
-        PostingList::from_items(
-            docs.into_iter()
-                .map(|doc_id| Posting::with_weight(doc_id, Vec::new(), 0))
-                .collect(),
-        )
+    ) -> RoaringTreemap {
+        self.numeric_fields.range(xpath, lo, hi)
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -127,15 +120,11 @@ impl SearchStats for ImmutableSegment {
     }
 
     fn doc_count(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.doc_count)
+        self.field_stats.get(&xpath).map_or(0, |s| s.doc_count)
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        self.field_stats
-            .get(&xpath)
-            .map_or(0, |s| s.total_doc_len)
+        self.field_stats.get(&xpath).map_or(0, |s| s.total_doc_len)
     }
 
     fn doc_range(&self) -> Option<(DocId, DocId)> {
