@@ -422,25 +422,27 @@ impl IndexPolicy {
 
         for field in self.indexed_fields() {
             if let Some(name) = &field.analyzer
-                && !self.analyzers.contains_key(name) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "field '{}' references unknown analyzer '{name}'",
-                            field.name
-                        ),
-                    ));
-                }
+                && !self.analyzers.contains_key(name)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "field '{}' references unknown analyzer '{name}'",
+                        field.name
+                    ),
+                ));
+            }
         }
 
         for (name, cfg) in &self.analyzers {
             if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length)
-                && min > max {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("analyzer '{name}': min_length {min} > max_length {max}"),
-                    ));
-                }
+                && min > max
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("analyzer '{name}': min_length {min} > max_length {max}"),
+                ));
+            }
         }
 
         Ok(())
@@ -490,9 +492,10 @@ impl IndexPolicy {
 
     pub fn analyzer_for(&self, field: &FieldPolicy) -> AnalyzerConfig {
         if let Some(name) = &field.analyzer
-            && let Some(cfg) = self.analyzers.get(name) {
-                return cfg.clone();
-            }
+            && let Some(cfg) = self.analyzers.get(name)
+        {
+            return cfg.clone();
+        }
 
         //either user defined $default or the hardcoded
         self.analyzers
@@ -590,9 +593,10 @@ impl IndexPolicy {
                     return Some(f);
                 }
                 if f.kind == FieldKind::Struct
-                    && let Some(hit) = find(&f.subfields, path) {
-                        return Some(hit);
-                    }
+                    && let Some(hit) = find(&f.subfields, path)
+                {
+                    return Some(hit);
+                }
             }
             None
         }

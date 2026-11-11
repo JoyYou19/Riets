@@ -378,9 +378,9 @@ impl IndexSnapshot {
         xpath: XPathId,
         query: &[f32],
         k: usize,
-        allowed: Option<RoaringTreemap>,
+        allowed: Option<&RoaringTreemap>,
     ) -> std::io::Result<Vec<VectorHit>> {
-        let filter = VectorFilter::new(&self.deleted, allowed.as_ref());
+        let filter = VectorFilter::new(&self.deleted, allowed);
         search_segments(&self.vectors, xpath, query, k, &filter)
     }
 }

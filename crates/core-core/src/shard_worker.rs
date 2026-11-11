@@ -411,7 +411,7 @@ impl ShardHandle {
                 Some(query),
                 &group.ctxs,
                 group_k,
-                restrict.clone(),
+                restrict.as_ref(),
                 mactmode,
                 plan,
             ));
@@ -471,7 +471,7 @@ impl ShardHandle {
         for &xpath in xpaths {
             lists.push(
                 snapshot
-                    .vector_search(xpath, query, k, allowed.clone())
+                    .vector_search(xpath, query, k, allowed.as_ref())
                     .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?,
             );
         }

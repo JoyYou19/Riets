@@ -257,7 +257,7 @@ where
                 &self.stats(),
                 &field_terms(&lists),
                 k,
-                restrict.cloned(),
+                restrict,
             ));
         }
 
@@ -277,7 +277,7 @@ where
                 &self.stats(),
                 &field_terms(&lists),
                 k,
-                restrict.cloned(),
+                restrict,
             ));
         }
 
@@ -353,9 +353,9 @@ where
             .collect();
         let stats = self.stats();
         Some(if conjunctive {
-            conjunctive_top_k_grouped(&stats, &fields, k, restrict.cloned())
+            conjunctive_top_k_grouped(&stats, &fields, k, restrict)
         } else {
-            wand_top_k_grouped(&stats, &fields, k, coverage, restrict.cloned())
+            wand_top_k_grouped(&stats, &fields, k, coverage, restrict)
         })
     }
 
@@ -1471,7 +1471,7 @@ where
                     if ranked_flat && !ctx.row_keyed {
                         continue;
                     }
-                    self.rank_single_field(query, ctx, k, restrict.cloned(), &mut by_doc);
+                    self.rank_single_field(query, ctx, k, restrict, &mut by_doc);
                 }
             }
             MatchMode::CrossFields => {
@@ -1805,7 +1805,7 @@ where
             // A document whose name is a run of the query's words is what the query is about:
             // "Vera Wang was born in March" is about Vera Wang. Every candidate is checked,
             // wherever it came from, and named documents no source found are added.
-            let shares = self.name_shares(plan, ctxs, restrict.cloned(), relevance.keys().copied());
+            let shares = self.name_shares(plan, ctxs, restrict, relevance.keys().copied());
             let missing: RoaringTreemap = shares
                 .keys()
                 .copied()
@@ -1872,7 +1872,7 @@ where
         &self,
         plan: &RankPlan,
         ctxs: &[FieldCtx],
-        restrict: Option<RoaringTreemap>,
+        restrict: Option<&RoaringTreemap>,
         candidates: impl Iterator<Item = DocId>,
     ) -> HashMap<DocId, f32> {
         let mut shares: HashMap<DocId, f32> = HashMap::new();
@@ -2158,7 +2158,7 @@ where
         query: Option<&Query>,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<RoaringTreemap>,
+        restrict: Option<&RoaringTreemap>,
         match_mode: MatchMode,
         plan: &RankPlan,
     ) -> Vec<SearchHit> {
@@ -2174,13 +2174,13 @@ where
         query: Option<&Query>,
         ctxs: &[FieldCtx],
         k: usize,
-        restrict: Option<RoaringTreemap>,
+        restrict: Option<&RoaringTreemap>,
         match_mode: MatchMode,
         plan: &RankPlan,
     ) -> RankedGroup {
         if plan.tiers.is_empty() {
             let hits = self
-                .rank_retrieve(query, ctxs, k, restrict.as_ref(), match_mode)
+                .rank_retrieve(query, ctxs, k, restrict, match_mode)
                 .into_iter()
                 .map(|mut hit| {
                     hit.base = hit.score;
@@ -2195,7 +2195,7 @@ where
                 clause_weights: Vec::new(),
             };
         }
-        self.rank_cascade(plan, ctxs, k, restrict.as_ref(), match_mode)
+        self.rank_cascade(plan, ctxs, k, restrict, match_mode)
     }
 
     fn rank_single_field(
@@ -2203,12 +2203,11 @@ where
         query: &Query,
         ctx: FieldCtx,
         k: usize,
-        restrict: Option<RoaringTreemap>,
+        restrict: Option<&RoaringTreemap>,
         by_doc: &mut HashMap<DocId, SearchHit>,
     ) {
         if !ctx.row_keyed
-            && let Some(hits) =
-                self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict.as_ref())
+            && let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict)
         {
             for h in hits {
                 let hit = wand_hit_to_search_hit(h);

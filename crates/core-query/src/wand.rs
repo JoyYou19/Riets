@@ -40,7 +40,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
     stats: &S,
     fields: &[FieldTerms<'_>],
     k: usize,
-    restrict: Option<RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 || fields.is_empty() {
         return Vec::new();
@@ -354,7 +354,7 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
     stats: &S,
     fields: &[FieldTerms<'_>],
     k: usize,
-    restrict: Option<RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
@@ -636,7 +636,7 @@ pub fn wand_top_k_grouped<S: SearchStats>(
     fields: &[FieldClauses<'_>],
     k: usize,
     coverage: Option<f32>,
-    restrict: Option<RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
@@ -685,10 +685,7 @@ pub fn wand_top_k_grouped<S: SearchStats>(
 
     // a few allowed documents: go to each of them (the cursors gallop) instead of walking every
     // posting of every clause to find them
-    if let Some(docs) = restrict
-        .as_ref()
-        .filter(|docs| docs.len() <= DIRECT_RESTRICT_MAX as u64)
-    {
+    if let Some(docs) = restrict.filter(|docs| docs.len() <= DIRECT_RESTRICT_MAX as u64) {
         let mut targets: Vec<DocId> = docs.iter().collect();
         targets.sort_unstable();
         for doc in targets {
@@ -740,9 +737,7 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         let smallest_doc = clauses[0].doc_id().unwrap();
 
         if smallest_doc == pivot_doc {
-            if restrict
-                .as_ref()
-                .is_none_or(|docs| docs.contains(pivot_doc))
+            if restrict.is_none_or(|docs| docs.contains(pivot_doc))
                 && let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc)
             {
                 push_top_k(&mut heap, pivot_doc, score, raw, matched_terms, k);
@@ -769,7 +764,7 @@ pub fn conjunctive_top_k_grouped<S: SearchStats>(
     stats: &S,
     fields: &[FieldClauses<'_>],
     k: usize,
-    restrict: Option<RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
