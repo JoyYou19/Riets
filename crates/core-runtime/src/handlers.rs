@@ -58,15 +58,12 @@ struct UpdateRolesRequest {
     roles: Vec<String>,
 }
 
-fn require_body(body: &str) -> Result<&str, CorelamoError> {
+fn require_body(body: String) -> Result<String, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() || trimmed == "{}" {
-        Err(CorelamoError::InvalidData(
-            "request body is empty".to_string(),
-        ))
-    } else {
-        Ok(trimmed)
+        return Err(CorelamoError::InvalidData("request body is empty".to_string()));
     }
+    Ok(body)
 }
 
 fn check_permission(
@@ -86,7 +83,7 @@ pub(crate) async fn login_handler(
     Extension(ctx): Extension<RequestContext>,
     body: String,
 ) -> Response {
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -213,7 +210,7 @@ pub(crate) async fn create_user_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::CreateUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -279,7 +276,7 @@ pub(crate) async fn update_user_password_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -340,7 +337,7 @@ pub(crate) async fn update_user_roles_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -393,7 +390,7 @@ pub(crate) async fn search_handler(
         .into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -465,7 +462,7 @@ pub(crate) async fn did_you_mean_handler(
         .into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -599,8 +596,8 @@ pub(crate) async fn insert_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
-        Ok(b) => b.to_string(),
+    let body = match require_body(body) {
+        Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -623,7 +620,7 @@ pub(crate) async fn insert_handler(
 
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -681,7 +678,7 @@ pub(crate) async fn retrieve_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -910,7 +907,7 @@ pub(crate) async fn delete_document_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -978,7 +975,7 @@ pub(crate) async fn partial_replace_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1050,7 +1047,7 @@ pub(crate) async fn replace_document_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1073,7 +1070,7 @@ pub(crate) async fn replace_document_handler(
     let policy = handle.policy();
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -1136,7 +1133,7 @@ pub(crate) async fn upsert_document_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1159,7 +1156,7 @@ pub(crate) async fn upsert_document_handler(
     let policy = handle.policy();
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -1534,7 +1531,7 @@ pub(crate) async fn info_words_handler(
         .into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1684,7 +1681,7 @@ pub(crate) async fn set_policy_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::SetPolicy) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1745,7 +1742,7 @@ pub(crate) async fn set_config_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2079,7 +2076,7 @@ pub(crate) async fn rename_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();

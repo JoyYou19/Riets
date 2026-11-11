@@ -20,8 +20,8 @@ pub(crate) trait DocumentConversion {
 // TODO: make this configurable
 const PARALLEL_PARSE_THRESHOLD: usize = 10;
 
-pub(crate) struct Json<'a> {
-    pub body: &'a str,
+pub(crate) struct Json {
+    pub body: String,
 }
 //pub struct Xml<'a>(pub &'a str);
 
@@ -34,7 +34,7 @@ pub(crate) struct ParseOutcome {
 
 #[timed(json_parsing)]
 pub(crate) fn parse_documents(
-    body: &str,
+    body: String,
     format: Format,
     policy: &IndexPolicy,
 ) -> Result<ParseOutcome, CorelamoError> {
@@ -63,34 +63,27 @@ fn generate_routing_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-impl DocumentConversion for Json<'_> {
+impl DocumentConversion for Json{
     #[timed(json_parsing)]
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError> {
-        //If an array was given
-        let mut buf = self.body.as_bytes().to_vec();
+        // the body's own bytes are parsed in place: no copy, one parse
+        let mut buf = self.body.into_bytes();
+        let value: Value = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
+        drop(buf); // the value tree owns everything it needs
 
-        if let Ok(Value::Array(items)) = simd_json::to_owned_value(&mut buf) {
+        if let Value::Array(items) = value {
             return Ok(parse_raw_items(&items, policy));
         }
-
-        //If a single document was given
-        let mut buf = self.body.as_bytes().to_vec();
-        let value: Value = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
-        let mut docs = Vec::new();
-        let mut indices = Vec::new();
-        let mut failures = Vec::new();
+        let mut outcome = ParseOutcome { docs: Vec::new(), indices: Vec::new(), failures: Vec::new() };
         match parse_one(0, &value, policy) {
             Ok(doc) => {
-                docs.push(doc);
-                indices.push(0);
+                outcome.docs.push(doc);
+                outcome.indices.push(0);
             }
-            Err(failure) => failures.push(failure),
+            Err(failure) => outcome.failures.push(failure),
         }
-        Ok(ParseOutcome {
-            docs,
-            indices,
-            failures,
-        })
+        Ok(outcome)
+    
     }
 }
 

@@ -64,7 +64,7 @@ use crossbeam_channel::bounded;
 use parking_lot::{ Mutex, RwLock };
 use simd_json::OwnedValue;
 use std::borrow::Cow;
-use std::collections::{ BTreeMap, HashSet };
+use std::collections::{ BTreeMap, BTreeSet, HashSet };
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,7 +74,15 @@ use std::time::{ Duration, SystemTime };
 use tokio::task::JoinSet;
 
 use crate::shard_manager_helpers::{
-    ResolvedSort, WriteReport, compile_filters, fold_sort_bounds, mark_all_failed, order_blended, order_strict, resolve_sorts, set_request_positions,
+    ResolvedSort,
+    WriteReport,
+    compile_filters,
+    fold_sort_bounds,
+    mark_all_failed,
+    order_blended,
+    order_strict,
+    resolve_sorts,
+    set_request_positions,
 };
 use core_embed::{ Embedder, ModelRegistry };
 
@@ -175,7 +183,7 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
         .into_iter()
         .filter(|field| {
             names.is_none_or(|names| {
-                names.iter().any(|name| *name == field.full_path || *name == field.name)
+                names.iter().any(|name| (*name == field.full_path || *name == field.name))
             })
         })
         .map(|field| field.xpath(policy))
@@ -422,24 +430,26 @@ impl ShardManager {
     #[timed(shard_manager_doc_modifying)]
     fn update_all_fields_from_fields(
         &self,
-        fields: &BTreeMap<String, String>
+        fields: &BTreeSet<&str>
     ) -> Result<(), CorelamoError> {
         if fields.is_empty() {
             return Ok(());
         }
 
-        let policy = self.policy.read().clone();
-        let wanted: Vec<(&String, FieldKind)> = fields
-            .keys()
-            .map(|xpath| {
-                let kind = policy.fields
-                    .iter()
-                    .find(|f| f.name == *xpath)
-                    .map_or(FieldKind::None, |f| f.kind);
-                (xpath, kind)
-            })
-            .collect();
-
+       
+        let wanted: Vec<(&str, FieldKind)> = {
+            let policy = self.policy.read();
+            fields
+                .iter()
+                .map(|&xpath| {
+                    let kind = policy.fields
+                        .iter()
+                        .find(|f| f.name == xpath)
+                        .map_or(FieldKind::None, |f| f.kind);
+                    (xpath, kind)
+                })
+                .collect()
+        };
         {
             let current = self.all_fields.read();
             if wanted.iter().all(|(xpath, kind)| current.get_fields().get(*xpath) == Some(kind)) {
@@ -453,7 +463,7 @@ impl ShardManager {
         let mut changed = false;
         for (xpath, kind) in wanted {
             if updated.get_fields().get(xpath) != Some(&kind) {
-                updated.get_fields_mut().insert(xpath.clone(), kind);
+                updated.get_fields_mut().insert(xpath.to_owned(), kind);
                 changed = true;
             }
         }
@@ -573,72 +583,75 @@ impl ShardManager {
         self.start().await
     }
 
-    async fn fan_out_all_shards<Item, Report,CallShard,ShardFuture>(
+    async fn fan_out_all_shards<Item, Report, CallShard, ShardFuture>(
         &self,
         items: Vec<Item>,
-        id_of:fn(&Item) -> &str,
-        call_shard:CallShard,
-    ) -> Result<Report,CorelamoError>
-    where 
-        Item:Send+ 'static,
-        Report:WriteReport,
-        CallShard:Fn(ShardHandle,Vec<Item>) -> ShardFuture,
-        ShardFuture:Future<Output = Result<Report, CorelamoError>> +Send +'static,
+        id_of: fn(&Item) -> &str,
+        call_shard: CallShard
+    )
+        -> Result<Report, CorelamoError>
+        where
+            Item: Send + 'static,
+            Report: WriteReport,
+            CallShard: Fn(ShardHandle, Vec<Item>) -> ShardFuture,
+            ShardFuture: Future<Output = Result<Report, CorelamoError>> + Send + 'static
     {
-    let mut items_per_shard: HashMap<usize, Vec<Item>> = HashMap::new();
-    let mut ids_per_shard: HashMap<usize, Vec<(usize, String)>> = HashMap::new();
-    for (position, item) in items.into_iter().enumerate() {
-        let id = id_of(&item);
-        let shard = self.shard_index_for(id);
-        ids_per_shard.entry(shard).or_default().push((position, id.to_owned()));
-        items_per_shard.entry(shard).or_default().push(item);
-    }
-    let mut running =Vec::with_capacity(items_per_shard.len());
-    for(shard,shard_items) in items_per_shard{
-        let handle =self.shards[shard].clone();
-        running.push((shard,tokio::spawn(call_shard(handle,shard_items))));
-    }
-    let mut merged =Report::empty();
-    let mut any_shard_succeeded= false;
-    let mut last_error =None;
-    for(shard,task) in running{
-        let ids= ids_per_shard.remove(&shard).unwrap_or_default();
-        let result =match task.await{
-            Ok(result) => result,
-            Err(panic) => Err(CorelamoError::Internal(format!("Shard task panicked {panic}")))
-        };
+        let mut items_per_shard: HashMap<usize, Vec<Item>> = HashMap::new();
+        let mut ids_per_shard: HashMap<usize, Vec<(usize, String)>> = HashMap::new();
+        for (position, item) in items.into_iter().enumerate() {
+            let id = id_of(&item);
+            let shard = self.shard_index_for(id);
+            ids_per_shard.entry(shard).or_default().push((position, id.to_owned()));
+            items_per_shard.entry(shard).or_default().push(item);
+        }
+        let mut running = Vec::with_capacity(items_per_shard.len());
+        for (shard, shard_items) in items_per_shard {
+            let handle = self.shards[shard].clone();
+            running.push((shard, tokio::spawn(call_shard(handle, shard_items))));
+        }
+        let mut merged = Report::empty();
+        let mut any_shard_succeeded = false;
+        let mut last_error = None;
+        for (shard, task) in running {
+            let ids = ids_per_shard.remove(&shard).unwrap_or_default();
+            let result = match task.await {
+                Ok(result) => result,
+                Err(panic) => Err(CorelamoError::Internal(format!("Shard task panicked {panic}"))),
+            };
 
-    
-    match result {
-        Ok(mut shard_report) => {
-            any_shard_succeeded =true;
-            set_request_positions(shard_report.failures_mut(),&ids);
-            merged.merge(shard_report);
+            match result {
+                Ok(mut shard_report) => {
+                    any_shard_succeeded = true;
+                    set_request_positions(shard_report.failures_mut(), &ids);
+                    merged.merge(shard_report);
+                }
+                Err(error) => {
+                    mark_all_failed(merged.failures_mut(), ids, &error);
+                    last_error = Some(error);
+                }
+            }
         }
-        Err(error) => {
-            mark_all_failed(merged.failures_mut(), ids, &error);
-            last_error=Some(error);
+        if !any_shard_succeeded && let Some(error) = last_error {
+            return Err(error);
         }
-    }
-}
-    if !any_shard_succeeded && let Some(error) =last_error{
-        return Err(error);
-    }
-    Ok(merged)
+        Ok(merged)
     }
     #[timed(shard_manager_doc_modifying)]
     pub async fn upsert(
-    &self,
-    inputs: Vec<DocumentInput>,
-    user: String,
-) -> Result<InsertReport, CorelamoError> {
-    self.update_all_fields_for(&inputs)?;
-    self.fan_out_all_shards(inputs, |d| d.external_id.as_str(), |shard, batch| {
-        let user = user.clone();
-        async move { shard.upsert(batch, user).await }
-    })
-    .await
-}
+        &self,
+        inputs: Vec<DocumentInput>,
+        user: String
+    ) -> Result<InsertReport, CorelamoError> {
+        self.update_all_fields_for(&inputs)?;
+        self.fan_out_all_shards(
+            inputs,
+            |d| d.external_id.as_str(),
+            |shard, batch| {
+                let user = user.clone();
+                async move { shard.upsert(batch, user).await }
+            }
+        ).await
+    }
 
     #[timed(retrieve_opps)]
     pub async fn retrieve_one(&self, id: &str) -> Result<Option<StoredDocument>, CorelamoError> {
@@ -654,67 +667,85 @@ impl ShardManager {
 
     #[timed(shard_manager_doc_modifying)]
     pub async fn replace(
-    &self,
-    inputs: Vec<DocumentInput>,
-    user: String,
-) -> Result<ReplaceReport, CorelamoError> {
-    self.update_all_fields_for(&inputs)?;
-    self.fan_out_all_shards(inputs, |d| d.external_id.as_str(), |shard, batch| {
-        let user = user.clone();
-        async move { shard.replace(batch, user).await }
-    })
-    .await
-}
-  pub async fn partial_replace(
-    &self,
-    items: Vec<(String, OwnedValue)>,
-    user: String,
-) -> Result<ReplaceReport, CorelamoError> {
-    self.fan_out_all_shards(items, |(id, _)| id.as_str(), |shard, batch| {
-        let user = user.clone();
-        async move { shard.partial_replace(batch, user).await }
-    })
-    .await
-}
+        &self,
+        inputs: Vec<DocumentInput>,
+        user: String
+    ) -> Result<ReplaceReport, CorelamoError> {
+        self.update_all_fields_for(&inputs)?;
+        self.fan_out_all_shards(
+            inputs,
+            |d| d.external_id.as_str(),
+            |shard, batch| {
+                let user = user.clone();
+                async move { shard.replace(batch, user).await }
+            }
+        ).await
+    }
+    pub async fn partial_replace(
+        &self,
+        items: Vec<(String, OwnedValue)>,
+        user: String
+    ) -> Result<ReplaceReport, CorelamoError> {
+        self.fan_out_all_shards(
+            items,
+            |(id, _)| id.as_str(),
+            |shard, batch| {
+                let user = user.clone();
+                async move { shard.partial_replace(batch, user).await }
+            }
+        ).await
+    }
 
     #[timed(shard_manager_doc_modifying)]
-    pub async fn delete(&self, ids: Vec<String>, user: String) -> Result<DeleteReport, CorelamoError> {
-    if ids.is_empty() {
-        return Ok(DeleteReport::empty());
+    pub async fn delete(
+        &self,
+        ids: Vec<String>,
+        user: String
+    ) -> Result<DeleteReport, CorelamoError> {
+        if ids.is_empty() {
+            return Ok(DeleteReport::empty());
+        }
+        self.fan_out_all_shards(
+            ids,
+            |id| id.as_str(),
+            |shard, batch| {
+                let user = user.clone();
+                async move { shard.delete(batch, user).await }
+            }
+        ).await
     }
-    self.fan_out_all_shards(ids, |id| id.as_str(), |shard, batch| {
-        let user = user.clone();
-        async move { shard.delete(batch, user).await }
-    })
-    .await
-}
-#[timed(inserting)]
-pub async fn insert(
-    &self,
-    inputs: Vec<DocumentInput>,
-    user: String,
-) -> Result<InsertReport, CorelamoError> {
-    let started = std::time::Instant::now();
-    let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
-    self.update_all_fields_for(&inputs)?;
-    let report = self
-        .fan_out_all_shards(inputs, |d| d.external_id.as_str(), |shard, batch| {
-            let user = user.clone();
-            async move { shard.insert(batch, user).await }
-        })
-        .await?;
-    core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
-    self.db_stats.record_indexing(false, started.elapsed());
-    Ok(report)
-}
+    #[timed(inserting)]
+    pub async fn insert(
+        &self,
+        inputs: Vec<DocumentInput>,
+        user: String
+    ) -> Result<InsertReport, CorelamoError> {
+        let started = std::time::Instant::now();
+        let total_bytes: u64 = inputs
+            .iter()
+            .map(|d| d.source.len() as u64)
+            .sum();
+        self.update_all_fields_for(&inputs)?;
+        let report = self.fan_out_all_shards(
+            inputs,
+            |d| d.external_id.as_str(),
+            |shard, batch| {
+                let user = user.clone();
+                async move { shard.insert(batch, user).await }
+            }
+        ).await?;
+        core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
+        self.db_stats.record_indexing(false, started.elapsed());
+        Ok(report)
+    }
 
-fn update_all_fields_for(&self, inputs: &[DocumentInput]) -> Result<(), CorelamoError> {
-    let mut all_fields_map = BTreeMap::new();
-    for input in inputs {
-        input.parsed.collect_leaf_values(&mut all_fields_map);
+    fn update_all_fields_for(&self, inputs: &[DocumentInput]) -> Result<(), CorelamoError> {
+        let mut names: BTreeSet<&str> = BTreeSet::new();
+        for input in inputs {
+            input.parsed.collect_field_names(&mut names);
+        }
+        self.update_all_fields_from_fields(&names)
     }
-    self.update_all_fields_from_fields(&all_fields_map)
-}
     #[timed(database_lifecycle)]
     pub async fn clear_all(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
