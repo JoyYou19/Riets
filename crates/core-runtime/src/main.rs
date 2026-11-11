@@ -538,6 +538,7 @@ async fn run() -> io::Result<()> {
             post(handlers::backup_restore_handler),
         )
         .route("/api/timings", post(handlers::timings_handler))
+        .route("/api/metrics", get(handlers::prometheus_metrics_handler))
         .route(
             "/api/databases/{db_name}/disk-usage",
             get(handlers::disk_usage_handler),

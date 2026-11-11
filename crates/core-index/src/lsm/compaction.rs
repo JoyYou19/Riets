@@ -169,7 +169,7 @@ impl Default for CompactionConfig {
 pub struct CompactionJob {
     pub job_id: u64,
     pub selected: Vec<SegmentHandle>,
-    pub deleted: DeleteSet,
+    pub deleted: Arc<DeleteSet>,
     pub delete_generation: u64,
     pub output_path: PathBuf,
     pub vectors: Vec<SegmentVectors>,

@@ -23,7 +23,7 @@ use crate::{
 pub struct IndexSnapshot {
     mem: Arc<MemIndex>,
     segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
-    deleted: DeleteSet,
+    deleted: Arc<DeleteSet>,
     vectors: Arc<Vec<SegmentVectors>>,
 }
 
@@ -281,7 +281,7 @@ impl IndexSnapshot {
     pub fn new(
         mem: Arc<MemIndex>,
         segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
-        deleted: DeleteSet,
+        deleted: Arc<DeleteSet>,
     ) -> Self {
         Self {
             mem,
