@@ -1,29 +1,30 @@
 use ahash::HashMap as AHashMap;
 use core_query::ranking::{POOL_SIZE, finalize};
 use roaring::RoaringTreemap;
+use simd_json::OwnedValue;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{ AtomicBool, Ordering };
-use std::thread::{ self, JoinHandle };
-use std::time::{ Duration, SystemTime };
-use std::{ fs, io };
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, SystemTime};
+use std::{fs, io};
 
 use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
-use core_index::fuzzy::{ FuzzyExpansion, FuzzySpec };
+use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
-use core_index::search::{ SearchIndex, SearchNumeric };
-use core_index::vector::{ VectorHit, merge_hits };
-use core_protocol::command_reponse_definitions::{ Fuzziness, LookupResponse, MatchMode };
+use core_index::search::{SearchIndex, SearchNumeric};
+use core_index::vector::{VectorHit, merge_hits};
+use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse, MatchMode};
 use core_query::planner::RankPlan;
-use core_query::resolver::{ FieldQuery, QueryGroup };
-use core_storage::binary_store::{ CompletedSegmentCompaction, SegmentCompactionJob };
-use core_storage::document_projections::{ id_path_to_strip, project_document };
+use core_query::resolver::{FieldQuery, QueryGroup};
+use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
+use core_storage::document_projections::{id_path_to_strip, project_document};
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
-use crossbeam_channel::{ Receiver, Sender, bounded };
+use crossbeam_channel::{Receiver, Sender, bounded};
 use indexmap::IndexMap;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -36,24 +37,13 @@ use crate::shared_state::SharedShardState;
 
 use core_index::document::IndexPolicy;
 use core_index::lsm::index_worker::ReindexProgress;
-use core_index::types::{ DocId, ShardId, XPathId };
+use core_index::types::{DocId, ShardId, XPathId};
 use core_protocol::errors::CorelamoError;
 use core_query::{
-    CorpusStats,
-    MatchedTerm,
-    PreparedQuery,
-    Query,
-    QueryExecutor,
-    SearchHit,
-    fuzzable_words,
+    CorpusStats, MatchedTerm, PreparedQuery, Query, QueryExecutor, SearchHit, fuzzable_words,
 };
 use core_storage::search_database::{
-    DeleteReport,
-    DocumentInput,
-    InsertReport,
-    ReplaceReport,
-    SearchDocumentHit,
-    WordStats,
+    DeleteReport, DocumentInput, InsertReport, ReplaceReport, SearchDocumentHit, WordStats,
 };
 
 //how often the worker loop wakes up to run that check
@@ -211,15 +201,22 @@ impl ShardHandle {
     }
     fn ensure_readable(&self) -> Result<(), CorelamoError> {
         if !self.is_running() {
-            return Err(
-                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.id))
-            );
+            return Err(CorelamoError::DatabaseNotRunning(format!(
+                "shard {} is not running",
+                self.id
+            )));
         }
         if self.is_clearing() {
-            return Err(CorelamoError::Busy(format!("shard {} is clearing", self.id)));
+            return Err(CorelamoError::Busy(format!(
+                "shard {} is clearing",
+                self.id
+            )));
         }
         if self.is_restoring() {
-            return Err(CorelamoError::Busy(format!("shard {} is restoring from backup", self.id)));
+            return Err(CorelamoError::Busy(format!(
+                "shard {} is restoring from backup",
+                self.id
+            )));
         }
         Ok(())
     }
@@ -246,7 +243,9 @@ impl ShardHandle {
 
     pub fn word_missing(&self, word: &str, xpaths: &[XPathId]) -> bool {
         let snapshot = self.shared.snapshot.get();
-        xpaths.iter().all(|&xpath| snapshot.lookup(word, xpath).items().iter().next().is_none())
+        xpaths
+            .iter()
+            .all(|&xpath| snapshot.lookup(word, xpath).items().iter().next().is_none())
     }
 
     /// For each candidate, the documents of this shard holding it together with every context
@@ -255,7 +254,7 @@ impl ShardHandle {
         &self,
         candidates: &[String],
         context: &[String],
-        xpaths: &[XPathId]
+        xpaths: &[XPathId],
     ) -> Vec<u64> {
         let snapshot = self.shared.snapshot.get();
         let docs_of = |term: &str| -> HashSet<DocId> {
@@ -292,7 +291,7 @@ impl ShardHandle {
         &self,
         words: &[String],
         xpaths: &[XPathId],
-        analyzers: &AHashMap<XPathId, Analyzer>
+        analyzers: &AHashMap<XPathId, Analyzer>,
     ) -> Result<Vec<WordStats>, CorelamoError> {
         self.ensure_readable()?;
         let snapshot = self.shared.snapshot.get();
@@ -300,7 +299,7 @@ impl ShardHandle {
         let mut out = Vec::with_capacity(words.len());
         for word in words {
             let mut occurrences: u64 = 0;
-            let mut docs = std::collections::HashSet::new();
+            let mut docs = HashSet::new();
             for &xpath in xpaths {
                 let analyzer = analyzers.get(&xpath).unwrap_or(&self.analyzer);
                 for token in analyzer.analyze(word) {
@@ -325,7 +324,7 @@ impl ShardHandle {
         xpaths: &[XPathId],
         fuzziness: Fuzziness,
         spec: FuzzySpec,
-        analyzers: &AHashMap<XPathId, Analyzer>
+        analyzers: &AHashMap<XPathId, Analyzer>,
     ) -> Result<Vec<Vec<FuzzyExpansion>>, CorelamoError> {
         self.ensure_readable()?;
         let snapshot = self.shared.snapshot.get();
@@ -362,9 +361,10 @@ impl ShardHandle {
             let Some(query) = group.query.as_ref() else {
                 continue;
             };
-            let queries = std::iter
-                ::once(query)
-                .chain(plan.queries().filter(|tier| Some(*tier) != group.query.as_ref()));
+            let queries = std::iter::once(query).chain(
+                plan.queries()
+                    .filter(|tier| Some(*tier) != group.query.as_ref()),
+            );
             let p = QueryExecutor::new(&*snapshot, &group.analyzer).prepare(queries, &group.ctxs);
             prepared.push(p);
         }
@@ -395,14 +395,18 @@ impl ShardHandle {
         plans: &[RankPlan],
         filters: Option<&RoaringTreemap>,
         k: usize,
-        mactmode: MatchMode
+        mactmode: MatchMode,
     ) -> (usize, Vec<SearchHit>) {
         if k == 0 {
             return (0, Vec::new());
         }
         // each group sees only part of a document's evidence: keep more of its candidates, so
         // documents strong across groups but middling in each survive until they are merged
-        let group_k = if groups.len() > 1 { k.max(POOL_SIZE) } else { k };
+        let group_k = if groups.len() > 1 {
+            k.max(POOL_SIZE)
+        } else {
+            k
+        };
         // `prepare_search` prepared only the groups that kept a query, in order
         let searched = groups
             .iter()
@@ -436,7 +440,7 @@ impl ShardHandle {
         groups: &[QueryGroup],
         plans: &[RankPlan],
         k: usize,
-        mactmode: MatchMode
+        mactmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
         let snapshot = &prepared.snapshot;
         let (total, hits) = self.rank_candidates(
@@ -447,14 +451,11 @@ impl ShardHandle {
             plans,
             prepared.filter.as_deref(),
             k,
-            mactmode
+            mactmode,
         );
         Ok(ShardRankedResult {
             total,
-            items: hits
-                .into_iter()
-                .map(|hit| (hit, Vec::new()))
-                .collect(),
+            items: hits.into_iter().map(|hit| (hit, Vec::new())).collect(),
             bounds: Vec::new(),
         })
     }
@@ -493,7 +494,7 @@ impl ShardHandle {
         plans: &[RankPlan],
         sort_xpaths: &[XPathId],
         window: usize,
-        matchmode: MatchMode
+        matchmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
         if window == 0 {
             return Ok(ShardRankedResult {
@@ -512,7 +513,7 @@ impl ShardHandle {
             plans,
             prepared.filter.as_deref(),
             window,
-            matchmode
+            matchmode,
         );
         if candidates.is_empty() {
             return Ok(ShardRankedResult {
@@ -564,15 +565,17 @@ impl ShardHandle {
     #[timed(retrieve_opps)]
     pub async fn get_document_direct(
         &self,
-        ids: &[String]
+        ids: &[String],
     ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
         self.ensure_readable()?;
         let mut out = Vec::with_capacity(ids.len());
         //INFO: shared state is responsible for either giving from RAM or reading from disk thus
         //making this funciton look quite primitive
         for id in ids {
-            let doc = self.shared
-                .get_document(id).await
+            let doc = self
+                .shared
+                .get_document(id)
+                .await
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             out.push((id.clone(), doc));
         }
@@ -592,11 +595,10 @@ impl ShardHandle {
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|e| e == "log") {
                 if let Some(ref date_str) = date {
-                    if
-                        path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|name| name.contains(date_str))
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|name| name.contains(date_str))
                     {
                         files.push(path);
                     }
@@ -638,33 +640,32 @@ impl ShardHandle {
         &self,
         ids: &[String],
         return_fields: Option<&IndexMap<String, bool>>,
-        policy: &IndexPolicy
+        policy: &IndexPolicy,
     ) -> Result<LookupResponse, CorelamoError> {
         self.ensure_readable()?;
         let mut found = Vec::new();
         let mut not_found = Vec::new();
 
         for id in ids {
-            let doc = self.shared
-                .get_document(id).await
+            let doc = self
+                .shared
+                .get_document(id)
+                .await
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
             match doc {
-                Some(doc) =>
-                    found.push((
-                        doc.external_id.clone(),
-                        project_document(&doc, policy, return_fields).map_err(|e|
-                            CorelamoError::Internal(e.to_string())
-                        )?.0,
-                    )),
+                Some(doc) => found.push((
+                    doc.external_id.clone(),
+                    project_document(&doc, policy, return_fields)
+                        .map_err(|e| CorelamoError::Internal(e.to_string()))?
+                        .0,
+                )),
                 None => not_found.push(id.clone()),
             }
         }
 
-        let strip_id = id_path_to_strip(
-            policy.id_field().map(|f| f.name.as_str()),
-            return_fields
-        ).map(String::from);
+        let strip_id = id_path_to_strip(policy.id_field().map(|f| f.name.as_str()), return_fields)
+            .map(String::from);
 
         Ok(LookupResponse::new(found, not_found, strip_id))
     }
@@ -674,14 +675,17 @@ impl ShardHandle {
         &self,
         hits: Vec<SearchHit>,
         return_fields: Option<&IndexMap<String, bool>>,
-        policy: &IndexPolicy
+        policy: &IndexPolicy,
     ) -> Result<Vec<Option<SearchDocumentHit>>, CorelamoError> {
         self.ensure_readable()?;
 
         let external_ids: Vec<Option<String>> = hits
             .iter()
             .map(|hit| {
-                self.shared.internal_to_external.get(&hit.doc_id).map(|r| r.value().clone())
+                self.shared
+                    .internal_to_external
+                    .get(&hit.doc_id)
+                    .map(|r| r.value().clone())
             })
             .collect();
 
@@ -696,15 +700,13 @@ impl ShardHandle {
 
         let mut results: Vec<Option<SearchDocumentHit>> = vec![None; hits.len()];
         while let Some(outcome) = set.join_next().await {
-            let (i, res) = outcome.map_err(|e|
-                CorelamoError::Internal(format!("resolve task panicked: {e}"))
-            )?;
+            let (i, res) = outcome
+                .map_err(|e| CorelamoError::Internal(format!("resolve task panicked: {e}")))?;
             let Some(doc) = res.map_err(|e| CorelamoError::Internal(e.to_string()))? else {
                 continue;
             };
-            let (doc_out, full_doc) = project_document(&doc, policy, return_fields).map_err(|e|
-                CorelamoError::Internal(e.to_string())
-            )?;
+            let (doc_out, full_doc) = project_document(&doc, policy, return_fields)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             results[i] = Some(SearchDocumentHit {
                 external_id: doc.external_id.clone(),
                 internal_id: doc.internal_id,
@@ -726,7 +728,7 @@ impl ShardHandle {
         groups: &[QueryGroup],
         plans: &[RankPlan],
         prepared: &PreparedShardSearch,
-        corpus: &CorpusStats
+        corpus: &CorpusStats,
     ) -> Vec<Vec<MatchedTerm>> {
         let mut out: Vec<Vec<MatchedTerm>> = vec![Vec::new(); hits.len()];
 
@@ -798,7 +800,7 @@ impl ShardHandle {
 
     async fn call<T>(
         &self,
-        make: impl FnOnce(oneshot::Sender<T>) -> ShardCmd
+        make: impl FnOnce(oneshot::Sender<T>) -> ShardCmd,
     ) -> Result<T, CorelamoError> {
         let (rtx, rrx) = oneshot::channel();
         self.tx.send(make(rtx)).map_err(|_| self.dead())?;
@@ -809,14 +811,12 @@ impl ShardHandle {
     pub async fn insert(
         &self,
         inputs: Vec<DocumentInput>,
-        user: String
+        user: String,
     ) -> Result<InsertReport, CorelamoError> {
-        let total_bytes: u64 = inputs
-            .iter()
-            .map(|d| d.source.len() as u64)
-            .sum();
+        let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
         core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
-        self.call(|resp| ShardCmd::Insert { user, inputs, resp }).await?
+        self.call(|resp| ShardCmd::Insert { user, inputs, resp })
+            .await?
     }
     #[timed(flushing)]
     pub async fn flush(&self) -> Result<(), CorelamoError> {
@@ -826,60 +826,67 @@ impl ShardHandle {
     pub async fn upsert(
         &self,
         inputs: Vec<DocumentInput>,
-        user: String
+        user: String,
     ) -> Result<InsertReport, CorelamoError> {
-        self.call(|resp| ShardCmd::Upsert { user, inputs, resp }).await?
+        self.call(|resp| ShardCmd::Upsert { user, inputs, resp })
+            .await?
     }
     #[timed(modifying_documents)]
     pub async fn replace(
         &self,
         inputs: Vec<DocumentInput>,
-        user: String
+        user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
-        self.call(|resp| ShardCmd::Replace { user, inputs, resp }).await?
+        self.call(|resp| ShardCmd::Replace { user, inputs, resp })
+            .await?
     }
     pub async fn partial_replace(
         &self,
         items: Vec<(String, OwnedValue)>,
-        user: String
+        user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
-        self.call(|resp| ShardCmd::PartialReplace { user, items, resp }).await?
+        self.call(|resp| ShardCmd::PartialReplace { user, items, resp })
+            .await?
     }
     #[timed(modifying_documents)]
     pub async fn delete(
         &self,
         ids: Vec<String>,
-        user: String
+        user: String,
     ) -> Result<DeleteReport, CorelamoError> {
-        self.call(|resp| ShardCmd::Delete { user, ids, resp }).await?
+        self.call(|resp| ShardCmd::Delete { user, ids, resp })
+            .await?
     }
     #[timed(database_lifecycle)]
     pub async fn set_policy(&self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::SetPolicy { user, policy, resp }).await?
+        self.call(|resp| ShardCmd::SetPolicy { user, policy, resp })
+            .await?
     }
     #[timed(database_lifecycle)]
     pub async fn set_config(
         &self,
         options: DatabaseOptions,
-        user: String
+        user: String,
     ) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::SetConfig {
             user,
             options,
             resp,
-        }).await?
+        })
+        .await?
     }
     #[timed(database_lifecycle)]
     pub async fn start(
         &self,
         policy: IndexPolicy,
-        options: DatabaseOptions
+        options: DatabaseOptions,
     ) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::Start {
             policy,
             options,
             resp,
-        }).await?
+        })
+        .await?
     }
     #[timed(database_lifecycle)]
     pub async fn stop(&self) -> Result<(), CorelamoError> {
@@ -894,36 +901,39 @@ impl ShardHandle {
         &self,
         shard_backup_path: PathBuf,
         backup_id: String,
-        user: String
+        user: String,
     ) -> Result<BackupManifest, CorelamoError> {
         self.call(|resp| ShardCmd::BackupFull {
             shard_backup_path,
             backup_id,
             resp,
             user,
-        }).await?
+        })
+        .await?
     }
     #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
-        let backup_dir = self.shared.root
+        let backup_dir = self
+            .shared
+            .root
             .parent() // .../movies/shards
             .and_then(|p| p.parent()) // .../movies
             .ok_or_else(|| CorelamoError::Internal("shard root too shallow".into()))?
             .join("backups");
 
-        let shard_name = self.shared.root
+        let shard_name = self
+            .shared
+            .root
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| CorelamoError::Internal("invalid shard root path".into()))?;
 
-        let mut all: Vec<BackupManifest> = fs
-            ::read_dir(&backup_dir)
+        let mut all: Vec<BackupManifest> = fs::read_dir(&backup_dir)
             .map_err(|e| CorelamoError::Internal(e.to_string()))?
             .filter_map(Result::ok)
             .filter_map(|e| {
-                let text = fs
-                    ::read_to_string(e.path().join(shard_name).join("manifest.json"))
-                    .ok()?;
+                let text =
+                    fs::read_to_string(e.path().join(shard_name).join("manifest.json")).ok()?;
                 let mut buf = text.into_bytes();
                 simd_json::from_slice(&mut buf).ok()
             })
@@ -936,52 +946,57 @@ impl ShardHandle {
         &self,
         user: String,
         shard_backup_path: PathBuf,
-        backup_id: String
+        backup_id: String,
     ) -> Result<Option<BackupManifest>, CorelamoError> {
         self.call(|resp| ShardCmd::BackupIncremental {
             shard_backup_path,
             backup_id,
             resp,
             user,
-        }).await?
+        })
+        .await?
     }
 
     #[timed(backup)]
     pub async fn delete_backup(
         &self,
         backup_id: String,
-        user: String
+        user: String,
     ) -> Result<(), CorelamoError> {
         self.call(|resp| ShardCmd::DeleteBackup {
             backup_id,
             user,
             resp,
-        }).await?
+        })
+        .await?
     }
 
     #[timed(backup)]
     pub async fn delete_backups_old(&self, cutoff: SystemTime) -> Result<(), CorelamoError> {
-        self.call(|resp| ShardCmd::DeleteBackupAuto { cutoff, resp }).await?
+        self.call(|resp| ShardCmd::DeleteBackupAuto { cutoff, resp })
+            .await?
     }
 
     #[timed(restore)]
     pub async fn prepare_restore(
         &self,
         backup_id: &str,
-        user: String
+        user: String,
     ) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
         self.call(move |resp| ShardCmd::PrepareRestore {
             user,
             backup_id,
             resp,
-        }).await?
+        })
+        .await?
     }
 
     #[timed(restore)]
     pub async fn commit_restore(&self, backup_id: &str) -> Result<(), CorelamoError> {
         let backup_id = backup_id.to_string();
-        self.call(move |resp| ShardCmd::CommitRestore { backup_id, resp }).await?
+        self.call(move |resp| ShardCmd::CommitRestore { backup_id, resp })
+            .await?
     }
 
     pub async fn abort_restore(&self) -> Result<(), CorelamoError> {
@@ -1000,8 +1015,15 @@ impl Drop for AliveGuard {
 pub fn spawn(
     mut shard: ShardDb,
     queue_depth: usize,
-    bootable: bool
-) -> Result<(ShardHandle, JoinHandle<()>, Receiver<Result<(), CorelamoError>>), CorelamoError> {
+    bootable: bool,
+) -> Result<
+    (
+        ShardHandle,
+        JoinHandle<()>,
+        Receiver<Result<(), CorelamoError>>,
+    ),
+    CorelamoError,
+> {
     let id = shard.shard_id();
     let progress = shard.progress();
     let alive = Arc::new(AtomicBool::new(true));
@@ -1013,8 +1035,7 @@ pub fn spawn(
     let (boot_tx, boot_rx) = bounded(1);
     let alive_worker = alive.clone();
     let shared_worker = shared.clone();
-    let join = thread::Builder
-        ::new()
+    let join = thread::Builder::new()
         .name(format!("shard-{id}"))
         .spawn(move || {
             let _guard = AliveGuard(alive_worker);
@@ -1022,7 +1043,9 @@ pub fn spawn(
             let started = if bootable { shard.start() } else { Ok(()) };
 
             let ok = started.is_ok();
-            shared_worker.is_running.store(bootable && ok, Ordering::Release);
+            shared_worker
+                .is_running
+                .store(bootable && ok, Ordering::Release);
             let _ = boot_tx.send(started);
             if ok {
                 run(shard, rx, shared_worker);
@@ -1065,7 +1088,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::Flush { resp } => {
                 let _ = resp.send(shard.flush());
             }
-            ShardCmd::SetConfig { options, resp, user } => {
+            ShardCmd::SetConfig {
+                options,
+                resp,
+                user,
+            } => {
                 let _ = resp.send(shard.set_options(options, user));
             }
             ShardCmd::SetPolicy { policy, resp, user } => {
@@ -1083,10 +1110,18 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::Delete { ids, resp, user } => {
                 let _ = resp.send(shard.delete(ids, user));
             }
-            ShardCmd::PrepareReindex { progress, stats, resp } => {
+            ShardCmd::PrepareReindex {
+                progress,
+                stats,
+                resp,
+            } => {
                 let _ = resp.send(shard.prepare_reindex(progress, stats));
             }
-            ShardCmd::CommitReindex { done, stats, started } => {
+            ShardCmd::CommitReindex {
+                done,
+                stats,
+                started,
+            } => {
                 let generation = done.generation;
                 let result = shard.commit_reindex(done);
                 if let Err(e) = &result {
@@ -1101,7 +1136,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             ShardCmd::ReindexAbandoned { generation } => {
                 shard.abondoned_reindex(generation);
             }
-            ShardCmd::Start { policy, options, resp } => {
+            ShardCmd::Start {
+                policy,
+                options,
+                resp,
+            } => {
                 shard.apply_config(policy, options);
                 let result = shard.start();
                 shared.is_running.store(result.is_ok(), Ordering::Release);
@@ -1124,67 +1163,81 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 shared.is_clearing.store(false, Ordering::Release);
                 let _ = resp.send(result);
             }
-            ShardCmd::BackupFull { shard_backup_path, backup_id, resp, user } => {
+            ShardCmd::BackupFull {
+                shard_backup_path,
+                backup_id,
+                resp,
+                user,
+            } => {
                 shared.is_backing_up.store(true, Ordering::Release);
                 let result = shard.backup_full(user, shard_backup_path, backup_id);
                 shared.is_backing_up.store(false, Ordering::Release);
                 if let Ok(manifest) = &result {
-                    *shared.last_backup_id
+                    *shared
+                        .last_backup_id
                         .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
-                        manifest.backup_id.clone()
-                    );
-                    shared.last_backup_at.store(manifest.created_at, Ordering::Release);
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(manifest.backup_id.clone());
+                    shared
+                        .last_backup_at
+                        .store(manifest.created_at, Ordering::Release);
                 }
                 let _ = resp.send(result);
             }
-            ShardCmd::BackupIncremental { shard_backup_path, backup_id, user, resp } => {
-                if
-                    shared.last_backup_id
-                        .read()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .is_none()
+            ShardCmd::BackupIncremental {
+                shard_backup_path,
+                backup_id,
+                user,
+                resp,
+            } => {
+                if shared
+                    .last_backup_id
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_none()
                 {
-                    let _ = resp.send(
-                        Err(
-                            CorelamoError::Internal(
-                                "no previous backup found for incremental backup".into()
-                            )
-                        )
-                    );
+                    let _ = resp.send(Err(CorelamoError::Internal(
+                        "no previous backup found for incremental backup".into(),
+                    )));
                     continue;
                 }
                 shared.is_backing_up.store(true, Ordering::Release);
                 let segment_dir = shard.root().join("documents");
-                let result = shard.backup_incremental(
-                    shard_backup_path,
-                    backup_id,
-                    user,
-                    segment_dir
-                );
+                let result =
+                    shard.backup_incremental(shard_backup_path, backup_id, user, segment_dir);
                 shared.is_backing_up.store(false, Ordering::Release);
                 if let Ok(Some(manifest)) = &result {
-                    *shared.last_backup_id
+                    *shared
+                        .last_backup_id
                         .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
-                        manifest.backup_id.clone()
-                    );
-                    shared.last_backup_at.store(manifest.created_at, Ordering::Release);
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(manifest.backup_id.clone());
+                    shared
+                        .last_backup_at
+                        .store(manifest.created_at, Ordering::Release);
                 }
                 let _ = resp.send(result);
             }
 
-            ShardCmd::PrepareRestore { user, backup_id, resp } => {
+            ShardCmd::PrepareRestore {
+                user,
+                backup_id,
+                resp,
+            } => {
                 shared.is_restoring.store(true, Ordering::Release);
                 let result = shard.prepare_restore(&backup_id, user);
-                shared.is_running.store(shard.is_running(), Ordering::Release);
+                shared
+                    .is_running
+                    .store(shard.is_running(), Ordering::Release);
                 shared.is_restoring.store(false, Ordering::Release);
                 let _ = resp.send(result);
             }
             ShardCmd::CommitRestore { backup_id, resp } => {
                 shared.is_restoring.store(true, Ordering::Release);
                 let result = shard.commit_restore(&backup_id);
-                shared.is_running.store(shard.is_running(), Ordering::Release);
+                shared
+                    .is_running
+                    .store(shard.is_running(), Ordering::Release);
                 shared.is_restoring.store(false, Ordering::Release);
                 let _ = resp.send(result);
             }
@@ -1197,7 +1250,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let _ = resp.send(shard.list_backups());
             }
 
-            ShardCmd::DeleteBackup { backup_id, user, resp } => {
+            ShardCmd::DeleteBackup {
+                backup_id,
+                user,
+                resp,
+            } => {
                 let _ = resp.send(shard.delete_backup(&backup_id, user));
             }
 
@@ -1205,7 +1262,10 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 let _ = resp.send(shard.delete_backups_old(cutoff));
             }
 
-            ShardCmd::PlanSegmentCompaction { dead_ratio_threshold, reply } => {
+            ShardCmd::PlanSegmentCompaction {
+                dead_ratio_threshold,
+                reply,
+            } => {
                 let job = shard.plan_segment_compaction(dead_ratio_threshold);
                 let _ = reply.send(job);
             }
