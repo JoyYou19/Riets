@@ -659,4 +659,3 @@ async fn run() -> io::Result<()> {
     info!(log, "Goodbye");
     Ok(())
 }
-

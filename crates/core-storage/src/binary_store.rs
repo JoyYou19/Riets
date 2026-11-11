@@ -106,7 +106,106 @@ fn with_path(err: io::Error, path: &Path) -> io::Error {
     io::Error::new(err.kind(), format!("{}: {}", path.display(), err))
 }
 
-//VISS IR TRIVIALI
+pub struct StoreSnapshot{
+    dir:PathBuf,
+    entries:Vec<(String,DocLocation)>,
+    highest_id:DocId
+}
+impl StoreSnapshot {
+    pub fn capture(
+        dir:PathBuf,
+        locations: &DashMap<String, DocLocation>,
+        highest_id: DocId
+    ) -> Self{
+        let mut entries:Vec<(String,DocLocation)> =locations
+        .iter().map(|entry|(entry.key().clone(), *entry.value())).collect();
+    entries.sort_unstable_by_key(|(_,location)|(location.segment, location.offset));
+    Self { dir, entries, highest_id }
+    }
+
+}
+fn read_only()->io::Error{
+    io::Error::new(io::ErrorKind::Unsupported,"store snapshot is read-only")
+}
+impl DocumentStore for StoreSnapshot {
+    fn put(&mut self, _doc: StoredDocument) -> io::Result<()> {
+        Err(read_only())
+    }
+
+    fn put_batch(&mut self, _docs: Vec<StoredDocument>) -> io::Result<()> {
+        Err(read_only())
+    }
+
+    fn delete(&mut self, _external_id: &str) -> io::Result<()> {
+        Err(read_only())
+    }
+
+    fn get(&self, _external_id: &str) -> io::Result<Option<StoredDocument>> {
+        Err(read_only())
+    }
+
+    fn contains(&self, _external_id: &str) -> io::Result<bool> {
+        Err(read_only())
+    }
+
+    fn max_internal_id(&self) -> DocId {
+        self.highest_id
+    }
+
+    fn document_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn sync(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn all_documents(&self) -> io::Result<Vec<StoredDocument>> {
+        let mut docs = Vec::with_capacity(self.entries.len());
+        self.for_each_document(&mut |doc| {
+            docs.push(doc.clone());
+            Ok(())
+        })?;
+        Ok(docs)
+    }
+
+    /// Reads exactly the recorded documents, segment by segment in file order.
+    fn for_each_document(
+        &self,
+        f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut source: Option<(u32, BufReader<File>, u64)> = None;
+        for (external_id, location) in &self.entries {
+            if !matches!(&source, Some((segment, _, _)) if *segment == location.segment) {
+                let seg_path = self
+                    .dir
+                    .join(BinaryDocumentStore::segment_filename(location.segment));
+                let file = File::open(&seg_path).map_err(|e| with_path(e, &seg_path))?;
+                source = Some((
+                    location.segment,
+                    BufReader::with_capacity(COMPACTION_IO_BUFFER, file),
+                    0,
+                ));
+            }
+            let (_, reader, position) = source.as_mut().expect("source opened above");
+            reader.seek_relative((location.offset as i64) - (*position as i64))?;
+            let doc = read_document(reader)?;
+            *position = location.offset + u64::from(location.len);
+
+            if doc.external_id != *external_id || doc.internal_id != location.internal_id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "segment {} offset {}: expected '{external_id}', found '{}'",
+                        location.segment, location.offset, doc.external_id
+                    ),
+                ));
+            }
+            f(&doc)?;
+        }
+        Ok(())
+    }
+}
 #[derive(Debug)]
 pub struct BinaryDocumentStore {
     path: PathBuf,

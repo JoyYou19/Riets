@@ -320,23 +320,24 @@ impl IntoResponse for HttpOk {
                     .unwrap_or_default();
 
                 if !self.pretty
-                    && let Some(fragment) = self.data.as_ref().and_then(|d| d.to_raw_json()) {
-                        let body = envelope_raw(
-                            self.status,
-                            &self.title,
-                            &self.instance,
-                            self.request_id,
-                            self.time_start,
-                            &fragment,
-                            &extra,
-                        );
-                        return Response::builder()
-                            .status(self.status)
-                            .header(header::CONTENT_TYPE, "application/json")
-                            .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
-                            .body(Body::from(body))
-                            .unwrap();
-                    }
+                    && let Some(fragment) = self.data.as_ref().and_then(|d| d.to_raw_json())
+                {
+                    let body = envelope_raw(
+                        self.status,
+                        &self.title,
+                        &self.instance,
+                        self.request_id,
+                        self.time_start,
+                        &fragment,
+                        &extra,
+                    );
+                    return Response::builder()
+                        .status(self.status)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
+                        .body(Body::from(body))
+                        .unwrap();
+                }
 
                 let data_value = match &self.data {
                     Some(d) => match d.to_json() {

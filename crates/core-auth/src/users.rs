@@ -63,7 +63,7 @@ impl<S: DocumentStore> UserDatabase<S> {
 
     pub fn remove_user(&mut self, username: &str) -> bool {
         match self.db.get_document(username) {
-            Ok(Some(_)) => self.db.delete_document(username).is_ok(),
+            Ok(Some(_)) => self.db.delete_documents(&[username.to_owned()]).is_ok(),
             _ => false,
         }
     }

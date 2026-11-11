@@ -55,11 +55,17 @@ pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
 }
 
 #[timed(modifying_documents)]
-pub fn append_delete(root: impl AsRef<Path>, doc_id: DocId) -> io::Result<()> {
+pub fn append_deletes(root: impl AsRef<Path>, doc_ids: &[DocId]) -> io::Result<()> {
+    if doc_ids.is_empty() {
+        return Ok(());
+    }
     let path = root.as_ref().join(DELETES_FILE);
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-
-    file.write_all(format!("{doc_id}\n").as_bytes())
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut out = io::BufWriter::new(file);
+    for id in doc_ids {
+        writeln!(out, "{id}")?;
+    }
+    out.flush()
 }
 
 #[timed(compaction)]

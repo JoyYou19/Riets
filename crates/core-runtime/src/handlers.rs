@@ -34,7 +34,7 @@ use hyper::HeaderMap;
 use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
 use slog::{error, info, o, warn};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 //authorizations
 use serde::{Deserialize, Serialize};
@@ -58,15 +58,14 @@ struct UpdateRolesRequest {
     roles: Vec<String>,
 }
 
-fn require_body(body: &str) -> Result<&str, CorelamoError> {
+fn require_body(body: String) -> Result<String, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() || trimmed == "{}" {
-        Err(CorelamoError::InvalidData(
+        return Err(CorelamoError::InvalidData(
             "request body is empty".to_string(),
-        ))
-    } else {
-        Ok(trimmed)
+        ));
     }
+    Ok(body)
 }
 
 fn check_permission(
@@ -86,7 +85,7 @@ pub(crate) async fn login_handler(
     Extension(ctx): Extension<RequestContext>,
     body: String,
 ) -> Response {
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -150,7 +149,10 @@ pub(crate) async fn logout_handler(
         )
         .into_response();
     };
-    let auth = state.auth.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let auth = state
+        .auth
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     auth.logout(&Token(token.to_string()));
     HttpOk::new("logged out", &ctx).into_response()
 }
@@ -210,7 +212,7 @@ pub(crate) async fn create_user_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::CreateUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -276,7 +278,7 @@ pub(crate) async fn update_user_password_handler(
     Extension(principal): Extension<Principal>,
     body: String,
 ) -> Response {
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -337,7 +339,7 @@ pub(crate) async fn update_user_roles_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -390,7 +392,7 @@ pub(crate) async fn search_handler(
         .into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -462,7 +464,7 @@ pub(crate) async fn did_you_mean_handler(
         .into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -596,8 +598,8 @@ pub(crate) async fn insert_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
-        Ok(b) => b.to_string(),
+    let body = match require_body(body) {
+        Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -620,7 +622,7 @@ pub(crate) async fn insert_handler(
 
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -678,7 +680,7 @@ pub(crate) async fn retrieve_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -907,7 +909,7 @@ pub(crate) async fn delete_document_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -975,7 +977,7 @@ pub(crate) async fn partial_replace_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1002,73 +1004,27 @@ pub(crate) async fn partial_replace_handler(
         .into_response();
     }
 
-    //convert this to Vec<(id, value)>
     let items: Vec<(String, OwnedValue)> = command
         .items
         .into_iter()
         .map(|item| (item.id, item.patch))
         .collect();
 
-    //now we fetch the docs while still in async
-    let mut fetched = HashMap::with_capacity(items.len());
-    for (id, _) in &items {
-        if fetched.contains_key(id) {
-            continue;
-        }
-        //WARN: this happens sequentially, for small partial-replaces its ok, if something happens we
-        //can upgrade this
-
-        let result = handle.retrieve_one(id).await.map_err(|e| e.to_string());
-        fetched.insert(id.clone(), result);
+    if items.is_empty() {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData("no documents to partially replace".into()),
+            &ctx,
+        )
+        .into_response();
     }
 
-    let policy = handle.policy();
-    let parsed = tokio::task::spawn_blocking(move || {
-        doc_parser::parse_partial_replace_to_inputs(&items, &policy, |id| match fetched.get(id) {
-            Some(Ok(doc)) => Ok(doc.clone()),
-            Some(Err(msg)) => Err(CorelamoError::Internal(msg.clone())),
-            None => Ok(None),
-        })
-    })
-    .await;
-
-    let (inputs, parse_failures) = match parsed {
-        Ok(result) => result,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    };
-
-    if inputs.is_empty() {
-        let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
-        outcome.fail_many(parse_failures);
-        let title = format!(
-            "partially replaced 0 document(s) in '{db_name}', {} failed",
-            outcome.failed_count()
-        );
-        return outcome
-            .into_ok(StatusCode::OK, title, &db_name, &ctx)
-            .into_response();
-    }
-
-    let report = match handle.replace(inputs, principal.id.0.clone()).await {
+    let report = match handle.partial_replace(items, principal.id.0.clone()).await {
         Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("replace task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
     outcome.succeed_many(report.replaced);
-    outcome.fail_many(parse_failures);
     outcome.fail_many(report.failures);
 
     let title = format!(
@@ -1093,7 +1049,7 @@ pub(crate) async fn replace_document_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1116,7 +1072,7 @@ pub(crate) async fn replace_document_handler(
     let policy = handle.policy();
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -1179,7 +1135,7 @@ pub(crate) async fn upsert_document_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1202,7 +1158,7 @@ pub(crate) async fn upsert_document_handler(
     let policy = handle.policy();
     let format = ctx.format;
     let parsed =
-        tokio::task::spawn_blocking(move || doc_parser::parse_documents(&body, format, &policy))
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
     let outcome = match parsed {
@@ -1577,7 +1533,7 @@ pub(crate) async fn info_words_handler(
         .into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1727,7 +1683,7 @@ pub(crate) async fn set_policy_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::SetPolicy) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1788,7 +1744,7 @@ pub(crate) async fn set_config_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b.to_string(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2122,7 +2078,7 @@ pub(crate) async fn rename_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let body = match require_body(&body) {
+    let body = match require_body(body) {
         Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();

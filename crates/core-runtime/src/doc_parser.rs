@@ -1,6 +1,5 @@
 use core_index::document::{IndexPolicy, policy::FieldKind};
 use core_protocol::{
-    command_response_helpers::apply_merge_patch,
     errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
@@ -21,8 +20,8 @@ pub(crate) trait DocumentConversion {
 // TODO: make this configurable
 const PARALLEL_PARSE_THRESHOLD: usize = 10;
 
-pub(crate) struct Json<'a> {
-    pub body: &'a str,
+pub(crate) struct Json {
+    pub body: String,
 }
 //pub struct Xml<'a>(pub &'a str);
 
@@ -35,7 +34,7 @@ pub(crate) struct ParseOutcome {
 
 #[timed(json_parsing)]
 pub(crate) fn parse_documents(
-    body: &str,
+    body: String,
     format: Format,
     policy: &IndexPolicy,
 ) -> Result<ParseOutcome, CorelamoError> {
@@ -64,34 +63,30 @@ fn generate_routing_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-impl DocumentConversion for Json<'_> {
+impl DocumentConversion for Json {
     #[timed(json_parsing)]
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError> {
-        //If an array was given
-        let mut buf = self.body.as_bytes().to_vec();
+        // the body's own bytes are parsed in place: no copy, one parse
+        let mut buf = self.body.into_bytes();
+        let value: Value = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
+        drop(buf); // the value tree owns everything it needs
 
-        if let Ok(Value::Array(items)) = simd_json::to_owned_value(&mut buf) {
+        if let Value::Array(items) = value {
             return Ok(parse_raw_items(&items, policy));
         }
-
-        //If a single document was given
-        let mut buf = self.body.as_bytes().to_vec();
-        let value: Value = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
-        let mut docs = Vec::new();
-        let mut indices = Vec::new();
-        let mut failures = Vec::new();
+        let mut outcome = ParseOutcome {
+            docs: Vec::new(),
+            indices: Vec::new(),
+            failures: Vec::new(),
+        };
         match parse_one(0, &value, policy) {
             Ok(doc) => {
-                docs.push(doc);
-                indices.push(0);
+                outcome.docs.push(doc);
+                outcome.indices.push(0);
             }
-            Err(failure) => failures.push(failure),
+            Err(failure) => outcome.failures.push(failure),
         }
-        Ok(ParseOutcome {
-            docs,
-            indices,
-            failures,
-        })
+        Ok(outcome)
     }
 }
 
@@ -196,81 +191,6 @@ pub(crate) fn convert_from_storage(
         }
     }
     (output, skipped)
-}
-
-#[timed(json_parsing)]
-pub(crate) fn parse_partial_replace_to_inputs(
-    items: &[(String, Value)],
-    policy: &IndexPolicy,
-    get_document: impl Fn(&str) -> Result<Option<StoredDocument>, CorelamoError>,
-) -> (Vec<DocumentInput>, Vec<DocFailure>) {
-    let mut inputs = Vec::with_capacity(items.len());
-    let mut failures = Vec::new();
-
-    for (index, (id, patch)) in items.iter().enumerate() {
-        let doc = match get_document(id) {
-            Ok(Some(doc)) => doc,
-            Ok(None) => {
-                failures.push(DocFailure::new(
-                    Some(index),
-                    Some(id.clone()),
-                    FailReason::NotFound,
-                ));
-                continue;
-            }
-            Err(e) => {
-                failures.push(DocFailure::new(
-                    Some(index),
-                    Some(id.clone()),
-                    FailReason::Internal(e.to_string()),
-                ));
-                continue;
-            }
-        };
-        let mut buf = doc.source.to_vec();
-        let mut doc_value: Value = match simd_json::from_slice(&mut buf) {
-            Ok(v) => v,
-            Err(e) => {
-                failures.push(DocFailure::new(
-                    Some(index),
-                    Some(id.clone()),
-                    FailReason::Internal(format!("stored document is not valid json: {e}")),
-                ));
-                continue;
-            }
-        };
-
-        apply_merge_patch(&mut doc_value, patch);
-
-        let node = match parse_into_node(&doc_value, policy) {
-            Ok(n) => n,
-            Err(e) => {
-                failures.push(DocFailure::new(Some(index), Some(id.clone()), e));
-                continue;
-            }
-        };
-
-        let source = match simd_json::to_vec(&doc_value) {
-            Ok(s) => s,
-            Err(e) => {
-                failures.push(DocFailure::new(
-                    Some(index),
-                    Some(id.clone()),
-                    FailReason::Internal(format!("failed to serialize patched document: {e}")),
-                ));
-                continue;
-            }
-        };
-
-        inputs.push(DocumentInput {
-            external_id: id.clone(),
-            parsed: node,
-            source,
-            format: Format::JSON,
-        });
-    }
-
-    (inputs, failures)
 }
 
 //polocy is just json so no worries

@@ -104,7 +104,7 @@ impl PostingList {
             }
             merged.push(item);
         }
-
+    
         let max_weight = merged
             .iter()
             .map(|posting| posting.weight)
