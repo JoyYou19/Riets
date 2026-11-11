@@ -909,17 +909,22 @@ impl LsmIndex {
     }
 
     #[timed(modifying_documents)]
-    pub fn delete_document(&mut self, doc_id: DocId) -> io::Result<()> {
-        self.last_ingest = Some(Instant::now());
-        self.deleted.delete(doc_id);
-        self.delete_generation += 1;
-
-        if let Some(root) = &self.root {
-            crate::lsm::deletes::append_delete(root, doc_id)?;
-        }
-
-        Ok(())
+    pub fn delete_documents(&mut self, doc_ids: &[DocId]) -> io::Result<()> {
+    if doc_ids.is_empty() {
+        return Ok(());
     }
+    if let Some(root) = &self.root {
+        crate::lsm::deletes::append_deletes(root, doc_ids)?;
+    }
+    self.last_ingest = Some(Instant::now());
+    for &doc_id in doc_ids {
+        self.deleted.delete(doc_id);
+    }
+    self.delete_generation += 1;
+    Ok(())
+}
+
+
     pub fn memtable_term_count(&self) -> usize {
         self.mem.term_count()
     }

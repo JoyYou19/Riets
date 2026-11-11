@@ -34,7 +34,7 @@ use hyper::HeaderMap;
 use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
 use slog::{error, info, o, warn};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 //authorizations
 use serde::{Deserialize, Serialize};
@@ -150,7 +150,10 @@ pub(crate) async fn logout_handler(
         )
         .into_response();
     };
-    let auth = state.auth.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let auth = state
+        .auth
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     auth.logout(&Token(token.to_string()));
     HttpOk::new("logged out", &ctx).into_response()
 }
@@ -1002,7 +1005,7 @@ pub(crate) async fn partial_replace_handler(
         .into_response();
     }
 
-         let items: Vec<(String, OwnedValue)> = command
+    let items: Vec<(String, OwnedValue)> = command
         .items
         .into_iter()
         .map(|item| (item.id, item.patch))
@@ -1016,7 +1019,7 @@ pub(crate) async fn partial_replace_handler(
         .into_response();
     }
 
-     let report = match handle.partial_replace(items, principal.id.0.clone()).await {
+    let report = match handle.partial_replace(items, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };

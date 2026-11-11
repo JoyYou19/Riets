@@ -225,9 +225,10 @@ pub(crate) fn compute_disk_usage(
             let entry = entry
                 .map_err(|e| CorelamoError::Internal(format!("failed to read shard entry: {e}")))?;
             if entry.path().is_dir()
-                && let Some(name) = entry.file_name().to_str() {
-                    shard_names.push(name.to_string());
-                }
+                && let Some(name) = entry.file_name().to_str()
+            {
+                shard_names.push(name.to_string());
+            }
         }
     }
     shard_names.sort_by_key(|name| {

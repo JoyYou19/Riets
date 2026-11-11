@@ -1,6 +1,5 @@
 use core_index::document::{IndexPolicy, policy::FieldKind};
 use core_protocol::{
-    command_response_helpers::apply_merge_patch,
     errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
