@@ -63,7 +63,7 @@ fn generate_routing_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-impl DocumentConversion for Json{
+impl DocumentConversion for Json {
     #[timed(json_parsing)]
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError> {
         // the body's own bytes are parsed in place: no copy, one parse
@@ -74,7 +74,11 @@ impl DocumentConversion for Json{
         if let Value::Array(items) = value {
             return Ok(parse_raw_items(&items, policy));
         }
-        let mut outcome = ParseOutcome { docs: Vec::new(), indices: Vec::new(), failures: Vec::new() };
+        let mut outcome = ParseOutcome {
+            docs: Vec::new(),
+            indices: Vec::new(),
+            failures: Vec::new(),
+        };
         match parse_one(0, &value, policy) {
             Ok(doc) => {
                 outcome.docs.push(doc);
@@ -83,7 +87,6 @@ impl DocumentConversion for Json{
             Err(failure) => outcome.failures.push(failure),
         }
         Ok(outcome)
-    
     }
 }
 

@@ -61,7 +61,9 @@ struct UpdateRolesRequest {
 fn require_body(body: String) -> Result<String, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() || trimmed == "{}" {
-        return Err(CorelamoError::InvalidData("request body is empty".to_string()));
+        return Err(CorelamoError::InvalidData(
+            "request body is empty".to_string(),
+        ));
     }
     Ok(body)
 }
