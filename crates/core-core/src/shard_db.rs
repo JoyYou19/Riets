@@ -12,10 +12,11 @@ use core_index::{
     types::{ ARRAY_ROW_FLAG, DocId, ShardId },
 };
 use core_protocol::{
-    command_reponse_definitions::{ LookupCommand, LookupResponse },
-    errors::{ CorelamoError, DocFailure, FailReason },
+    command_reponse_definitions::{ LookupCommand, LookupResponse }, command_response_helpers::apply_merge_patch, errors::{ CorelamoError, DocFailure, FailReason }, format::Format,
 };
 use core_timing::timed;
+use indexmap::IndexMap;
+use simd_json::OwnedValue;
 use std::{
     collections::VecDeque,
     fs::{ self, File },
@@ -37,8 +38,13 @@ use core_embed::ModelRegistry;
 use core_logs::logger;
 use core_storage::{
     binary_store::{
-        BinaryDocumentStore, CompletedSegmentCompaction, DEFAULT_SEGMENT_SIZE, SegmentCompactionJob, StoreSnapshot, save_maps,
-    }, document_store::{ DocumentStore, StoredDocument }, search_database::{
+        BinaryDocumentStore,
+        CompletedSegmentCompaction,
+        DEFAULT_SEGMENT_SIZE,
+        SegmentCompactionJob,
+        StoreSnapshot,
+        save_maps,
+    }, document_store::{ DocumentStore, StoredDocument }, json_parse::parse_into_node, search_database::{
         DeleteReport,
         DocumentInput,
         FlushTicket,
@@ -970,7 +976,15 @@ impl ShardDb {
             );
         }
         self.flush()?;
-        let store =StoreSnapshot::capture(self.root.join("documents"),&self.shared.locations, self.db_ref().map_err(|e| CorelamoError::Internal(e.to_string()))?.store().max_internal_id(),);
+        let store = StoreSnapshot::capture(
+            self.root.join("documents"),
+            &self.shared.locations,
+            self
+                .db_ref()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?
+                .store()
+                .max_internal_id()
+        );
         self.generation += 1;
         self.wal_reindex = Some(self.generation);
         let params = ReindexParams {
@@ -1171,6 +1185,78 @@ impl ShardDb {
         );
 
         Ok(ReplaceReport { replaced, failures })
+    }
+    pub fn partial_replace(
+        &mut self,
+        items: Vec<( String, OwnedValue)>,
+        user: String
+    ) -> Result<ReplaceReport, CorelamoError> {
+        self.ensure_running()?;
+        let mut failures = Vec::new();
+        let mut patched: IndexMap<String, OwnedValue> = IndexMap::new();
+        for ( id, patch) in items {
+            if let Some(value) = patched.get_mut(&id) {
+                apply_merge_patch(value, &patch);
+                continue;
+            }
+            let stored = self
+                .db_ref()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?
+                .get_document(&id)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let Some(doc) = stored else {
+            failures.push(DocFailure::new(None, Some(id), FailReason::NotFound));
+            continue;
+            };
+            let mut buf = doc.source.to_vec();
+            let mut value: OwnedValue = match simd_json::to_owned_value(&mut buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    failures.push(
+                        DocFailure::new(
+                            None,
+                            Some(id),
+                            FailReason::Internal(format!("stored document is not valid JSON: {e}"))
+                        )
+                    );
+                    continue;
+                }
+            };
+            apply_merge_patch(&mut value, &patch);
+            patched.insert(id,value);
+        }
+        let mut inputs = Vec::with_capacity(patched.len());
+        for (id,  value) in patched {
+            let parsed = match parse_into_node(&value, &self.policy) {
+                Ok(node) => node,
+                Err(reason) => {
+                    failures.push(DocFailure::new(None, Some(id), reason));
+                    continue;
+                }
+            };
+            let source = match simd_json::to_vec(&value) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    failures.push(
+                        DocFailure::new(None,Some(id),FailReason::Internal(e.to_string()))
+                    );
+                    continue;
+                }
+            };
+            inputs.push(DocumentInput {
+                external_id: id,
+                parsed,
+                source,
+                format: Format::JSON,
+            });
+        }
+        let mut report = if inputs.is_empty() {
+            ReplaceReport { replaced: 0, failures: Vec::new() }
+        } else {
+            self.replace(inputs, user)?
+        };
+        report.failures.extend(failures);
+        Ok(report)
     }
 
     #[timed(modifying_database_documents)]

@@ -1,5 +1,6 @@
-use ahash::{HashMap as AHashMap, HashSet};
+use ahash::{ HashMap as AHashMap, HashSet };
 use core_query::ranking::{ POOL_SIZE, finalize };
+use simd_json::OwnedValue;
 use std::collections::HashMap;
 
 use std::path::PathBuf;
@@ -111,6 +112,11 @@ pub enum ShardCmd {
     Replace {
         user: String,
         inputs: Vec<DocumentInput>,
+        resp: oneshot::Sender<Result<ReplaceReport, CorelamoError>>,
+    },
+    PartialReplace {
+        user: String,
+        items: Vec<(String, OwnedValue)>,
         resp: oneshot::Sender<Result<ReplaceReport, CorelamoError>>,
     },
     Delete {
@@ -531,17 +537,6 @@ impl ShardHandle {
             })
             .collect();
 
-        // debug:
-        // println!(
-        //     "bounds: {:?}, sample_doc: {:?}, sample_year: {:?}",
-        //     bounds,
-        //     candidates.first().map(|h| h.doc_id),
-        //     candidates
-        //         .first()
-        //         .and_then(|_| sort_xpaths.first())
-        //         .and_then(|&x| snapshot.numeric_value(x, candidates.first().unwrap().doc_id))
-        // );
-
         let items: Vec<(SearchHit, Vec<Option<f64>>)> = candidates
             .into_iter()
             .map(|hit| {
@@ -846,6 +841,13 @@ impl ShardHandle {
     ) -> Result<ReplaceReport, CorelamoError> {
         self.call(|resp| ShardCmd::Replace { user, inputs, resp }).await?
     }
+    pub async fn partial_replace(
+        &self,
+        items: Vec<(String, OwnedValue)>,
+        user: String
+    ) -> Result<ReplaceReport, CorelamoError> {
+        self.call(|resp| ShardCmd::PartialReplace { user, items, resp }).await?
+    }
     #[timed(modifying_documents)]
     pub async fn delete(
         &self,
@@ -1077,6 +1079,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             }
             ShardCmd::Replace { inputs, resp, user } => {
                 let _ = resp.send(shard.replace(inputs, user));
+            }
+            ShardCmd::PartialReplace { user, items, resp } => {
+                let _ = resp.send(shard.partial_replace(items, user));
             }
             ShardCmd::Delete { ids, resp, user } => {
                 let _ = resp.send(shard.delete(ids, user));

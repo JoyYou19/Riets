@@ -23,11 +23,12 @@ const SEGMENT_EXTENSION: &str = "wal";
 pub enum SyncMode {
     /// fsync before every append returns, once per write request. An acknowledged write
     /// survives a crash or a power loss.
-    #[default]
+   // #[default] PRODCTION
     SyncEach,
     /// No fsync on append: records survive a process crash (they are in the OS page cache)
     /// but not a power loss. Use it only where losing the last writes is acceptable, such as
     /// benchmarks.
+    #[default ]
     Manual,
 }
 

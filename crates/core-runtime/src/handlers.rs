@@ -1002,73 +1002,27 @@ pub(crate) async fn partial_replace_handler(
         .into_response();
     }
 
-    //convert this to Vec<(id, value)>
-    let items: Vec<(String, OwnedValue)> = command
+         let items: Vec<(String, OwnedValue)> = command
         .items
         .into_iter()
         .map(|item| (item.id, item.patch))
         .collect();
 
-    //now we fetch the docs while still in async
-    let mut fetched = HashMap::with_capacity(items.len());
-    for (id, _) in &items {
-        if fetched.contains_key(id) {
-            continue;
-        }
-        //WARN: this happens sequentially, for small partial-replaces its ok, if something happens we
-        //can upgrade this
-
-        let result = handle.retrieve_one(id).await.map_err(|e| e.to_string());
-        fetched.insert(id.clone(), result);
+    if items.is_empty() {
+        return HttpError::from_corelamo(
+            CorelamoError::InvalidData("no documents to partially replace".into()),
+            &ctx,
+        )
+        .into_response();
     }
 
-    let policy = handle.policy();
-    let parsed = tokio::task::spawn_blocking(move || {
-        doc_parser::parse_partial_replace_to_inputs(&items, &policy, |id| match fetched.get(id) {
-            Some(Ok(doc)) => Ok(doc.clone()),
-            Some(Err(msg)) => Err(CorelamoError::Internal(msg.clone())),
-            None => Ok(None),
-        })
-    })
-    .await;
-
-    let (inputs, parse_failures) = match parsed {
-        Ok(result) => result,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
-    };
-
-    if inputs.is_empty() {
-        let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
-        outcome.fail_many(parse_failures);
-        let title = format!(
-            "partially replaced 0 document(s) in '{db_name}', {} failed",
-            outcome.failed_count()
-        );
-        return outcome
-            .into_ok(StatusCode::OK, title, &db_name, &ctx)
-            .into_response();
-    }
-
-    let report = match handle.replace(inputs, principal.id.0.clone()).await {
+     let report = match handle.partial_replace(items, principal.id.0.clone()).await {
         Ok(r) => r,
-        Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(format!("replace task panicked: {e}")),
-                &ctx,
-            )
-            .into_response();
-        }
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
 
     let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
     outcome.succeed_many(report.replaced);
-    outcome.fail_many(parse_failures);
     outcome.fail_many(report.failures);
 
     let title = format!(
