@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use rust_stemmers::Algorithm;
-use tantivy::tokenizer::{Token as TantivyToken, TokenFilter, TokenStream, Tokenizer};
+
+use crate::analyzer::small_tantivy::{Token, TokenFilter, TokenStream, Tokenizer};
 
 /// Snowball stemmer with a per-instance stem cache.
 /// Produces the same output as tantivy's `Stemmer` for the given language.
@@ -107,11 +108,11 @@ impl<S: TokenStream> TokenStream for CachedStemmerTokenStream<'_, S> {
         true
     }
 
-    fn token(&self) -> &TantivyToken {
+    fn token(&self) -> &Token {
         self.tail.token()
     }
 
-    fn token_mut(&mut self) -> &mut TantivyToken {
+    fn token_mut(&mut self) -> &mut Token {
         self.tail.token_mut()
     }
 }

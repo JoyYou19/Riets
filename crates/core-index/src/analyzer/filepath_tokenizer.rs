@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use tantivy::tokenizer::{BoxTokenStream, Token, TokenStream, Tokenizer};
+use crate::analyzer::small_tantivy::{BoxTokenStream, Token, TokenStream, Tokenizer};
 
 // "src/core/shard_db.rs" -> whole path + "src" "core" "shard_db" "rs"
 #[derive(Clone)]

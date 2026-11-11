@@ -43,7 +43,7 @@
 
 use std::collections::HashSet;
 
-use tantivy::tokenizer::{BoxTokenStream, Token, TokenStream, Tokenizer};
+use crate::analyzer::small_tantivy::{BoxTokenStream, Token, TokenStream, Tokenizer};
 
 fn split_where(
     segment: &str,
@@ -76,9 +76,7 @@ fn split_where(
 fn split_on_case(segment: &str) -> Vec<(usize, usize)> {
     split_where(segment, |prev, curr, next| {
         (prev.is_lowercase() && curr.is_uppercase())
-            || (prev.is_uppercase()
-                && curr.is_uppercase()
-                && next.is_some_and(char::is_lowercase))
+            || (prev.is_uppercase() && curr.is_uppercase() && next.is_some_and(char::is_lowercase))
     })
 }
 

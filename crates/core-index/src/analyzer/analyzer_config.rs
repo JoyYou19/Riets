@@ -1,6 +1,6 @@
+use crate::analyzer::small_tantivy::{Token, TokenFilter, TokenStream, Tokenizer};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
-use tantivy::tokenizer::{Language as TantivyLanguage, Token, TokenFilter, TokenStream, Tokenizer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,12 +15,31 @@ pub enum CorelamoTokenizer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Language(pub TantivyLanguage);
+pub enum Language {
+    Arabic,
+    Danish,
+    Dutch,
+    English,
+    Finnish,
+    French,
+    German,
+    Greek,
+    Hungarian,
+    Italian,
+    Norwegian,
+    Portuguese,
+    Romanian,
+    Russian,
+    Spanish,
+    Swedish,
+    Tamil,
+    Turkish,
+}
 
 impl Language {
     pub fn name(self) -> &'static str {
-        use tantivy::tokenizer::Language as L;
-        match self.0 {
+        use Language as L;
+        match self {
             L::Arabic => "arabic",
             L::Danish => "danish",
             L::Dutch => "dutch",
@@ -43,8 +62,8 @@ impl Language {
     }
 
     pub fn from_name(s: &str) -> Option<Self> {
-        use tantivy::tokenizer::Language as L;
-        Some(Language(match s.to_ascii_lowercase().as_str() {
+        use Language as L;
+        Some(match s.to_ascii_lowercase().as_str() {
             "arabic" => L::Arabic,
             "danish" => L::Danish,
             "dutch" => L::Dutch,
@@ -64,14 +83,13 @@ impl Language {
             "tamil" => L::Tamil,
             "turkish" => L::Turkish,
             _ => return None,
-        }))
+        })
     }
 
-    //porno funkcija
     pub fn algorithm(self) -> rust_stemmers::Algorithm {
+        use Language as L;
         use rust_stemmers::Algorithm as A;
-        use tantivy::tokenizer::Language as L;
-        match self.0 {
+        match self {
             L::Arabic => A::Arabic,
             L::Danish => A::Danish,
             L::Dutch => A::Dutch,
@@ -111,7 +129,6 @@ impl<'de> Deserialize<'de> for Language {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Stopwords {
-    LanguageDefaults(Language),
     Words(HashSet<String>),
 }
 
@@ -172,7 +189,7 @@ impl AnalyzerConfig {
     //when a user removes $default we hardcode just in case
     pub fn builtin_default() -> Self {
         Self {
-            stemming: Some(Language(TantivyLanguage::English)),
+            stemming: Some(Language::English),
             ..Self::default()
         }
     }
