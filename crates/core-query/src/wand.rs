@@ -33,6 +33,15 @@ struct MultiFieldTerm<'a> {
     upper_bound: u64,
 }
 
+/// Smallest allowed doc id `>= d`, or `None` when the filter has no documents left.
+fn next_allowed(allowed: &RoaringTreemap, d: DocId) -> Option<DocId> {
+    if d == 0 {
+        allowed.select(0)
+    } else {
+        allowed.select(allowed.rank(d - 1))
+    }
+}
+
 /// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
 /// Each pair is an independent WAND cursor scored with its own field's statistics.
 #[timed(search)]
@@ -103,8 +112,14 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
             break;
         };
 
-        let pivot_doc = terms[pivot_index].cursor.doc_id().unwrap();
+        let mut pivot_doc = terms[pivot_index].cursor.doc_id().unwrap();
         let smallest_doc = terms[0].cursor.doc_id().unwrap();
+        if let Some(allowed) = restrict {
+            let Some(next) = next_allowed(allowed, pivot_doc) else {
+                break;
+            };
+            pivot_doc = next;
+        }
 
         if smallest_doc == pivot_doc {
             if restrict
@@ -137,18 +152,17 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
                     ));
                     matched_terms += 1;
                 }
-
                 push_top_k(&mut heap, pivot_doc, score, score, matched_terms, k);
-            }
 
-            for term in &mut terms {
-                if term.cursor.doc_id() == Some(pivot_doc) {
-                    term.cursor.next();
+                for term in &mut terms {
+                    if term.cursor.doc_id() == Some(pivot_doc) {
+                        term.cursor.next();
+                    }
                 }
-            }
-        } else {
-            for term in &mut terms[..pivot_index] {
-                term.cursor.advance_to(pivot_doc);
+            } else {
+                for term in &mut terms[..pivot_index] {
+                    term.cursor.advance_to(pivot_doc);
+                }
             }
         }
     }
@@ -733,13 +747,18 @@ pub fn wand_top_k_grouped<S: SearchStats>(
             break;
         };
 
-        let pivot_doc = clauses[pivot_index].doc_id().unwrap();
+        let mut pivot_doc = clauses[pivot_index].doc_id().unwrap();
         let smallest_doc = clauses[0].doc_id().unwrap();
 
+        if let Some(allowed) = restrict {
+            let Some(next) = next_allowed(allowed, pivot_doc) else {
+                break;
+            };
+            pivot_doc = next;
+        }
+
         if smallest_doc == pivot_doc {
-            if restrict.is_none_or(|docs| docs.contains(pivot_doc))
-                && let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc)
-            {
+            if let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc) {
                 push_top_k(&mut heap, pivot_doc, score, raw, matched_terms, k);
             }
 
