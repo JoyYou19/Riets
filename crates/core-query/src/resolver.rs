@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use core_index::{
@@ -106,8 +106,8 @@ pub fn compile_query(
     };
 
     // group fields by analyzer name; analyze once per analyzer, then reuse
-    let mut by_name: HashMap<Option<String>, (Analyzer, Option<Query>, Vec<FieldCtx>)> =
-        HashMap::new();
+    let mut by_name: BTreeMap<Option<String>, (Analyzer, Option<Query>, Vec<FieldCtx>)> =
+    BTreeMap::new();
     for field in fields {
         let key = field.analyzer.clone();
         let entry = by_name.entry(key).or_insert_with(|| {

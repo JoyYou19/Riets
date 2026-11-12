@@ -1258,7 +1258,7 @@ impl ShardDb {
         }
 
         let docs: Vec<WalDocumentRef<'_>> = inputs.iter().map(WalDocumentRef::from).collect();
-        self.wal_append_record(&&WalRecordRef::Upsert(&docs))?;
+        self.wal_append_record(&WalRecordRef::Upsert(&docs))?;
         self.pending += inputs.len() as u32;
         let batch_size = self.options.runtime.indexing_batch_size;
         let should_checkpoint = self.pending >= (batch_size as u32);

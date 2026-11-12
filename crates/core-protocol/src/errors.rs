@@ -35,10 +35,10 @@ pub enum CorelamoError {
     #[error("conflict: {0}")]
     Conflict(String),
 
-    #[error("conflict: {0}")]
+    #[error("database not running: {0}")]
     DatabaseNotRunning(String),
 
-    #[error("conflict: {0}")]
+    #[error("database already running: {0}")]
     DatabaseAlreadyRunning(String),
     #[error("Busy:{0}")]
     Busy(String),
@@ -62,8 +62,8 @@ impl CorelamoError {
             CorelamoError::DatabaseNotRunning(_) => "database_not_started",
             CorelamoError::PathNotIndexed(_) => "path_not_indexed",
             CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
-            CorelamoError::Busy(_) => "Process is already happening", //mosk janomaina
-            CorelamoError::FailedToEx(_) => "Failed to execute the task",
+            CorelamoError::Busy(_) => "busy", //mosk janomaina
+            CorelamoError::FailedToEx(_) => "execution_failed",
         }
     }
 
@@ -78,9 +78,9 @@ impl CorelamoError {
             CorelamoError::UnsupportedFormat(_) => "Unsupported Format",
             CorelamoError::Conflict(_) => "Conflict",
             CorelamoError::UnknownRole(_) => "Role Error",
-            CorelamoError::DatabaseNotRunning(_) => "database_not_started",
+            CorelamoError::DatabaseNotRunning(_) => "Database Not Running",
             CorelamoError::PathNotIndexed(_) => "Path Not Indexed",
-            CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
+            CorelamoError::DatabaseAlreadyRunning(_) => "Database Already Running",
             CorelamoError::Busy(_) => "Service Unavailable",
             CorelamoError::FailedToEx(_) => "Execution failed",
         }
@@ -109,16 +109,7 @@ impl CorelamoError {
 //more helpers to convert io/serde/toml
 impl From<std::io::Error> for CorelamoError {
     fn from(e: std::io::Error) -> Self {
-        match e.kind() {
-            std::io::ErrorKind::NotFound => CorelamoError::NotFound(e.to_string()),
-            std::io::ErrorKind::AlreadyExists => CorelamoError::AlreadyExists(e.to_string()),
-            std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput => {
-                CorelamoError::InvalidData(e.to_string())
-            }
-            // os-level permission failure is always a server-side config problem, not a user error
-            std::io::ErrorKind::PermissionDenied => CorelamoError::PermissionDenied(e.to_string()),
-            _ => CorelamoError::Internal(e.to_string()),
-        }
+        CorelamoError::Internal(e.to_string())
     }
 }
 

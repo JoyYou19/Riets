@@ -36,7 +36,7 @@ pub struct LsmIndex {
     flush_threshold: usize,
     //flush queue
     flush_queue: FlushQueue,
-    deleted: DeleteSet,
+    deleted: Arc<DeleteSet>,
     delete_generation: u64,
     root: Option<PathBuf>,
     next_segment_id: u64,
@@ -163,6 +163,9 @@ impl SearchIndex for LsmIndex {
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.snapshot().terms(xpath)
     }
+    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+        self.snapshot().prefix_terms(prefix, xpath)
+    }
 
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
@@ -224,7 +227,7 @@ impl SearchNumeric for LsmIndex {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> RoaringTreemap {
         self.snapshot().numeric_range(xpath, lo, hi)
     }
@@ -267,7 +270,7 @@ impl LsmIndex {
             query_segments: Arc::new(Vec::new()),
             flush_threshold,
             flush_queue: FlushQueue::default(),
-            deleted: DeleteSet::new(),
+            deleted: Arc::new(DeleteSet::new()),
             delete_generation: 0,
             root: None,
             next_doc_id: 0,
@@ -374,7 +377,7 @@ impl LsmIndex {
             query_segments: Arc::new(query_segments),
             flush_threshold,
             flush_queue: FlushQueue::default(),
-            deleted,
+            deleted: Arc::new(deleted),
             delete_generation: 0, //incorrect
             root: Some(root),
             next_segment_id,
@@ -470,8 +473,9 @@ impl LsmIndex {
             );
         }
         segments.extend(self.query_segments.iter().cloned());
-        IndexSnapshot::new(mem, Arc::new(segments), self.deleted.clone())
-            .with_vectors(Arc::clone(&self.vectors))
+        IndexSnapshot::new(mem, Arc::new(segments), Arc::clone(&self.deleted)).with_vectors(
+            Arc::clone(&self.vectors)
+        )
     }
 
     pub fn merge_into_memtable(&mut self, other: MemIndex) {
@@ -730,14 +734,16 @@ impl LsmIndex {
         let job_id = self.next_compaction_job_id;
         self.next_compaction_job_id += 1;
 
-        Ok(Some(CompactionJob {
-            job_id,
-            selected,
-            deleted: self.deleted.clone(),
-            delete_generation: self.delete_generation,
-            output_path,
-            vectors,
-        }))
+        Ok(
+            Some(CompactionJob {
+                job_id,
+                selected,
+                deleted: Arc::clone(&self.deleted),
+                delete_generation: self.delete_generation,
+                output_path,
+                vectors,
+            })
+        )
     }
 
     fn merge_all_due(sizes: &[Option<u64>], ratio: u64) -> bool {
@@ -901,7 +907,7 @@ impl LsmIndex {
         }
 
         if merged_all && completed.delete_generation == self.delete_generation {
-            self.deleted = DeleteSet::new();
+            self.deleted = Arc::new(DeleteSet::new());
             crate::lsm::deletes::clear_deletes(&root)?;
         }
 
@@ -917,8 +923,9 @@ impl LsmIndex {
             crate::lsm::deletes::append_deletes(root, doc_ids)?;
         }
         self.last_ingest = Some(Instant::now());
+        let deleted = Arc::make_mut(&mut self.deleted);
         for &doc_id in doc_ids {
-            self.deleted.delete(doc_id);
+            deleted.delete(doc_id);
         }
         self.delete_generation += 1;
         Ok(())

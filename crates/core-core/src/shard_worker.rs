@@ -1,5 +1,5 @@
-use ahash::HashMap as AHashMap;
-use core_query::ranking::{POOL_SIZE, finalize};
+use ahash::{ HashMap as AHashMap, HashSet };
+use core_query::ranking::{ POOL_SIZE, finalize };
 use roaring::RoaringTreemap;
 use simd_json::OwnedValue;
 
@@ -353,7 +353,7 @@ impl ShardHandle {
         &self,
         groups: &[QueryGroup],
         plans: &[RankPlan],
-        filters: Option<&HashMap<String, FieldQuery>>,
+        filters: Option<&HashMap<String, FieldQuery>>
     ) -> PreparedShardSearch {
         let snapshot = self.shared.snapshot.get();
         let mut prepared = Vec::with_capacity(groups.len());
@@ -397,7 +397,7 @@ impl ShardHandle {
         k: usize,
         mactmode: MatchMode,
     ) -> (usize, Vec<SearchHit>) {
-        if k == 0 {
+        if k == 0 || filters.is_some_and(|f| f.is_empty()) {
             return (0, Vec::new());
         }
         // each group sees only part of a document's evidence: keep more of its candidates, so
@@ -419,14 +419,9 @@ impl ShardHandle {
             let executor = QueryExecutor::new(snapshot, &group.analyzer)
                 .with_corpus(corpus)
                 .with_prepared(prepared_group);
-            ranked.push(executor.rank_features(
-                Some(query),
-                &group.ctxs,
-                group_k,
-                filters,
-                mactmode,
-                plan,
-            ));
+            ranked.push(
+                executor.rank_features(Some(query), &group.ctxs, group_k, filters, mactmode, plan)
+            );
         }
         let hits = finalize(ranked, k);
         (hits.len(), hits)
@@ -467,7 +462,7 @@ impl ShardHandle {
         xpaths: &[XPathId],
         query: &[f32],
         k: usize,
-        prepared: &PreparedShardSearch,
+        prepared: &PreparedShardSearch
     ) -> Result<Vec<VectorHit>, CorelamoError> {
         self.ensure_readable()?;
         if prepared.filter.as_ref().is_some_and(|f| f.is_empty()) {
@@ -476,10 +471,9 @@ impl ShardHandle {
         let mut lists = Vec::with_capacity(xpaths.len());
         for &xpath in xpaths {
             lists.push(
-                prepared
-                    .snapshot
+                prepared.snapshot
                     .vector_search(xpath, query, k, prepared.filter.as_deref())
-                    .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?,
+                    .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?
             );
         }
         Ok(merge_hits(lists, k))
@@ -583,55 +577,21 @@ impl ShardHandle {
         Ok(out)
     }
 
-    pub fn get_logs_direct(&self, date: Option<String>) -> Result<String, CorelamoError> {
-        let logs_dir = self.shared.root.join("logs");
-        if !logs_dir.exists() {
-            return Ok(String::new());
-        }
-
-        let mut files: Vec<PathBuf> = Vec::new();
-        for entry in fs::read_dir(&logs_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|e| e == "log") {
-                if let Some(ref date_str) = date {
-                    if path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|name| name.contains(date_str))
-                    {
-                        files.push(path);
-                    }
-                } else {
-                    files.push(path);
-                }
-            }
-        }
-        files.sort();
-
-        let mut output = String::new();
-        for file_path in files {
-            let content = fs::read_to_string(&file_path)?;
-            output.push_str(&content);
-            if !content.ends_with('\n') {
-                output.push('\n');
-            }
-        }
-        Ok(output)
+    pub fn get_logs_direct(
+        &self,
+        date: Option<&str>,
+        max_lines: usize
+    ) -> Result<Vec<String>, CorelamoError> {
+        let lines = core_logs::logger::read_log_tail(
+            &self.shared.root.join("logs"),
+            date,
+            max_lines
+        )?;
+        Ok(lines)
     }
 
     pub fn clear_logs_direct(&self) -> Result<(), CorelamoError> {
-        let logs_dir = self.shared.root.join("logs");
-        if !logs_dir.exists() {
-            return Ok(());
-        }
-        for entry in fs::read_dir(&logs_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|e| e == "log") {
-                fs::remove_file(&path)?;
-            }
-        }
+        core_logs::logger::remove_logs(&self.shared.root.join("logs"))?;
         Ok(())
     }
 

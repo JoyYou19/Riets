@@ -527,7 +527,8 @@ impl ResponseData for LookupResponse {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GetLogsRequest {
-    pub date: Option<String>,
+    pub date: Option<String>, 
+    pub max_lines: Option<usize>,
 }
 
 impl Command for GetLogsRequest {}

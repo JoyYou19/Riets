@@ -183,7 +183,7 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
         .into_iter()
         .filter(|field| {
             names.is_none_or(|names| {
-                names.iter().any(|name| *name == field.full_path || *name == field.name)
+                names.iter().any(|name| (*name == field.full_path || *name == field.name))
             })
         })
         .map(|field| field.xpath(policy))
@@ -192,7 +192,7 @@ fn vector_xpaths(policy: &IndexPolicy, names: Option<&[String]>) -> Vec<XPathId>
 pub struct ShardManager {
     shards: Vec<ShardHandle>,
     root: PathBuf,
-    policy: RwLock<IndexPolicy>,
+    policy: RwLock<Arc<IndexPolicy>>,
     options: RwLock<DatabaseOptions>,
     analyzer_set: RwLock<AnalyzerSet>,
     db_stats: Arc<DbStats>,
@@ -275,7 +275,7 @@ impl ShardManager {
         Ok(Self {
             shards,
             root,
-            policy: RwLock::new(policy),
+            policy: RwLock::new(Arc::new(policy)),
             options: RwLock::new(options),
             joins: Mutex::new(joins),
             shutdown_done: AtomicBool::new(false),
@@ -412,7 +412,7 @@ impl ShardManager {
             joins: Mutex::new(joins),
             shutdown_done: AtomicBool::new(false),
             root,
-            policy: RwLock::new(policy),
+            policy: RwLock::new(Arc::new(policy)),
             options: RwLock::new(options),
             analyzer_set: RwLock::new(analyzer_set),
             all_fields: RwLock::new(all_fields),
@@ -428,15 +428,11 @@ impl ShardManager {
 
     //peak name ik
     #[timed(shard_manager_doc_modifying)]
-    fn update_all_fields_from_fields(
-        &self,
-        fields: &BTreeSet<&str>
-    ) -> Result<(), CorelamoError> {
+    fn update_all_fields_from_fields(&self, fields: &BTreeSet<&str>) -> Result<(), CorelamoError> {
         if fields.is_empty() {
             return Ok(());
         }
 
-       
         let wanted: Vec<(&str, FieldKind)> = {
             let policy = self.policy.read();
             fields
@@ -474,40 +470,39 @@ impl ShardManager {
         Ok(())
     }
 
-    pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
-        let mut all_lines: Vec<String> = Vec::new();
+    pub fn get_logs(
+        &self,
+        date: Option<String>,
+        max_lines: usize
+    ) -> Result<String, CorelamoError> {
+        let mut lines: Vec<String> = Vec::new();
         for h in &self.shards {
-            let logs = h.get_logs_direct(date.clone())?;
-            for line in logs.lines() {
-                if !line.trim().is_empty() {
-                    all_lines.push(line.to_string());
-                }
-            }
+            lines.extend(h.get_logs_direct(date.as_deref(), max_lines)?);
         }
-        //nu kas tas ir bet sakartojas pareizi lmao
-        all_lines.sort_by(|a, b| {
-            let a_ts = a.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
-            let b_ts = b.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
-            a_ts.cmp(&b_ts)
+
+        // every line starts with a fixed-width timestamp (`2026-11-11 16:58:03.123+02:00`), so
+        // comparing that prefix orders lines by time without allocating; the sort is stable,
+        // so lines with the same millisecond keep their order
+        const TIMESTAMP_LEN: usize = 29;
+        lines.sort_by(|a, b| {
+            let a_ts = a.get(..TIMESTAMP_LEN).unwrap_or(a);
+            let b_ts = b.get(..TIMESTAMP_LEN).unwrap_or(b);
+            a_ts.cmp(b_ts)
         });
-        Ok(all_lines.join("\n") + (if all_lines.is_empty() { "" } else { "\n" }))
+
+        let skip = lines.len().saturating_sub(max_lines);
+        let mut out = lines[skip..].join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        Ok(out)
     }
 
     pub fn clear_logs(&self) -> Result<(), CorelamoError> {
         for h in &self.shards {
             h.clear_logs_direct()?;
         }
-
-        let logs_dir = self.root.join("logs");
-        if logs_dir.exists() {
-            for entry in fs::read_dir(&logs_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() && path.extension().is_some_and(|e| e == "log") {
-                    fs::remove_file(&path)?;
-                }
-            }
-        }
+        core_logs::logger::remove_logs(&self.root.join("logs"))?;
         Ok(())
     }
 
@@ -515,7 +510,7 @@ impl ShardManager {
     pub async fn start(&self) -> Result<(), CorelamoError> {
         let policy = IndexPolicy::load(&self.root)?;
         let options = DatabaseOptions::load_from_file(&self.root)?;
-        *self.policy.write() = policy.clone();
+        *self.policy.write() = Arc::new(policy.clone());
         *self.options.write() = options.clone();
 
         let mut set = JoinSet::new();
@@ -838,8 +833,8 @@ impl ShardManager {
         }
     }
 
-    pub fn policy(&self) -> IndexPolicy {
-        self.policy.read().clone()
+    pub fn policy(&self) -> Arc<IndexPolicy> {
+        Arc::clone(&self.policy.read())
     }
 
     pub fn options(&self) -> DatabaseOptions {
@@ -919,7 +914,7 @@ impl ShardManager {
         };
         if let Some(e) = failure {
             for handle in &self.shards {
-                let _ = handle.set_policy(previous.clone(), user.clone()).await;
+                let _ = handle.set_policy((*previous).clone(), user.clone()).await;
             }
             return Err(e);
         }
@@ -927,7 +922,7 @@ impl ShardManager {
         let changed = previous.analyzers != policy.analyzers || previous.fields != policy.fields;
 
         *self.analyzer_set.write() = AnalyzerSet::from_policy(&policy.analyzers);
-        *self.policy.write() = policy;
+        *self.policy.write() = Arc::new(policy);
         self.update_all_fields_from_policy()?;
 
         Ok(
@@ -1243,9 +1238,11 @@ impl ShardManager {
         };
 
         // started only now: a corrected re-run must not leave an embedding search running
-        let vector_task = search.semantic.clone().map(|(text, xpaths)| {
-            self.spawn_vector_search(text, xpaths, FUSION_DEPTH, stats.shards.clone())
-        });
+        let vector_task = search.semantic
+            .clone()
+            .map(|(text, xpaths)| {
+                self.spawn_vector_search(text, xpaths, FUSION_DEPTH, stats.shards.clone())
+            });
         let shard_hits = match self.rank_on_shards(&search, &stats).await {
             Ok(shard_hits) => shard_hits,
             Err(e) => {
@@ -1364,13 +1361,11 @@ impl ShardManager {
         search: &CompiledSearch,
         typed: &OwnedValue
     ) -> Result<ShardStatistics, CorelamoError> {
-        let (corpus, shards) = self
-            .collect_statistics_once(
-                &search.groups,
-                &search.plans_no_fuzzy,
-                search.filters.clone(),
-            )
-            .await?;
+        let (corpus, shards) = self.collect_statistics_once(
+            &search.groups,
+            &search.plans_no_fuzzy,
+            search.filters.clone()
+        ).await?;
         let unknown_word = has_unknown_word(typed, &search.groups, &corpus);
         let has_fuzzy = search.plans_full
             .iter()
@@ -1384,9 +1379,11 @@ impl ShardManager {
                 unknown_word,
             });
         }
-        let (corpus, shards) = self
-            .collect_statistics_once(&search.groups, &search.plans_full, search.filters.clone())
-            .await?;
+        let (corpus, shards) = self.collect_statistics_once(
+            &search.groups,
+            &search.plans_full,
+            search.filters.clone()
+        ).await?;
         Ok(ShardStatistics {
             corpus: Arc::new(corpus),
             shards,
@@ -1400,7 +1397,7 @@ impl ShardManager {
         &self,
         groups: &Arc<Vec<QueryGroup>>,
         plans: &Arc<Vec<RankPlan>>,
-        filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
+        filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>
     ) -> Result<(CorpusStats, Vec<Arc<PreparedShardSearch>>), CorelamoError> {
         let mut set = JoinSet::new();
         for (index, handle) in self.shards.iter().enumerate() {
@@ -1409,10 +1406,7 @@ impl ShardManager {
             let plans = Arc::clone(plans);
             let filters = filters.clone();
             set.spawn_blocking(move || {
-                (
-                    index,
-                    handle.prepare_search(&groups, &plans, filters.as_deref()),
-                )
+                (index, handle.prepare_search(&groups, &plans, filters.as_deref()))
             });
         }
         let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
@@ -1489,20 +1483,33 @@ impl ShardManager {
             let groups = Arc::clone(&search.groups);
             let plans = Arc::clone(&stats.plans);
             let sort_xpaths = search.sort_xpaths.clone();
-            let (window, word_fetch, match_mode) =
-                (search.window, search.word_fetch, search.match_mode);
-            set.spawn_blocking(move || match sort_xpaths.as_ref() {
-                Some(sort_xpaths) => handle.rank_sorted(
-                    &prepared,
-                    &corpus,
-                    &groups,
-                    &plans,
-                    sort_xpaths,
-                    window,
-                    match_mode,
-                ),
-                None => {
-                    handle.rank_top_k(&prepared, &corpus, &groups, &plans, word_fetch, match_mode)
+            let (window, word_fetch, match_mode) = (
+                search.window,
+                search.word_fetch,
+                search.match_mode,
+            );
+            set.spawn_blocking(move || {
+                match sort_xpaths.as_ref() {
+                    Some(sort_xpaths) =>
+                        handle.rank_sorted(
+                            &prepared,
+                            &corpus,
+                            &groups,
+                            &plans,
+                            sort_xpaths,
+                            window,
+                            match_mode
+                        ),
+                    None => {
+                        handle.rank_top_k(
+                            &prepared,
+                            &corpus,
+                            &groups,
+                            &plans,
+                            word_fetch,
+                            match_mode
+                        )
+                    }
                 }
             });
         }
@@ -2153,12 +2160,13 @@ impl ShardManager {
         //stupid but so that this works too insetead of passing filters
         let empty_groups = Arc::new(Vec::<QueryGroup>::new());
         let empty_plans = Arc::new(Vec::<RankPlan>::new());
-        let (_, prepared_shards) = self
-            .collect_statistics_once(&empty_groups, &empty_plans, filters)
-            .await?;
+        let (_, prepared_shards) = self.collect_statistics_once(
+            &empty_groups,
+            &empty_plans,
+            filters
+        ).await?;
         let hits = self
-            .spawn_vector_search(request.text, xpaths, k, prepared_shards)
-            .await
+            .spawn_vector_search(request.text, xpaths, k, prepared_shards).await
             .map_err(|e| CorelamoError::Internal(format!("vector search task panicked: {e}")))?
             .ok_or_else(|| {
                 CorelamoError::Internal(
@@ -2540,7 +2548,7 @@ impl ShardManager {
         text: String,
         xpaths: Vec<XPathId>,
         k: usize,
-        prepared_shards: Vec<Arc<PreparedShardSearch>>,
+        prepared_shards: Vec<Arc<PreparedShardSearch>>
     ) -> tokio::task::JoinHandle<Option<Vec<VectorHit>>> {
         let models = Arc::clone(&self.models);
         let shards = self.shards.clone();
@@ -2666,7 +2674,7 @@ struct PageRequest {
 /// Everything a search decides before it asks a shard anything.
 /// holly porno
 struct CompiledSearch {
-    policy: IndexPolicy,
+    policy: Arc<IndexPolicy>,
     groups: Arc<Vec<QueryGroup>>,
     filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
     sorts: Option<ResolvedSort>,

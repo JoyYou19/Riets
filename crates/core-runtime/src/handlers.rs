@@ -35,7 +35,9 @@ use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
 use slog::{error, info, o, warn};
 use std::sync::Arc;
-
+//needs to become configurable
+const DEFAULT_LOG_LINES: usize = 10_000;
+const MAX_LOG_LINES: usize = 200_000;
 //authorizations
 use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
@@ -175,7 +177,9 @@ pub(crate) async fn list_users_handler(
     .await;
     let users = match listed {
         Ok(Ok(users)) => users,
-        Ok(Err(e)) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Ok(Err(e)) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
         Err(_) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal("auth service unavailable".to_string()),
@@ -187,11 +191,13 @@ pub(crate) async fn list_users_handler(
     let log = slog_scope::logger().new(o!("component" => "handlers"));
     let data: Vec<_> = users
         .into_iter()
-        .map(|(username, roles)| match roles {
-            Ok(roles) => json!({ "username": username, "roles": roles }),
-            Err(reason) => {
-                warn!(log, "user record cannot be read"; "username" => &username, "error" => &reason);
-                json!({ "username": username, "roles": [], "error": reason })
+        .map(|(username, roles)| {
+            match roles {
+                Ok(roles) => json!({ "username": username, "roles": roles }),
+                Err(reason) => {
+                    warn!(log, "user record cannot be read"; "username" => &username, "error" => &reason);
+                    json!({ "username": username, "roles": [], "error": reason })
+                }
             }
         })
         .collect();
@@ -381,7 +387,9 @@ pub(crate) async fn search_handler(
     }
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -412,7 +420,14 @@ pub(crate) async fn search_handler(
     let hits = match manager.search(&command).await {
         Ok(hits) => hits,
         Err(e) => {
-            handle.record_search(true, start.elapsed());
+            let client_error = matches!(
+                e,
+                CorelamoError::InvalidData(_)
+                    | CorelamoError::PathNotIndexed(_)
+                    | CorelamoError::UnsupportedFormat(_)
+                    | CorelamoError::NotFound(_)
+            );
+            handle.record_search(!client_error, start.elapsed());
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
@@ -453,7 +468,9 @@ pub(crate) async fn did_you_mean_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -466,7 +483,9 @@ pub(crate) async fn did_you_mean_handler(
 
     let body = match require_body(body) {
         Ok(b) => b.to_string(),
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let mut buf = body.as_bytes().to_vec();
@@ -483,7 +502,9 @@ pub(crate) async fn did_you_mean_handler(
 
     let report = match handle.did_you_mean(&req).await {
         Ok(r) => r,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let found: usize = report.words.iter().map(|w| w.suggestions.len()).sum();
@@ -523,7 +544,9 @@ pub(crate) async fn get_all_fields_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let all_fields = handle.all_fields();
@@ -556,7 +579,9 @@ pub(crate) async fn lookup_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -607,7 +632,9 @@ pub(crate) async fn insert_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -696,7 +723,9 @@ pub(crate) async fn retrieve_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -756,7 +785,9 @@ pub(crate) async fn start_database_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle.start().await {
@@ -778,7 +809,9 @@ pub(crate) async fn stop_database_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle.stop().await {
@@ -800,7 +833,9 @@ pub(crate) async fn restart_database_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle.restart().await {
@@ -824,7 +859,9 @@ pub(crate) async fn clear_database_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle.clear_all().await {
@@ -851,16 +888,22 @@ pub(crate) async fn get_logs_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
-    let date = if body.trim().is_empty() {
-        None
+    let (date, max_lines) = if body.trim().is_empty() {
+        (None, DEFAULT_LOG_LINES)
     } else {
-        //insane smukais porno lai dabutu date: "" aaraa
         let mut buf = body.trim().as_bytes().to_vec();
         match simd_json::from_slice::<GetLogsRequest>(&mut buf) {
-            Ok(req) => req.date,
+            Ok(req) => (
+                req.date,
+                req.max_lines
+                    .unwrap_or(DEFAULT_LOG_LINES)
+                    .clamp(1, MAX_LOG_LINES),
+            ),
             Err(e) => {
                 return HttpError::from_corelamo(
                     CorelamoError::InvalidData(format!("invalid get-logs request: {e}")),
@@ -871,9 +914,16 @@ pub(crate) async fn get_logs_handler(
         }
     };
 
-    match handle.get_logs(date) {
-        Ok(msg) => HttpOk::raw(StatusCode::OK, "text/plain", msg, &ctx),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    // file reads go to the blocking pool, not an async runtime thread
+    let manager = Arc::clone(&handle);
+    match tokio::task::spawn_blocking(move || manager.get_logs(date, max_lines)).await {
+        Ok(Ok(text)) => HttpOk::raw(StatusCode::OK, "text/plain", text, &ctx),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("get-logs task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -889,12 +939,20 @@ pub(crate) async fn clear_logs_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
-    match handle.clear_logs() {
-        Ok(()) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
+    let manager = Arc::clone(&handle);
+    match tokio::task::spawn_blocking(move || manager.clear_logs()).await {
+        Ok(Ok(())) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
+        Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("clear-logs task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -925,7 +983,9 @@ pub(crate) async fn delete_document_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -993,7 +1053,9 @@ pub(crate) async fn partial_replace_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -1020,7 +1082,9 @@ pub(crate) async fn partial_replace_handler(
 
     let report = match handle.partial_replace(items, principal.id.0.clone()).await {
         Ok(r) => r,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let mut outcome = BatchOutcome::new("partially replaced", StatusCode::NOT_FOUND);
@@ -1058,7 +1122,9 @@ pub(crate) async fn replace_document_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -1144,7 +1210,9 @@ pub(crate) async fn upsert_document_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -1265,7 +1333,9 @@ pub(crate) async fn create_database_handler(
     //reserve name + already exists...
     let slot = match state.databases.reserve(&db_name) {
         Ok(slot) => slot,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
     let db_path = slot.dir.clone();
 
@@ -1326,14 +1396,18 @@ pub(crate) async fn delete_database_handler(
 
     let slot = match state.databases.get(&db_name) {
         Ok(slot) => slot,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let _gate = slot.gate.write().await;
 
     let manager = match slot.manager() {
         Ok(manager) => manager,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     slot.set_state(SlotState::Deleting);
@@ -1433,7 +1507,9 @@ pub(crate) async fn stats_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -1457,14 +1533,16 @@ pub(crate) async fn stats_handler(
             "background_compaction_enabled": stats.background_compaction_enabled,
             "shard_count": stats.shard_count,
             "metrics": {
-                "search_requests": metrics.search_requests,
-                "search_errors": metrics.search_errors,
-                "average_search_us": metrics.average_search_time()
-                    .map(|d| d.as_millis() as u64),
+                "average_search_ms": metrics.average_search_time().map(|d| d.as_millis() as u64),
+                "search_p50_ms": metrics.search_percentile(0.50).map(|d| d.as_millis() as u64),
+                "search_p95_ms": metrics.search_percentile(0.95).map(|d| d.as_millis() as u64),
+                "search_p99_ms": metrics.search_percentile(0.99).map(|d| d.as_millis() as u64),
                 "indexing_requests": metrics.indexing_requests,
                 "indexing_errors": metrics.indexing_errors,
-                "average_indexing_ms": metrics.average_indexing_time()
-                    .map(|d| d.as_millis() as u64),
+                "average_indexing_ms": metrics.average_indexing_time().map(|d| d.as_millis() as u64),
+                "indexing_p50_ms": metrics.indexing_percentile(0.50).map(|d| d.as_millis() as u64),
+                "indexing_p95_ms": metrics.indexing_percentile(0.95).map(|d| d.as_millis() as u64),
+                "indexing_p99_ms": metrics.indexing_percentile(0.99).map(|d| d.as_millis() as u64),
                 "reindex_requests": metrics.reindex_requests,
                 "reindex_errors": metrics.reindex_errors,
             },
@@ -1504,11 +1582,122 @@ pub(crate) async fn stats_handler(
             "restoring": stats.restoring,
             }
         }),
-        &ctx,
-    )
-    .into_response()
+        &ctx
+    ).into_response()
+}
+/// `GET /api/metrics`: every live database's counters in the Prometheus text format.
+pub(crate) async fn prometheus_metrics_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::Status) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    let slots = state.databases.list();
+    let text = tokio::task::spawn_blocking(move || {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        for (name, kind) in [
+            ("corelamo_documents", "gauge"),
+            ("corelamo_segments", "gauge"),
+            ("corelamo_search_requests_total", "counter"),
+            ("corelamo_search_errors_total", "counter"),
+            ("corelamo_indexing_requests_total", "counter"),
+            ("corelamo_indexing_errors_total", "counter"),
+            ("corelamo_search_seconds", "histogram"),
+            ("corelamo_indexing_seconds", "histogram"),
+        ] {
+            let _ = writeln!(out, "# TYPE {name} {kind}");
+        }
+        for slot in slots {
+            if slot.state() != SlotState::Live {
+                continue;
+            }
+            let Ok(manager) = slot.manager() else {
+                continue;
+            };
+            let stats = manager.stats();
+            let m = &stats.metrics;
+            let db = slot.name.replace('\\', "\\\\").replace('"', "\\\"");
+            let _ = writeln!(
+                out,
+                "corelamo_documents{{db=\"{db}\"}} {}",
+                stats.document_count
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_segments{{db=\"{db}\"}} {}",
+                stats.segment_count
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_search_requests_total{{db=\"{db}\"}} {}",
+                m.search_requests
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_search_errors_total{{db=\"{db}\"}} {}",
+                m.search_errors
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_indexing_requests_total{{db=\"{db}\"}} {}",
+                m.indexing_requests
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_indexing_errors_total{{db=\"{db}\"}} {}",
+                m.indexing_errors
+            );
+            write_histogram(
+                &mut out,
+                "corelamo_search_seconds",
+                &db,
+                &m.search_latency,
+                m.search_total_time,
+            );
+            write_histogram(
+                &mut out,
+                "corelamo_indexing_seconds",
+                &db,
+                &m.indexing_latency,
+                m.indexing_total_time,
+            );
+        }
+        out
+    })
+    .await;
+
+    match text {
+        Ok(text) => HttpOk::raw(StatusCode::OK, "text/plain; version=0.0.4", text, &ctx),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("metrics task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
+    }
 }
 
+/// One histogram in the Prometheus text format: cumulative `le` buckets, `+Inf`, sum, count.
+fn write_histogram(
+    out: &mut String,
+    name: &str,
+    db: &str,
+    counts: &[u64],
+    sum: std::time::Duration,
+) {
+    use std::fmt::Write as _;
+    let mut cumulative = 0u64;
+    for (i, &count) in counts.iter().enumerate() {
+        cumulative += count;
+        let le = core_core::metrics::bucket_upper_bound(i).as_secs_f64();
+        let _ = writeln!(out, "{name}_bucket{{db=\"{db}\",le=\"{le}\"}} {cumulative}");
+    }
+    let _ = writeln!(out, "{name}_bucket{{db=\"{db}\",le=\"+Inf\"}} {cumulative}");
+    let _ = writeln!(out, "{name}_sum{{db=\"{db}\"}} {}", sum.as_secs_f64());
+    let _ = writeln!(out, "{name}_count{{db=\"{db}\"}} {cumulative}");
+}
 #[timed(search)]
 pub(crate) async fn info_words_handler(
     State(state): State<AppState>,
@@ -1522,7 +1711,9 @@ pub(crate) async fn info_words_handler(
     }
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -1590,7 +1781,9 @@ pub(crate) async fn reindex_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.all_running() {
@@ -1640,7 +1833,9 @@ pub(crate) async fn abort_reindex_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if handle.stats().reindexing.status == ReindexStatus::Cancelled {
@@ -1663,7 +1858,9 @@ pub(crate) async fn get_policy_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
     let policy = handle.policy();
 
@@ -1699,7 +1896,9 @@ pub(crate) async fn set_policy_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle.set_policy_all(policy, principal.id.0.clone()).await {
@@ -1723,7 +1922,9 @@ pub(crate) async fn get_config_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let options = handle.options();
@@ -1745,7 +1946,7 @@ pub(crate) async fn set_config_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -1761,7 +1962,9 @@ pub(crate) async fn set_config_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle
@@ -1769,11 +1972,7 @@ pub(crate) async fn set_config_handler(
         .await
     {
         Ok(()) => HttpOk::new(format!("config updated for '{db_name}'"), &ctx).into_response(),
-        Err(e) => HttpError::from_corelamo(
-            CorelamoError::Internal(format!("failed to update config for '{db_name}': {e}")),
-            &ctx,
-        )
-        .into_response(),
+        Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
 
@@ -1877,7 +2076,9 @@ pub(crate) async fn backup_handler(
 
     let (handle, gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if let Err(e) = handle.try_start_backup() {
@@ -1909,7 +2110,9 @@ pub(crate) async fn backup_restore_handler(
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
     if !is_valid_backup_id(&backup_id) {
         return HttpError::from_corelamo(
@@ -1962,7 +2165,9 @@ pub(crate) async fn backup_incremental_handler(
 
     let (handle, gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let backups = match handle.list_backups() {
@@ -2009,7 +2214,9 @@ pub(crate) async fn list_backups_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     let backups = match handle.list_backups() {
@@ -2041,7 +2248,9 @@ pub(crate) async fn backup_delete_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if !handle.has_backup(&backup_id) {
@@ -2117,7 +2326,9 @@ pub(crate) async fn rename_database_handler(
 
     let slot = match state.databases.get(&db_name) {
         Ok(slot) => slot,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     // one lifecycle operation per database; released on every return path
@@ -2125,7 +2336,9 @@ pub(crate) async fn rename_database_handler(
 
     let manager = match slot.manager() {
         Ok(manager) => manager,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     if manager.all_running() {
@@ -2143,7 +2356,9 @@ pub(crate) async fn rename_database_handler(
     // concurrent create for the same name fail instead of racing this rename.
     let new_slot = match state.databases.reserve(&new_name) {
         Ok(slot) => slot,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     slot.set_state(SlotState::Renaming);
@@ -2174,34 +2389,38 @@ pub(crate) async fn rename_database_handler(
     let (old_task, new_task) = (old_path.clone(), new_path.clone());
     let (old_label, new_label) = (db_name.clone(), new_name.clone());
 
-    let result = tokio::task::spawn_blocking(move || -> Result<ShardManager, CorelamoError> {
-        std::fs::rename(&old_task, &new_task).map_err(|e| {
-            CorelamoError::Internal(format!(
-                "failed to rename '{old_label}' to '{new_label}' on disk: {e}"
-            ))
-        })?;
-        ShardManager::load(
-            new_task.clone(),
-            false,
-            crate::corelamo_settings::synonym_registry(),
-            crate::corelamo_settings::model_registry()
-        )
-        .map_err(|e| {
-            // it moved but does not open: move it back so the old name keeps working
-            let rolled_back = std::fs::rename(&new_task, &old_task).is_ok();
-            CorelamoError::Internal(if rolled_back {
-                format!(
-                    "renamed on disk but failed to reopen '{new_label}': {e}; the rename was rolled back"
-                )
-            } else {
-                format!(
-                    "renamed on disk but failed to reopen '{new_label}': {e}, and rolling back \
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<ShardManager, CorelamoError> {
+            std::fs
+                ::rename(&old_task, &new_task)
+                .map_err(|e| {
+                    CorelamoError::Internal(
+                        format!("failed to rename '{old_label}' to '{new_label}' on disk: {e}")
+                    )
+                })?;
+            ShardManager::load(
+                new_task.clone(),
+                false,
+                crate::corelamo_settings::synonym_registry(),
+                crate::corelamo_settings::model_registry()
+            ).map_err(|e| {
+                // it moved but does not open: move it back so the old name keeps working
+                let rolled_back = std::fs::rename(&new_task, &old_task).is_ok();
+                CorelamoError::Internal(
+                    if rolled_back {
+                        format!(
+                            "renamed on disk but failed to reopen '{new_label}': {e}; the rename was rolled back"
+                        )
+                    } else {
+                        format!(
+                            "renamed on disk but failed to reopen '{new_label}': {e}, and rolling back \
                      failed; the data is at its new path and will be picked up on the next server restart"
+                        )
+                    }
                 )
             })
-        })
-    })
-    .await;
+        }
+    ).await;
 
     match result {
         Ok(Ok(reopened)) => {
@@ -2292,7 +2511,9 @@ pub(crate) async fn disk_usage_handler(
 
     let slot = match state.databases.get(&db_name) {
         Ok(slot) => slot,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     // a delete or rename moves this directory out from under the walk
@@ -2334,7 +2555,9 @@ pub(crate) async fn get_dictionary_handler(
 
     let (handle, _gate) = match state.db_read(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     HttpOk::raw(
@@ -2358,12 +2581,16 @@ pub(crate) async fn set_dictionary_handler(
     //parse first: a TOML error needs no database
     let document = match DictionaryDocument::parse(&db_name, &body) {
         Ok(d) => d,
-        Err(e) => return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response();
+        }
     };
 
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle.set_dictionary(document).await {
@@ -2383,7 +2610,9 @@ pub(crate) async fn reset_dictionary_handler(
     }
     let (handle, _gate) = match state.db_write(&db_name).await {
         Ok(x) => x,
-        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
     };
 
     match handle.reload_dictionary().await {

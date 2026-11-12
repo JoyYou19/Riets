@@ -41,7 +41,7 @@ pub struct ReindexTask {
     pub progress: Arc<ReindexProgress>,
     pub stats: Arc<DbStats>,
 }
-pub(crate) const REINDEX_COMPLETE:&str = "REINDEX_COMPELTE";
+pub(crate) const REINDEX_COMPLETE:&str = "REINDEX_COMPLETE";
 fn mark_complete(dir:&Path)->io::Result<()>{
     fs::File::create(dir.join(REINDEX_COMPLETE))?.sync_all()?;
     fs::File::open(dir)?.sync_all()
