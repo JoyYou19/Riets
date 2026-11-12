@@ -12,7 +12,7 @@ thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 
 
-
+bitpacking="0.9"
 
 
 # Logging / observability

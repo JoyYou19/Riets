@@ -42,4 +42,12 @@ impl PreparedQuery {
     pub(crate) fn list(&self, xpath: XPathId, key: &LeafKey) -> Option<&PostingList> {
         self.lists.get(&xpath).and_then(|keys| keys.get(key))
     }
+    pub(crate) fn insert_doc_freq(&mut self, xpath: XPathId, key: LeafKey, doc_freq: u64) {
+        self.stats.insert_doc_freq(xpath, key, doc_freq);
+    }
+
+    /// Whether this leaf was already prepared, with or without its list.
+    pub(crate) fn has_leaf(&self, xpath: XPathId, key: &LeafKey) -> bool {
+        self.list(xpath, key).is_some() || self.stats.doc_freq(xpath, key).is_some()
+    }
 }

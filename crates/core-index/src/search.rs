@@ -1,11 +1,7 @@
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton},
-    numeric_values::{NumericBound, NumericValue},
-    posting::PostingList,
-    types::{ArrayRowId, DocId, XPathId},
-    wildcard::WildcardPattern,
+    fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton}, numeric_values::{NumericBound, NumericValue}, posting::{PostingList, cursor::TermCursor}, types::{ArrayRowId, DocId, XPathId}, wildcard::WildcardPattern,
 };
 
 #[derive(Debug, Clone)]
@@ -14,10 +10,15 @@ pub struct TermPostings {
     pub doc_freq: u32,
     pub max_weight: u16,
 }
-
+pub struct TermCursorInfo<'a> {
+    pub cursor: TermCursor<'a>,
+    pub doc_freq: u32,
+    pub max_weight: u16,
+}
 // Every searchable segment should implement this, simply functions that we are going to need for
 // every type of segment either it is Immutable, Snapshot or in Memory
 pub trait SearchIndex {
+    
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList;
     fn lookup_term(&self, term: &str, xpath: XPathId) -> TermPostings {
         let postings = self.lookup(term, xpath);
@@ -31,6 +32,7 @@ pub trait SearchIndex {
     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)>;
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList;
 
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>>;
     //All indexed terms for a field (for the fuzzy automaton scan).
     fn terms(&self, xpath: XPathId) -> Vec<String>;
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32;

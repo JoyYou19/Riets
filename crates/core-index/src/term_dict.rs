@@ -13,7 +13,7 @@
 
 use std::{collections::BTreeMap, fmt, io, sync::OnceLock};
 
-pub const TERM_META_LEN: usize = 8 + 4 + 4 + 2;
+pub const TERM_META_LEN: usize = 8 + 4 + 4 + 2+4+4+4;
 
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
@@ -30,6 +30,13 @@ pub struct TermMeta {
     pub postings_len: u32,
     pub doc_freq: u32,
     pub max_weight: u16,
+    /// Number of blocks, which is also the number of skip entries.
+    pub block_count:u32,
+     /// Bytes of the blocks area (after the skip table).
+    pub block_len:u32,
+    //btyes of the position stream 
+    pub positions_len:u32
+
 }
 
 //to io:Error simplest one yer

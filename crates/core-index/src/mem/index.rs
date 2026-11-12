@@ -5,8 +5,9 @@ use crate::document::analyzed::{ AnalyzedDocument, AnalyzedField, AnalyzedTarget
 use crate::document::document::BoolField;
 use crate::fuzzy::{ DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton };
 use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
-use crate::posting::PostingList;
-use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
+use crate::posting::cursor::TermCursor;
+use crate::posting::{ PostingCursor, PostingList };
+use crate::search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo };
 use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId };
 use crate::wildcard::{ WildcardPattern, capped_union };
 use ahash::AHashMap;
@@ -149,6 +150,18 @@ impl SearchIndex for MemIndex {
     }
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.lookup_wildcard(pattern, xpath)
+    }
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
+        // the inherent lookup borrows the list; the trait one would clone it
+        let list = MemIndex::lookup(self, term, xpath)?;
+        if list.is_empty() {
+            return None;
+        }
+        Some(TermCursorInfo {
+            cursor: TermCursor::Slice(PostingCursor::new(list)),
+            doc_freq: u32::try_from(list.len()).unwrap_or(u32::MAX),
+            max_weight: list.max_weight(),
+        })
     }
 }
 

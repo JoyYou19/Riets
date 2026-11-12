@@ -2,19 +2,20 @@ use core_timing::timed;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::SeekFrom;
-
+use bitpacking::{BitPacker, BitPacker4x};
 use std::{
     fs::File,
     io::{self, BufWriter, Seek, Write},
     path::Path,
 };
 
-use crate::array_rows::ArrayRowIndex;
+use crate::{array_rows::ArrayRowIndex, disk::format::{BLOCK_LEN, SkipEntry}, posting::Posting};
 use crate::document::document::BoolField;
 use crate::tmp_path_for;
 use crate::{
     disk::{
-        codec::{push_var_u16, push_var_u32, push_var_u64},
+        codec::{encode_block, push_var_u32},
+
         format::{SegmentFooter, SegmentHeader},
     },
     numeric_values::NumericFields,
@@ -25,8 +26,167 @@ use crate::{
     types::{DocId, TermKey, XPathId},
 };
 
-/// Tracks the write position itself, so `stream_position()` never flushes
-/// the `BufWriter` or makes a syscall.
+struct BlockWriter {
+    packer:BitPacker4x,
+    // the block being built
+    docs: [u64; 128],
+    term_frequency: [u32; 128],
+    weights: [u16; 128],
+    slots: usize,
+
+    // per-block stats, reset in flush()
+    block_max_tf: u32,
+    block_max_weight: u16,
+
+    block_min_doc_len: u32,    // for the block-max WAND bound
+    block_positions_start: u32,
+    block_offsets_start: u32,
+
+    // output
+    skip_table: Vec<u8>,
+    blocks_packed: Vec<u8>,
+    positions: Vec<u8>,
+    offsets: Vec<u8>,
+    block_count:u32,
+    last_doc_id: u64,
+}
+impl BlockWriter {
+    fn new() -> Self {
+        Self {
+            packer: BitPacker4x::new(),
+            docs: [0; BLOCK_LEN],
+            term_frequency: [0; BLOCK_LEN],
+            weights: [0; BLOCK_LEN],
+            slots: 0,
+            block_max_tf: 0,
+            block_max_weight: 0,
+            block_min_doc_len: u32::MAX,
+            block_positions_start: 0,
+            block_offsets_start: 0,
+            skip_table: Vec::new(),
+            blocks_packed: Vec::with_capacity(64 * 1024),
+            positions: Vec::with_capacity(64 * 1024),
+            offsets: Vec::new(),
+            block_count: 0,
+            last_doc_id: 0,
+        }
+    }
+
+    /// Encodes `list` into this writer's buffers, replacing the previous term.
+    /// `doc_len` gives a document's length in this term's field.
+    #[timed(writing_files)]
+    fn write_term(&mut self, list: &PostingList, doc_len: impl Fn(DocId) -> Option<u32>) {
+        self.skip_table.clear();
+        self.blocks_packed.clear();
+        self.positions.clear();
+        self.offsets.clear();
+        self.block_count = 0;
+        self.slots = 0;
+        self.last_doc_id = 0;
+        self.reset_block_stats();
+
+        for posting in list.items() {
+            self.push(posting, doc_len(posting.doc_id));
+        }
+        self.flush_block();
+    }
+
+    fn push(&mut self, posting: &Posting, doc_len: Option<u32>) {
+        let doc_id = posting.doc_id;
+
+        // a gap that does not fit u32 (the jump to array-row ids) starts a new block, whose
+        // first doc is stored absolutely in its skip entry
+        if self.slots > 0 && doc_id - self.last_doc_id > u64::from(u32::MAX) {
+            self.flush_block();
+        }
+
+        if self.slots == 0 {
+            self.block_positions_start = stream_offset(&self.positions);
+            self.block_offsets_start = stream_offset(&self.offsets);
+        }
+
+        let tf = u32::try_from(posting.positions.len()).expect("term frequency fits u32");
+        let slot = self.slots;
+        self.docs[slot] = doc_id;
+        self.term_frequency[slot] = tf;
+        self.weights[slot] = posting.weight;
+
+        self.block_max_tf = self.block_max_tf.max(tf);
+        self.block_max_weight = self.block_max_weight.max(posting.weight);
+        // 0 = unknown length: the block bound then falls back to the term bound
+        self.block_min_doc_len = self.block_min_doc_len.min(doc_len.unwrap_or(0));
+
+        let mut last_position = 0u32;
+        for &position in &posting.positions {
+            push_var_u32(&mut self.positions, position - last_position);
+            last_position = position;
+        }
+
+        let has_offsets = !posting.offsets.is_empty();
+        debug_assert!(!has_offsets || posting.offsets.len() == posting.positions.len());
+        self.offsets.push(u8::from(has_offsets));
+        if has_offsets {
+            for &(start, end) in &posting.offsets {
+                push_var_u32(&mut self.offsets, start);
+                push_var_u32(&mut self.offsets, end - start);
+            }
+        }
+
+        self.slots += 1;
+        self.last_doc_id = doc_id;
+
+        if self.slots == BLOCK_LEN {
+            self.flush_block();
+        }
+    }
+
+    fn flush_block(&mut self) {
+        if self.slots == 0 {
+            return;
+        }
+        let len = self.slots;
+        let block_start = stream_offset(&self.blocks_packed);
+
+        encode_block(
+            &self.packer,
+            &self.docs[..len],
+            &self.term_frequency[..len],
+            &self.weights[..len],
+            &mut self.blocks_packed,
+        );
+
+        SkipEntry {
+            first_doc_id: self.docs[0],
+            last_doc_id: self.docs[len - 1],
+            block_start_offset:block_start,
+            positions_start_offset: self.block_positions_start,
+            offsets_start_offset: self.block_offsets_start,
+            max_tf: self.block_max_tf,
+            min_doc_len: self.block_min_doc_len,
+            max_weight: self.block_max_weight,
+            len: u8::try_from(len).expect("block length is at most 128"),
+        }
+        .write_to(&mut self.skip_table);
+
+        self.block_count += 1;
+        self.slots = 0;
+        self.reset_block_stats();
+    }
+
+    fn reset_block_stats(&mut self) {
+        self.block_max_tf = 0;
+        self.block_max_weight = 0;
+        self.block_min_doc_len = u32::MAX;
+    }
+
+    fn total_len(&self) -> usize {
+        self.skip_table.len() + self.blocks_packed.len() + self.positions.len() + self.offsets.len()
+    }
+}
+
+fn stream_offset(buffer: &[u8]) -> u32 {
+    u32::try_from(buffer.len()).expect("one term's postings stream exceeds 4 GiB")
+}
 struct PositionWriter<W> {
     inner: W,
     pos: u64,
@@ -72,7 +232,7 @@ struct FieldWriter<K> {
     fields: Vec<(XPathId, TermDict)>,
     current: Option<XPathId>,
     entries: Vec<(K, TermMeta)>,
-    postings_buf: Vec<u8>,
+    blocks:BlockWriter,
     term_count: u32,
 }
 
@@ -82,7 +242,7 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
             fields: Vec::new(),
             current: None,
             entries: Vec::new(),
-            postings_buf: Vec::with_capacity(64 * 1024),
+            blocks: BlockWriter::new(),
             term_count: 0,
         }
     }
@@ -95,30 +255,42 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
         xpath: XPathId,
         term: K,
         postings: &PostingList,
+        doc_len: impl Fn(DocId) -> Option<u32>,
     ) -> io::Result<()> {
         if self.current != Some(xpath) {
             self.close_field()?;
             self.current = Some(xpath);
         }
 
-        self.postings_buf.clear();
-
         let postings_offset = out.stream_position()?;
-        encode_posting_list(&mut self.postings_buf, postings);
-        out.write_all(&self.postings_buf)?;
+        self.blocks.write_term(postings, doc_len);
+
+        let blocks = &self.blocks;
+        out.write_all(&blocks.skip_table)?;
+        out.write_all(&blocks.blocks_packed)?;
+        out.write_all(&blocks.positions)?;
+        out.write_all(&blocks.offsets)?;
+
+        let to_u32 = |len: usize| {
+            u32::try_from(len).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "term postings exceed 4 GiB")
+            })
+        };
 
         self.entries.push((
             term,
             TermMeta {
                 postings_offset,
-                postings_len: self.postings_buf.len() as u32,
-                doc_freq: postings.len() as u32,
+                postings_len: to_u32(blocks.total_len())?,
+                doc_freq: to_u32(postings.len())?,
                 max_weight: postings.max_weight(),
+                block_count: blocks.block_count,
+                block_len: to_u32(blocks.blocks_packed.len())?,
+                positions_len: to_u32(blocks.positions.len())?,
             },
         ));
 
         self.term_count += 1;
-
         Ok(())
     }
 
@@ -192,6 +364,9 @@ fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io:
             write_u32(out, meta.postings_len)?;
             write_u32(out, meta.doc_freq)?;
             write_u16(out, meta.max_weight)?;
+            write_u32(out, meta.block_count)?;
+            write_u32(out, meta.block_len)?;
+            write_u32(out, meta.positions_len)?;
         }
     }
 
@@ -267,8 +442,12 @@ pub fn write_segment_to<W: Write + Seek>(
 
     let mut writer: FieldWriter<&str> = FieldWriter::new();
 
+    let doc_lengths = segment.doc_lengths();
     for (key, postings) in segment.terms() {
-        writer.push(out, key.xpath, key.term.as_str(), postings)?;
+        let xpath = key.xpath;
+        writer.push(out, xpath, key.term.as_str(), postings, |doc| {
+            doc_lengths.get(&(doc, xpath)).copied()
+        })?;
     }
 
     let (fields, term_count) = writer.finish()?;
@@ -350,38 +529,6 @@ fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Resul
     Ok(())
 }
 
-#[timed(writing_files)]
-fn encode_posting_list(out: &mut Vec<u8>, list: &PostingList) {
-    let mut last_doc_id = 0u64;
-
-    for posting in list.items() {
-        let doc_delta = posting.doc_id - last_doc_id;
-        last_doc_id = posting.doc_id;
-
-        push_var_u64(out, doc_delta);
-        push_var_u16(out, posting.weight);
-        push_var_u32(out, posting.positions.len() as u32);
-
-        let has_offsets = !posting.offsets.is_empty();
-        debug_assert!(!has_offsets || posting.offsets.len() == posting.positions.len());
-        out.push(has_offsets as u8);
-
-        let mut last_position = 0u32;
-
-        for &position in &posting.positions {
-            let position_delta = position - last_position;
-            last_position = position;
-            push_var_u32(out, position_delta);
-        }
-
-        if has_offsets {
-            for &(start, end) in &posting.offsets {
-                push_var_u32(out, start);
-                push_var_u32(out, end - start);
-            }
-        }
-    }
-}
 
 #[timed(writing_files)]
 pub fn write_merged_segment(
@@ -427,7 +574,9 @@ pub fn write_merged_segment_to<W: Write + Seek>(
 
     for (key, postings) in terms {
         let xpath = key.xpath;
-        writer.push(out, xpath, key.term, &postings)?;
+        writer.push(out, xpath, key.term, &postings,|doc|{
+            doc_lengths.get(&(doc,xpath)).copied()
+        })?;
     }
 
     let (fields, term_count) = writer.finish()?;

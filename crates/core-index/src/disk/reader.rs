@@ -2,28 +2,15 @@
 
 use std::{ collections::BTreeMap, io, path::Path };
 
+use bitpacking::{BitPacker, BitPacker4x};
 use core_timing::timed;
 use memmap2::Mmap;
 use roaring::RoaringTreemap;
 
 use crate::{
-    array_rows::{ ArrayRowIndex, NO_PARENT_ROW },
-    bkd::Bkd,
-    disk::{
-        codec::{ read_var_u16, read_var_u32, read_var_u64 },
-        format::{ FOOTER_LEN, MAGIC, SegmentFooter, VERSION },
-    },
-    document::document::BoolField,
-    document_values::DocValues,
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
-    numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue },
-    posting::item::Offsets,
-    posting::{ Posting, PostingList },
-    search::{ SearchIndex, SearchNumeric, SearchStats, TermPostings },
-    segment::build_field_stats,
-    term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta },
-    types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId },
-    wildcard::MAX_PATTERN_TERMS,
+    analyzer::analyzer_config::Stopwords::LanguageDefaults, array_rows::{ ArrayRowIndex, NO_PARENT_ROW }, bkd::Bkd, disk::{
+        block_cursor::BlockCursor, codec::{ DecodedBlock, decode_block, read_var_u16, read_var_u32, read_var_u64 }, format::{ FOOTER_LEN, MAGIC, SKIP_ENTRY_LEN, SegmentFooter, SkipEntry, VERSION },
+    }, document::document::BoolField, document_values::DocValues, fuzzy::{ FuzzyExpansion, FuzzyOptions }, numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue }, posting::{Positions, Posting, PostingList, cursor::TermCursor, item::Offsets}, search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo, TermPostings }, segment::build_field_stats, term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta }, types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId }, wildcard::MAX_PATTERN_TERMS,
 };
 
 // Read only disk segment.
@@ -78,10 +65,6 @@ impl SearchNumeric for DiskSegment {
 }
 
 impl DiskSegment {
-    // Opens and validates a segment, doesn't do any decoding for postings,
-    // just mmaps, validates, reads the dictionary, so we can use this
-    // even if we don't need to use the data inside of it
-    // in the case of just checking if we even want to read this segment
     #[timed(disk_io)]
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
@@ -150,93 +133,110 @@ impl DiskSegment {
     //Decodes the postings and offsets
     #[timed(search)]
     fn read_postings(&self, meta: TermMeta) -> PostingList {
-        let start = meta.postings_offset as usize;
-        let len = meta.postings_len as usize;
-
-        let Some(end) = start.checked_add(len) else {
+        let Some(bytes) = self.term_bytes(meta) else {
             return PostingList::default();
         };
 
-        if end > self.mmap.len() {
-            return PostingList::default();
-        }
-
-        read_posting_list(
-            &self.mmap[start..end],
-            meta.doc_freq,
-            meta.max_weight
-        ).unwrap_or_default()
+        read_posting_list(bytes, meta).unwrap_or_default()
     }
 
-    //Reads posting the same way as the original function, but into a buffer
-
+    // Reads postings the same way as `read_postings`, but into a caller's buffer
     fn read_postings_into(&self, meta: TermMeta, out: &mut Vec<Posting>) {
-        let start = meta.postings_offset as usize;
-        let len = meta.postings_len as usize;
-
-        let Some(end) = start.checked_add(len) else {
+        let Some(bytes) = self.term_bytes(meta) else {
             return;
         };
 
-        if end > self.mmap.len() {
-            return;
-        }
+        let _ = read_posting_list_into(bytes, meta, out);
+    }
 
-        let _ = read_posting_list_into(&self.mmap[start..end], meta.doc_freq, out);
+    /// The bytes of one term's region, or `None` when the meta points outside the file.
+    fn term_bytes(&self, meta: TermMeta) -> Option<&[u8]> {
+        let start = usize::try_from(meta.postings_offset).ok()?;
+        let end = start.checked_add(meta.postings_len as usize)?;
+        self.mmap.get(start..end)
     }
 }
 
 //gramatu tarps:
-fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -> io::Result<()> {
-    let mut offset = 0;
-    let count = doc_freq as usize;
+fn read_posting_list_into(bytes: &[u8], meta:TermMeta, out: &mut Vec<Posting>) -> io::Result<()> {
 
-    //add more space for out
-    out.reserve(count);
 
-    let mut last_doc_id = 0u64;
+    //duplicate code 
+     let block_count = meta.block_count as usize;
+    let skip_len = block_count
+        .checked_mul(SKIP_ENTRY_LEN)
+        .ok_or_else(|| invalid("skip table size overflow"))?;
+    let blocks_end = skip_len
+        .checked_add(meta.block_len as usize)
+        .ok_or_else(|| invalid("blocks size overflow"))?;
+    let positions_end = blocks_end
+        .checked_add(meta.positions_len as usize)
+        .ok_or_else(|| invalid("positions size overflow"))?;
+    if positions_end > bytes.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "term region truncated"));
+    }
 
-    for _ in 0..count {
-        let doc_delta = read_var_u64(bytes, &mut offset)?;
-        let doc_id = last_doc_id + doc_delta;
-        last_doc_id = doc_id;
+    let skip_table = &bytes[..skip_len];
+    let blocks = &bytes[skip_len..blocks_end];
+    let positions = &bytes[blocks_end..positions_end];
+    let offsets = &bytes[positions_end..];
 
-        let weight = read_var_u16(bytes, &mut offset)?;
-        let position_count = read_var_u32(bytes, &mut offset)? as usize;
+    let packer = BitPacker4x::new();
+    let mut block = DecodedBlock::default();
+    let mut position_at = 0usize;
+    let mut offset_at = 0usize;
 
-        //per-posting offsets flag
-        if offset >= bytes.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "missing offsets flag"));
-        }
-        let present = bytes[offset] != 0;
-        offset += 1;
+    out.reserve(meta.doc_freq as usize);
 
-        let mut positions = crate::posting::Positions::with_capacity(position_count);
-        let mut last_position = 0u32;
+    for index in 0..block_count {
+        let entry = SkipEntry::read_at(skip_table, index)?;
+        let start = entry.block_start_offset as usize;
+        let block_bytes = blocks
+            .get(start..)
+            .ok_or_else(|| invalid("block offset past blocks area"))?;
+        decode_block(&packer, block_bytes, &entry, &mut block)?;
 
-        for _ in 0..position_count {
-            let position_delta = read_var_u32(bytes, &mut offset)?;
-            let position = last_position + position_delta;
-            last_position = position;
-            positions.push(position);
-        }
+        for i in 0..block.len {
+            let tf = block.term_freq[i] as usize;
 
-        let mut offsets = Offsets::new();
-        if present {
-            offsets = Offsets::with_capacity(position_count);
-            for _ in 0..position_count {
-                let start = read_var_u32(bytes, &mut offset)?;
-                let len = read_var_u32(bytes, &mut offset)?;
-                offsets.push((start, start + len));
+            let mut doc_positions = Positions::with_capacity(tf);
+            let mut last_position = 0u32;
+            for _ in 0..tf {
+                last_position += read_var_u32(positions, &mut position_at)?;
+                doc_positions.push(last_position);
             }
-        }
 
-        out.push(Posting::with_weight_and_offsets(doc_id, positions, offsets, weight));
+            let present = *offsets
+                .get(offset_at)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "missing offsets flag"))?
+                != 0;
+            offset_at += 1;
+
+            let mut doc_offsets = Offsets::new();
+            if present {
+                doc_offsets.reserve(tf);
+                for _ in 0..tf {
+                    let start = read_var_u32(offsets, &mut offset_at)?;
+                    let len = read_var_u32(offsets, &mut offset_at)?;
+                    doc_offsets.push((start, start + len));
+                }
+            }
+
+            out.push(Posting::with_weight_and_offsets(
+                block.docs[i],
+                doc_positions,
+                doc_offsets,
+                block.weights[i],
+            ));
+        }
     }
 
     Ok(())
-}
 
+}
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
 // We need to search this segment for sure
 impl SearchIndex for DiskSegment {
     #[timed(search)]
@@ -320,7 +320,15 @@ impl SearchIndex for DiskSegment {
             })
             .unwrap_or_default()
     }
-
+     fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
+        let meta = self.dictionary.get(xpath, term)?;
+        let cursor = BlockCursor::new(self.term_bytes(meta)?, meta).ok()?;
+        Some(TermCursorInfo {
+            cursor: TermCursor::Block(Box::new(cursor)),
+            doc_freq: meta.doc_freq,
+            max_weight: meta.max_weight,
+        })
+    }
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let Some(dict) = self.dictionary.field(xpath) else {
@@ -731,6 +739,9 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
                 postings_len: cursor.read_u32()?,
                 doc_freq: cursor.read_u32()?,
                 max_weight: cursor.read_u16()?,
+                block_count:cursor.read_u32()?,
+                block_len:cursor.read_u32()?,
+                positions_len:cursor.read_u32()?
             });
         }
 
@@ -832,12 +843,12 @@ fn read_bool_points(
 }
 
 #[timed(search)]
-fn read_posting_list(bytes: &[u8], doc_freq: u32, max_weight: u16) -> io::Result<PostingList> {
+fn read_posting_list(bytes: &[u8], meta:TermMeta) -> io::Result<PostingList> {
     let mut postings = Vec::new();
 
-    read_posting_list_into(bytes, doc_freq, &mut postings)?;
+    read_posting_list_into(bytes, meta, &mut postings)?;
 
-    Ok(PostingList::from_sorted_with_max_weight(postings, max_weight))
+    Ok(PostingList::from_sorted_with_max_weight(postings, meta.max_weight))
 }
 
 fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {

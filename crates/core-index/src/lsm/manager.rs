@@ -10,22 +10,11 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    disk::{ reader::DiskSegment, writer::write_segment },
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
-    lsm::{
+    disk::{ reader::DiskSegment, writer::write_segment }, fuzzy::{ FuzzyExpansion, FuzzyOptions }, lsm::{
         IndexSnapshot,
         compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
         manifest,
-    },
-    mem::MemIndex,
-    numeric_values::{ NumericBound, NumericValue },
-    posting::{ DeleteSet, PostingList },
-    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats },
-    segment::{ ImmutableSegment, SegmentHandle },
-    types::{ ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId },
-    vector::{ HnswGraph, hnsw_file_path },
-    vector::{ SegmentVectors, VectorFile, find_vector_files, vector_file_path },
-    wildcard::WildcardPattern,
+    }, mem::MemIndex, numeric_values::{ NumericBound, NumericValue }, posting::{ DeleteSet, PostingList, cursor::{TermCursor, UnionCursor} }, search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo }, segment::{ ImmutableSegment, SegmentHandle }, types::{ ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId }, vector::{ HnswGraph, SegmentVectors, VectorFile, find_vector_files, hnsw_file_path, vector_file_path }, wildcard::WildcardPattern,
 };
 
 pub struct LsmIndex {
@@ -214,6 +203,39 @@ impl SearchIndex for LsmIndex {
         opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         self.snapshot().fuzzy_expansions(term, xpath, opts)
+    }
+        #[timed(search)]
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
+        let pending = self.flush_queue.pending.iter().flat_map(|flush| flush.generations.iter());
+
+        // the same sources as `build_snapshot`, borrowed from `self` instead of cloned
+        let memory = std::iter::once(&self.mem)
+            .chain(self.generations.iter().map(|generation| &**generation))
+            .chain(pending.map(|generation| &**generation));
+
+        let mut children = Vec::new();
+        let mut doc_freq = 0u32;
+        let mut max_weight = 0u16;
+
+        let infos = memory
+            .filter_map(|mem| mem.term_cursor(term, xpath))
+            .chain(self.query_segments.iter().filter_map(|segment| segment.term_cursor(term, xpath)));
+
+        for info in infos {
+            doc_freq = doc_freq.saturating_add(info.doc_freq);
+            max_weight = max_weight.max(info.max_weight);
+            children.push(info.cursor);
+        }
+
+        let cursor = if children.is_empty() {
+            return None;
+        } else if children.len() == 1 && self.deleted.is_empty() {
+            children.pop()?
+        } else {
+            TermCursor::Union(Box::new(UnionCursor::new(children, &self.deleted)))
+        };
+
+        Some(TermCursorInfo { cursor, doc_freq, max_weight })
     }
 }
 

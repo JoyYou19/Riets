@@ -1,9 +1,8 @@
 use std::{cmp::Ordering, collections::BinaryHeap};
 
 use core_index::{
-    posting::{PostingList, cursor::PostingCursor},
-    search::SearchStats,
-    types::{DocId, XPathId},
+
+    posting::cursor::TermCursor, search::SearchStats, types::{DocId, XPathId},
 };
 use core_timing::timed;
 use roaring::RoaringTreemap;
@@ -13,32 +12,48 @@ use crate::{
     scorer::{bm25_score_scaled, bm25_upper_bound},
 };
 
+
 /// One query term's postings in a field, borrowed from wherever they were read.
 pub struct TermRef<'a> {
-    pub postings: &'a PostingList,
+    pub cursor: TermCursor<'a>,
     pub doc_freq: u32,
     pub max_weight: u16,
 }
 
+struct MultiFieldTerm<'a> {
+    cursor: TermCursor<'a>,
+    field: usize,
+    doc_freq: u32,
+    upper_bound: u64,
+}
+pub struct WandTerm<'a> {
+    pub cursor: TermCursor<'a>,
+    pub doc_freq: u32,
+    pub upper_bound: u64,
+}
+
+impl<'a> WandTerm<'a> {
+    pub fn new(cursor: TermCursor<'a>, doc_freq: u32, max_weight: u16, doc_count: u64) -> Self {
+        Self {
+            cursor,
+            doc_freq,
+            upper_bound: bm25_upper_bound(max_weight, doc_count, doc_freq),
+        }
+    }
+}
 /// Postings for every query term within one field.
 pub struct FieldTerms<'a> {
     pub xpath: XPathId,
     pub terms: Vec<TermRef<'a>>,
 }
 
-struct MultiFieldTerm<'a> {
-    cursor: PostingCursor<'a>,
-    field: usize,
-    doc_freq: u32,
-    upper_bound: u64,
-}
 
 /// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
 /// Each pair is an independent WAND cursor scored with its own field's statistics.
 #[timed(search)]
-pub fn wand_top_k_multi_field<S: SearchStats>(
+pub fn wand_top_k_multi_field<'a,S: SearchStats>(
     stats: &S,
-    fields: &[FieldTerms<'_>],
+    fields: Vec<FieldTerms<'a>>,
     k: usize,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
@@ -56,17 +71,16 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
             )
         })
         .collect();
-
-    let mut terms: Vec<MultiFieldTerm<'_>> = Vec::new();
-    for (field_index, field) in fields.iter().enumerate() {
+    let field_count =fields.len();
+    let mut terms: Vec<MultiFieldTerm<'a>> = Vec::new();
+    for (field_index, field) in fields.into_iter().enumerate() {
         let doc_count = field_stats[field_index].1;
-        for term in &field.terms {
-            let cursor = PostingCursor::new(term.postings);
-            if cursor.is_exhausted() {
+        for term in field.terms {
+            if term.cursor.is_exhausted() {
                 continue;
             }
             terms.push(MultiFieldTerm {
-                cursor,
+                cursor:term.cursor,
                 field: field_index,
                 doc_freq: term.doc_freq,
                 upper_bound: bm25_upper_bound(term.max_weight, doc_count, term.doc_freq),
@@ -75,7 +89,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
     }
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
-    let mut doc_len_cache: Vec<Option<u32>> = vec![None; fields.len()];
+    let mut doc_len_cache: Vec<Option<u32>> = vec![None; field_count];
 
     loop {
         terms.retain(|term| !term.cursor.is_exhausted());
@@ -125,11 +139,11 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
                             .doc_len(pivot_doc, xpath)
                             .unwrap_or(avg_doc_len as u32)
                     });
-                    let posting = term.cursor.current().unwrap();
+                
 
                     score = score.saturating_add(bm25_score_scaled(
-                        posting.positions.len() as u32,
-                        posting.weight,
+                        term.cursor.term_freq(),
+                        term.cursor.weight(),
                         doc_len,
                         avg_doc_len,
                         doc_count,
@@ -155,21 +169,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
 
     finish_heap(heap)
 }
-pub struct WandTerm<'a> {
-    pub cursor: PostingCursor<'a>,
-    pub doc_freq: u32,
-    pub upper_bound: u64,
-}
 
-impl<'a> WandTerm<'a> {
-    pub fn new(postings: &'a PostingList, doc_freq: u32, max_weight: u16, doc_count: u64) -> Self {
-        Self {
-            cursor: PostingCursor::new(postings),
-            doc_freq,
-            upper_bound: bm25_upper_bound(max_weight, doc_count, doc_freq),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WandHit {
@@ -267,8 +267,8 @@ struct FieldConjunction<'a> {
 
 impl<'a> FieldConjunction<'a> {
     /// `None` when the field cannot match: no terms, or a term without postings.
-    fn new<S: SearchStats>(stats: &S, field: &FieldTerms<'a>) -> Option<Self> {
-        if field.terms.is_empty() || field.terms.iter().any(|term| term.postings.is_empty()) {
+    fn new<S: SearchStats>(stats: &S, field: FieldTerms<'a>) -> Option<Self> {
+        if field.terms.is_empty() || field.terms.iter().any(|term| term.cursor.is_exhausted()) {
             return None;
         }
 
@@ -279,8 +279,8 @@ impl<'a> FieldConjunction<'a> {
             avg_doc_len: stats.avg_doc_len(field.xpath),
             terms: field
                 .terms
-                .iter()
-                .map(|term| WandTerm::new(term.postings, term.doc_freq, term.max_weight, doc_count))
+                .into_iter()
+                .map(|term| WandTerm::new(term.cursor, term.doc_freq, term.max_weight, doc_count))
                 .collect(),
             started: false,
         })
@@ -333,10 +333,9 @@ impl<'a> FieldConjunction<'a> {
 
         let mut score = 0u64;
         for term in &self.terms {
-            let posting = term.cursor.current().unwrap();
             score = score.saturating_add(bm25_score_scaled(
-                posting.positions.len() as u32,
-                posting.weight,
+                term.cursor.term_freq(),
+                term.cursor.weight(),
                 doc_len,
                 self.avg_doc_len,
                 self.doc_count,
@@ -350,9 +349,9 @@ impl<'a> FieldConjunction<'a> {
 /// `conjunctive_top_k` for several fields at once: a document's score is the sum of its scores
 /// in every field that holds all the terms.
 #[timed(search)]
-pub fn conjunctive_top_k_multi_field<S: SearchStats>(
+pub fn conjunctive_top_k_multi_field<'a,S: SearchStats>(
     stats: &S,
-    fields: &[FieldTerms<'_>],
+    fields: Vec<FieldTerms<'a>>,
     k: usize,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
@@ -360,8 +359,8 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
         return Vec::new();
     }
 
-    let mut conjunctions: Vec<FieldConjunction<'_>> = fields
-        .iter()
+    let mut conjunctions: Vec<FieldConjunction<'a>> = fields
+        .into_iter()
         .filter_map(|field| FieldConjunction::new(stats, field))
         .collect();
     let mut current: Vec<Option<DocId>> = conjunctions
@@ -396,8 +395,7 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
     finish_heap(heap)
 }
 
-/// One way a query clause can match, scored with the statistics of field `xpath` (the exact field
-/// for an exact match).
+
 pub struct FormRef<'a> {
     pub xpath: XPathId,
     /// Which searched field the form is read in.d
@@ -419,7 +417,7 @@ struct FormCursor<'a> {
     // how rare the form's words are together (the sum of their idf in the form's field): what a
     // match of this form is worth when a query's coverage is measured (see `wand_top_k_grouped`)
     idf: f32,
-    cursors: Vec<PostingCursor<'a>>,
+    cursors: Vec<TermCursor<'a>>,
     doc_freqs: Vec<u32>,
     xpath: XPathId,
     doc_count: u64,
@@ -432,8 +430,8 @@ struct FormCursor<'a> {
 
 impl<'a> FormCursor<'a> {
     /// `None` when the form cannot match (a list without postings).
-    fn new<S: SearchStats>(stats: &S, form: &FormRef<'a>) -> Option<Self> {
-        if form.lists.is_empty() || form.lists.iter().any(|list| list.postings.is_empty()) {
+    fn new<S: SearchStats>(stats: &S, form: FormRef<'a>) -> Option<Self> {
+        if form.lists.is_empty() || form.lists.iter().any(|list| list.cursor.is_exhausted()) {
             return None;
         }
         let doc_count = stats.doc_count(form.xpath);
@@ -450,15 +448,13 @@ impl<'a> FormCursor<'a> {
             }
             ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
         };
+        let idf = form.lists.iter().map(|list| rarity(list.doc_freq)).sum();
+        let doc_freqs = form.lists.iter().map(|list| list.doc_freq).collect();
         let mut cursor = Self {
             field: form.field,
-            idf: form.lists.iter().map(|list| rarity(list.doc_freq)).sum(),
-            cursors: form
-                .lists
-                .iter()
-                .map(|list| PostingCursor::new(list.postings))
-                .collect(),
-            doc_freqs: form.lists.iter().map(|list| list.doc_freq).collect(),
+            idf,
+            cursors: form.lists.into_iter().map(|list| list.cursor).collect(),
+            doc_freqs,
             xpath: form.xpath,
             doc_count,
             avg_doc_len: stats.avg_doc_len(form.xpath),
@@ -522,10 +518,10 @@ impl<'a> FormCursor<'a> {
             .unwrap_or(self.avg_doc_len as u32);
         let mut score = 0u64;
         for (cursor, &doc_freq) in self.cursors.iter().zip(&self.doc_freqs) {
-            let posting = cursor.current().unwrap();
+            
             score = score.saturating_add(bm25_score_scaled(
-                posting.positions.len() as u32,
-                posting.weight,
+                cursor.term_freq(),
+                cursor.weight(),
                 doc_len,
                 self.avg_doc_len,
                 self.doc_count,
@@ -553,9 +549,9 @@ struct ClauseCursor<'a> {
 }
 impl<'a> ClauseCursor<'a> {
     /// `None` when no form of the clause can match in the field.
-    fn new<S: SearchStats>(stats: &S, forms: &[FormRef<'a>]) -> Option<Self> {
+    fn new<S: SearchStats>(stats: &S, forms: Vec<FormRef<'a>>) -> Option<Self> {
         let forms: Vec<FormCursor<'a>> = forms
-            .iter()
+            .into_iter()
             .filter_map(|form| FormCursor::new(stats, form))
             .collect();
         if forms.is_empty() {
@@ -631,9 +627,9 @@ const DIRECT_RESTRICT_MAX: usize = 4096;
 /// missing a rare word costs much more than missing a common one. `None` adds the clauses up as
 /// they are (any clause is enough).
 #[timed(search)]
-pub fn wand_top_k_grouped<S: SearchStats>(
+pub fn wand_top_k_grouped<'a,S: SearchStats>(
     stats: &S,
-    fields: &[FieldClauses<'_>],
+    fields: Vec<FieldClauses<'a>>,
     k: usize,
     coverage: Option<f32>,
     restrict: Option<&RoaringTreemap>,
@@ -642,13 +638,14 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         return Vec::new();
     }
 
-    let mut clauses: Vec<ClauseCursor<'_>> = fields
-        .iter()
+    let mut clauses: Vec<ClauseCursor<'a>> = fields
+        .into_iter()
         .flat_map(|field| {
             field
                 .clauses
-                .iter()
+                .into_iter()
                 .filter_map(|forms| ClauseCursor::new(stats, forms))
+            
         })
         .collect();
 
@@ -760,9 +757,9 @@ pub fn wand_top_k_grouped<S: SearchStats>(
 /// match in the same field (by any of its forms); a document's score is the sum of its scores in
 /// every field where they all do.
 #[timed(search)]
-pub fn conjunctive_top_k_grouped<S: SearchStats>(
+pub fn conjunctive_top_k_grouped<'a,S: SearchStats>(
     stats: &S,
-    fields: &[FieldClauses<'_>],
+    fields: Vec<FieldClauses<'a>>,
     k: usize,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
@@ -771,15 +768,15 @@ pub fn conjunctive_top_k_grouped<S: SearchStats>(
     }
 
     // every clause of a field, or none when one of them cannot match there
-    let mut conjunctions: Vec<Vec<ClauseCursor<'_>>> = fields
-        .iter()
+     let mut conjunctions: Vec<Vec<ClauseCursor<'a>>> = fields
+        .into_iter()
         .filter_map(|field| {
             if field.clauses.is_empty() {
                 return None;
             }
             field
                 .clauses
-                .iter()
+                .into_iter()
                 .map(|forms| ClauseCursor::new(stats, forms))
                 .collect::<Option<Vec<_>>>()
         })

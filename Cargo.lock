@@ -631,6 +631,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "arc-swap",
+ "bitpacking",
  "core-timing",
  "fst",
  "levenshtein_automata",

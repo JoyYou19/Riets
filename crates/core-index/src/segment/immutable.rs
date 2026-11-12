@@ -6,12 +6,12 @@ use roaring::RoaringTreemap;
 use crate::{
     array_rows::ArrayRowIndex,
     document::document::BoolField,
-    numeric_values::{NumericBound, NumericFields, NumericValue},
-    posting::PostingList,
-    search::{SearchIndex, SearchNumeric, SearchStats},
-    segment::{build_field_stats, compute_doc_id_range},
-    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
-    wildcard::{WildcardPattern, capped_union},
+    numeric_values::{ NumericBound, NumericFields, NumericValue },
+    posting::{ PostingCursor, PostingList, cursor::TermCursor },
+    search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo },
+    segment::{ build_field_stats, compute_doc_id_range },
+    types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId },
+    wildcard::{ WildcardPattern, capped_union },
 };
 
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
@@ -44,17 +44,17 @@ impl SearchIndex for ImmutableSegment {
             .collect()
     }
     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
-    let mut out = Vec::new();
-    for (key, postings) in self.terms.range(TermKey::new(prefix, xpath)..) {
-        if key.xpath != xpath || !key.term.starts_with(prefix) {
-            break;
+        let mut out = Vec::new();
+        for (key, postings) in self.terms.range(TermKey::new(prefix, xpath)..) {
+            if key.xpath != xpath || !key.term.starts_with(prefix) {
+                break;
+            }
+            if !postings.is_empty() {
+                out.push((key.term.clone(), postings.len() as u32));
+            }
         }
-        if !postings.is_empty() {
-            out.push((key.term.clone(), postings.len() as u32));
-        }
+        out
     }
-    out
-}
 
     fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
         self.array_row_index.element_index_of(row)
@@ -105,6 +105,18 @@ impl SearchIndex for ImmutableSegment {
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         ImmutableSegment::lookup_wildcard(self, pattern, xpath)
     }
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
+        // the inherent lookup borrows the list; the trait one would clone it
+        let list = ImmutableSegment::lookup(self, term, xpath)?;
+        if list.is_empty() {
+            return None;
+        }
+        Some(TermCursorInfo {
+            cursor: TermCursor::Slice(PostingCursor::new(list)),
+            doc_freq: u32::try_from(list.len()).unwrap_or(u32::MAX),
+            max_weight: list.max_weight(),
+        })
+    }
 }
 
 impl SearchNumeric for ImmutableSegment {
@@ -112,7 +124,7 @@ impl SearchNumeric for ImmutableSegment {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> RoaringTreemap {
         self.numeric_fields.range(xpath, lo, hi)
     }
@@ -151,7 +163,7 @@ impl ImmutableSegment {
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
         bool_fields: BTreeMap<XPathId, BoolField>,
-        array_row_index: ArrayRowIndex,
+        array_row_index: ArrayRowIndex
     ) -> Self {
         debug_assert_eq!(
             field_stats,
