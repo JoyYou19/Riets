@@ -1,28 +1,28 @@
 //WARN: Valter, luudzu piedod es atvicaju es centos Kristianu aptureet - Normunds
 
-use std::{collections::BTreeMap, io, path::Path};
+use std::{ collections::BTreeMap, io, path::Path };
 
 use core_timing::timed;
 use memmap2::Mmap;
 use roaring::RoaringTreemap;
 
 use crate::{
-    array_rows::{ArrayRowIndex, NO_PARENT_ROW},
+    array_rows::{ ArrayRowIndex, NO_PARENT_ROW },
     bkd::Bkd,
     disk::{
-        codec::{read_var_u16, read_var_u32, read_var_u64},
-        format::{FOOTER_LEN, MAGIC, SegmentFooter, VERSION},
+        codec::{ read_var_u16, read_var_u32, read_var_u64 },
+        format::{ FOOTER_LEN, MAGIC, SegmentFooter, VERSION },
     },
     document::document::BoolField,
     document_values::DocValues,
-    fuzzy::{FuzzyExpansion, FuzzyOptions},
-    numeric_values::{NumericBound, NumericField, NumericFields, NumericKind, NumericValue},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue },
     posting::item::Offsets,
-    posting::{Posting, PostingList},
-    search::{SearchIndex, SearchNumeric, SearchStats, TermPostings},
+    posting::{ Posting, PostingList },
+    search::{ SearchIndex, SearchNumeric, SearchStats, TermPostings },
     segment::build_field_stats,
-    term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
-    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
+    term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta },
+    types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId },
     wildcard::MAX_PATTERN_TERMS,
 };
 
@@ -63,7 +63,7 @@ impl SearchNumeric for DiskSegment {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> RoaringTreemap {
         self.numeric_fields.range(xpath, lo, hi)
     }
@@ -161,8 +161,11 @@ impl DiskSegment {
             return PostingList::default();
         }
 
-        read_posting_list(&self.mmap[start..end], meta.doc_freq, meta.max_weight)
-            .unwrap_or_default()
+        read_posting_list(
+            &self.mmap[start..end],
+            meta.doc_freq,
+            meta.max_weight
+        ).unwrap_or_default()
     }
 
     //Reads posting the same way as the original function, but into a buffer
@@ -203,10 +206,7 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
 
         //per-posting offsets flag
         if offset >= bytes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "missing offsets flag",
-            ));
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "missing offsets flag"));
         }
         let present = bytes[offset] != 0;
         offset += 1;
@@ -231,9 +231,7 @@ fn read_posting_list_into(bytes: &[u8], doc_freq: u32, out: &mut Vec<Posting>) -
             }
         }
 
-        out.push(Posting::with_weight_and_offsets(
-            doc_id, positions, offsets, weight,
-        ));
+        out.push(Posting::with_weight_and_offsets(doc_id, positions, offsets, weight));
     }
 
     Ok(())
@@ -309,9 +307,7 @@ impl SearchIndex for DiskSegment {
 
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
-        self.dictionary
-            .get(xpath, term)
-            .map_or(0, |meta| meta.doc_freq)
+        self.dictionary.get(xpath, term).map_or(0, |meta| meta.doc_freq)
     }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.dictionary
@@ -333,8 +329,9 @@ impl SearchIndex for DiskSegment {
 
         // choose the terms from the dictionary first, then read postings only for those
         let mut matches = dict.prefix(prefix);
-        matches
-            .sort_unstable_by(|a, b| b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0)));
+        matches.sort_unstable_by(|a, b|
+            b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0))
+        );
         matches.truncate(MAX_PATTERN_TERMS);
 
         let mut postings = Vec::new();
@@ -349,7 +346,7 @@ impl SearchIndex for DiskSegment {
     fn lookup_wildcard(
         &self,
         pattern: &crate::wildcard::WildcardPattern,
-        xpath: XPathId,
+        xpath: XPathId
     ) -> PostingList {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);
@@ -364,8 +361,9 @@ impl SearchIndex for DiskSegment {
             .into_iter()
             .filter(|(term, _)| pattern.matches(term))
             .collect();
-        matches
-            .sort_unstable_by(|a, b| b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0)));
+        matches.sort_unstable_by(|a, b|
+            b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0))
+        );
         matches.truncate(MAX_PATTERN_TERMS);
 
         let mut postings = Vec::new();
@@ -394,7 +392,7 @@ impl SearchIndex for DiskSegment {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         self.dictionary
             .field(xpath)
@@ -406,6 +404,18 @@ impl SearchIndex for DiskSegment {
             })
             .unwrap_or_default()
     }
+    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+        self.dictionary
+            .field(xpath)
+            .map(|dict|
+                dict
+                    .prefix(prefix)
+                    .into_iter()
+                    .map(|(t, meta)| (t, meta.doc_freq))
+                    .collect()
+            )
+            .unwrap_or_default()
+    }
 }
 
 fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
@@ -413,24 +423,17 @@ fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
     let dictionary_len = footer.dictionary_len as usize;
 
     let Some(dictionary_end) = dictionary_start.checked_add(dictionary_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary offset overflow",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary offset overflow"));
     };
 
     if dictionary_start < crate::disk::format::HEADER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary starts before segment body",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "dictionary starts before segment body")
+        );
     }
 
     if dictionary_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary outside segment bounds",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary outside segment bounds"));
     }
 
     //numeric checks
@@ -438,61 +441,47 @@ fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
     let numeric_fields_len = footer.numeric_fields_len as usize;
 
     let Some(numeric_fields_end) = numeric_fields_start.checked_add(numeric_fields_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields offset overflow",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "numeric fields offset overflow"));
     };
 
     if numeric_fields_start < crate::disk::format::HEADER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields start before segment body",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "numeric fields start before segment body")
+        );
     }
 
     if numeric_fields_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields outside segment bounds",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "numeric fields outside segment bounds")
+        );
     }
 
     let bool_start = footer.bool_fields_offset as usize;
     let bool_len = footer.bool_fields_len as usize;
     let Some(bool_end) = bool_start.checked_add(bool_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bool fields offset overflow",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bool fields offset overflow"));
     };
     if bool_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bool fields outside segment bounds",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "bool fields outside segment bounds")
+        );
     }
 
     let array_start = footer.array_row_index_offset as usize;
     let array_len = footer.array_row_index_len as usize;
     let Some(array_end) = array_start.checked_add(array_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index offset overflow",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "array row index offset overflow"));
     };
     if array_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index outside segment bounds",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "array row index outside segment bounds")
+        );
     }
 
     if footer.term_count == 0 && footer.dictionary_len != 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "empty dictionary has invalid length",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "empty dictionary has invalid length")
+        );
     }
 
     Ok(())
@@ -500,25 +489,16 @@ fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
 
 fn validate_header(bytes: &[u8]) -> io::Result<()> {
     if bytes.len() < 12 + FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "segment too small",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "segment too small"));
     }
 
     if bytes[0..8] != MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bad segment magic",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad segment magic"));
     }
 
     let version = read_u32_at(bytes, 8);
     if version != VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unsupported segment version",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported segment version"));
     }
 
     Ok(())
@@ -554,7 +534,10 @@ pub struct DocLengths {
 
 enum FieldLengths {
     // `u32::MAX`: the document has no such field
-    Dense { first: DocId, lens: Vec<u32> },
+    Dense {
+        first: DocId,
+        lens: Vec<u32>,
+    },
     Sparse(BTreeMap<DocId, u32>),
 }
 
@@ -567,8 +550,16 @@ impl DocLengths {
         let fields = by_field
             .into_iter()
             .map(|(xpath, docs)| {
-                let first = docs.iter().map(|&(doc, _)| doc).min().unwrap_or(0);
-                let last = docs.iter().map(|&(doc, _)| doc).max().unwrap_or(0);
+                let first = docs
+                    .iter()
+                    .map(|&(doc, _)| doc)
+                    .min()
+                    .unwrap_or(0);
+                let last = docs
+                    .iter()
+                    .map(|&(doc, _)| doc)
+                    .max()
+                    .unwrap_or(0);
                 let span = last.saturating_sub(first).saturating_add(1);
                 // dense when at least a quarter of the span has the field
                 let lengths = if span <= (docs.len() as u64).saturating_mul(4) {
@@ -591,7 +582,9 @@ impl DocLengths {
         match lengths {
             FieldLengths::Dense { first, lens } => {
                 let index = usize::try_from(doc_id.checked_sub(*first)?).ok()?;
-                lens.get(index).copied().filter(|&len| len != u32::MAX)
+                lens.get(index)
+                    .copied()
+                    .filter(|&len| len != u32::MAX)
             }
             FieldLengths::Sparse(map) => map.get(&doc_id).copied(),
         }
@@ -603,17 +596,19 @@ impl DocLengths {
             |(xpath, lengths)| -> Box<dyn Iterator<Item = ((DocId, XPathId), u32)> + '_> {
                 let xpath = *xpath;
                 match lengths {
-                    FieldLengths::Dense { first, lens } => Box::new(
-                        lens.iter()
-                            .enumerate()
-                            .filter(|&(_, &len)| len != u32::MAX)
-                            .map(move |(index, &len)| ((*first + index as DocId, xpath), len)),
-                    ),
+                    FieldLengths::Dense { first, lens } =>
+                        Box::new(
+                            lens
+                                .iter()
+                                .enumerate()
+                                .filter(|&(_, &len)| len != u32::MAX)
+                                .map(move |(index, &len)| ((*first + (index as DocId), xpath), len))
+                        ),
                     FieldLengths::Sparse(map) => {
                         Box::new(map.iter().map(move |(&doc, &len)| ((doc, xpath), len)))
                     }
                 }
-            },
+            }
         )
     }
 }
@@ -626,10 +621,9 @@ fn read_doc_lengths(bytes: &[u8], footer: &SegmentFooter) -> io::Result<DocLengt
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "doc lengths offset overflow"))?;
 
     if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "doc lengths outside segment bounds",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "doc lengths outside segment bounds")
+        );
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
@@ -650,17 +644,15 @@ fn read_doc_lengths(bytes: &[u8], footer: &SegmentFooter) -> io::Result<DocLengt
 fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<ArrayRowIndex> {
     let start = footer.array_row_index_offset as usize;
     let len = footer.array_row_index_len as usize;
-    let end = start.checked_add(len).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index offset overflow",
-        )
-    })?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "array row index offset overflow")
+        })?;
     if end > bytes.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index outside segment bounds",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "array row index outside segment bounds")
+        );
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
@@ -672,10 +664,10 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
         let parent = cursor.read_u64()?;
         let element = cursor.read_u32()?;
         idx.push_row(
-            ArrayRowId::from_raw(base.raw() + i as u64),
+            ArrayRowId::from_raw(base.raw() + (i as u64)),
             doc,
             (parent != NO_PARENT_ROW.raw()).then_some(ArrayRowId::from_raw(parent)),
-            element,
+            element
         );
     }
     Ok(idx)
@@ -690,17 +682,11 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
     let len = footer.dictionary_len as usize;
 
     let Some(end) = start.checked_add(len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary offset overflow",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary offset overflow"));
     };
 
     if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary outside segment bounds",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary outside segment bounds"));
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
@@ -708,10 +694,12 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
 
     // Every field costs at least xpath + term_count + fst_len.
     if field_count.saturating_mul(16) > len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary field count exceeds section size",
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "dictionary field count exceeds section size"
+            )
+        );
     }
 
     let mut dictionary = TermDictionary::new();
@@ -727,10 +715,12 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
         // Check the metas actually fit before reserving, so a bogus count in a
         // corrupt file cannot make us allocate gigabytes.
         if field_terms.saturating_mul(TERM_META_LEN) > cursor.remaining() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "dictionary term count exceeds section size",
-            ));
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "dictionary term count exceeds section size"
+                )
+            );
         }
 
         let mut metas = Vec::with_capacity(field_terms);
@@ -749,10 +739,7 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
     }
 
     if term_count != (footer.term_count as usize) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary term count mismatch",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary term count mismatch"));
     }
 
     Ok(dictionary)
@@ -763,17 +750,13 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
     let len = footer.numeric_fields_len as usize;
 
     let Some(end) = start.checked_add(len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields offset overflow",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "numeric fields offset overflow"));
     };
 
     if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields outside segment bounds",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "numeric fields outside segment bounds")
+        );
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
@@ -804,10 +787,12 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
             entries.push((doc_id, packed));
         }
 
-        let bkd = Bkd::from_packed(kind, bkd_points)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let doc_values = DocValues::from_packed(kind, entries)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let bkd = Bkd::from_packed(kind, bkd_points).map_err(|e|
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        )?;
+        let doc_values = DocValues::from_packed(kind, entries).map_err(|e|
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        )?;
         fields.insert_field(xpath, NumericField { bkd, doc_values });
     }
 
@@ -816,7 +801,7 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
 
 fn read_bool_points(
     bytes: &[u8],
-    footer: &SegmentFooter,
+    footer: &SegmentFooter
 ) -> io::Result<BTreeMap<XPathId, BoolField>> {
     let start = footer.bool_fields_offset as usize;
     let len = footer.bool_fields_len as usize;
@@ -824,10 +809,9 @@ fn read_bool_points(
         .checked_add(len)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bool fields offset overflow"))?;
     if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bool fields outside segment bounds",
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "bool fields outside segment bounds")
+        );
     }
 
     let mut cursor = Cursor::new(&bytes[start..end]);
@@ -839,13 +823,10 @@ fn read_bool_points(
         let true_ids = RoaringTreemap::deserialize_from(cursor.take(true_len)?)?;
         let false_len = cursor.read_u64()? as usize;
         let false_ids = RoaringTreemap::deserialize_from(cursor.take(false_len)?)?;
-        fields.insert(
-            xpath,
-            BoolField {
-                true_ids,
-                false_ids,
-            },
-        );
+        fields.insert(xpath, BoolField {
+            true_ids,
+            false_ids,
+        });
     }
     Ok(fields)
 }
@@ -856,9 +837,7 @@ fn read_posting_list(bytes: &[u8], doc_freq: u32, max_weight: u16) -> io::Result
 
     read_posting_list_into(bytes, doc_freq, &mut postings)?;
 
-    Ok(PostingList::from_sorted_with_max_weight(
-        postings, max_weight,
-    ))
+    Ok(PostingList::from_sorted_with_max_weight(postings, max_weight))
 }
 
 fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
@@ -908,10 +887,7 @@ impl<'a> Cursor<'a> {
         let end = self.offset + len;
 
         if end > self.bytes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected eof",
-            ));
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "unexpected eof"));
         }
 
         let slice = &self.bytes[self.offset..end];

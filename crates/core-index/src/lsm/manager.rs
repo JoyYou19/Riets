@@ -159,6 +159,9 @@ impl SearchIndex for LsmIndex {
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.snapshot().terms(xpath)
     }
+    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+        self.snapshot().prefix_terms(prefix, xpath)
+    }
 
     #[timed(search)]
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {

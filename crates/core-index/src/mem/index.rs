@@ -1,14 +1,14 @@
 use crate::analyzer::analyzer::AnalyzerSet;
 use crate::array_rows::ArrayRowIndex;
 use crate::document::IndexedDocument;
-use crate::document::analyzed::{AnalyzedDocument, AnalyzedField, AnalyzedTarget};
+use crate::document::analyzed::{ AnalyzedDocument, AnalyzedField, AnalyzedTarget };
 use crate::document::document::BoolField;
-use crate::fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton};
-use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
+use crate::fuzzy::{ DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton };
+use crate::numeric_values::{ NumericBound, NumericPoints, NumericValue };
 use crate::posting::PostingList;
-use crate::search::{SearchIndex, SearchNumeric, SearchStats};
-use crate::types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId};
-use crate::wildcard::{WildcardPattern, capped_union};
+use crate::search::{ SearchIndex, SearchNumeric, SearchStats };
+use crate::types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId };
+use crate::wildcard::{ WildcardPattern, capped_union };
 use ahash::AHashMap;
 use core_timing::timed;
 use roaring::RoaringTreemap;
@@ -100,18 +100,12 @@ impl SearchIndex for MemIndex {
             .collect()
     }
 
-    // The trait's version copies every term of the field into a Vec before running the automaton
-    // over them (2 edits). Here the keys are walked in place, and the automaton only runs on terms
-    // with the prefix and a length within `max_edits` of the typed word; a term is copied only
-    // when it matches.
     fn fuzzy_expansions(
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
-        // One automaton covers k = 0, 1 and 2 with identical semantics,
-        // including transpositions and the exact-prefix lock.
         let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
 
         let mut candidates: Vec<(String, u8, u32)> = Vec::new();
@@ -123,29 +117,36 @@ impl SearchIndex for MemIndex {
                 continue;
             };
             candidates.push((key.term.clone(), edits, self.doc_freq(&key.term, xpath)));
-            if candidates.len() >= DEFAULT_MAX_CANDIDATES {
-                break;
-            }
         }
+        candidates.sort_unstable_by(|a, b| {
+            a.1
+                .cmp(&b.1)
+                .then(b.2.cmp(&a.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        candidates.truncate(DEFAULT_MAX_CANDIDATES);
 
         candidates
             .into_iter()
             .map(|(t, edits, doc_freq)| FuzzyExpansion::new(t, edits, doc_freq))
             .collect()
     }
-    // No TermMeta here — MemIndex stores full PostingLists directly, so
-    // doc_freq is just the stored list's length. Uses the private lookup()
-    // (returns &PostingList, no clone) rather than lookup_or_empty, since
-    // there's no need to clone the whole posting list just to read its len.
+
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
-        self.terms
-            .get(&TermKey::new(term, xpath))
-            .map_or(0, |list| list.len() as u32)
+        self.terms.get(&TermKey::new(term, xpath)).map_or(0, |list| list.len() as u32)
     }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
     }
-
+    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+        self.terms
+            .iter()
+            .filter(
+                |(key, list)| key.xpath == xpath && !list.is_empty() && key.term.starts_with(prefix)
+            )
+            .map(|(key, list)| (key.term.clone(), list.len() as u32))
+            .collect()
+    }
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         self.lookup_wildcard(pattern, xpath)
     }
@@ -156,7 +157,7 @@ impl SearchNumeric for MemIndex {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> RoaringTreemap {
         self.numeric_points.range(xpath, lo, hi)
     }
@@ -228,7 +229,7 @@ impl MemIndex {
             field_stats,
             self.numeric_points.build(),
             bool_fields,
-            self.array_row_index,
+            self.array_row_index
         )
     }
     /// One segment from memtable generations, oldest first (their doc ids ascend), read in
@@ -273,7 +274,7 @@ impl MemIndex {
             field_stats,
             numeric_points.build(),
             bool_fields,
-            array_row_index,
+            array_row_index
         )
     }
     //tracks min and max doc id in this segment
@@ -296,22 +297,21 @@ impl MemIndex {
         doc_id: DocId,
         positions: Vec<u32>,
         offsets: Vec<(u32, u32)>,
-        weight: u16,
+        weight: u16
     ) {
-        self.estimated_bytes += size_of::<DocId>()
-            + size_of::<u16>()
-            + positions.len() * size_of::<u32>()
-            + offsets.len() * size_of::<(u32, u32)>();
+        self.estimated_bytes +=
+            size_of::<DocId>() +
+            size_of::<u16>() +
+            positions.len() * size_of::<u32>() +
+            offsets.len() * size_of::<(u32, u32)>();
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             Entry::Occupied(mut slot) => {
-                slot.get_mut()
-                    .insert_posting(doc_id, positions, offsets, weight);
+                slot.get_mut().insert_posting(doc_id, positions, offsets, weight);
             }
             Entry::Vacant(slot) => {
                 self.estimated_bytes += slot.key().term.len() + size_of::<TermKey>();
-                slot.insert(PostingList::new())
-                    .insert_posting(doc_id, positions, offsets, weight);
+                slot.insert(PostingList::new()).insert_posting(doc_id, positions, offsets, weight);
             }
         }
     }
@@ -343,7 +343,7 @@ impl MemIndex {
                 row.array_row_id,
                 document.doc_id,
                 row.parent,
-                row.element_index,
+                row.element_index
             );
             self.apply_target(row.array_row_id.raw(), row.target);
         }
@@ -354,8 +354,7 @@ impl MemIndex {
             self.apply_field(target_id, field);
         }
         for point in target.numeric_points {
-            self.numeric_points
-                .insert(point.xpath, point.value, target_id);
+            self.numeric_points.insert(point.xpath, point.value, target_id);
         }
         for point in target.bool_points {
             let slot = self.bool_fields.entry(point.xpath).or_default();
@@ -368,9 +367,7 @@ impl MemIndex {
     }
 
     fn apply_field(&mut self, doc_id: DocId, field: AnalyzedField) {
-        let old = self
-            .doc_lengths
-            .insert((doc_id, field.xpath), field.doc_len);
+        let old = self.doc_lengths.insert((doc_id, field.xpath), field.doc_len);
 
         let stats = self.field_stats.entry(field.xpath).or_default();
         if let Some(old_len) = old {
@@ -388,7 +385,7 @@ impl MemIndex {
                 doc_id,
                 term.positions,
                 term.offsets,
-                term.weight,
+                term.weight
             );
         }
     }
@@ -399,8 +396,7 @@ impl MemIndex {
 
     #[timed(search)]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
-        let matches: Vec<(&str, &PostingList)> = self
-            .terms
+        let matches: Vec<(&str, &PostingList)> = self.terms
             .iter()
             .filter(|(key, _)| key.xpath == xpath && key.term.starts_with(prefix))
             .map(|(key, postings)| (key.term.as_str(), postings))
@@ -413,8 +409,7 @@ impl MemIndex {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);
         }
-        let matches: Vec<(&str, &PostingList)> = self
-            .terms
+        let matches: Vec<(&str, &PostingList)> = self.terms
             .iter()
             .filter(|(key, _)| key.xpath == xpath && pattern.matches(&key.term))
             .map(|(key, postings)| (key.term.as_str(), postings))

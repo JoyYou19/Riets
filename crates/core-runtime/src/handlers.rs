@@ -1,37 +1,26 @@
 use crate::{
     AppState,
-    database_helpers::{ compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name },
+    database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name},
     database_manager::SlotState,
     doc_parser,
-    http_response::{ BatchOutcome, HttpError, HttpOk },
+    http_response::{BatchOutcome, HttpError, HttpOk},
     middleware::RequestContext,
 };
 use axum::{
     Extension,
-    extract::{ Path, State },
+    extract::{Path, State},
     http::StatusCode,
-    response::{ IntoResponse, Response },
+    response::{IntoResponse, Response},
 };
-use core_auth::{ Permission, Principal, Token, hash_password };
-use core_backup::backup::{ BackupType, is_valid_backup_id };
-use core_core::{ DatabaseOptions, shard_manager::ShardManager };
+use core_auth::{Permission, Principal, Token, hash_password};
+use core_backup::backup::{BackupType, is_valid_backup_id};
+use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
     command_reponse_definitions::{
-        Command,
-        CreateDatabaseRequest,
-        DeleteCommand,
-        DidYouMeanRequest,
-        GetLogsRequest,
-        InfoWordsRequest,
-        LoginResponse,
-        LookupCommand,
-        PartialReplaceCommand,
-        RenameDatabaseRequest,
-        RetrieveCommand,
-        RetrieveResponse,
-        SearchCommand,
-        SearchResponse,
+        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest,
+        InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand,
+        RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
         TimingsRequest,
     },
     document_out::DocumentOut,
@@ -43,14 +32,14 @@ use core_timing::timed;
 
 use hyper::HeaderMap;
 use simd_json::owned::Object;
-use simd_json::{ OwnedValue, json };
-use slog::{ error, info, o, warn };
+use simd_json::{OwnedValue, json};
+use slog::{error, info, o, warn};
 use std::sync::Arc;
 //needs to become configurable
 const DEFAULT_LOG_LINES: usize = 10_000;
 const MAX_LOG_LINES: usize = 200_000;
 //authorizations
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 struct LoginRequest {
     username: String,
@@ -74,7 +63,9 @@ struct UpdateRolesRequest {
 fn require_body(body: String) -> Result<String, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() || trimmed == "{}" {
-        return Err(CorelamoError::InvalidData("request body is empty".to_string()));
+        return Err(CorelamoError::InvalidData(
+            "request body is empty".to_string(),
+        ));
     }
     Ok(body)
 }
@@ -82,9 +73,10 @@ fn require_body(body: String) -> Result<String, CorelamoError> {
 fn check_permission(
     state: &AppState,
     principal: &Principal,
-    permission: Permission
+    permission: Permission,
 ) -> Result<(), CorelamoError> {
-    let auth = state.auth
+    let auth = state
+        .auth
         .read()
         .map_err(|_| CorelamoError::Internal("auth service unavailable".into()))?;
     auth.check(principal, permission)
@@ -93,7 +85,7 @@ fn check_permission(
 pub(crate) async fn login_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
-    body: String
+    body: String,
 ) -> Response {
     let body = match require_body(body) {
         Ok(b) => b,
@@ -107,8 +99,9 @@ pub(crate) async fn login_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::InvalidData(format!("invalid login request:{e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
     let auth = Arc::clone(&state.auth);
@@ -116,18 +109,19 @@ pub(crate) async fn login_handler(
     let password = req.password.clone();
     // Argon2 is slow on purpose: off the async threads, under the read lock, so other
     // requests (which also only read) are not held up
-    let token = match
-        tokio::task::spawn_blocking(move || {
-            let auth = auth.read().map_err(|_| ())?;
-            Ok::<_, ()>(auth.login(&username, &password))
-        }).await
+    let token = match tokio::task::spawn_blocking(move || {
+        let auth = auth.read().map_err(|_| ())?;
+        Ok::<_, ()>(auth.login(&username, &password))
+    })
+    .await
     {
         Ok(Ok(token)) => token,
         _ => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal("auth service unavailable".to_string()),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -136,11 +130,11 @@ pub(crate) async fn login_handler(
             let resp = LoginResponse { token: token.0 };
             HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
         }
-        Ok(None) =>
-            HttpError::from_corelamo(
-                CorelamoError::Unauthorized("invalid username or password".to_string()),
-                &ctx
-            ).into_response(),
+        Ok(None) => HttpError::from_corelamo(
+            CorelamoError::Unauthorized("invalid username or password".to_string()),
+            &ctx,
+        )
+        .into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
 }
@@ -148,22 +142,26 @@ pub(crate) async fn login_handler(
 pub(crate) async fn logout_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
-    headers: HeaderMap
+    headers: HeaderMap,
 ) -> Response {
     let Some(token) = headers.get("X-Corelamo-Key").and_then(|v| v.to_str().ok()) else {
         return HttpError::from_corelamo(
             CorelamoError::Unauthorized("missing X-Corelamo-Key header".into()),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     };
-    let auth = state.auth.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let auth = state
+        .auth
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     auth.logout(&Token(token.to_string()));
     HttpOk::new("logged out", &ctx).into_response()
 }
 pub(crate) async fn list_users_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::ListUsers) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -171,9 +169,12 @@ pub(crate) async fn list_users_handler(
 
     let auth = Arc::clone(&state.auth);
     let listed = tokio::task::spawn_blocking(move || {
-        let auth = auth.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let auth = auth
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.list_users()
-    }).await;
+    })
+    .await;
     let users = match listed {
         Ok(Ok(users)) => users,
         Ok(Err(e)) => {
@@ -182,8 +183,9 @@ pub(crate) async fn list_users_handler(
         Err(_) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal("auth service unavailable".to_string()),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
     let log = slog_scope::logger().new(o!("component" => "handlers"));
@@ -202,15 +204,16 @@ pub(crate) async fn list_users_handler(
     HttpOk::with_data(
         format!("{} user(s)", data.len()),
         json!({ "users": data }),
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 
 pub(crate) async fn create_user_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::CreateUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -227,8 +230,9 @@ pub(crate) async fn create_user_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::InvalidData(format!("invalid create-user request: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
     let auth = Arc::clone(&state.auth);
@@ -236,18 +240,21 @@ pub(crate) async fn create_user_handler(
     let created = tokio::task::spawn_blocking(move || {
         let hash = hash_password(&req.password)?;
 
-        let mut auth = auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut auth = auth
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.create_user(&principal, &req.username, hash, req.roles)
-    }).await;
+    })
+    .await;
 
     match created {
         Ok(Ok(())) => HttpOk::new(format!("user '{username}' created"), &ctx).into_response(),
         Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
-        Err(_) =>
-            HttpError::from_corelamo(
-                CorelamoError::Internal("auth service unavailable".to_string()),
-                &ctx
-            ).into_response(),
+        Err(_) => HttpError::from_corelamo(
+            CorelamoError::Internal("auth service unavailable".to_string()),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -255,12 +262,15 @@ pub(crate) async fn delete_user_handler(
     State(state): State<AppState>,
     Path(username): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let mut auth = state.auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut auth = state
+        .auth
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match auth.delete_user(&principal, &username) {
         Ok(()) => HttpOk::new(format!("user '{username}' deleted"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -272,7 +282,7 @@ pub(crate) async fn update_user_password_handler(
     Path(username): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     let body = match require_body(body) {
         Ok(b) => b,
@@ -280,9 +290,8 @@ pub(crate) async fn update_user_password_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-    if
-        principal.id.0 != username &&
-        let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd)
+    if principal.id.0 != username
+        && let Err(e) = check_permission(&state, &principal, Permission::UpdatePwd)
     {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
@@ -292,8 +301,9 @@ pub(crate) async fn update_user_password_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::InvalidData(format!("invalid update-password request: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -304,20 +314,23 @@ pub(crate) async fn update_user_password_handler(
         let hash = hash_password(&req.password)?;
         // short: the write lock only covers the store update; update_user_password checks
         // the permission again, since it may have changed while hashing
-        let mut auth = auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut auth = auth
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.update_user_password(&principal, &target, hash)
-    }).await;
+    })
+    .await;
 
     match updated {
         Ok(Ok(())) => {
             HttpOk::new(format!("password updated for '{username}'"), &ctx).into_response()
         }
         Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
-        Err(_) =>
-            HttpError::from_corelamo(
-                CorelamoError::Internal("auth service unavailable".to_string()),
-                &ctx
-            ).into_response(),
+        Err(_) => HttpError::from_corelamo(
+            CorelamoError::Internal("auth service unavailable".to_string()),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -326,7 +339,7 @@ pub(crate) async fn update_user_roles_handler(
     Path(username): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::UpdateRole) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -344,12 +357,16 @@ pub(crate) async fn update_user_roles_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::InvalidData(format!("invalid update-roles request: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
-    let mut auth = state.auth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut auth = state
+        .auth
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match auth.update_user_roles(&principal, &username, req.roles) {
         Ok(()) => HttpOk::new(format!("roles updated for '{username}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -363,7 +380,7 @@ pub(crate) async fn search_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Search) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -378,8 +395,9 @@ pub(crate) async fn search_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let body = match require_body(body) {
@@ -404,10 +422,10 @@ pub(crate) async fn search_handler(
         Err(e) => {
             let client_error = matches!(
                 e,
-                CorelamoError::InvalidData(_) |
-                    CorelamoError::PathNotIndexed(_) |
-                    CorelamoError::UnsupportedFormat(_) |
-                    CorelamoError::NotFound(_)
+                CorelamoError::InvalidData(_)
+                    | CorelamoError::PathNotIndexed(_)
+                    | CorelamoError::UnsupportedFormat(_)
+                    | CorelamoError::NotFound(_)
             );
             handle.record_search(!client_error, start.elapsed());
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -421,10 +439,12 @@ pub(crate) async fn search_handler(
     let policy = handle.policy();
     let strip_id = id_path_to_strip(
         policy.id_field().map(|f| f.name.as_str()),
-        command.return_fields.as_ref()
-    ).map(String::from);
+        command.return_fields.as_ref(),
+    )
+    .map(String::from);
 
-    let docs: Vec<(String, f32, DocumentOut, Vec<String>)> = hits.0
+    let docs: Vec<(String, f32, DocumentOut, Vec<String>)> = hits
+        .0
         .into_iter()
         .map(|hit| (hit.external_id, hit.score, hit.doc, hit.highlights))
         .collect();
@@ -440,7 +460,7 @@ pub(crate) async fn did_you_mean_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::DidYouMean) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -456,8 +476,9 @@ pub(crate) async fn did_you_mean_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let body = match require_body(body) {
@@ -473,8 +494,9 @@ pub(crate) async fn did_you_mean_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::InvalidData(format!("invalid did-you-mean request: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -485,12 +507,10 @@ pub(crate) async fn did_you_mean_handler(
         }
     };
 
-    let found: usize = report.words
-        .iter()
-        .map(|w| w.suggestions.len())
-        .sum();
+    let found: usize = report.words.iter().map(|w| w.suggestions.len()).sum();
 
-    let suggestions: Vec<OwnedValue> = report.words
+    let suggestions: Vec<OwnedValue> = report
+        .words
         .iter()
         .map(|w| {
             json!({
@@ -507,15 +527,16 @@ pub(crate) async fn did_you_mean_handler(
             "corrected": report.corrected,
             "suggestions": suggestions,
         }),
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 
 pub(crate) async fn get_all_fields_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::AllFields) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -539,8 +560,9 @@ pub(crate) async fn get_all_fields_handler(
     HttpOk::with_data(
         format!("{} field(s) for '{db_name}'", all_fields.len()),
         json!({ "fields": fields_json }),
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 
 #[timed(retrieve_opps)]
@@ -549,7 +571,7 @@ pub(crate) async fn lookup_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Lookup) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -565,8 +587,9 @@ pub(crate) async fn lookup_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let command = match LookupCommand::parse(&body, ctx.format) {
@@ -595,7 +618,7 @@ pub(crate) async fn insert_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Insert) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -617,16 +640,17 @@ pub(crate) async fn insert_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let policy = handle.policy();
 
     let format = ctx.format;
-    let parsed = tokio::task::spawn_blocking(move ||
-        doc_parser::parse_documents(body, format, &policy)
-    ).await;
+    let parsed =
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
+            .await;
 
     let outcome = match parsed {
         Ok(Ok(o)) => o,
@@ -636,8 +660,9 @@ pub(crate) async fn insert_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -665,7 +690,9 @@ pub(crate) async fn insert_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
 #[timed(retrieve_opps)]
@@ -674,7 +701,7 @@ pub(crate) async fn retrieve_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Retrieve) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -704,8 +731,9 @@ pub(crate) async fn retrieve_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let manager = Arc::clone(&handle);
@@ -749,7 +777,7 @@ pub(crate) async fn start_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::StartDB) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -773,7 +801,7 @@ pub(crate) async fn stop_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::StopDB) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -797,7 +825,7 @@ pub(crate) async fn restart_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::RestartDB) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -823,7 +851,7 @@ pub(crate) async fn clear_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::ClearDB) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -837,11 +865,11 @@ pub(crate) async fn clear_database_handler(
     };
 
     match handle.clear_all().await {
-        Ok(()) =>
-            HttpOk::new(
-                format!("database: {db_name}, is cleared of data and index"),
-                &ctx
-            ).into_response(),
+        Ok(()) => HttpOk::new(
+            format!("database: {db_name}, is cleared of data and index"),
+            &ctx,
+        )
+        .into_response(),
 
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -852,7 +880,7 @@ pub(crate) async fn get_logs_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::GetLogs) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -870,13 +898,18 @@ pub(crate) async fn get_logs_handler(
     } else {
         let mut buf = body.trim().as_bytes().to_vec();
         match simd_json::from_slice::<GetLogsRequest>(&mut buf) {
-            Ok(req) =>
-                (req.date, req.max_lines.unwrap_or(DEFAULT_LOG_LINES).clamp(1, MAX_LOG_LINES)),
+            Ok(req) => (
+                req.date,
+                req.max_lines
+                    .unwrap_or(DEFAULT_LOG_LINES)
+                    .clamp(1, MAX_LOG_LINES),
+            ),
             Err(e) => {
                 return HttpError::from_corelamo(
                     CorelamoError::InvalidData(format!("invalid get-logs request: {e}")),
-                    &ctx
-                ).into_response();
+                    &ctx,
+                )
+                .into_response();
             }
         }
     };
@@ -886,11 +919,11 @@ pub(crate) async fn get_logs_handler(
     match tokio::task::spawn_blocking(move || manager.get_logs(date, max_lines)).await {
         Ok(Ok(text)) => HttpOk::raw(StatusCode::OK, "text/plain", text, &ctx),
         Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
-        Err(e) =>
-            HttpError::from_corelamo(
-                CorelamoError::Internal(format!("get-logs task panicked: {e}")),
-                &ctx
-            ).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("get-logs task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -898,7 +931,7 @@ pub(crate) async fn clear_logs_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::ClearLogs) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -915,11 +948,11 @@ pub(crate) async fn clear_logs_handler(
     match tokio::task::spawn_blocking(move || manager.clear_logs()).await {
         Ok(Ok(())) => HttpOk::new(format!("Deleted logs for {db_name}"), &ctx).into_response(),
         Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
-        Err(e) =>
-            HttpError::from_corelamo(
-                CorelamoError::Internal(format!("clear-logs task panicked: {e}")),
-                &ctx
-            ).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::Internal(format!("clear-logs task panicked: {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -929,7 +962,7 @@ pub(crate) async fn delete_document_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Delete) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -958,8 +991,9 @@ pub(crate) async fn delete_document_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let manager = Arc::clone(&handle);
@@ -970,8 +1004,9 @@ pub(crate) async fn delete_document_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("delete task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -985,7 +1020,9 @@ pub(crate) async fn delete_document_handler(
         outcome.failed_count()
     );
 
-    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
 #[timed(modifying_documents)]
@@ -994,7 +1031,7 @@ pub(crate) async fn partial_replace_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1024,11 +1061,13 @@ pub(crate) async fn partial_replace_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
-    let items: Vec<(String, OwnedValue)> = command.items
+    let items: Vec<(String, OwnedValue)> = command
+        .items
         .into_iter()
         .map(|item| (item.id, item.patch))
         .collect();
@@ -1036,8 +1075,9 @@ pub(crate) async fn partial_replace_handler(
     if items.is_empty() {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData("no documents to partially replace".into()),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let report = match handle.partial_replace(items, principal.id.0.clone()).await {
@@ -1056,7 +1096,9 @@ pub(crate) async fn partial_replace_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
 #[timed(modifying_documents)]
@@ -1065,7 +1107,7 @@ pub(crate) async fn replace_document_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Replace) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1088,15 +1130,16 @@ pub(crate) async fn replace_document_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let policy = handle.policy();
     let format = ctx.format;
-    let parsed = tokio::task::spawn_blocking(move ||
-        doc_parser::parse_documents(body, format, &policy)
-    ).await;
+    let parsed =
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
+            .await;
 
     let outcome = match parsed {
         Ok(Ok(o)) => o,
@@ -1106,8 +1149,9 @@ pub(crate) async fn replace_document_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -1120,8 +1164,9 @@ pub(crate) async fn replace_document_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("replace task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -1139,7 +1184,9 @@ pub(crate) async fn replace_document_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
 #[timed(modifying_documents)]
@@ -1148,7 +1195,7 @@ pub(crate) async fn upsert_document_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Upsert) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1171,15 +1218,16 @@ pub(crate) async fn upsert_document_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let policy = handle.policy();
     let format = ctx.format;
-    let parsed = tokio::task::spawn_blocking(move ||
-        doc_parser::parse_documents(body, format, &policy)
-    ).await;
+    let parsed =
+        tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
+            .await;
 
     let outcome = match parsed {
         Ok(Ok(o)) => o,
@@ -1189,8 +1237,9 @@ pub(crate) async fn upsert_document_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("parse task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -1203,8 +1252,9 @@ pub(crate) async fn upsert_document_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("upsert task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -1222,7 +1272,9 @@ pub(crate) async fn upsert_document_handler(
         outcome.succeeded_count(),
         outcome.failed_count()
     );
-    outcome.into_ok(StatusCode::OK, title, &db_name, &ctx).into_response()
+    outcome
+        .into_ok(StatusCode::OK, title, &db_name, &ctx)
+        .into_response()
 }
 
 #[timed(database_lifecycle)]
@@ -1231,7 +1283,7 @@ pub(crate) async fn create_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::CreateDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1243,38 +1295,39 @@ pub(crate) async fn create_database_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let shard_count = (
-        if body.trim().is_empty() {
-            None
-        } else {
-            let mut buf = body.trim().as_bytes().to_vec();
-            match simd_json::from_slice::<CreateDatabaseRequest>(&mut buf) {
-                Ok(req) => req.shard_count,
-                Err(e) => {
-                    return HttpError::from_corelamo(
-                        CorelamoError::InvalidData(format!("invalid create-database request: {e}")),
-                        &ctx
-                    ).into_response();
-                }
+    let shard_count = (if body.trim().is_empty() {
+        None
+    } else {
+        let mut buf = body.trim().as_bytes().to_vec();
+        match simd_json::from_slice::<CreateDatabaseRequest>(&mut buf) {
+            Ok(req) => req.shard_count,
+            Err(e) => {
+                return HttpError::from_corelamo(
+                    CorelamoError::InvalidData(format!("invalid create-database request: {e}")),
+                    &ctx,
+                )
+                .into_response();
             }
         }
-    )
-        //TODO: calculate in a smart way
-        .unwrap_or(4);
+    })
+    //TODO: calculate in a smart way
+    .unwrap_or(4);
     //studip max shard_count
     if shard_count > 128 {
         return HttpError::from_corelamo(
-            CorelamoError::InvalidData(
-                format!("shard_count {shard_count} exceeds the maximum of 128")
-            ),
-            &ctx
-        ).into_response();
+            CorelamoError::InvalidData(format!(
+                "shard_count {shard_count} exceeds the maximum of 128"
+            )),
+            &ctx,
+        )
+        .into_response();
     }
     if shard_count < 1 {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData("database must have atleast one shard".to_string()),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     //reserve name + already exists...
@@ -1293,9 +1346,10 @@ pub(crate) async fn create_database_handler(
             DatabaseOptions::default(),
             shard_count,
             crate::corelamo_settings::synonym_registry(),
-            crate::corelamo_settings::model_registry()
+            crate::corelamo_settings::model_registry(),
         )
-    }).await;
+    })
+    .await;
 
     //smart publish + cleanup oon errors
     match created {
@@ -1306,8 +1360,9 @@ pub(crate) async fn create_database_handler(
             HttpOk::with_status(
                 StatusCode::CREATED,
                 format!("database '{db_name}' created"),
-                &ctx
-            ).into_response()
+                &ctx,
+            )
+            .into_response()
         }
         Ok(Err(e)) => {
             let _ = std::fs::remove_dir_all(&slot.dir);
@@ -1319,8 +1374,9 @@ pub(crate) async fn create_database_handler(
             state.databases.remove(&db_name);
             HttpError::from_corelamo(
                 CorelamoError::Internal(format!("create task panicked: {e}")),
-                &ctx
-            ).into_response()
+                &ctx,
+            )
+            .into_response()
         }
     }
 }
@@ -1330,7 +1386,7 @@ pub(crate) async fn delete_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1363,22 +1419,22 @@ pub(crate) async fn delete_database_handler(
             slot.set_state(SlotState::Live);
             error!(log, "delete: shutdown failed, database kept"; "db" => %db_name, "error" => %e);
             return HttpError::from_corelamo(
-                CorelamoError::Internal(
-                    format!(
-                        "failed to shut down '{db_name}' before deleting: {e}; \
+                CorelamoError::Internal(format!(
+                    "failed to shut down '{db_name}' before deleting: {e}; \
                      it is stopped and was not removed"
-                    )
-                ),
-                &ctx
-            ).into_response();
+                )),
+                &ctx,
+            )
+            .into_response();
         }
         Err(e) => {
             slot.set_state(SlotState::Live);
             error!(log, "delete: shutdown task panicked"; "db" => %db_name, "error" => %e);
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("shutdown task panicked for '{db_name}': {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     }
 
@@ -1386,12 +1442,11 @@ pub(crate) async fn delete_database_handler(
     //preventing a partially deleted database
     let dir = slot.dir.clone();
     let trash = trash_dir_for(state.databases.dir(), &db_name);
-    let removed = tokio::task::spawn_blocking(
-        move || -> Result<(), std::io::Error> {
-            std::fs::rename(&dir, &trash)?;
-            std::fs::remove_dir_all(&trash)
-        }
-    ).await;
+    let removed = tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
+        std::fs::rename(&dir, &trash)?;
+        std::fs::remove_dir_all(&trash)
+    })
+    .await;
 
     match removed {
         Ok(Ok(())) => {
@@ -1404,24 +1459,24 @@ pub(crate) async fn delete_database_handler(
             slot.set_state(SlotState::Live);
             error!(log, "database delete failed, database kept"; "name" => %db_name, "error" => %e);
             HttpError::from_corelamo(
-                CorelamoError::Internal(
-                    format!(
-                        "failed to delete '{db_name}' from disk: {e}; it is stopped and was not removed"
-                    )
-                ),
-                &ctx
-            ).into_response()
+                CorelamoError::Internal(format!(
+                    "failed to delete '{db_name}' from disk: {e}; it is stopped and was not removed"
+                )),
+                &ctx,
+            )
+            .into_response()
         }
         Ok(Err(e)) => {
             // renamed into .deleting-, only the recursive removal failed
             state.databases.remove(&db_name);
             error!(log, "database delete incomplete"; "name" => %db_name, "error" => %e);
             HttpError::from_corelamo(
-                CorelamoError::Internal(
-                    format!("removed '{db_name}' from memory but failed to delete its files: {e}")
-                ),
-                &ctx
-            ).into_response()
+                CorelamoError::Internal(format!(
+                    "removed '{db_name}' from memory but failed to delete its files: {e}"
+                )),
+                &ctx,
+            )
+            .into_response()
         }
         Err(e) => {
             // the task panicked, so whether the directory moved can only be read off the disk
@@ -1433,8 +1488,9 @@ pub(crate) async fn delete_database_handler(
             error!(log, "database delete panicked"; "name" => %db_name, "error" => %e);
             HttpError::from_corelamo(
                 CorelamoError::Internal(format!("delete task panicked: {e}")),
-                &ctx
-            ).into_response()
+                &ctx,
+            )
+            .into_response()
         }
     }
 }
@@ -1443,7 +1499,7 @@ pub(crate) async fn stats_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Status) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1459,8 +1515,9 @@ pub(crate) async fn stats_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     // atomics only: this never queues behind an fsync or a reindex commit
@@ -1532,7 +1589,7 @@ pub(crate) async fn stats_handler(
 pub(crate) async fn prometheus_metrics_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Status) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1557,33 +1614,79 @@ pub(crate) async fn prometheus_metrics_handler(
             if slot.state() != SlotState::Live {
                 continue;
             }
-            let Ok(manager) = slot.manager() else { continue };
+            let Ok(manager) = slot.manager() else {
+                continue;
+            };
             let stats = manager.stats();
             let m = &stats.metrics;
             let db = slot.name.replace('\\', "\\\\").replace('"', "\\\"");
-            let _ = writeln!(out, "corelamo_documents{{db=\"{db}\"}} {}", stats.document_count);
-            let _ = writeln!(out, "corelamo_segments{{db=\"{db}\"}} {}", stats.segment_count);
-            let _ = writeln!(out, "corelamo_search_requests_total{{db=\"{db}\"}} {}", m.search_requests);
-            let _ = writeln!(out, "corelamo_search_errors_total{{db=\"{db}\"}} {}", m.search_errors);
-            let _ = writeln!(out, "corelamo_indexing_requests_total{{db=\"{db}\"}} {}", m.indexing_requests);
-            let _ = writeln!(out, "corelamo_indexing_errors_total{{db=\"{db}\"}} {}", m.indexing_errors);
-            write_histogram(&mut out, "corelamo_search_seconds", &db, &m.search_latency, m.search_total_time);
-            write_histogram(&mut out, "corelamo_indexing_seconds", &db, &m.indexing_latency, m.indexing_total_time);
+            let _ = writeln!(
+                out,
+                "corelamo_documents{{db=\"{db}\"}} {}",
+                stats.document_count
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_segments{{db=\"{db}\"}} {}",
+                stats.segment_count
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_search_requests_total{{db=\"{db}\"}} {}",
+                m.search_requests
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_search_errors_total{{db=\"{db}\"}} {}",
+                m.search_errors
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_indexing_requests_total{{db=\"{db}\"}} {}",
+                m.indexing_requests
+            );
+            let _ = writeln!(
+                out,
+                "corelamo_indexing_errors_total{{db=\"{db}\"}} {}",
+                m.indexing_errors
+            );
+            write_histogram(
+                &mut out,
+                "corelamo_search_seconds",
+                &db,
+                &m.search_latency,
+                m.search_total_time,
+            );
+            write_histogram(
+                &mut out,
+                "corelamo_indexing_seconds",
+                &db,
+                &m.indexing_latency,
+                m.indexing_total_time,
+            );
         }
         out
-    }).await;
+    })
+    .await;
 
     match text {
         Ok(text) => HttpOk::raw(StatusCode::OK, "text/plain; version=0.0.4", text, &ctx),
         Err(e) => HttpError::from_corelamo(
             CorelamoError::Internal(format!("metrics task panicked: {e}")),
-            &ctx
-        ).into_response(),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
 /// One histogram in the Prometheus text format: cumulative `le` buckets, `+Inf`, sum, count.
-fn write_histogram(out: &mut String, name: &str, db: &str, counts: &[u64], sum: std::time::Duration) {
+fn write_histogram(
+    out: &mut String,
+    name: &str,
+    db: &str,
+    counts: &[u64],
+    sum: std::time::Duration,
+) {
     use std::fmt::Write as _;
     let mut cumulative = 0u64;
     for (i, &count) in counts.iter().enumerate() {
@@ -1601,7 +1704,7 @@ pub(crate) async fn info_words_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Search) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1616,8 +1719,9 @@ pub(crate) async fn info_words_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let body = match require_body(body) {
@@ -1632,8 +1736,9 @@ pub(crate) async fn info_words_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::InvalidData(format!("invalid info-words request: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -1658,8 +1763,9 @@ pub(crate) async fn info_words_handler(
     HttpOk::with_data(
         format!("info for {} word(s)", results.len()),
         json!({ "words": results }),
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 
 #[timed(reindex)]
@@ -1667,7 +1773,7 @@ pub(crate) async fn reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1683,8 +1789,9 @@ pub(crate) async fn reindex_handler(
     if !handle.all_running() {
         return HttpError::from_corelamo(
             CorelamoError::DatabaseNotRunning(format!("database {db_name} is not running")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let name_for_db = db_name.clone();
@@ -1696,8 +1803,9 @@ pub(crate) async fn reindex_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("reindex task panicked: {e}")),
-                &value
-            ).into_response();
+                &value,
+            )
+            .into_response();
         }
     };
 
@@ -1717,7 +1825,7 @@ pub(crate) async fn abort_reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Reindex) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1731,10 +1839,8 @@ pub(crate) async fn abort_reindex_handler(
     };
 
     if handle.stats().reindexing.status == ReindexStatus::Cancelled {
-        return HttpOk::new(
-            format!("reindex already aborted for '{db_name}'"),
-            &ctx
-        ).into_response();
+        return HttpOk::new(format!("reindex already aborted for '{db_name}'"), &ctx)
+            .into_response();
     }
     handle.abort_reindex();
     HttpOk::new(format!("reindex aborted for '{db_name}'"), &ctx).into_response()
@@ -1744,7 +1850,7 @@ pub(crate) async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::GetPolicy) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1769,7 +1875,7 @@ pub(crate) async fn set_policy_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::SetPolicy) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1808,7 +1914,7 @@ pub(crate) async fn get_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1834,7 +1940,7 @@ pub(crate) async fn set_config_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1861,7 +1967,10 @@ pub(crate) async fn set_config_handler(
         }
     };
 
-    match handle.set_options_all(options, principal.id.0.clone()).await {
+    match handle
+        .set_options_all(options, principal.id.0.clone())
+        .await
+    {
         Ok(()) => HttpOk::new(format!("config updated for '{db_name}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }
@@ -1870,7 +1979,7 @@ pub(crate) async fn set_config_handler(
 pub(crate) async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::ListDatabases) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1889,23 +1998,26 @@ pub(crate) async fn list_databases_handler(
                 Some(json!({ "name": slot.name.clone(), "running": manager.all_running() }))
             })
             .collect::<Vec<_>>()
-    }).await;
+    })
+    .await;
 
     let entries = match entries {
         Ok(e) => e,
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("list task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
     HttpOk::with_data(
         format!("{} database(s)", entries.len()),
         json!({ "databases": entries }),
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 #[derive(Serialize)]
 struct EmbeddingModelInfo {
@@ -1924,7 +2036,7 @@ struct ListModelsResponse {
 pub(crate) async fn list_models_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::ListModels) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1946,8 +2058,9 @@ pub(crate) async fn list_models_handler(
     HttpOk::with_data(
         "Embedding models".to_string(),
         ListModelsResponse { models },
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 
 #[timed(backup)]
@@ -1955,7 +2068,7 @@ pub(crate) async fn backup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::BackupFull) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1986,7 +2099,7 @@ pub(crate) async fn backup_restore_handler(
     State(state): State<AppState>,
     Path((db_name, backup_id)): Path<(String, String)>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     let id_for_log = backup_id.clone();
     let name_for_log = db_name.clone();
@@ -2004,33 +2117,37 @@ pub(crate) async fn backup_restore_handler(
     if !is_valid_backup_id(&backup_id) {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData(format!("invalid backup id '{backup_id}'")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     if !handle.has_backup(&backup_id) {
         return HttpError::from_corelamo(
             CorelamoError::NotFound(format!("Backup with id '{id_for_log}' does not exist")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     if let Err(e) = handle.try_start_restore() {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    let result = handle.restore_backup(&backup_id, principal.id.0.clone()).await;
+    let result = handle
+        .restore_backup(&backup_id, principal.id.0.clone())
+        .await;
     handle.finish_restore(result.is_ok());
 
     match result {
         Ok(()) => {
             HttpOk::new(format!("restore completed for '{name_for_log}'"), &ctx).into_response()
         }
-        Err(e) =>
-            HttpError::from_corelamo(
-                CorelamoError::FailedToEx(format!("restore failed for '{name_for_log}': {e}")),
-                &ctx
-            ).into_response(),
+        Err(e) => HttpError::from_corelamo(
+            CorelamoError::FailedToEx(format!("restore failed for '{name_for_log}': {e}")),
+            &ctx,
+        )
+        .into_response(),
     }
 }
 
@@ -2039,7 +2156,7 @@ pub(crate) async fn backup_incremental_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     let log = slog_scope::logger().new(o!("component" => "handlers"));
     if let Err(e) = check_permission(&state, &principal, Permission::BackupIncremental) {
@@ -2063,8 +2180,9 @@ pub(crate) async fn backup_incremental_handler(
     if !backups.iter().any(|b| b.backup_type == BackupType::Full) {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData("no full backup exists to base an increment on".into()),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     if let Err(e) = handle.try_start_backup() {
@@ -2088,7 +2206,7 @@ pub(crate) async fn list_backups_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::ListBackups) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2104,18 +2222,17 @@ pub(crate) async fn list_backups_handler(
     let backups = match handle.list_backups() {
         Ok(b) => b,
         Err(e) => {
-            return HttpError::from_corelamo(
-                CorelamoError::Internal(e.to_string()),
-                &ctx
-            ).into_response();
+            return HttpError::from_corelamo(CorelamoError::Internal(e.to_string()), &ctx)
+                .into_response();
         }
     };
 
     HttpOk::with_data(
         format!("{} backup(s) for '{db_name}'", backups.len()),
         json!({ "backups": backups }),
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 
 #[timed(backup)]
@@ -2123,7 +2240,7 @@ pub(crate) async fn backup_delete_handler(
     State(state): State<AppState>,
     Path((db_name, backup_id)): Path<(String, String)>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteBackup) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2139,15 +2256,23 @@ pub(crate) async fn backup_delete_handler(
     if !handle.has_backup(&backup_id) {
         return HttpError::from_corelamo(
             CorelamoError::NotFound(format!("Backup with id '{backup_id}' does not exist")),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
-    if let Err(e) = handle.delete_backup(backup_id.clone(), principal.id.0.clone()).await {
+    if let Err(e) = handle
+        .delete_backup(backup_id.clone(), principal.id.0.clone())
+        .await
+    {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
 
-    HttpOk::new(format!("backup '{backup_id}' deleted for '{db_name}'"), &ctx).into_response()
+    HttpOk::new(
+        format!("backup '{backup_id}' deleted for '{db_name}'"),
+        &ctx,
+    )
+    .into_response()
 }
 
 #[timed(database_lifecycle)]
@@ -2156,7 +2281,7 @@ pub(crate) async fn rename_database_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::RenameDatabase) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2174,8 +2299,9 @@ pub(crate) async fn rename_database_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::InvalidData(format!("invalid rename-database request: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -2189,10 +2315,11 @@ pub(crate) async fn rename_database_handler(
     if new_name == db_name {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData(
-                "new name is the same as the current name (names are case-insensitive)".to_string()
+                "new name is the same as the current name (names are case-insensitive)".to_string(),
             ),
-            &ctx
-        ).into_response();
+            &ctx,
+        )
+        .into_response();
     }
 
     let log = slog_scope::logger().new(o!("component" => "handlers"));
@@ -2216,13 +2343,12 @@ pub(crate) async fn rename_database_handler(
 
     if manager.all_running() {
         return HttpError::from_corelamo(
-            CorelamoError::Conflict(
-                format!(
-                    "database '{db_name}' must be stopped before renaming; call stop-database first"
-                )
-            ),
-            &ctx
-        ).into_response();
+            CorelamoError::Conflict(format!(
+                "database '{db_name}' must be stopped before renaming; call stop-database first"
+            )),
+            &ctx,
+        )
+        .into_response();
     }
 
     // Claim the new name before anything is shut down: this refuses a name another slot
@@ -2242,13 +2368,12 @@ pub(crate) async fn rename_database_handler(
     let shut = tokio::task::spawn_blocking(move || db.shutdown()).await;
     let shut_err = match shut {
         Ok(Ok(())) => None,
-        Ok(Err(e)) =>
-            Some(
-                CorelamoError::Internal(
-                    format!("failed to shut down '{db_name}' before renaming: {e}")
-                )
-            ),
-        Err(e) => Some(CorelamoError::Internal(format!("shutdown task panicked: {e}"))),
+        Ok(Err(e)) => Some(CorelamoError::Internal(format!(
+            "failed to shut down '{db_name}' before renaming: {e}"
+        ))),
+        Err(e) => Some(CorelamoError::Internal(format!(
+            "shutdown task panicked: {e}"
+        ))),
     };
     if let Some(e) = shut_err {
         state.databases.remove(&new_name);
@@ -2308,8 +2433,9 @@ pub(crate) async fn rename_database_handler(
             info!(log, "database renamed"; "old_name" => %db_name, "new_name" => %new_name);
             HttpOk::new(
                 format!("database '{db_name}' renamed to '{new_name}'"),
-                &ctx
-            ).into_response()
+                &ctx,
+            )
+            .into_response()
         }
         Ok(Err(e)) => {
             state.databases.remove(&new_name);
@@ -2333,8 +2459,9 @@ pub(crate) async fn rename_database_handler(
             error!(log, "rename-database task panicked"; "old_name" => %db_name, "new_name" => %new_name, "error" => %e);
             HttpError::from_corelamo(
                 CorelamoError::Internal(format!("rename task panicked: {e}")),
-                &ctx
-            ).into_response()
+                &ctx,
+            )
+            .into_response()
         }
     }
 }
@@ -2343,7 +2470,7 @@ pub(crate) async fn timings_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Status) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2358,8 +2485,9 @@ pub(crate) async fn timings_handler(
             Err(e) => {
                 return HttpError::from_corelamo(
                     CorelamoError::InvalidData(format!("invalid timings request: {e}")),
-                    &ctx
-                ).into_response();
+                    &ctx,
+                )
+                .into_response();
             }
         }
     };
@@ -2375,7 +2503,7 @@ pub(crate) async fn disk_usage_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::Status) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2395,9 +2523,8 @@ pub(crate) async fn disk_usage_handler(
     let db_root = slot.dir.clone();
     let name_for_task = slot.name.clone();
 
-    let result = tokio::task::spawn_blocking(move ||
-        compute_disk_usage(&db_root, &name_for_task)
-    ).await;
+    let result =
+        tokio::task::spawn_blocking(move || compute_disk_usage(&db_root, &name_for_task)).await;
 
     let usage = match result {
         Ok(Ok(u)) => u,
@@ -2407,8 +2534,9 @@ pub(crate) async fn disk_usage_handler(
         Err(e) => {
             return HttpError::from_corelamo(
                 CorelamoError::Internal(format!("disk usage task panicked: {e}")),
-                &ctx
-            ).into_response();
+                &ctx,
+            )
+            .into_response();
         }
     };
 
@@ -2419,7 +2547,7 @@ pub(crate) async fn get_dictionary_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::GetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2432,7 +2560,12 @@ pub(crate) async fn get_dictionary_handler(
         }
     };
 
-    HttpOk::raw(StatusCode::OK, "application/toml", handle.dictionary_text(), &ctx)
+    HttpOk::raw(
+        StatusCode::OK,
+        "application/toml",
+        handle.dictionary_text(),
+        &ctx,
+    )
 }
 
 pub(crate) async fn set_dictionary_handler(
@@ -2440,7 +2573,7 @@ pub(crate) async fn set_dictionary_handler(
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
-    body: String
+    body: String,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();
@@ -2470,7 +2603,7 @@ pub(crate) async fn reset_dictionary_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
-    Extension(principal): Extension<Principal>
+    Extension(principal): Extension<Principal>,
 ) -> Response {
     if let Err(e) = check_permission(&state, &principal, Permission::SetConfig) {
         return HttpError::from_corelamo(e, &ctx).into_response();

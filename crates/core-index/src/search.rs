@@ -28,6 +28,7 @@ pub trait SearchIndex {
         }
     }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList;
+    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)>;
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList;
 
     //All indexed terms for a field (for the fuzzy automaton scan).

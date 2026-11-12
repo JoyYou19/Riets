@@ -43,6 +43,18 @@ impl SearchIndex for ImmutableSegment {
             .map(|(k, _)| k.term.clone())
             .collect()
     }
+    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+    let mut out = Vec::new();
+    for (key, postings) in self.terms.range(TermKey::new(prefix, xpath)..) {
+        if key.xpath != xpath || !key.term.starts_with(prefix) {
+            break;
+        }
+        if !postings.is_empty() {
+            out.push((key.term.clone(), postings.len() as u32));
+        }
+    }
+    out
+}
 
     fn element_index_of_row(&self, row: ArrayRowId) -> Option<u32> {
         self.array_row_index.element_index_of(row)
