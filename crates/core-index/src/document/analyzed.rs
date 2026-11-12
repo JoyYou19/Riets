@@ -97,7 +97,7 @@ fn analyze_target(
 //Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
 fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool) -> AnalyzedField {
     // analyzed.rs add_weighted
-    eprintln!("[idx] xpath={:?} analyzer={:?}", part.xpath, part.analyzer);
+    //eprintln!("[idx] xpath={:?} analyzer={:?}", part.xpath, part.analyzer);
 
     let field_analyzer = part
         .analyzer
@@ -160,12 +160,12 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
         cur_position += span + gap;
     }
 
-    eprintln!(
-        "[idx-terms] xpath={:?} analyzer={:?} terms={:?}",
-        part.xpath,
-        part.analyzer,
-        occurrences.keys().collect::<Vec<_>>()
-    );
+    // eprintln!(
+    //     "[idx-terms] xpath={:?} analyzer={:?} terms={:?}",
+    //     part.xpath,
+    //     part.analyzer,
+    //     occurrences.keys().collect::<Vec<_>>()
+    // );
 
     let terms = occurrences
         .into_iter()
