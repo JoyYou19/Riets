@@ -198,11 +198,6 @@ impl FieldPolicy {
                 .as_bool()
                 .ok_or_else(|| format!("field '{name}': $list must be a bool"))?;
         }
-        if let Some(b) = obj.get("$repeated") {
-            f.repeated = b
-                .as_bool()
-                .ok_or_else(|| format!("field '{name}': $repeated must be a bool"))?;
-        }
 
         if let Some(a) = obj.get("$analyzer") {
             f.analyzer = Some(
@@ -234,11 +229,6 @@ impl FieldPolicy {
         let mut f = Self::struct_with(name, subfields);
         if let Some(w) = obj.get("$weight") {
             f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
-        }
-        if let Some(r) = obj.get("$repeated") {
-            f.repeated = r
-                .as_bool()
-                .ok_or_else(|| format!("field '{name}': $repeated must be a bool"))?;
         }
         if let Some(b) = obj.get("$searchable") {
             f.searchable = b

@@ -185,7 +185,7 @@ impl Analyzer {
         }
     }
 
-    /// Build an analyzer from a config: tokenizer + ordered filter chain.
+    //Build an analyzer from a config: tokenizer + ordered filter chain.
     pub fn from_config(config: &AnalyzerConfig) -> Self {
         let literal_symbols: HashSet<char> = config.literal_symbols.iter().copied().collect();
 

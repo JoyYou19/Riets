@@ -160,8 +160,10 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
                     }
                 }
             } else {
-                for term in &mut terms[..pivot_index] {
-                    term.cursor.advance_to(pivot_doc);
+                for term in &mut terms {
+                    if term.cursor.doc_id().is_some_and(|doc| doc < pivot_doc) {
+                        term.cursor.advance_to(pivot_doc);
+                    }
                 }
             }
         }
@@ -766,8 +768,10 @@ pub fn wand_top_k_grouped<S: SearchStats>(
                 clause.step_past(pivot_doc);
             }
         } else {
-            for clause in &mut clauses[..pivot_index] {
-                clause.advance_to(pivot_doc);
+            for clause in &mut clauses {
+                if clause.doc_id().is_some_and(|doc| doc < pivot_doc) {
+                    clause.advance_to(pivot_doc);
+                }
             }
         }
     }

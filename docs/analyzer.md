@@ -1,4 +1,3 @@
-analyzer```markdown
 # Analyzers in the policy
 
 Text analysis is configured **per field**. You define named **analyzers** in one
@@ -210,6 +209,3 @@ warning:
 
 New and updated documents use the new policy immediately; existing documents
 keep their old terms until you run a **reindex**.
-```
-
-That's the complete single-file doc — save it as `docs/analyzers.md`.
