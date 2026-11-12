@@ -3,6 +3,10 @@ use crate::analyzer::analyzer_config::{
 };
 use crate::analyzer::cached_stemmer::CachedStemmer;
 use crate::analyzer::filepath_tokenizer::FilepathTokenizer;
+use crate::analyzer::small_tantivy::{
+    AsciiFoldingFilter, BoxTokenStream, LowerCaser, RawTokenizer, RemoveLongFilter,
+    SimpleTokenizer, StopWordFilter, TextAnalyzer, Tokenizer, WhitespaceTokenizer,
+};
 use crate::analyzer::stip_html::strip_html;
 use crate::analyzer::strip_markdown::strip_markdown;
 use crate::analyzer::url_tokenizer::UrlTokenizer;
@@ -13,16 +17,13 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
 };
-use tantivy::tokenizer::{
-    AsciiFoldingFilter, BoxTokenStream, LowerCaser, RawTokenizer, RemoveLongFilter,
-    SimpleTokenizer, StopWordFilter, TextAnalyzer, TokenStream, Tokenizer, WhitespaceTokenizer,
-};
 
 #[derive(Clone)]
 pub struct Analyzer {
     id: u64,
     analyzer: TextAnalyzer,
     literal_symbols: HashSet<char>,
+    lowercase: bool,
     char_filters: Vec<CompiledCharFilter>,
 }
 
@@ -126,7 +127,6 @@ fn build_tokenizer(config: &AnalyzerConfig) -> ConfigTokenizer {
 //either use the given or tantivy has built-in per-language stopwords too they have A LOT
 fn stopword_filter(stop: &Stopwords) -> Option<StopWordFilter> {
     match stop {
-        Stopwords::LanguageDefaults(lang) => StopWordFilter::new(lang.0),
         Stopwords::Words(words) => Some(StopWordFilter::remove(words.iter().cloned())),
     }
 }
@@ -182,11 +182,12 @@ impl Analyzer {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
             analyzer,
             literal_symbols,
+            lowercase: true,
             char_filters: Vec::new(),
         }
     }
 
-    /// Build an analyzer from a config: tokenizer + ordered filter chain.
+    //Build an analyzer from a config: tokenizer + ordered filter chain.
     pub fn from_config(config: &AnalyzerConfig) -> Self {
         let literal_symbols: HashSet<char> = config.literal_symbols.iter().copied().collect();
 
@@ -247,6 +248,7 @@ impl Analyzer {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
             analyzer,
             literal_symbols,
+            lowercase: config.lowercase,
             char_filters,
         }
     }
@@ -291,6 +293,10 @@ impl Analyzer {
 
     pub fn has_char_filters(&self) -> bool {
         !self.char_filters.is_empty()
+    }
+
+    pub fn lowercases(&self) -> bool {
+        self.lowercase
     }
 
     pub fn is_word_char(&self, c: char) -> bool {
@@ -516,9 +522,13 @@ mod name_keys {
 
 #[cfg(test)]
 mod cached_stemmer_equivalence {
-    use super::*;
-    use crate::analyzer::cached_stemmer::CachedStemmer;
-    use tantivy::tokenizer::{Language, Stemmer, TokenStream};
+    use std::collections::HashSet;
+
+    use crate::analyzer::{
+        cached_stemmer::CachedStemmer,
+        small_tantivy::{LowerCaser, RemoveLongFilter, Stemmer, TextAnalyzer},
+        word_delimiter::WordDelimiterTokenizer,
+    };
 
     fn pipeline_tokens(analyzer: &mut TextAnalyzer, text: &str) -> Vec<(String, usize)> {
         let mut stream = analyzer.token_stream(text);
@@ -530,17 +540,17 @@ mod cached_stemmer_equivalence {
     }
 
     #[test]
-    fn cached_stemmer_matches_tantivy_stemmer() {
+    fn cached_stemmer_matches_stemmer() {
         let symbols: HashSet<char> = ['_'].into_iter().collect();
         let mut reference = TextAnalyzer::builder(WordDelimiterTokenizer::new(symbols.clone()))
             .filter(RemoveLongFilter::limit(40))
             .filter(LowerCaser)
-            .filter(Stemmer::new(Language::English))
+            .filter(Stemmer::new(rust_stemmers::Algorithm::English))
             .build();
         let mut cached = TextAnalyzer::builder(WordDelimiterTokenizer::new(symbols))
             .filter(RemoveLongFilter::limit(40))
             .filter(LowerCaser)
-            .filter(CachedStemmer::new(rust_stemmers::Algorithm::English, 8)) // tiny capacity also exercises eviction
+            .filter(CachedStemmer::new(rust_stemmers::Algorithm::English, 8))
             .build();
 
         let text = std::env::var("ANALYZER_SAMPLE")

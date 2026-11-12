@@ -43,7 +43,7 @@
 
 use std::collections::HashSet;
 
-use tantivy::tokenizer::{BoxTokenStream, Token, TokenStream, Tokenizer};
+use crate::analyzer::small_tantivy::{BoxTokenStream, Token, TokenStream, Tokenizer};
 
 fn split_where(
     segment: &str,
@@ -76,9 +76,7 @@ fn split_where(
 fn split_on_case(segment: &str) -> Vec<(usize, usize)> {
     split_where(segment, |prev, curr, next| {
         (prev.is_lowercase() && curr.is_uppercase())
-            || (prev.is_uppercase()
-                && curr.is_uppercase()
-                && next.is_some_and(char::is_lowercase))
+            || (prev.is_uppercase() && curr.is_uppercase() && next.is_some_and(char::is_lowercase))
     })
 }
 
@@ -211,11 +209,12 @@ impl WordDelimiterTokenizer {
             self.split_numerics,
         );
 
-        let parts_to_emit: Vec<&(String, usize, usize)> = if parts.len() > 1 {
-            parts.iter().collect()
-        } else {
-            Vec::new()
-        };
+        let parts_to_emit: Vec<&(String, usize, usize)> =
+            if parts.len() > 1 || !self.preserve_original {
+                parts.iter().collect()
+            } else {
+                Vec::new()
+            };
         let span = parts_to_emit.len().max(1);
         let start = *position;
 

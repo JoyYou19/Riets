@@ -198,11 +198,6 @@ impl FieldPolicy {
                 .as_bool()
                 .ok_or_else(|| format!("field '{name}': $list must be a bool"))?;
         }
-        if let Some(b) = obj.get("$repeated") {
-            f.repeated = b
-                .as_bool()
-                .ok_or_else(|| format!("field '{name}': $repeated must be a bool"))?;
-        }
 
         if let Some(a) = obj.get("$analyzer") {
             f.analyzer = Some(
@@ -234,11 +229,6 @@ impl FieldPolicy {
         let mut f = Self::struct_with(name, subfields);
         if let Some(w) = obj.get("$weight") {
             f.weight = parse_weight(w).map_err(|e| format!("field '{name}': $weight: {e}"))?;
-        }
-        if let Some(r) = obj.get("$repeated") {
-            f.repeated = r
-                .as_bool()
-                .ok_or_else(|| format!("field '{name}': $repeated must be a bool"))?;
         }
         if let Some(b) = obj.get("$searchable") {
             f.searchable = b
@@ -785,7 +775,11 @@ const MAX_ARRAY_DEPTH: u32 = 3;
 // arrays should have one subfield + max 3 + numbers cant be exact=false
 fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
     if field.kind == FieldKind::Struct {
-        let depth = array_depth + 1;
+        let depth = if field.repeated {
+            array_depth + 1
+        } else {
+            array_depth
+        };
         if field.subfields.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -839,7 +833,12 @@ fn stamp_field(
     field.full_path = full.clone();
 
     if field.kind == FieldKind::Struct {
-        let d = array_depth + 1;
+        //bug fix
+        let d = if field.repeated {
+            array_depth + 1
+        } else {
+            array_depth
+        };
         field.depth = d;
         for sub in &mut field.subfields {
             stamp_field(sub, &full, d, registry);

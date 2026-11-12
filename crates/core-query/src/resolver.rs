@@ -68,6 +68,18 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
 }
 
 pub fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
+    let a = field
+        .analyzer
+        .as_deref()
+        .and_then(|name| analyzers.get(name));
+    eprintln!(
+        "[query] field={} name={:?} found={}",
+        field.name,
+        field.analyzer,
+        a.is_some()
+    );
+    a.unwrap_or_else(|| analyzers.default_analyzer());
+
     field
         .analyzer
         .as_deref()

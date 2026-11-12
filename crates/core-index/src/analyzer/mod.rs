@@ -1,7 +1,9 @@
 pub mod analyzer;
 pub mod analyzer_config;
+pub mod ascii_folding_filter;
 pub mod cached_stemmer;
 pub mod filepath_tokenizer;
+pub mod small_tantivy;
 pub mod stip_html;
 pub mod strip_markdown;
 pub mod token;
