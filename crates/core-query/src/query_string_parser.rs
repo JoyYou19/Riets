@@ -114,7 +114,7 @@ fn analyze_term(word: &str, analyzer: &Analyzer) -> Option<Query> {
     let mut tokens = analyzer.analyze_query(word).into_iter().map(|t| t.text);
     //this is also the check for if returned nothing
     let first = tokens.next()?;
-    eprintln!("[query-terms] raw={:?} -> {:?}", word, tokens);
+    eprintln!("[query-term] raw={:?} first={:?}", word, first);
     match tokens.next() {
         None => Some(Query::Term(first)),
         Some(second) => {

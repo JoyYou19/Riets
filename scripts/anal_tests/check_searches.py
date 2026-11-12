@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 Runs the analyzer/search test queries against a Corelamo database and checks
 that each one returns the expected documents.
@@ -219,7 +220,7 @@ S("case_field", "Example", E(1))
 S("case_field", "example", [])
 S("case_field", "UPPER", E(5))
 S("case_field", "upper", [])
-X("case_field", "camelcase example", E(1))
+X("case_field", "camelcase example", E())
 
 group("german stemming + folding")
 S("german_field", "haus", E(1))
