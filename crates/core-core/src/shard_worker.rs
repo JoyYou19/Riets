@@ -1,9 +1,9 @@
-use ahash::{ HashMap as AHashMap, HashSet };
-use core_query::ranking::{ POOL_SIZE, finalize };
+use ahash::{HashMap as AHashMap, HashSet, HashSetExt};
+use core_query::ranking::{POOL_SIZE, finalize};
 use roaring::RoaringTreemap;
 use simd_json::OwnedValue;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -353,7 +353,7 @@ impl ShardHandle {
         &self,
         groups: &[QueryGroup],
         plans: &[RankPlan],
-        filters: Option<&HashMap<String, FieldQuery>>
+        filters: Option<&HashMap<String, FieldQuery>>,
     ) -> PreparedShardSearch {
         let snapshot = self.shared.snapshot.get();
         let mut prepared = Vec::with_capacity(groups.len());
@@ -419,9 +419,14 @@ impl ShardHandle {
             let executor = QueryExecutor::new(snapshot, &group.analyzer)
                 .with_corpus(corpus)
                 .with_prepared(prepared_group);
-            ranked.push(
-                executor.rank_features(Some(query), &group.ctxs, group_k, filters, mactmode, plan)
-            );
+            ranked.push(executor.rank_features(
+                Some(query),
+                &group.ctxs,
+                group_k,
+                filters,
+                mactmode,
+                plan,
+            ));
         }
         let hits = finalize(ranked, k);
         (hits.len(), hits)
@@ -462,7 +467,7 @@ impl ShardHandle {
         xpaths: &[XPathId],
         query: &[f32],
         k: usize,
-        prepared: &PreparedShardSearch
+        prepared: &PreparedShardSearch,
     ) -> Result<Vec<VectorHit>, CorelamoError> {
         self.ensure_readable()?;
         if prepared.filter.as_ref().is_some_and(|f| f.is_empty()) {
@@ -471,9 +476,10 @@ impl ShardHandle {
         let mut lists = Vec::with_capacity(xpaths.len());
         for &xpath in xpaths {
             lists.push(
-                prepared.snapshot
+                prepared
+                    .snapshot
                     .vector_search(xpath, query, k, prepared.filter.as_deref())
-                    .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?
+                    .map_err(|e| CorelamoError::Internal(format!("vector search: {e}")))?,
             );
         }
         Ok(merge_hits(lists, k))
@@ -580,13 +586,10 @@ impl ShardHandle {
     pub fn get_logs_direct(
         &self,
         date: Option<&str>,
-        max_lines: usize
+        max_lines: usize,
     ) -> Result<Vec<String>, CorelamoError> {
-        let lines = core_logs::logger::read_log_tail(
-            &self.shared.root.join("logs"),
-            date,
-            max_lines
-        )?;
+        let lines =
+            core_logs::logger::read_log_tail(&self.shared.root.join("logs"), date, max_lines)?;
         Ok(lines)
     }
 
