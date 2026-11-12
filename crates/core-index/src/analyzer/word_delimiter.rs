@@ -209,11 +209,12 @@ impl WordDelimiterTokenizer {
             self.split_numerics,
         );
 
-        let parts_to_emit: Vec<&(String, usize, usize)> = if parts.len() > 1 {
-            parts.iter().collect()
-        } else {
-            Vec::new()
-        };
+        let parts_to_emit: Vec<&(String, usize, usize)> =
+            if parts.len() > 1 || !self.preserve_original {
+                parts.iter().collect()
+            } else {
+                Vec::new()
+            };
         let span = parts_to_emit.len().max(1);
         let start = *position;
 

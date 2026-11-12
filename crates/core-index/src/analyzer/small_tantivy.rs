@@ -1,3 +1,5 @@
+//holly vibe replacement of tantivy's token tokenizer.... only the parts we need, tests so far have shown that outputs match we dont need the rest of tantivvys lib
+
 use std::{collections::HashSet, mem, str::CharIndices, sync::Arc};
 
 use std::borrow::{Borrow, BorrowMut};

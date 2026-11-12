@@ -6,7 +6,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-INPUT_FILE = "fever/corpus.jsonl"
+INPUT_FILE = "../../fever/corpus.jsonl"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
 SHARD_COUNT = 4
@@ -19,13 +19,13 @@ IN_FLIGHT = 8     # insert requests running at the same time
 # (fields without one use "$default"). See docs/analyzers.md.
 POLICY = json.dumps({
     "analyzers": {
-        "$default": {"stemming": "english", "min_length": 1,"stopwords": [
-      "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
-      "into", "is", "it", "of", "on", "or", "such", "that", "the", "their", "then",
-      "there", "these", "they", "this", "to", "was", "will", "with",
-      "has", "have", "had", "were", "been",
-      "which", "from", "also", "an", "than"
-    ]}},
+        "$default": {"stemming": "english", "min_length": 1, "stopwords": [
+            "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
+            "into", "is", "it", "of", "on", "or", "such", "that", "the", "their", "then",
+            "there", "these", "they", "this", "to", "was", "will", "with",
+            "has", "have", "had", "were", "been",
+            "which", "from", "also", "an", "than"
+        ]}},
     "document": {
         "_id": {
             "$type": "id_auto",
@@ -158,7 +158,8 @@ def main():
             batches_from_jsonl(INPUT_FILE, BATCH_SIZE), start=1
         ):
             sent += count
-            pending.append((batch_no, count, pool.submit(post, insert_path, payload)))
+            pending.append(
+                (batch_no, count, pool.submit(post, insert_path, payload)))
 
             if len(pending) >= IN_FLIGHT:
                 done_no, done_len, future = pending.popleft()
@@ -168,7 +169,8 @@ def main():
             report(done_no, done_len, future.result())
 
     duration = time.time() - start
-    print(f"\n[INFO] Done: {inserted:,} of {sent:,} documents inserted in {duration:.2f}s.")
+    print(f"\n[INFO] Done: {inserted:,} of {
+          sent:,} documents inserted in {duration:.2f}s.")
 
 
 if __name__ == "__main__":

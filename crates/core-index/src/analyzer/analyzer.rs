@@ -23,6 +23,7 @@ pub struct Analyzer {
     id: u64,
     analyzer: TextAnalyzer,
     literal_symbols: HashSet<char>,
+    lowercase: bool,
     char_filters: Vec<CompiledCharFilter>,
 }
 
@@ -181,6 +182,7 @@ impl Analyzer {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
             analyzer,
             literal_symbols,
+            lowercase: true,
             char_filters: Vec::new(),
         }
     }
@@ -246,6 +248,7 @@ impl Analyzer {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
             analyzer,
             literal_symbols,
+            lowercase: config.lowercase,
             char_filters,
         }
     }
@@ -290,6 +293,10 @@ impl Analyzer {
 
     pub fn has_char_filters(&self) -> bool {
         !self.char_filters.is_empty()
+    }
+
+    pub fn lowercases(&self) -> bool {
+        self.lowercase
     }
 
     pub fn is_word_char(&self, c: char) -> bool {

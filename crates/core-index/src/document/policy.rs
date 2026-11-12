@@ -775,7 +775,11 @@ const MAX_ARRAY_DEPTH: u32 = 3;
 // arrays should have one subfield + max 3 + numbers cant be exact=false
 fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
     if field.kind == FieldKind::Struct {
-        let depth = array_depth + 1;
+        let depth = if field.repeated {
+            array_depth + 1
+        } else {
+            array_depth
+        };
         if field.subfields.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -829,7 +833,12 @@ fn stamp_field(
     field.full_path = full.clone();
 
     if field.kind == FieldKind::Struct {
-        let d = array_depth + 1;
+        //bug fix
+        let d = if field.repeated {
+            array_depth + 1
+        } else {
+            array_depth
+        };
         field.depth = d;
         for sub in &mut field.subfields {
             stamp_field(sub, &full, d, registry);

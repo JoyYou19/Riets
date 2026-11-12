@@ -96,6 +96,9 @@ fn analyze_target(
 
 //Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
 fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool) -> AnalyzedField {
+    // analyzed.rs add_weighted
+    eprintln!("[idx] xpath={:?} analyzer={:?}", part.xpath, part.analyzer);
+
     let field_analyzer = part
         .analyzer
         .as_deref()
@@ -128,14 +131,13 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
 
     for seg in &segments {
         let (words, span) = if part.exact {
-            // whole value, lowercased, one term (nothing split/removed)
-            //WARN: might not be the best way to store/analyze exact field, might change later :)
             let offset = (0u32, seg.len() as u32);
-            push(
-                &seg.to_lowercase(),
-                encode_position(cur_position, 1),
-                offset,
-            );
+            let exact = if field_analyzer.lowercases() {
+                seg.to_lowercase()
+            } else {
+                seg.to_string()
+            };
+            push(&exact, encode_position(cur_position, 1), offset);
             if part.names {
                 for term in field_analyzer.name_terms(seg) {
                     push(&term, encode_position(cur_position, 1), offset);
@@ -157,6 +159,13 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
         total_words_len += words;
         cur_position += span + gap;
     }
+
+    eprintln!(
+        "[idx-terms] xpath={:?} analyzer={:?} terms={:?}",
+        part.xpath,
+        part.analyzer,
+        occurrences.keys().collect::<Vec<_>>()
+    );
 
     let terms = occurrences
         .into_iter()

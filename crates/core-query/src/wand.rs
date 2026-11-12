@@ -122,48 +122,43 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
         }
 
         if smallest_doc == pivot_doc {
-            if restrict
-                .as_ref()
-                .is_none_or(|docs| docs.contains(pivot_doc))
-            {
-                doc_len_cache.fill(None);
-                let mut score = 0u64;
-                let mut matched_terms = 0usize;
+            doc_len_cache.fill(None);
+            let mut score = 0u64;
+            let mut matched_terms = 0usize;
 
-                for term in &terms {
-                    if term.cursor.doc_id() != Some(pivot_doc) {
-                        continue;
-                    }
-                    let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
-                    let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
-                        stats
-                            .doc_len(pivot_doc, xpath)
-                            .unwrap_or(avg_doc_len as u32)
-                    });
-                    let posting = term.cursor.current().unwrap();
-
-                    score = score.saturating_add(bm25_score_scaled(
-                        posting.positions.len() as u32,
-                        posting.weight,
-                        doc_len,
-                        avg_doc_len,
-                        doc_count,
-                        term.doc_freq,
-                    ));
-                    matched_terms += 1;
+            for term in &terms {
+                if term.cursor.doc_id() != Some(pivot_doc) {
+                    continue;
                 }
-                push_top_k(&mut heap, pivot_doc, score, score, matched_terms, k);
+                let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
+                let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
+                    stats
+                        .doc_len(pivot_doc, xpath)
+                        .unwrap_or(avg_doc_len as u32)
+                });
+                let posting = term.cursor.current().unwrap();
 
-                for term in &mut terms {
-                    if term.cursor.doc_id() == Some(pivot_doc) {
-                        term.cursor.next();
-                    }
+                score = score.saturating_add(bm25_score_scaled(
+                    posting.positions.len() as u32,
+                    posting.weight,
+                    doc_len,
+                    avg_doc_len,
+                    doc_count,
+                    term.doc_freq,
+                ));
+                matched_terms += 1;
+            }
+            push_top_k(&mut heap, pivot_doc, score, score, matched_terms, k);
+
+            for term in &mut terms {
+                if term.cursor.doc_id() == Some(pivot_doc) {
+                    term.cursor.next();
                 }
-            } else {
-                for term in &mut terms {
-                    if term.cursor.doc_id().is_some_and(|doc| doc < pivot_doc) {
-                        term.cursor.advance_to(pivot_doc);
-                    }
+            }
+        } else {
+            for term in &mut terms {
+                if term.cursor.doc_id().is_some_and(|doc| doc < pivot_doc) {
+                    term.cursor.advance_to(pivot_doc);
                 }
             }
         }

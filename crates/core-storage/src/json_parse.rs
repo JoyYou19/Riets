@@ -40,15 +40,15 @@ impl ParsedNode {
         }
     }
     pub fn collect_field_names<'a>(&'a self, out: &mut BTreeSet<&'a str>) {
-    for leaf in &self.leaves {
-        out.insert(leaf.path.as_str());
-    }
-    for array_field in &self.arrays {
-        for element in &array_field.elements {
-            element.collect_field_names(out);
+        for leaf in &self.leaves {
+            out.insert(leaf.path.as_str());
+        }
+        for array_field in &self.arrays {
+            for element in &array_field.elements {
+                element.collect_field_names(out);
+            }
         }
     }
-}
 }
 
 pub fn parse_into_node(value: &OwnedValue, policy: &IndexPolicy) -> Result<ParsedNode, FailReason> {
@@ -82,29 +82,37 @@ fn walk_fields(
             continue;
         };
 
-        //this array of nested objects?
         if field.kind == FieldKind::Struct {
-            //ensure valid array
-            let OwnedValue::Array(elements) = value else {
-                continue;
-            };
-            let mut array_field = ArrayField {
-                path: field.full_path.clone(),
-                elements: Vec::new(),
-            };
-            for element in elements.iter() {
-                let OwnedValue::Object(_) = element else {
-                    return Err(FailReason::InvalidField {
-                        field: field.name.clone(),
-                        expected: "object".to_string(),
-                        got: value_type_name(element).to_string(),
-                    });
+            //this array of nested objects?
+            if field.repeated {
+                //ensure valid array
+                let OwnedValue::Array(elements) = value else {
+                    continue;
                 };
-                let mut child = ParsedNode::default();
-                walk_fields(element, &field.subfields, &mut child)?;
-                array_field.elements.push(child);
+                let mut array_field = ArrayField {
+                    path: field.full_path.clone(),
+                    elements: Vec::new(),
+                };
+                for element in elements.iter() {
+                    let OwnedValue::Object(_) = element else {
+                        return Err(FailReason::InvalidField {
+                            field: field.name.clone(),
+                            expected: "object".to_string(),
+                            got: value_type_name(element).to_string(),
+                        });
+                    };
+                    let mut child = ParsedNode::default();
+                    walk_fields(element, &field.subfields, &mut child)?;
+                    array_field.elements.push(child);
+                }
+                node.arrays.push(array_field);
+            } else {
+                //single object
+                let OwnedValue::Object(_) = value else {
+                    continue;
+                };
+                walk_fields(value, &field.subfields, node)?;
             }
-            node.arrays.push(array_field);
 
         //this is an array with string/num/bool
         } else if field.repeated {
@@ -121,7 +129,7 @@ fn walk_fields(
                 let Some(raw) = leaf_text(element) else {
                     continue;
                 };
-                validate_leaf(field,element, &raw)?;
+                validate_leaf(field, element, &raw)?;
                 let mut child = ParsedNode::default();
                 child.leaves.push(LeafValue {
                     path: field.full_path.clone(),
@@ -135,7 +143,7 @@ fn walk_fields(
             let Some(raw) = leaf_text(value) else {
                 continue;
             };
-            validate_leaf(field,value, &raw)?;
+            validate_leaf(field, value, &raw)?;
             node.leaves.push(LeafValue {
                 path: field.full_path.clone(),
                 value: raw,
@@ -145,8 +153,8 @@ fn walk_fields(
     Ok(())
 }
 
-fn validate_leaf(field: &FieldPolicy, value:&OwnedValue,raw: &str) -> Result<(), FailReason> {
-   use simd_json::StaticNode::{F64, I64, U64};
+fn validate_leaf(field: &FieldPolicy, value: &OwnedValue, raw: &str) -> Result<(), FailReason> {
+    use simd_json::StaticNode::{F64, I64, U64};
     let already_valid = match (field.kind, value) {
         (FieldKind::Integer | FieldKind::Float, OwnedValue::Static(I64(_) | U64(_))) => true,
         (FieldKind::Float, OwnedValue::Static(F64(_))) => true,
@@ -155,11 +163,14 @@ fn validate_leaf(field: &FieldPolicy, value:&OwnedValue,raw: &str) -> Result<(),
     if already_valid || !field.kind.is_numeric() || raw.trim().is_empty() {
         return Ok(());
     }
-    field.kind.validate_value(raw).map_err(|_| FailReason::InvalidField {
-        field: field.name.clone(),
-        expected: field.kind.label().to_string(),
-        got: raw.to_string(),
-    })
+    field
+        .kind
+        .validate_value(raw)
+        .map_err(|_| FailReason::InvalidField {
+            field: field.name.clone(),
+            expected: field.kind.label().to_string(),
+            got: raw.to_string(),
+        })
 }
 
 fn get_by_path<'a>(mut value: &'a OwnedValue, path: &str) -> Option<&'a OwnedValue> {

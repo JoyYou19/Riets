@@ -2,6 +2,7 @@
 pub struct AsciiFoldingFilter;
 
 pub fn fold(text: &str, output: &mut String) {
+    output.clear();
     for c in text.chars() {
         if let Some(folded) = fold_non_ascii_char(c) {
             output.push_str(folded);

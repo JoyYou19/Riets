@@ -1,0 +1,284 @@
+{
+    "analyzers": {
+        "$default": {
+            "stemming": "english"
+        },
+        "title": {
+            "stemming": null
+        },
+        "name": {
+            "ascii_folding": true
+        },
+        "url": {
+            "tokenizer": "url",
+            "ascii_folding": true
+        },
+        "code": {
+            "tokenizer": "code",
+            "lowercase": false
+        },
+        "filepath": {
+            "tokenizer": "filepath"
+        },
+        "html": {
+            "char_filters": [
+                {
+                    "html_strip": {}
+                }
+            ],
+            "stemming": "english"
+        },
+        "markdown": {
+            "char_filters": [
+                {
+                    "markdown_strip": {}
+                }
+            ],
+            "stemming": "english"
+        },
+        "utm_clean": {
+            "tokenizer": "url",
+            "char_filters": [
+                {
+                    "pattern_replace": {
+                        "pattern": "\\?utm_.*",
+                        "replacement": ""
+                    }
+                }
+            ]
+        },
+        "chain": {
+            "char_filters": [
+                {
+                    "html_strip": {}
+                },
+                {
+                    "pattern_replace": {
+                        "pattern": "\\[REDACTED\\]",
+                        "replacement": ""
+                    }
+                }
+            ],
+            "stemming": "english"
+        },
+        "kw": {
+            "tokenizer": "keyword"
+        },
+        "ws": {
+            "tokenizer": "whitespace"
+        },
+        "std": {
+            "tokenizer": "standard"
+        },
+        "stop_custom": {
+            "stopwords": [
+                "foo",
+                "bar",
+                "baz"
+            ]
+        },
+        "german": {
+            "stemming": "german",
+            "ascii_folding": true
+        },
+        "lengths": {
+            "min_length": 4,
+            "max_length": 10
+        },
+        "no_original": {
+            "preserve_original": false
+        },
+        "literal": {
+            "literal_symbols": [
+                "_",
+                "#",
+                "@"
+            ]
+        },
+        "case_sensitive": {
+            "lowercase": false,
+            "stemming": null
+        },
+        "stop_list": {
+            "stopwords": [
+                "a",
+                "an",
+                "and",
+                "be",
+                "in",
+                "is",
+                "of",
+                "not",
+                "or",
+                "that",
+                "the",
+                "this",
+                "to",
+                "over"
+            ],
+            "stemming": "english"
+        },
+        "exact_tag": {
+            "tokenizer": "keyword",
+            "lowercase": true
+        },
+        "empty": {}
+    },
+    "document": {
+        "slug": "id",
+        "title": {
+            "$type": "text",
+            "$analyzer": "title",
+            "$exact": true
+        },
+        "author": {
+            "$type": "text",
+            "$analyzer": "name",
+            "$exact": true
+        },
+        "body": {
+            "$type": "text"
+        },
+        "summary": "text",
+        "weighted": {
+            "$type": "text",
+            "$weight": {
+                "min": 10,
+                "max": 90
+            }
+        },
+        "url": {
+            "$type": "text",
+            "$analyzer": "url",
+            "$exact": true
+        },
+        "tracking_url": {
+            "$type": "text",
+            "$analyzer": "utm_clean"
+        },
+        "source_code": {
+            "$type": "text",
+            "$analyzer": "code"
+        },
+        "repo_path": {
+            "$type": "text",
+            "$analyzer": "filepath"
+        },
+        "readme": {
+            "$type": "text",
+            "$analyzer": "html"
+        },
+        "notes_md": {
+            "$type": "text",
+            "$analyzer": "markdown"
+        },
+        "chained": {
+            "$type": "text",
+            "$analyzer": "chain"
+        },
+        "kw_field": {
+            "$type": "text",
+            "$analyzer": "kw"
+        },
+        "ws_field": {
+            "$type": "text",
+            "$analyzer": "ws"
+        },
+        "std_field": {
+            "$type": "text",
+            "$analyzer": "std"
+        },
+        "stop_en_field": {
+            "$type": "text",
+            "$analyzer": "stop_list"
+        },
+        "stop_custom_field": {
+            "$type": "text",
+            "$analyzer": "stop_custom"
+        },
+        "german_field": {
+            "$type": "text",
+            "$analyzer": "german"
+        },
+        "lengths_field": {
+            "$type": "text",
+            "$analyzer": "lengths"
+        },
+        "no_original_field": {
+            "$type": "text",
+            "$analyzer": "no_original"
+        },
+        "literal_field": {
+            "$type": "text",
+            "$analyzer": "literal"
+        },
+        "case_field": {
+            "$type": "text",
+            "$analyzer": "case_sensitive",
+            "$exact": true
+        },
+        "tags": [
+            "text"
+        ],
+        "years": [
+            {
+                "$type": "integer"
+            }
+        ],
+        "year": "integer",
+        "count": "int",
+        "rating": "float",
+        "published": "date",
+        "is_public": "bool",
+        "secret_note": {
+            "$type": "text",
+            "$searchable": false
+        },
+        "internal_id": {
+            "$type": "integer",
+            "$list": false
+        },
+        "debug": "none",
+        "embedding": {
+            "$type": "text",
+            "$vector": true
+        },
+        "items": [
+            {
+                "sku": "text",
+                "qty": "integer",
+                "price": "float"
+            }
+        ],
+        "address": {
+            "street": "text",
+            "city": {
+                "$type": "text",
+                "$analyzer": "name",
+                "$exact": true
+            },
+            "zip": "integer",
+            "geo": {
+                "lat": "float",
+                "lon": "float"
+            }
+        },
+        "orders": [
+            {
+                "sku": "text",
+                "ship_to": {
+                    "city": "text",
+                    "zip": "integer"
+                }
+            }
+        ],
+        "tag": {
+            "$type": "text",
+            "$analyzer": "exact_tag"
+        },
+        "empty_field": {
+            "$type": "text",
+            "$analyzer": "empty"
+        }
+    }
+}
