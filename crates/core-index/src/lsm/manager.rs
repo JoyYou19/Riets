@@ -1,30 +1,30 @@
 use std::{
     collections::VecDeque,
     io,
-    path::{ Path, PathBuf },
+    path::{Path, PathBuf},
     sync::Arc,
-    time::{ Duration, Instant },
+    time::{Duration, Instant},
 };
 
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    disk::{ reader::DiskSegment, writer::write_segment },
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    disk::{reader::DiskSegment, writer::write_segment},
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
     lsm::{
         IndexSnapshot,
-        compaction::{ CompactionConfig, CompactionJob, CompletedCompaction },
+        compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
         manifest,
     },
     mem::MemIndex,
-    numeric_values::{ NumericBound, NumericValue },
-    posting::{ DeleteSet, PostingList },
-    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats },
-    segment::{ ImmutableSegment, SegmentHandle },
-    types::{ ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId },
-    vector::{ HnswGraph, hnsw_file_path },
-    vector::{ SegmentVectors, VectorFile, find_vector_files, vector_file_path },
+    numeric_values::{NumericBound, NumericValue},
+    posting::{DeleteSet, PostingList},
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats},
+    segment::{ImmutableSegment, SegmentHandle},
+    types::{ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId},
+    vector::{HnswGraph, hnsw_file_path},
+    vector::{SegmentVectors, VectorFile, find_vector_files, vector_file_path},
     wildcard::WildcardPattern,
 };
 
@@ -62,8 +62,8 @@ impl FlushJob {
 
     #[timed(writing_files)]
     pub fn write(self) -> io::Result<DiskSegment> {
-        let with_path = |e: io::Error|
-            io::Error::new(e.kind(), format!("{}: {e}", self.path.display()));
+        let with_path =
+            |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", self.path.display()));
         let segment = MemIndex::freeze_shared(&self.generations);
         write_segment(&self.path, &segment).map_err(with_path)?;
         DiskSegment::open(&self.path).map_err(with_path)
@@ -118,7 +118,9 @@ impl FlushQueue {
     fn complete(&mut self, seq: u64) -> io::Result<PendingFlush> {
         match self.pending.front() {
             Some(front) if front.seq == seq => Ok(self.pending.pop_front().expect("front checked")),
-            _ => Err(io::Error::other(format!("segment write {seq} finished out of order"))),
+            _ => Err(io::Error::other(format!(
+                "segment write {seq} finished out of order"
+            ))),
         }
     }
 
@@ -136,8 +138,9 @@ impl FlushQueue {
 
     fn health(&self) -> io::Result<()> {
         match &self.failure {
-            Some(message) =>
-                Err(io::Error::other(format!("segment write failed earlier: {message}"))),
+            Some(message) => Err(io::Error::other(format!(
+                "segment write failed earlier: {message}"
+            ))),
             None => Ok(()),
         }
     }
@@ -147,6 +150,7 @@ impl FlushQueue {
 // fn unwrap_mem(generation: Arc<MemIndex>) -> MemIndex {
 //     Arc::try_unwrap(generation).unwrap_or_else(|shared| (*shared).clone())
 // }
+
 pub trait FlushCheckpoint: Send + Sync {
     fn checkpoint(&self) -> io::Result<()>;
 }
@@ -211,7 +215,7 @@ impl SearchIndex for LsmIndex {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
         self.snapshot().fuzzy_expansions(term, xpath, opts)
     }
@@ -300,15 +304,17 @@ impl LsmIndex {
             let disk = match DiskSegment::open(&path) {
                 Ok(disk) => disk,
                 // derived data: start without it, a reindex rebuilds it from the store
-                Err(e) if
-                    matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidData)
-                => {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+                    ) =>
+                {
                     // keep its number reserved so a new segment never reuses the name
-                    if
-                        let Some(id) = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .and_then(manifest::segment_id_of)
+                    if let Some(id) = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .and_then(manifest::segment_id_of)
                     {
                         next_segment_id = next_segment_id.max(id + 1);
                     }
@@ -324,12 +330,13 @@ impl LsmIndex {
             }
 
             max_array_row = max_array_row.max(
-                disk.array_row_index().max_array_row().unwrap_or(ArrayRowId(0))
+                disk.array_row_index()
+                    .max_array_row()
+                    .unwrap_or(ArrayRowId(0)),
             );
 
-            if
-                let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) &&
-                let Some(id) = stem
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                && let Some(id) = stem
                     .strip_prefix("segment-")
                     .and_then(|value| value.parse::<u64>().ok())
             {
@@ -392,7 +399,8 @@ impl LsmIndex {
     /// deleted. A new document must get a higher id, or it would inherit those traces.
     pub fn highest_known_doc_id(&self) -> DocId {
         let in_segments = self.next_doc_id.saturating_sub(1);
-        let deleted = self.deleted
+        let deleted = self
+            .deleted
             .iter()
             .filter(|&doc_id| (doc_id & ARRAY_ROW_FLAG) == 0)
             .max()
@@ -411,9 +419,8 @@ impl LsmIndex {
                 break;
             }
 
-            if
-                Arc::strong_count(newest) > 1 &&
-                newest.estimated_size_bytes() > SMALL_GENERATION_BYTES
+            if Arc::strong_count(newest) > 1
+                && newest.estimated_size_bytes() > SMALL_GENERATION_BYTES
             {
                 break;
             }
@@ -445,25 +452,24 @@ impl LsmIndex {
     }
 
     fn build_snapshot(&self, mem: Arc<MemIndex>) -> IndexSnapshot {
-        let pending: usize = self.flush_queue.pending
+        let pending: usize = self
+            .flush_queue
+            .pending
             .iter()
             .map(|pending| pending.generations.len())
             .sum();
-        let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> = Vec::with_capacity(
-            self.generations.len() + pending + self.query_segments.len()
-        );
+        let mut segments: Vec<Arc<dyn SearchReader + Send + Sync>> =
+            Vec::with_capacity(self.generations.len() + pending + self.query_segments.len());
         segments.extend(
             self.generations
                 .iter()
-                .map(|generation| Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>)
+                .map(|generation| Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>),
         );
         for flush in &self.flush_queue.pending {
             segments.extend(
-                flush.generations
-                    .iter()
-                    .map(|generation| {
-                        Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>
-                    })
+                flush.generations.iter().map(|generation| {
+                    Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>
+                }),
             );
         }
         segments.extend(self.query_segments.iter().cloned());
@@ -478,8 +484,9 @@ impl LsmIndex {
     }
 
     pub fn memtable_size(&self) -> usize {
-        self.mem.estimated_size_bytes() +
-            self.generations
+        self.mem.estimated_size_bytes()
+            + self
+                .generations
                 .iter()
                 .map(|generation| generation.estimated_size_bytes())
                 .sum::<usize>()
@@ -511,7 +518,7 @@ impl LsmIndex {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "flushed generations contain no document ids"
+                    "flushed generations contain no document ids",
                 )
             })?;
         self.next_doc_id = max_doc_id.saturating_add(1);
@@ -522,17 +529,19 @@ impl LsmIndex {
             self.flush_queue.push(path, generations);
         } else {
             let segment = Arc::new(MemIndex::freeze_shared(&generations));
-            self.segment_handles.push(SegmentHandle::Memory(Arc::clone(&segment)));
-            Arc::make_mut(&mut self.query_segments).push(
-                segment as Arc<dyn SearchReader + Send + Sync>
-            );
+            self.segment_handles
+                .push(SegmentHandle::Memory(Arc::clone(&segment)));
+            Arc::make_mut(&mut self.query_segments)
+                .push(segment as Arc<dyn SearchReader + Send + Sync>);
         }
         Ok(())
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
         if self.flush_queue.writes_in_flight() {
-            return Err(io::Error::other("flush() called while segment writes are in flight"));
+            return Err(io::Error::other(
+                "flush() called while segment writes are in flight",
+            ));
         }
         self.queue_flush()?;
         for job in self.flush_queue.take_jobs() {
@@ -567,16 +576,20 @@ impl LsmIndex {
     /// Where a pending flush goes among the segments: before the ones added after it was
     /// queued, after everything older.
     fn flush_position(&self, pending: &PendingFlush) -> usize {
-        self.segment_handles.len().saturating_sub(pending.added_after)
+        self.segment_handles
+            .len()
+            .saturating_sub(pending.added_after)
     }
 
     fn install_flushed(&mut self, pending: &PendingFlush, disk: DiskSegment) -> io::Result<()> {
-        let root = self.root
+        let root = self
+            .root
             .clone()
             .ok_or_else(|| io::Error::other("flushed segment without a root"))?;
         manifest::append_segment(&root, &pending.path)?;
         let position = self.flush_position(pending);
-        self.segment_handles.insert(position, SegmentHandle::Disk(pending.path.clone()));
+        self.segment_handles
+            .insert(position, SegmentHandle::Disk(pending.path.clone()));
         Arc::make_mut(&mut self.query_segments).insert(position, Arc::new(disk));
         Ok(())
     }
@@ -586,11 +599,10 @@ impl LsmIndex {
     fn keep_in_memory(&mut self, pending: &PendingFlush) {
         let segment = Arc::new(MemIndex::freeze_shared(&pending.generations));
         let position = self.flush_position(pending);
-        self.segment_handles.insert(position, SegmentHandle::Memory(Arc::clone(&segment)));
-        Arc::make_mut(&mut self.query_segments).insert(
-            position,
-            segment as Arc<dyn SearchReader + Send + Sync>
-        );
+        self.segment_handles
+            .insert(position, SegmentHandle::Memory(Arc::clone(&segment)));
+        Arc::make_mut(&mut self.query_segments)
+            .insert(position, segment as Arc<dyn SearchReader + Send + Sync>);
     }
 
     /// Every flush numbered below this has to finish before data queued so far is on disk.
@@ -626,7 +638,8 @@ impl LsmIndex {
                 self.segment_handles.push(SegmentHandle::Disk(path));
                 Arc::new(disk)
             } else {
-                self.segment_handles.push(SegmentHandle::Memory(segment.clone()));
+                self.segment_handles
+                    .push(SegmentHandle::Memory(segment.clone()));
                 segment as Arc<dyn SearchReader + Send + Sync>
             };
             Arc::make_mut(&mut self.query_segments).push(reader);
@@ -658,17 +671,14 @@ impl LsmIndex {
     #[timed(compaction)]
     pub fn plan_compaction(
         &mut self,
-        config: CompactionConfig
+        config: CompactionConfig,
     ) -> io::Result<Option<CompactionJob>> {
         let Some(root) = &self.root else {
             return Ok(None);
         };
 
         let sizes = self.segment_sizes();
-        let disk_segments = sizes
-            .iter()
-            .filter(|size| size.is_some())
-            .count();
+        let disk_segments = sizes.iter().filter(|size| size.is_some()).count();
         if disk_segments < 2 {
             return Ok(None);
         }
@@ -693,11 +703,13 @@ impl LsmIndex {
                 Self::tiered_window(&sizes, config.size_ratio, 2, max_width)
             }
         } else if self.segment_count() >= config.compact_when_segments_at_least {
-            Self::tiered_window(&sizes, config.size_ratio, config.min_width, max_width).or_else(|| {
-                (self.segment_count() > config.max_segments)
-                    .then(|| Self::cheapest_window(&sizes, max_width))
-                    .flatten()
-            })
+            Self::tiered_window(&sizes, config.size_ratio, config.min_width, max_width).or_else(
+                || {
+                    (self.segment_count() > config.max_segments)
+                        .then(|| Self::cheapest_window(&sizes, max_width))
+                        .flatten()
+                },
+            )
         } else {
             None
         };
@@ -707,7 +719,8 @@ impl LsmIndex {
         };
 
         let selected: Vec<SegmentHandle> = self.segment_handles[start..end].to_vec();
-        let vectors: Vec<SegmentVectors> = self.vectors
+        let vectors: Vec<SegmentVectors> = self
+            .vectors
             .iter()
             .filter(|entry| {
                 selected
@@ -744,16 +757,16 @@ impl LsmIndex {
     }
 
     pub fn settling(&self, config: &CompactionConfig) -> bool {
-        let in_memory =
-            self.root.is_some() &&
-            (self.mem.doc_id_range().is_some() ||
-                !self.generations.is_empty() ||
-                self.segment_handles
+        let in_memory = self.root.is_some()
+            && (self.mem.doc_id_range().is_some()
+                || !self.generations.is_empty()
+                || self
+                    .segment_handles
                     .iter()
                     .any(|handle| matches!(handle, SegmentHandle::Memory(_))));
-        !self.quiet_for(config.idle_merge_after) ||
-            in_memory ||
-            Self::merge_all_due(&self.segment_sizes(), config.size_ratio)
+        !self.quiet_for(config.idle_merge_after)
+            || in_memory
+            || Self::merge_all_due(&self.segment_sizes(), config.size_ratio)
     }
 
     /// No document was added or deleted for `period` (or since the index opened).
@@ -765,11 +778,9 @@ impl LsmIndex {
     fn segment_sizes(&self) -> Vec<Option<u64>> {
         self.segment_handles
             .iter()
-            .map(|handle| {
-                match handle {
-                    SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
-                    SegmentHandle::Memory(_) => None,
-                }
+            .map(|handle| match handle {
+                SegmentHandle::Disk(_) => Some(Self::segment_size_bytes(handle).max(1)),
+                SegmentHandle::Memory(_) => None,
             })
             .collect()
     }
@@ -780,7 +791,7 @@ impl LsmIndex {
         sizes: &[Option<u64>],
         ratio: u64,
         min_width: usize,
-        max_width: usize
+        max_width: usize,
     ) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize, u64)> = None;
 
@@ -806,7 +817,8 @@ impl LsmIndex {
                 end += 1;
             }
 
-            if end - start >= min_width && best.is_none_or(|(_, _, best_total)| total < best_total) {
+            if end - start >= min_width && best.is_none_or(|(_, _, best_total)| total < best_total)
+            {
                 best = Some((start, end, total));
             }
         }
@@ -843,7 +855,8 @@ impl LsmIndex {
         };
 
         // Locate the selected segments wherever they are in the live list.
-        let mut positions: Vec<usize> = completed.selected
+        let mut positions: Vec<usize> = completed
+            .selected
             .iter()
             .filter_map(|handle| self.segment_handles.iter().position(|live| live == handle))
             .collect();
@@ -871,7 +884,10 @@ impl LsmIndex {
             segs.remove(pos);
         }
 
-        self.segment_handles.insert(insert_pos, SegmentHandle::Disk(completed.output_path.clone()));
+        self.segment_handles.insert(
+            insert_pos,
+            SegmentHandle::Disk(completed.output_path.clone()),
+        );
         let disk: Arc<dyn SearchReader + Send + Sync> = Arc::new(disk);
         segs.insert(insert_pos, disk);
         manifest::compact_manifest(&root, &self.disk_segment_paths())?;
@@ -922,11 +938,9 @@ impl LsmIndex {
     pub fn disk_segment_paths(&self) -> Vec<PathBuf> {
         self.segment_handles
             .iter()
-            .filter_map(|handle| {
-                match handle {
-                    SegmentHandle::Disk(path) => Some(path.clone()),
-                    SegmentHandle::Memory(_) => None,
-                }
+            .filter_map(|handle| match handle {
+                SegmentHandle::Disk(path) => Some(path.clone()),
+                SegmentHandle::Memory(_) => None,
             })
             .collect()
     }
@@ -935,7 +949,8 @@ impl LsmIndex {
     /// Attaches `<segment>.<xpath>.vec`, replacing any earlier version.
     /// Returns false (and removes the file) when the segment is no longer live.
     pub fn install_vectors(&mut self, segment: &Path, xpath: XPathId) -> io::Result<bool> {
-        let live = self.segment_handles
+        let live = self
+            .segment_handles
             .iter()
             .any(|handle| matches!(handle, SegmentHandle::Disk(p) if p == segment));
         if !live {
@@ -954,7 +969,8 @@ impl LsmIndex {
         let vectors = Arc::make_mut(&mut self.vectors);
         let Some(entry) = vectors
             .iter_mut()
-            .find(|entry| entry.segment == segment && entry.xpath == xpath) else {
+            .find(|entry| entry.segment == segment && entry.xpath == xpath)
+        else {
             let _ = std::fs::remove_file(&path);
             return Ok(false);
         };
@@ -975,7 +991,10 @@ impl LsmIndex {
     fn attach_vectors(&mut self, segment: &Path, xpath: XPathId) -> io::Result<()> {
         let file = Arc::new(VectorFile::open(vector_file_path(segment, xpath))?);
         let vectors = Arc::make_mut(&mut self.vectors);
-        match vectors.iter_mut().find(|entry| entry.segment == segment && entry.xpath == xpath) {
+        match vectors
+            .iter_mut()
+            .find(|entry| entry.segment == segment && entry.xpath == xpath)
+        {
             Some(existing) => {
                 existing.file = file;
                 // the graph indexes the old file: drop it, the background worker builds a new
@@ -985,13 +1004,12 @@ impl LsmIndex {
                     let _ = std::fs::remove_file(hnsw_file_path(segment, xpath));
                 }
             }
-            None =>
-                vectors.push(SegmentVectors {
-                    segment: segment.to_path_buf(),
-                    xpath,
-                    file,
-                    graph: None,
-                }),
+            None => vectors.push(SegmentVectors {
+                segment: segment.to_path_buf(),
+                xpath,
+                file,
+                graph: None,
+            }),
         }
         Ok(())
     }
