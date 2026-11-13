@@ -133,17 +133,14 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
             if threshold > 0 {
                 let mut block_bound = 0u64;
                 let mut skip_to = terms.get(on_pivot).and_then(|term| term.cursor.doc_id());
-                let mut usable = true;
                 for term in &terms[..on_pivot] {
-                    let Some(entry) = term.cursor.block_entry() else {
-                        usable = false;
-                        break;
+                    // no block bound (memory lists, unions, unknown doc lengths): the term's
+                    // whole-list bound, which holds for every doc and does not limit the skip
+                    let Some(entry) = term.cursor.block_entry().filter(|e| e.min_doc_len > 0)
+                    else {
+                        block_bound = block_bound.saturating_add(term.upper_bound);
+                        continue;
                     };
-                    // 0: a doc in the block has no stored length, the bound is unknown
-                    if entry.min_doc_len == 0 {
-                        usable = false;
-                        break;
-                    }
                     let (_, doc_count, avg_doc_len) = field_stats[term.field];
                     block_bound = block_bound.saturating_add(bm25_score_scaled(
                         entry.max_tf,
@@ -156,9 +153,10 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                     let after_block = entry.last_doc_id.saturating_add(1);
                     skip_to = Some(skip_to.map_or(after_block, |known| known.min(after_block)));
                 }
-                if usable
-                    && block_bound < threshold
+                // `skip_to > pivot_doc`: a skip must move forward, or the loop would not end
+                if block_bound < threshold
                     && let Some(skip_to) = skip_to
+                    && skip_to > pivot_doc
                 {
                     for term in &mut terms[..on_pivot] {
                         term.cursor.advance_to(skip_to);
@@ -471,6 +469,8 @@ struct FormCursor<'a> {
     avg_doc_len: f32,
     weight: u16,
     upper_bound: u64,
+    // each list's best possible score (whole list), for cursors without block bounds
+    list_bounds: Vec<u64>,
     // any of the lists is enough (the typed words of a synonym group), or all of them
     any: bool,
     // the document every cursor is on, `None` once there is none left
@@ -493,11 +493,12 @@ impl<'a> FormCursor<'a> {
         }
         let doc_count = stats.doc_count(form.xpath);
         // both kinds: at most every list's best score added up
-        let upper_bound = form
+        let list_bounds: Vec<u64> = form
             .lists
             .iter()
             .map(|list| bm25_upper_bound(list.max_weight, doc_count, list.doc_freq))
-            .fold(0u64, u64::saturating_add);
+            .collect();
+        let upper_bound = list_bounds.iter().copied().fold(0u64, u64::saturating_add);
         let rarity = |doc_freq: u32| -> f32 {
             let n = doc_count as f32;
             let df = (doc_freq as f32).min(n);
@@ -511,6 +512,7 @@ impl<'a> FormCursor<'a> {
         let mut cursor = Self {
             field: form.field,
             idf,
+            list_bounds,
             positions: vec![Vec::new(); form.lists.len()],
             phrase: form.phrase,
             cursors: form.lists.into_iter().map(|list| list.cursor).collect(),
@@ -836,21 +838,29 @@ pub fn wand_top_k_grouped<'a,S: SearchStats>(
             if threshold > 0 {
                 let mut block_bound = 0u64;
                 let mut skip_to = clauses.get(on_pivot).and_then(|clause| clause.doc_id());
-                let mut usable = true;
-                'clauses: for clause in &clauses[..on_pivot] {
+                for clause in &clauses[..on_pivot] {
                     let mut per_form = Vec::with_capacity(clause.forms.len());
                     for form in &clause.forms {
+                        // a finished form scores nothing from here on; its cursors may sit
+                        // behind the pivot and must not shape the skip
+                        if form.doc.is_none() {
+                            continue;
+                        }
                         let mut form_bound = 0u64;
-                        for (cursor, &doc_freq) in form.cursors.iter().zip(&form.doc_freqs) {
+                        for ((cursor, &doc_freq), &list_bound) in
+                            form.cursors.iter().zip(&form.doc_freqs).zip(&form.list_bounds)
+                        {
                             // an exhausted list adds nothing to any later doc
                             if cursor.is_exhausted() {
                                 continue;
                             }
-                            // memory lists, unions, unknown doc lengths: no block bound
+                            // no block bound (memory lists, unions, unknown doc lengths): the
+                            // list's whole bound, which holds for every doc and does not limit
+                            // how far we skip
                             let Some(entry) = cursor.block_entry().filter(|e| e.min_doc_len > 0)
                             else {
-                                usable = false;
-                                break 'clauses;
+                                form_bound = form_bound.saturating_add(list_bound);
+                                continue;
                             };
                             form_bound = form_bound.saturating_add(bm25_score_scaled(
                                 entry.max_tf,
@@ -869,9 +879,10 @@ pub fn wand_top_k_grouped<'a,S: SearchStats>(
                     block_bound =
                         block_bound.saturating_add(best_per_field(per_form.into_iter()));
                 }
-                if usable
-                    && block_bound < threshold
+                // `skip_to > pivot_doc`: a skip must move forward, or the loop would not end
+                if block_bound < threshold
                     && let Some(skip_to) = skip_to
+                    && skip_to > pivot_doc
                 {
                     for clause in &mut clauses[..on_pivot] {
                         clause.advance_to(skip_to);

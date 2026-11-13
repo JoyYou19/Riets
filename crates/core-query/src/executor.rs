@@ -535,7 +535,30 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     any: false,
                     phrase: Some(terms.iter().map(|term| term.offset).collect()),
                 }),
-                Query::Exact(_) => self.leaf_form(&form.query, ctx, None, form.weight),
+                Query::Exact(raw) => {
+                    // a single term in the exact field (as `execute_exact` reads it): a cursor,
+                    // so its blocks can be skipped like any other word's
+                    let xpath = ctx.exact_xpath.unwrap_or(ctx.xpath);
+                    let raw = raw.trim();
+                    let raw = raw
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .unwrap_or(raw);
+                    let words: Vec<&str> = raw.split_whitespace().collect();
+                    let term = if words.len() == 1 { words[0] } else { raw };
+                    if term.is_empty() {
+                        None
+                    } else {
+                        let (source, doc_freq) = self.term_source(term, xpath);
+                        Some(FormLists {
+                            xpath,
+                            lists: vec![(source, doc_freq)],
+                            weight: form.weight,
+                            any: false,
+                            phrase: None,
+                        })
+                    }
+                }
                 Query::And(words) => {
                     let lists: Option<Vec<(ListSource<'a>, u32)>> = words
                         .iter()
@@ -1512,6 +1535,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             Query::Synonym(forms) => {
                 for form in forms {
                     match &form.query {
+                        // WAND reads exact forms through cursors itself: nothing to prepare
+                        Query::Exact(_) if lazy_phrases => {}
                         // WAND checks this phrase on positions itself: only its words' statistics
                         Query::Phrase(terms) if lazy_phrases => {
                             for term in terms {
