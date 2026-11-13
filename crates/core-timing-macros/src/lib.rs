@@ -137,3 +137,4 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     output.into()
 }
+

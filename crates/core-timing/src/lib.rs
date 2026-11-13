@@ -214,6 +214,11 @@ fn filename_only(file: &'static str) -> &'static str {
 /// threads and see contention, prefer timing the boundary functions
 /// (parse, index-write, disk-write) rather than every inner helper.
 pub fn record(category: &'static str, name: &'static str, file: &'static str, elapsed: Duration) {
+    //fix
+    if !cfg!(feature = "timing") {
+        return;
+    }
+
     let file = filename_only(file);
     let ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
     let mut map = registry();
@@ -257,6 +262,10 @@ pub fn record(category: &'static str, name: &'static str, file: &'static str, el
 /// consistent about this across call sites that feed into the same
 /// category, so `MB/s` means the same thing on every row.
 pub fn add_bytes(category: &'static str, name: &'static str, file: &'static str, bytes: u64) {
+    //fix
+    if !cfg!(feature = "timing") {
+        return;
+    }
     let file = filename_only(file);
     let mut map = registry();
     let entry = map
@@ -501,3 +510,4 @@ fn fmt_bytes_rate(bytes_per_sec: f64) -> String {
         format!("{bytes_per_sec:.0} B/s")
     }
 }
+
