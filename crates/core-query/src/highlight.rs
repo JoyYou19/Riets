@@ -315,33 +315,73 @@ fn build_snippet(
 }
 
 fn fragments_by_chars(text: &str, ranges: &[Span], opts: &HighlightFieldOptions) -> Vec<String> {
+    if opts.number_of_fragments == 0 {
+        return Vec::new();
+    }
     if text.len() <= opts.fragment_size {
         return vec![build_snippet(text, 0, text.len(), ranges, opts)];
     }
-    let mut out = Vec::new();
-    for span in ranges.iter().take(opts.number_of_fragments) {
-        let half = opts.fragment_size / 2;
-        let ws = snap_down(text, span.start.saturating_sub(half));
-        let we = snap_up(text, (span.end + half).min(text.len()));
-        out.push(build_snippet(text, ws, we, ranges, opts));
-    }
-    out
+    let windows = fragment_windows(text, ranges, opts.fragment_size);
+    let top = top_regions(
+        ranges,
+        &windows,
+        opts.fragment_size,
+        opts.number_of_fragments,
+    );
+    top.into_iter()
+        .map(|(ws, we)| build_snippet(text, ws, we, ranges, opts))
+        .collect()
 }
 
 fn fragments_by_sentence(text: &str, ranges: &[Span], opts: &HighlightFieldOptions) -> Vec<String> {
-    let mut out = Vec::new();
-    for (start, end) in split_sentences(text) {
-        if ranges
-            .iter()
-            .any(|span| span.start < end && span.end > start)
-        {
-            out.push(build_snippet(text, start, end, ranges, opts));
-            if out.len() >= opts.number_of_fragments {
-                break;
-            }
-        }
+    if opts.number_of_fragments == 0 {
+        return Vec::new();
     }
-    out
+    let matching: Vec<(usize, usize)> = split_sentences(text)
+        .into_iter()
+        .filter(|&(start, end)| {
+            ranges
+                .iter()
+                .any(|span| span.start < end && span.end > start)
+        })
+        .collect();
+    let top = top_regions(
+        ranges,
+        &matching,
+        opts.fragment_size,
+        opts.number_of_fragments,
+    );
+    top.into_iter()
+        .map(|(start, end)| {
+            let (ws, we) = if end - start <= opts.fragment_size {
+                (start, end)
+            } else {
+                // long sentence: anchor at the sentence boundary and cut to
+                // fragment_size at a word boundary; slide only when the best
+                // match is further in than one fragment.
+                let best = ranges
+                    .iter()
+                    .filter(|span| span.start < end && span.end > start)
+                    .max_by(|a, b| {
+                        a.weight
+                            .total_cmp(&b.weight)
+                            .then_with(|| b.start.cmp(&a.start))
+                    })
+                    .unwrap();
+                let half = opts.fragment_size / 2;
+                let anchored_we = snap_up(text, (start + opts.fragment_size).min(end));
+                if best.start < anchored_we {
+                    (start, anchored_we)
+                } else {
+                    (
+                        snap_down(text, best.start.saturating_sub(half)),
+                        snap_up(text, (best.end + half).min(end)),
+                    )
+                }
+            };
+            build_snippet(text, ws, we, ranges, opts)
+        })
+        .collect()
 }
 
 fn split_sentences(text: &str) -> Vec<(usize, usize)> {
@@ -373,9 +413,7 @@ fn snap_up(text: &str, mut i: usize) -> usize {
     i
 }
 
-/// Non-overlapping, word-aligned windows of ~`fragment_size` bytes covering the
-/// matched spans in document order. A span that fits inside the current window
-/// extends it; a span that does not fit starts a new window.
+//stupid smart function that combines spans that are in the same window
 fn fragment_windows(text: &str, spans: &[Span], fragment_size: usize) -> Vec<(usize, usize)> {
     let mut windows: Vec<(usize, usize)> = Vec::new();
     for span in spans {
@@ -391,6 +429,48 @@ fn fragment_windows(text: &str, spans: &[Span], fragment_size: usize) -> Vec<(us
         }
     }
     windows
+}
+
+const DENSITY_BOOST: f32 = 0.5;
+//score for multiple spans in a single region
+fn region_score(spans: &[Span], start: usize, end: usize, fragment_size: usize) -> f32 {
+    let mut total = 0.0f32;
+    let mut first = usize::MAX;
+    let mut last = 0usize;
+    for span in spans {
+        if span.start < end && span.end > start {
+            total += span.weight;
+            first = first.min(span.start);
+            last = last.max(span.end);
+        }
+    }
+    if first == usize::MAX {
+        return 0.0;
+    }
+    let extent = last.saturating_sub(first).max(1);
+    let closeness = 1.0 - (extent as f32 / fragment_size.max(1) as f32);
+    total * (1.0 + DENSITY_BOOST * closeness.max(0.0))
+}
+
+fn top_regions(
+    spans: &[Span],
+    regions: &[(usize, usize)],
+    fragment_size: usize,
+    k: usize,
+) -> Vec<(usize, usize)> {
+    let mut scored: Vec<((usize, usize), f32)> = regions
+        .iter()
+        .map(|&(start, end)| {
+            let score = region_score(spans, start, end, fragment_size);
+            ((start, end), score)
+        })
+        .collect();
+    scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
+    scored
+        .into_iter()
+        .take(k)
+        .map(|(region, _)| region)
+        .collect()
 }
 
 pub fn field_texts(value: &OwnedValue, path: &str) -> Vec<String> {
