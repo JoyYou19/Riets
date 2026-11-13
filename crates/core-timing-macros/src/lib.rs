@@ -1,8 +1,8 @@
 //! Proc-macro crate for `#[timed]`.
 //!
-//! This crate only contains the macro. The runtime (registry + report
-//! formatting) lives in the sibling `core-timing` crate, which re-exports
-//! this macro so consumers only ever need to depend on `core-timing`.
+//! This crate only contains the macro. The runtime lives in the sibling
+//! `core-timing` crate, which re-exports this macro so consumers only ever
+//! need to depend on `core-timing`.
 
 use proc_macro::TokenStream;
 use quote::quote_spanned;
@@ -13,8 +13,8 @@ use syn::{
 };
 
 /// Parses the optional `#[timed(...)]` argument list:
-///   #[timed]                          -> category = None, label = None
-///   #[timed(category)]                -> category = Some(category), label = None
+///   #[timed]                           -> category = None, label = None
+///   #[timed(category)]                 -> category = Some(category), label = None
 ///   #[timed(category, "custom label")] -> both
 struct TimedArgs {
     category: Option<Ident>,
@@ -44,8 +44,7 @@ impl Parse for TimedArgs {
 }
 
 /// Wrap a function so its wall-clock execution time is recorded into the
-/// global `core_timing` registry, gated entirely behind the `timing`
-/// feature of the *crate that uses this macro*.
+/// global `core_timing` registry.
 ///
 /// Usage:
 /// ```ignore
@@ -67,21 +66,24 @@ impl Parse for TimedArgs {
 /// fn flush(&mut self) { ... }
 /// ```
 ///
-/// Requires the consuming crate to declare, in its own Cargo.toml:
+/// The consuming crate only needs to depend on `core-timing`; it does not
+/// have to declare any feature of its own. Whether anything is recorded is
+/// decided solely by the `timing` feature of `core-timing`. When that
+/// feature is off, the guard this macro creates is a zero-sized value with
+/// no `Drop` impl: no `Instant::now()`, no registry, no lock, no cost.
+///
+/// To switch timing on for a whole workspace with one flag, forward it:
 /// ```toml
 /// [features]
 /// timing = ["core-timing/timing"]
 /// ```
-/// and to depend on `core-timing`. When the `timing` feature is not
-/// enabled, the generated branch is statically dead and the compiler
-/// removes it — no `Instant::now()` call, no registry access, no cost.
 #[proc_macro_attribute]
 pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
     let args = parse_macro_input!(attr as TimedArgs);
 
-    // `Instant::now()` and a `Drop` guard are not allowed in a `const fn`; fail here with a
-    // clear message instead of a confusing error inside the expansion.
+    // A drop guard is not allowed in a `const fn`; fail here with a clear
+    // message instead of a confusing error inside the expansion.
     if let Some(constness) = &input.sig.constness {
         return syn::Error::new_spanned(constness, "#[timed] cannot be used on a `const fn`")
             .to_compile_error()
@@ -96,12 +98,9 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
         ..
     } = input;
 
-    // Tokens this macro generates must carry a span taken from the input
-    // item. `quote!` stamps them with `Span::call_site()`, whose expansion
-    // context makes rustc treat the whole function as macro-generated and
-    // skip the `dead_code` lint for it. `quote_spanned!` with an input span
-    // keeps the lint working; interpolated `#sig`/`#block` keep their own
-    // spans either way, so diagnostics stay accurate.
+    // Generated tokens carry a span taken from the input item. `quote!`
+    // would stamp them with `Span::call_site()`, which makes rustc treat the
+    // whole function as macro-generated and skip the `dead_code` lint.
     let span = sig.ident.span();
     let fn_name = sig.ident.to_string();
     // the body's statements are spliced in directly; `{ #block }` would trip `unused_braces`
@@ -112,25 +111,26 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map_or_else(|| "uncategorized".to_string(), |ident| ident.to_string());
     let label = args.label.map_or(fn_name, |lit| lit.value());
 
-    // The body is emitted once and unchanged, behind a drop guard that records the time when
-    // the function returns (normally, by `return` or by `?`). No closure or async block
-    // wraps it, so the return type is never written out: `impl Trait` returns, borrowed
-    // returns and `unsafe fn` bodies keep working, and `static`s in the body stay single.
-    // In an `async fn` the guard lives inside the future, so it measures until the future
-    // completes or is dropped. `cfg!` is evaluated in the crate that uses the macro; when
-    // its `timing` feature is off the guard is a constant `None` and compiles away.
+    // The body is emitted once and unchanged, behind a guard that records
+    // the time when the function returns (normally, by `return` or by `?`).
+    // No closure or async block wraps it, so the return type is never
+    // written out: `impl Trait` returns, borrowed returns and `unsafe fn`
+    // bodies keep working, and `static`s in the body stay single. In an
+    // `async fn` the guard lives inside the future, so it measures until the
+    // future completes or is dropped.
+    //
+    // There is deliberately no `cfg!` here. `core_timing::Timer` is the real
+    // guard when core-timing's `timing` feature is on and a zero-sized no-op
+    // when it is off, so one feature controls everything and the macro and
+    // the runtime can never disagree.
     let output = quote_spanned! { span =>
         #(#attrs)*
         #vis #sig {
-            let __core_timing_guard = if ::core::cfg!(feature = "timing") {
-                ::core::option::Option::Some(::core_timing::Timer::start(
-                    #category,
-                    #label,
-                    ::core::file!(),
-                ))
-            } else {
-                ::core::option::Option::None
-            };
+            let __core_timing_guard = ::core_timing::Timer::start(
+                #category,
+                #label,
+                ::core::file!(),
+            );
             #(#stmts)*
         }
     };
