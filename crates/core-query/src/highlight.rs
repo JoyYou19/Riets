@@ -6,6 +6,7 @@ use core_index::types::position_start;
 use core_protocol::command_reponse_definitions::HighlightFieldOptions;
 use core_timing::timed;
 use simd_json::OwnedValue;
+use unicode_segmentation::UnicodeSegmentation;
 
 //we need to re-analyze flattened arrays cause the position and offsets dont match in them
 #[timed(highlight)]
@@ -308,8 +309,9 @@ fn build_snippet(
         out.push_str(post);
         pos = e;
     }
+
     out.push_str(&text[pos..we]);
-    out
+    out.trim().to_string()
 }
 
 fn fragments_by_chars(text: &str, ranges: &[Span], opts: &HighlightFieldOptions) -> Vec<String> {
@@ -344,19 +346,19 @@ fn fragments_by_sentence(text: &str, ranges: &[Span], opts: &HighlightFieldOptio
 
 fn split_sentences(text: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
-    let mut start = 0usize;
-    for (i, c) in text.char_indices() {
-        if matches!(c, '.' | '!' | '?') {
-            out.push((start, i + c.len_utf8()));
-            start = i + c.len_utf8();
+    for (offset, sentence) in text.split_sentence_bound_indices() {
+        let trimmed = sentence.trim();
+        if trimmed.is_empty() {
+            continue;
         }
-    }
-    if start < text.len() {
-        out.push((start, text.len()));
+        let lead = sentence.len() - sentence.trim_start().len();
+        let start = offset + lead;
+        out.push((start, start + trimmed.len()));
     }
     out
 }
 
+//these two so that doesnt get cut off mid-word
 fn snap_down(text: &str, mut i: usize) -> usize {
     while i > 0 && !text.is_char_boundary(i) {
         i -= 1;
@@ -369,6 +371,26 @@ fn snap_up(text: &str, mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// Non-overlapping, word-aligned windows of ~`fragment_size` bytes covering the
+/// matched spans in document order. A span that fits inside the current window
+/// extends it; a span that does not fit starts a new window.
+fn fragment_windows(text: &str, spans: &[Span], fragment_size: usize) -> Vec<(usize, usize)> {
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    for span in spans {
+        match windows.last_mut() {
+            Some((ws, we)) if span.end.saturating_sub(*ws) <= fragment_size => {
+                *we = snap_up(text, span.end.max(*we));
+            }
+            _ => {
+                let ws = snap_down(text, span.start);
+                let we = snap_up(text, (ws + fragment_size).max(span.end).min(text.len()));
+                windows.push((ws, we));
+            }
+        }
+    }
+    windows
 }
 
 pub fn field_texts(value: &OwnedValue, path: &str) -> Vec<String> {
