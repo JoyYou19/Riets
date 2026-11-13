@@ -2712,6 +2712,12 @@ fn highlight_request(
             )));
         }
 
+        if field.kind != FieldKind::Text {
+            return Err(CorelamoError::InvalidData(format!(
+                "cannot highlight '{name}': only text fields support highlighting"
+            )));
+        }
+
         let analyzer = field_analyzer(field, analyzers).clone();
         let flattened = field.repeated;
         let row_keyed = field.row_keyed;
