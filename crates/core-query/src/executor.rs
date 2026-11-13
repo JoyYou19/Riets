@@ -675,7 +675,11 @@ where
                     if ctx.row_keyed {
                         self.push_row_matches(query, doc_id, ctx, out);
                     } else if let Some(leaf) = self.leaf(query, ctx) {
-                        self.push_leaf_matches(&leaf.postings, doc_id, ctx.xpath, out);
+                        //compute relevance weight 3000
+                        let doc_freq =
+                            self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+                        let weight = bm25_idf(doc_freq, self.stats().doc_count(leaf.xpath));
+                        self.push_leaf_matches(&leaf.postings, doc_id, ctx.xpath, weight, out);
                     }
                 }
             }
@@ -695,6 +699,8 @@ where
             Query::Fuzzy(raw, fuzziness, fuzzy_spec) => {
                 for &ctx in ctxs {
                     let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
+                    //WARN: we will need to come back to this a bit later this is aprox
+                    let weight = bm25_idf(list.len() as u32, self.stats().doc_count(ctx.xpath));
                     if ctx.row_keyed {
                         for posting in list.items() {
                             if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id))
@@ -706,13 +712,14 @@ where
                                         row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
                                         row_path: Vec::new(),
                                         positions: posting.positions.to_vec(),
+                                        weight,
                                         offsets: posting.offsets.to_vec(),
                                     });
                                 }
                             }
                         }
                     } else {
-                        self.push_leaf_matches(&list, doc_id, ctx.xpath, out);
+                        self.push_leaf_matches(&list, doc_id, ctx.xpath, weight, out);
                     }
                 }
             }
@@ -738,6 +745,7 @@ where
         list: &PostingList,
         doc_id: DocId,
         xpath: XPathId,
+        weight: f32,
         out: &mut Vec<MatchedTerm>,
     ) {
         if let Some(p) = Self::posting_for(list, doc_id) {
@@ -749,6 +757,7 @@ where
                     row_id: None,
                     positions: p.positions.to_vec(),
                     row_path: Vec::new(),
+                    weight,
                     offsets: p.offsets.to_vec(),
                 });
             }
@@ -767,6 +776,10 @@ where
         let Some(leaf) = self.leaf(query, ctx) else {
             return;
         };
+        //compute the relavance same as search with bm25
+        let doc_freq = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+        let weight = bm25_idf(doc_freq, self.stats().doc_count(leaf.xpath));
+
         for posting in leaf.postings.items() {
             if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) == Some(doc_id) {
                 if !posting.positions.is_empty() {
@@ -775,6 +788,7 @@ where
                         row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
                         row_path: Vec::new(),
                         positions: posting.positions.to_vec(),
+                        weight,
                         offsets: posting.offsets.to_vec(),
                     });
                 }
@@ -788,6 +802,7 @@ where
         terms: &[PhraseTerm],
         xpath: XPathId,
         row_id: Option<ArrayRowId>,
+        weight: f32,
         word_postings: &[Option<Posting>],
         out: &mut Vec<MatchedTerm>,
     ) {
@@ -846,6 +861,7 @@ where
                         positions: Vec::new(),
                         row_path: Vec::new(),
                         row_id,
+                        weight,
                         offsets: vec![(start, end)],
                     });
                 } else {
@@ -854,6 +870,7 @@ where
                         row_id,
                         row_path: Vec::new(),
                         positions: matched,
+                        weight,
                         offsets: Vec::new(),
                     });
                 }
@@ -861,7 +878,6 @@ where
         }
     }
 
-    #[timed(highlight)]
     fn collect_phrase(
         &self,
         terms: &[PhraseTerm],
@@ -872,14 +888,17 @@ where
         if terms.is_empty() {
             return;
         }
+        let doc_count = self.stats().doc_count(xpath);
+        let mut weight = 0.0f32;
         let word_postings: Vec<Option<Posting>> = terms
             .iter()
             .map(|t| {
-                let (list, _) = self.fetch_term_list(&t.text, xpath);
+                let (list, doc_freq) = self.fetch_term_list(&t.text, xpath);
+                weight += bm25_idf(doc_freq, doc_count);
                 Self::posting_for(&list, doc_id).cloned()
             })
             .collect();
-        Self::push_phrase_matches(terms, xpath, None, &word_postings, out);
+        Self::push_phrase_matches(terms, xpath, None, weight, &word_postings, out);
     }
 
     fn collect_phrase_row_keyed(
@@ -893,29 +912,31 @@ where
             return;
         }
         let xpath = ctx.xpath;
-        let lists: Vec<Cow<'a, PostingList>> = terms
+        let doc_count = self.stats().doc_count(xpath);
+        let lists: Vec<(Cow<'a, PostingList>, u32)> = terms
             .iter()
-            .map(|t| self.fetch_term_list(&t.text, xpath).0)
+            .map(|t| self.fetch_term_list(&t.text, xpath))
             .collect();
-        for posting in lists[0].items() {
+        let weight: f32 = lists.iter().map(|(_, df)| bm25_idf(*df, doc_count)).sum();
+        for posting in lists[0].0.items() {
             if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) != Some(doc_id) {
                 continue;
             }
             let row_id = posting.doc_id;
             let word_postings: Vec<Option<Posting>> = lists
                 .iter()
-                .map(|l| Self::posting_for(l, row_id).cloned())
+                .map(|(l, _)| Self::posting_for(l, row_id).cloned())
                 .collect();
             Self::push_phrase_matches(
                 terms,
                 xpath,
                 Some(ArrayRowId::from_raw(row_id)),
+                weight,
                 &word_postings,
                 out,
             );
         }
     }
-
     /// What a leaf query reads in one field.
     /// The key a leaf query's list is filed under and the field it is read from (the exact field
     /// for an exact match); `None` for anything that is not a leaf.

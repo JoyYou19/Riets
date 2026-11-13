@@ -16,4 +16,6 @@ pub struct MatchedTerm {
     //[2, 0] = cast[2].aliases[0].
     pub row_path: Vec<u32>,
     pub offsets: Vec<(u32, u32)>,
+    //relevance of a matched term
+    pub weight: f32,
 }
