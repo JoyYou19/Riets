@@ -1511,7 +1511,20 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             }
             Query::Synonym(forms) => {
                 for form in forms {
-                    self.prepare_leaves(&form.query, ctx, out,lazy_phrases);
+                    match &form.query {
+                        // WAND checks this phrase on positions itself: only its words' statistics
+                        Query::Phrase(terms) if lazy_phrases => {
+                            for term in terms {
+                                self.prepare_leaves(
+                                    &Query::Term(term.text.clone()),
+                                    ctx,
+                                    out,
+                                    lazy_phrases,
+                                );
+                            }
+                        }
+                        other => self.prepare_leaves(other, ctx, out, lazy_phrases),
+                    }
                 }
             }
 
@@ -2157,9 +2170,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 keep(&mut found, hit);
             }
         }
-        if let Some(Tier::All(q)) = plan.tiers.iter().find(|t| matches!(t, Tier::All(_))) {
-            eprintln!("all tier: {q:?}");
-        }
+        
         let mut hits: Vec<SearchHit> = found.into_values().collect();
         let clause_weights = self.clause_masks(&plan.clauses, ctxs, &mut hits);
         self.apply_density(&mut hits, &plan.terms, &plain_xpaths);
