@@ -142,6 +142,8 @@ struct FormLists<'a> {
     xpath: XPathId,
     lists: Vec<(ListSource<'a>, u32)>,
     weight: u16,
+    any:bool,
+     phrase: Option<Vec<u32>>,
 }
 
 impl FormLists<'_> {
@@ -162,6 +164,9 @@ impl FormLists<'_> {
                 })
                 .collect(),
             weight: self.weight,
+            any:self.any,
+            phrase: self.phrase.clone()
+            
         }
     }
 }
@@ -367,19 +372,79 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 )
             );
         }
+        // fuzzy: one clause per typed word, its forms the word's expansions in every field,
+        // each weighted down by its edits; a doc must hold every word
+        if let Query::Fuzzy(raw, fuzziness, spec) = query {
+            let words = self.fuzzy_words(raw);
+            if words.is_empty() || words.len() >= MAX_FUZZY_WORDS {
+                return Some(Vec::new());
+            }
 
+            let forms: Vec<Vec<(usize, FormLists<'a>)>> = words
+                .iter()
+                .map(|word| {
+                    let opts = fuzzy_options(word, *fuzziness, *spec);
+                    xpaths
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(field, &xpath)| {
+                            let candidates = self
+                                .fuzzy_candidates(word, xpath, opts)
+                                .into_iter()
+                                .map(|e| (e.term, e.edits, e.doc_freq));
+                            select_expansions(word, candidates, spec.max_expansions)
+                                .into_iter()
+                                .map(move |expansion| {
+                                    let local = self.local_doc_freq(&expansion.term, xpath);
+                                    (
+                                        field,
+                                        FormLists {
+                                            xpath,
+                                            lists: vec![(
+                                                ListSource::Term {
+                                                    term: expansion.term,
+                                                    xpath,
+                                                    local,
+                                                },
+                                                expansion.doc_freq,
+                                            )],
+                                            weight: 1000 / (1 + u16::from(expansion.edits)),
+                                            any:false,
+                                            phrase: None
+                                        },
+                                    )
+                                })
+                        })
+                        .collect()
+                })
+                .collect();
+
+            // a word with no expansion in this index: no document holds every word
+            if
+                forms
+                    .iter()
+                    .any(|word_forms| word_forms.iter().all(|(_, form)| form.lists[0].0.is_empty()))
+            {
+                return Some(Vec::new());
+            }
+
+            let index: &'a I = self.index;
+            let clauses = FieldClauses {
+                clauses: forms
+                    .iter()
+                    .map(|word_forms| {
+                        word_forms
+                            .iter()
+                            .map(|(field, form)| form.as_ref(index, *field))
+                            .collect()
+                    })
+                    .collect(),
+            };
+            return Some(wand_top_k_grouped(&self.stats(), vec![clauses], k, Some(1.0), restrict));
+        }
         None
     }
 
-    /// The WAND fast path for flat queries: every part a word or a group of words, phrases, exact
-    /// matches and typed multi-word spans (`best_fields`: only queries with synonym groups, the
-    /// others take `execute_top_k_retrieval`).
-    ///
-    /// `cross_fields`: a part matches in any of the fields and adds up its best form in each, as
-    /// `cross_field_hits` scores it, one document at a time instead of scoring every match.
-    /// Otherwise each field ranks its clauses on its own. `coverage` (`cross_fields`, a disjunction):
-    /// keep only documents covering that share of the query's weight and scale their scores by it
-    /// (see `wand::wand_top_k_grouped`); `None` is any part.
     fn execute_grouped_retrieval(
         &self,
         query: &Query,
@@ -463,7 +528,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 Query::Term(_) => self.leaf_form(&form.query, ctx, floor, form.weight),
                 // a phrase form adds up its words' scores on the documents where they form the
                 // phrase, the way the typed words' AND does: the two compete on the same scale
-                Query::Phrase(terms) => self.phrase_form(&form.query, terms, ctx, form.weight),
+                 Query::Phrase(terms) => Some(FormLists {
+                    xpath: ctx.xpath,
+                    lists: terms.iter().map(|term| self.term_source(&term.text, ctx.xpath)).collect(),
+                    weight: form.weight,
+                    any: false,
+                    phrase: Some(terms.iter().map(|term| term.offset).collect()),
+                }),
                 Query::Exact(_) => self.leaf_form(&form.query, ctx, None, form.weight),
                 Query::And(words) => {
                     let lists: Option<Vec<(ListSource<'a>, u32)>> = words
@@ -487,6 +558,24 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         xpath: ctx.xpath,
                         lists,
                         weight: form.weight,
+                        any:false,
+                        phrase:None
+                    })
+                }
+                Query::Wand(words) if words.iter().all(|word| matches!(word, Query::Term(_))) => {
+                    let lists = words
+                        .iter()
+                        .filter_map(|word| match word {
+                            Query::Term(term) => Some(self.term_source(term, ctx.xpath)),
+                            _ => None,
+                        })
+                        .collect();
+                    Some(FormLists {
+                        xpath: ctx.xpath,
+                        lists,
+                        weight: form.weight,
+                        any: true,
+                        phrase:None
                     })
                 }
                 _ => None,
@@ -525,6 +614,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             xpath,
             lists: vec![(source, doc_freq)],
             weight,
+            any:false,
+            phrase:None
         })
     }
 
@@ -791,8 +882,16 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 for &ctx in ctxs {
                     if ctx.row_keyed {
                         self.push_row_matches(query, doc_id, ctx, out);
+                    } else if let Query::Term(term) = query {
+                        let posting = self.posting_for(term, ctx.xpath, doc_id);
+                        Self::push_leaf_matches(posting.as_ref(), ctx.xpath, out);
                     } else if let Some(leaf) = self.leaf(query, ctx) {
-                        self.push_leaf_matches(&leaf.postings, doc_id, ctx.xpath, out);
+                        let items = leaf.postings.items();
+                        let posting = items
+                            .binary_search_by_key(&doc_id, |p| p.doc_id)
+                            .ok()
+                            .map(|index| &items[index]);
+                        Self::push_leaf_matches(posting, ctx.xpath, out);
                     }
                 }
             }
@@ -806,31 +905,42 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 }
             }
 
-            // WARN: fuzzy is the one leaf that re-runs per doc. Cuz PreparedQuery caches the fuzzy
-            // candidates, but not the fuzzy union, i was told that this optimization migh bee
-            // negligable, we can cache it if needed - norca
             Query::Fuzzy(raw, fuzziness, fuzzy_spec) => {
                 for &ctx in ctxs {
-                    let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
                     if ctx.row_keyed {
+                        let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
                         for posting in list.items() {
                             if
                                 self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) ==
-                                Some(doc_id)
+                                    Some(doc_id) &&
+                                !posting.positions.is_empty()
                             {
-                                if !posting.positions.is_empty() {
-                                    out.push(MatchedTerm {
-                                        xpath: ctx.xpath,
-                                        row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
-                                        row_path: Vec::new(),
-                                        positions: posting.positions.to_vec(),
-                                        offsets: posting.offsets.to_vec(),
-                                    });
-                                }
+                                out.push(MatchedTerm {
+                                    xpath: ctx.xpath,
+                                    row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
+                                    row_path: Vec::new(),
+                                    positions: posting.positions.to_vec(),
+                                    offsets: posting.offsets.to_vec(),
+                                });
                             }
                         }
                     } else {
-                        self.push_leaf_matches(&list, doc_id, ctx.xpath, out);
+                        // the doc is already a hit: read each expansion for it alone
+                        for word in self.fuzzy_words(raw) {
+                            let opts = fuzzy_options(&word, *fuzziness, *fuzzy_spec);
+                            let candidates = self
+                                .fuzzy_candidates(&word, ctx.xpath, opts)
+                                .into_iter()
+                                .map(|e| (e.term, e.edits, e.doc_freq));
+                            for expansion in select_expansions(
+                                &word,
+                                candidates,
+                                fuzzy_spec.max_expansions
+                            ) {
+                                let posting = self.posting_for(&expansion.term, ctx.xpath, doc_id);
+                                Self::push_leaf_matches(posting.as_ref(), ctx.xpath, out);
+                            }
+                        }
                     }
                 }
             }
@@ -851,14 +961,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
     }
 
-    fn push_leaf_matches(
-        &self,
-        list: &PostingList,
-        doc_id: DocId,
-        xpath: XPathId,
-        out: &mut Vec<MatchedTerm>
-    ) {
-        if let Some(p) = Self::posting_for(list, doc_id) {
+    fn push_leaf_matches(posting: Option<&Posting>, xpath: XPathId, out: &mut Vec<MatchedTerm>) {
+        if let Some(p) = posting {
             if !p.positions.is_empty() {
                 //offsets migh be empty here, the re-analyzing and all the magic happens later in
                 //highlight.rs
@@ -994,10 +1098,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         }
         let word_postings: Vec<Option<Posting>> = terms
             .iter()
-            .map(|t| {
-                let (list, _) = self.fetch_term_list(&t.text, xpath);
-                Self::posting_for(&list, doc_id).cloned()
-            })
+            .map(|t| self.posting_for(&t.text, xpath, doc_id))
             .collect();
         Self::push_phrase_matches(terms, xpath, None, &word_postings, out);
     }
@@ -1024,7 +1125,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             let row_id = posting.doc_id;
             let word_postings: Vec<Option<Posting>> = lists
                 .iter()
-                .map(|l| Self::posting_for(l, row_id).cloned())
+                .map(|l| {
+                    let items = l.items();
+                    items
+                        .binary_search_by_key(&row_id, |p| p.doc_id)
+                        .ok()
+                        .map(|index| items[index].clone())
+                })
+
                 .collect();
             Self::push_phrase_matches(
                 terms,
@@ -1384,30 +1492,33 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     ) -> PreparedQuery {
         let mut prepared = PreparedQuery::default();
         for query in queries {
+            // the grouped (WAND) path reads synonym phrase forms through cursors itself
+            let lazy_phrases = ctxs.iter().all(|ctx| !ctx.row_keyed)
+                && grouped_parts(query, false).is_some();
             for &ctx in ctxs {
-                self.prepare_leaves(query, ctx, &mut prepared);
+                self.prepare_leaves(query, ctx, &mut prepared, lazy_phrases);
             }
         }
         prepared
     }
 
-    fn prepare_leaves(&self, query: &Query, ctx: FieldCtx, out: &mut PreparedQuery) {
+    fn prepare_leaves(&self, query: &Query, ctx: FieldCtx, out: &mut PreparedQuery, lazy_phrases:bool) {
         match query {
             Query::Wand(parts) | Query::Or(parts) | Query::And(parts) => {
                 for part in parts {
-                    self.prepare_leaves(part, ctx, out);
+                    self.prepare_leaves(part, ctx, out,lazy_phrases);
                 }
             }
             Query::Synonym(forms) => {
                 for form in forms {
-                    self.prepare_leaves(&form.query, ctx, out);
+                    self.prepare_leaves(&form.query, ctx, out,lazy_phrases);
                 }
             }
 
             Query::Phrase(terms) => {
                 // phrase forms are also scored by their words (score_phrase_as_words)
                 for term in terms {
-                    self.prepare_leaves(&Query::Term(term.text.clone()), ctx, out);
+                    self.prepare_leaves(&Query::Term(term.text.clone()), ctx, out,lazy_phrases);
                 }
                 let Some((key, xpath)) = Self::leaf_key(query, ctx) else {
                     return;
@@ -2046,7 +2157,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 keep(&mut found, hit);
             }
         }
-
+        if let Some(Tier::All(q)) = plan.tiers.iter().find(|t| matches!(t, Tier::All(_))) {
+            eprintln!("all tier: {q:?}");
+        }
         let mut hits: Vec<SearchHit> = found.into_values().collect();
         let clause_weights = self.clause_masks(&plan.clauses, ctxs, &mut hits);
         self.apply_density(&mut hits, &plan.terms, &plain_xpaths);
@@ -2141,7 +2254,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 .filter(|ctx| !ctx.row_keyed)
                 .flat_map(|&ctx| self.clause_forms(clause, ctx))
                 .filter(|form| {
-                    !form.lists.is_empty() && form.lists.iter().all(|(list, _)| !list.is_empty())
+                    !form.lists.is_empty()
+                        && if form.any {
+                            form.lists.iter().any(|(list, _)| !list.is_empty())
+                        } else {
+                            form.lists.iter().all(|(list, _)| !list.is_empty())
+                        }
                 })
                 .collect();
             let largest = forms
@@ -2167,23 +2285,38 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         order.sort_unstable_by_key(|&i| hits[i].doc_id);
 
         let index: &'a I = self.index;
-        for (clause_index, forms) in clause_forms.iter().enumerate() {
-            let mut cursors: Vec<Vec<TermCursor<'_>>> = forms
+                for (clause_index, forms) in clause_forms.iter().enumerate() {
+                        let mut cursors: Vec<(bool, Option<&Vec<u32>>, Vec<TermCursor<'_>>)> = forms
                 .iter()
-                .map(|form|
-                    form.lists
-                        .iter()
-                        .map(|(source, _)| source.open(index).0)
-                        .collect()
-                )
+                .map(|form| {
+                    (
+                        form.any,
+                        form.phrase.as_ref(),
+                        form.lists.iter().map(|(source, _)| source.open(index).0).collect(),
+                    )
+                })
                 .collect();
             for &i in &order {
                 let doc = hits[i].doc_id;
-                let matched = cursors.iter_mut().any(|form| {
-                    form.iter_mut().all(|cursor| {
-                        cursor.advance_to(doc);
-                        cursor.doc_id() == Some(doc)
-                    })
+                let on = |cursor: &mut TermCursor<'_>| {
+                    cursor.advance_to(doc);
+                    cursor.doc_id() == Some(doc)
+                };
+                let matched = cursors.iter_mut().any(|(any, phrase, form)| {
+                    if *any {
+                        return form.iter_mut().any(on);
+                    }
+                    if !form.iter_mut().all(on) {
+                        return false;
+                    }
+                    let Some(offsets) = phrase else { return true };
+                    let mut buffers: Vec<Vec<u32>> = vec![Vec::new(); form.len()];
+                    let read = form
+                        .iter()
+                        .zip(buffers.iter_mut())
+                        .all(|(cursor, buffer)| cursor.positions_into(buffer).is_ok());
+                    let lists: Vec<&[u32]> = buffers.iter().map(Vec::as_slice).collect();
+                    read && phrase_matches(&lists, offsets)
                 });
                 if matched {
                     hits[i].mask |= 1u64 << clause_index;
@@ -2263,20 +2396,24 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             xpath: ctx.xpath,
             lists,
             weight,
+            any:false,
+            phrase:None
         })
     }
 
     /// Documents containing the phrase in at least one plain field.
     fn phrase_docs(&self, terms: &[PhraseTerm], ctxs: &[FieldCtx]) -> HashSet<DocId> {
+        let phrase = Query::Phrase(terms.to_vec());
         let mut docs = HashSet::new();
-        for ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed) {
-            docs.extend(
-                self
-                    .execute_phrase(terms, ctx.xpath)
-                    .items()
-                    .iter()
-                    .map(|p| p.doc_id)
-            );
+        for &ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed) {
+            if let Some(leaf) = self.leaf(&phrase, ctx) {
+                docs.extend(
+                    leaf.postings
+                        .items()
+                        .iter()
+                        .map(|p| p.doc_id)
+                );
+            }
         }
         docs
     }
@@ -2294,7 +2431,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             return;
         }
 
-                // hits in doc id order, so every cursor only moves forward
+        // hits in doc id order, so every cursor only moves forward
         let mut order: Vec<usize> = (0..hits.len()).collect();
         order.sort_unstable_by_key(|&i| hits[i].doc_id);
 
@@ -2320,7 +2457,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 held.clear();
                 for (t, cursor) in cursors.iter_mut().enumerate() {
                     cursor.advance_to(doc);
-                    if cursor.doc_id() == Some(doc) && cursor.positions_into(&mut buffers[t]).is_ok()
+                    if
+                        cursor.doc_id() == Some(doc) &&
+                        cursor.positions_into(&mut buffers[t]).is_ok()
                     {
                         held.push(t);
                     }
@@ -2328,11 +2467,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 if held.len() < 2 {
                     continue;
                 }
-                let positions: Vec<&[u32]> = held.iter().map(|&t| buffers[t].as_slice()).collect();
+                let positions: Vec<&[u32]> = held
+                    .iter()
+                    .map(|&t| buffers[t].as_slice())
+                    .collect();
                 let Some(span) = min_cover_span(&positions) else {
                     continue;
                 };
-                let offsets: Vec<u32> = held.iter().map(|&t| terms[t].offset).collect();
+                let offsets: Vec<u32> = held
+                    .iter()
+                    .map(|&t| terms[t].offset)
+                    .collect();
                 // the span of these words as typed, stopword gaps included ("king of the hill" -> 4)
                 let first = offsets.iter().copied().min().unwrap_or(0);
                 let last = offsets.iter().copied().max().unwrap_or(0);
@@ -2451,12 +2596,19 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     }
 
     //helpers for highlights
-    fn posting_for(list: &PostingList, doc_id: DocId) -> Option<&Posting> {
-        let idx = list
-            .items()
-            .binary_search_by_key(&doc_id, |p| p.doc_id)
-            .ok()?;
-        list.items().get(idx)
+    /// `term`'s posting for one document, read through a cursor: only the block holding the
+    /// document is decoded, and only that document's positions and offsets are read.
+    fn posting_for(&self, term: &str, xpath: XPathId, doc_id: DocId) -> Option<Posting> {
+        let mut cursor = self.open_term_cursor(term, xpath);
+        cursor.advance_to(doc_id);
+        if cursor.doc_id() != Some(doc_id) {
+            return None;
+        }
+        let mut positions = Vec::new();
+        let mut offsets = Vec::new();
+        cursor.positions_into(&mut positions).ok()?;
+        cursor.offsets_into(&mut offsets).ok()?;
+        Some(Posting::with_weight_and_offsets(doc_id, positions, offsets, cursor.weight()))
     }
 
     fn offset_for(positions: &[u32], offsets: &[(u32, u32)], pos: u32) -> Option<(u32, u32)> {
@@ -2585,22 +2737,6 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     }
 }
 
-/// The postings of `list` for the given documents (sorted), found by binary search: the phrase
-/// matches are few, the word's list can be long.
-fn postings_of(list: &PostingList, docs: &[DocId]) -> PostingList {
-    let items = list.items();
-    PostingList::from_sorted(
-        docs
-            .iter()
-            .filter_map(|doc| {
-                items
-                    .binary_search_by_key(doc, |posting| posting.doc_id)
-                    .ok()
-                    .map(|index| items[index].clone())
-            })
-            .collect()
-    )
-}
 /// The postings of `docs` (sorted ascending) read through `cursor`, positions included.
 fn postings_of_cursor(mut cursor: TermCursor<'_>, docs: &[DocId]) -> PostingList {
     let mut items = Vec::new();
@@ -2623,7 +2759,7 @@ fn postings_of_cursor(mut cursor: TermCursor<'_>, docs: &[DocId]) -> PostingList
 }
 
 #[timed(search)]
-fn phrase_matches(position_lists: &[&[u32]], offsets: &[u32]) -> bool {
+pub(crate) fn phrase_matches(position_lists: &[&[u32]], offsets: &[u32]) -> bool {
     let Some((first, rest)) = position_lists.split_first() else {
         return false;
     };
@@ -2766,7 +2902,9 @@ fn grouped_parts(query: &Query, needs_group: bool) -> Option<(bool, Vec<&Query>)
     let form_fits = |form: &Query| {
         match form {
             Query::Term(_) | Query::Phrase(_) | Query::Exact(_) => true,
-            Query::And(words) => words.iter().all(|word| matches!(word, Query::Term(_))),
+            Query::And(words) | Query::Wand(words) => {
+                words.iter().all(|word| matches!(word, Query::Term(_)))
+            }
             _ => false,
         }
     };
