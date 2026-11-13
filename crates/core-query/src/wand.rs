@@ -825,6 +825,61 @@ pub fn wand_top_k_grouped<'a,S: SearchStats>(
         let smallest_doc = clauses[0].doc_id().unwrap();
 
         if smallest_doc == pivot_doc {
+            // clauses are sorted by doc: the ones on the pivot are a prefix
+            let on_pivot = clauses
+                .iter()
+                .take_while(|clause| clause.doc_id() == Some(pivot_doc))
+                .count();
+
+            // block-max: if the blocks the pivot's clauses are in cannot beat the threshold
+            // together, no doc up to the end of the shortest of those blocks can: jump past it
+            if threshold > 0 {
+                let mut block_bound = 0u64;
+                let mut skip_to = clauses.get(on_pivot).and_then(|clause| clause.doc_id());
+                let mut usable = true;
+                'clauses: for clause in &clauses[..on_pivot] {
+                    let mut per_form = Vec::with_capacity(clause.forms.len());
+                    for form in &clause.forms {
+                        let mut form_bound = 0u64;
+                        for (cursor, &doc_freq) in form.cursors.iter().zip(&form.doc_freqs) {
+                            // an exhausted list adds nothing to any later doc
+                            if cursor.is_exhausted() {
+                                continue;
+                            }
+                            // memory lists, unions, unknown doc lengths: no block bound
+                            let Some(entry) = cursor.block_entry().filter(|e| e.min_doc_len > 0)
+                            else {
+                                usable = false;
+                                break 'clauses;
+                            };
+                            form_bound = form_bound.saturating_add(bm25_score_scaled(
+                                entry.max_tf,
+                                entry.max_weight,
+                                entry.min_doc_len,
+                                form.avg_doc_len,
+                                form.doc_count,
+                                doc_freq,
+                            ));
+                            let after_block = entry.last_doc_id.saturating_add(1);
+                            skip_to =
+                                Some(skip_to.map_or(after_block, |known| known.min(after_block)));
+                        }
+                        per_form.push((form.field, weighted(form_bound, form.weight)));
+                    }
+                    block_bound =
+                        block_bound.saturating_add(best_per_field(per_form.into_iter()));
+                }
+                if usable
+                    && block_bound < threshold
+                    && let Some(skip_to) = skip_to
+                {
+                    for clause in &mut clauses[..on_pivot] {
+                        clause.advance_to(skip_to);
+                    }
+                    continue;
+                }
+            }
+
             if restrict.is_none_or(|docs| docs.contains(pivot_doc))
                 && let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc)
             {
