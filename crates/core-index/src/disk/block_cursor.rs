@@ -128,7 +128,7 @@ impl<'a> BlockCursor<'a> {
 
     /// The skip entry of the block the cursor is in (block bounds for block-max WAND).
     #[inline]
-    pub(crate) fn block_entry(&self) -> &SkipEntry {
+    pub fn block_entry(&self) -> &SkipEntry {
         &self.entry
     }
 
@@ -195,7 +195,7 @@ impl<'a> BlockCursor<'a> {
         Ok(())
     }
 
-    /// Highlight offsets of the current document, appended to `out` (cleared first). Empty when
+       /// Highlight offsets of the current document, appended to `out` (cleared first). Empty when
     /// the document was indexed without offsets.
     pub fn offsets_into(&self, out: &mut Vec<(u32, u32)>) -> io::Result<()> {
         out.clear();

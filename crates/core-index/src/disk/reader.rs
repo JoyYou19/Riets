@@ -8,8 +8,8 @@ use memmap2::Mmap;
 use roaring::RoaringTreemap;
 
 use crate::{
-    analyzer::analyzer_config::Stopwords::LanguageDefaults, array_rows::{ ArrayRowIndex, NO_PARENT_ROW }, bkd::Bkd, disk::{
-        block_cursor::BlockCursor, codec::{ DecodedBlock, decode_block, read_var_u16, read_var_u32, read_var_u64 }, format::{ FOOTER_LEN, MAGIC, SKIP_ENTRY_LEN, SegmentFooter, SkipEntry, VERSION },
+    array_rows::{ ArrayRowIndex, NO_PARENT_ROW }, bkd::Bkd, disk::{
+        block_cursor::BlockCursor, codec::{ DecodedBlock, decode_block, read_var_u32 }, format::{ FOOTER_LEN, MAGIC, SKIP_ENTRY_LEN, SegmentFooter, SkipEntry, VERSION }, writer::MergeSource,
     }, document::document::BoolField, document_values::DocValues, fuzzy::{ FuzzyExpansion, FuzzyOptions }, numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue }, posting::{Positions, Posting, PostingList, cursor::TermCursor, item::Offsets}, search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo, TermPostings }, segment::build_field_stats, term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta }, types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId }, wildcard::MAX_PATTERN_TERMS,
 };
 
@@ -120,16 +120,16 @@ impl DiskSegment {
         &self.bool_fields
     }
 
-    //bro yo zis so good function
-    pub fn iter_terms(&self) -> impl Iterator<Item = (TermKey, PostingList)> + '_ {
+    //bro yo zis so good function //now even better
+    pub(crate) fn iter_terms(&self) -> impl Iterator<Item = (TermKey, MergeSource<'_>)> + '_ {
         let this = self;
         self.dictionary.fields().flat_map(move |(xpath, dict)| {
-            dict.entries()
-                .into_iter()
-                .map(move |(term, meta)| (TermKey::new(term, xpath), this.read_postings(meta)))
+            dict.entries().into_iter().filter_map(move |(term, meta)| {
+                let bytes = this.term_bytes(meta)?;
+                Some((TermKey::new(term, xpath), MergeSource::Disk { bytes, meta }))
+            })
         })
     }
-
     //Decodes the postings and offsets
     #[timed(search)]
     fn read_postings(&self, meta: TermMeta) -> PostingList {

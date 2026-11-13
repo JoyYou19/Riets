@@ -1,14 +1,5 @@
 use crate::{
-    array_rows::ArrayRowIndex,
-    background::background_pool,
-    disk::{reader::DiskSegment, writer::write_merged_segment},
-    document::document::BoolField,
-    lsm::index_worker::IndexCommand,
-    numeric_values::{NumericFields, NumericPoints, unpack},
-    posting::{DeleteSet, PostingList},
-    segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, TermKey, XPathId},
-    vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
+    array_rows::ArrayRowIndex, background::background_pool, disk::{reader::DiskSegment, writer::{MergeSource, write_merged_segment}}, document::document::BoolField, lsm::index_worker::IndexCommand, numeric_values::{NumericFields, NumericPoints, unpack}, posting::{DeleteSet, PostingList}, segment::{ImmutableSegment, SegmentHandle}, types::{DocId, TermKey, XPathId}, vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
 };
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
@@ -26,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, PostingList)> + 'a>;
+type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, MergeSource<'a>)> + 'a>;
 
 enum OpenSegment {
     Disk(DiskSegment),
@@ -60,8 +51,8 @@ impl OpenSegment {
     fn iter_terms(&self) -> TermIter<'_> {
         match self {
             OpenSegment::Disk(d) => Box::new(d.iter_terms()),
-            OpenSegment::Memory(m) => {
-                Box::new(m.terms().iter().map(|(k, v)| (k.clone(), v.clone())))
+             OpenSegment::Memory(m) => {
+                Box::new(m.terms().iter().map(|(k, v)| (k.clone(), MergeSource::Memory(v))))
             }
         }
     }
@@ -76,65 +67,52 @@ impl OpenSegment {
 
 struct MergedTerms<'a> {
     sources: Vec<TermIter<'a>>,
-    heads: Vec<Option<PostingList>>,
+    heads: Vec<Option<MergeSource<'a>>>,
     heap: BinaryHeap<Reverse<(TermKey, usize)>>,
-    deleted: &'a DeleteSet,
 }
+
 impl<'a> MergedTerms<'a> {
-    fn new(mut sources: Vec<TermIter<'a>>, deleted: &'a DeleteSet) -> Self {
+    fn new(mut sources: Vec<TermIter<'a>>) -> Self {
         let mut heads = Vec::with_capacity(sources.len());
         let mut heap = BinaryHeap::with_capacity(sources.len());
         for (index, source) in sources.iter_mut().enumerate() {
             match source.next() {
-                Some((key, list)) => {
+                Some((key, head)) => {
                     heap.push(Reverse((key, index)));
-                    heads.push(Some(list));
+                    heads.push(Some(head));
                 }
                 None => heads.push(None),
             }
         }
-        Self {
-            sources,
-            heads,
-            heap,
-            deleted,
-        }
+        Self { sources, heads, heap }
     }
 
-    /// Takes the current posting list of `index` and loads its next term.
-    fn advance(&mut self, index: usize) -> PostingList {
-        let list = self.heads[index].take().unwrap_or_default();
+    /// Takes the current source of `index` and loads its next term.
+    fn advance(&mut self, index: usize) -> Option<MergeSource<'a>> {
+        let head = self.heads[index].take();
         if let Some((key, next)) = self.sources[index].next() {
             self.heap.push(Reverse((key, index)));
             self.heads[index] = Some(next);
         }
-        list
+        head
     }
 }
-impl Iterator for MergedTerms<'_> {
-    type Item = (TermKey, PostingList);
+
+impl<'a> Iterator for MergedTerms<'a> {
+    type Item = (TermKey, Vec<MergeSource<'a>>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let Reverse((key, index)) = self.heap.pop()?;
-            let mut items = self.advance(index).into_items();
-
-            // Same term in other sources: pop them too. Ties pop in source
-            // index order, which is doc_id order (sources are sorted below).
-            while matches!(self.heap.peek(), Some(Reverse((next_key, _))) if *next_key == key) {
-                let Reverse((_, other)) = self.heap.pop().unwrap();
-                items.extend(self.advance(other).into_items());
-            }
-
-            // Sorts only if the input ranges overlapped; merges duplicate doc_ids.
-            let mut merged = PostingList::from_items(items);
-            self.deleted.filter_in_place(&mut merged);
-            if !merged.is_empty() {
-                return Some((key, merged));
-            }
+        let Reverse((key, index)) = self.heap.pop()?;
+        let mut group: Vec<MergeSource<'a>> = self.advance(index).into_iter().collect();
+        // same term in other sources: ties pop in source order, which is doc order
+        while matches!(self.heap.peek(), Some(Reverse((next, _))) if *next == key) {
+            let Reverse((_, other)) = self.heap.pop()?;
+            group.extend(self.advance(other));
         }
+        Some((key, group))
     }
 }
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CompactionConfig {
     pub max_segments_per_compaction: usize,
@@ -246,11 +224,12 @@ pub fn compact_segments_streaming(
     }
 
     let sources: Vec<TermIter<'_>> = opened.iter().map(|s| s.iter_terms()).collect();
-    let merged_terms = MergedTerms::new(sources, deleted);
+    let merged_terms = MergedTerms::new(sources);
 
     write_merged_segment(
         output_path,
         merged_terms,
+        deleted,
         &merged_doc_lengths,
         &merged_points.build(),
         &merged_array_rows,

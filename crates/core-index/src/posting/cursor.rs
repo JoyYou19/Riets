@@ -1,7 +1,7 @@
 use std::io;
 
 use crate::{
-    disk::block_cursor::BlockCursor, posting::{DeleteSet, Posting, PostingList, cursor}, types::DocId,
+    disk::{block_cursor::BlockCursor, format::SkipEntry}, posting::{DeleteSet, Posting, PostingList, cursor}, types::DocId,
 };
 
 pub enum TermCursor<'a>{
@@ -91,8 +91,15 @@ impl <'a> TermCursor<'a> {
             }
         }
     }
-
-    pub fn offsets_into(&self, out: &mut Vec<(u32, u32)>) -> io::Result<()> {
+     /// The skip entry of the block the cursor is in; `None` for cursors without blocks
+    /// (memory lists, unions), which then use the term-wide bound.
+    pub fn block_entry(&self) -> Option<SkipEntry> {
+        match self {
+            Self::Block(cursor) if !cursor.is_exhausted() => Some(*cursor.block_entry()),
+            _ => None,
+        }
+    }
+        pub fn offsets_into(&self, out: &mut Vec<(u32, u32)>) -> io::Result<()> {
         match self {
             Self::Slice(cursor) => {
                 out.clear();
@@ -109,12 +116,13 @@ impl <'a> TermCursor<'a> {
                     Ok(())
                 }
             },
-            Self::Empty=>{
+            Self::Empty => {
                 out.clear();
                 Ok(())
             }
         }
     }
+
 }
 
 pub struct UnionCursor<'a>{
