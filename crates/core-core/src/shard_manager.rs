@@ -42,6 +42,7 @@ use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, W
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 use core_timing::timed;
 use crossbeam_channel::bounded;
+use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
 use simd_json::OwnedValue;
 use std::borrow::Cow;
@@ -2178,7 +2179,7 @@ impl ShardManager {
         more: bool,
         command: &SearchCommand,
         policy: &IndexPolicy,
-        highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
+        highlight: Option<HighlightSpec>,
         groups: Arc<Vec<QueryGroup>>,
         prepared: &[Arc<PreparedShardSearch>],
         corpus: Option<Arc<CorpusStats>>,
@@ -2280,8 +2281,8 @@ impl ShardManager {
         }
 
         //populate highlights from the matched spans
-        if let Some(fields) = &highlight {
-            let fields = fields.clone();
+        if let Some(spec) = &highlight {
+            let spec = spec.clone();
             let matched_by_doc = matched_by_doc;
             resolved = tokio::task::spawn_blocking(move || {
                 for slot in &mut resolved {
@@ -2292,10 +2293,29 @@ impl ShardManager {
                         .get(&hit.internal_id)
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
-                    let mut highlights = Vec::new();
+                    let mut highlights: IndexMap<String, Vec<String>> = IndexMap::new();
                     if !matched.is_empty() {
+                        // explicit fields first, then auto fields ranked by this
+                        // document's best match weight (descending)
+                        let mut ordered: Vec<&FieldHighlight> = spec.explicit.iter().collect();
+                        if let Some(auto) = &spec.auto {
+                            let mut ranked: Vec<(f32, &FieldHighlight)> = auto
+                                .iter()
+                                .map(|f| {
+                                    let best = matched
+                                        .iter()
+                                        .filter(|m| m.xpath == f.xpath)
+                                        .map(|m| m.weight)
+                                        .fold(0.0f32, f32::max);
+                                    (best, f)
+                                })
+                                .collect();
+                            ranked.sort_unstable_by(|a, b| {
+                                b.0.total_cmp(&a.0).then(a.1.full_path.cmp(&b.1.full_path))
+                            });
+                            ordered.extend(ranked.into_iter().map(|(_, f)| f));
+                        }
                         let value = match &hit.full_doc {
-                            //smart shit to highlight non-returned fields
                             Some(full) => Cow::Borrowed(full),
                             None => match hit.doc.value() {
                                 Ok(v) => v,
@@ -2304,51 +2324,48 @@ impl ShardManager {
                                 }
                             },
                         };
-                        for (xpath, full_path, analyzer, opts, flattened, row_keyed) in &fields {
+                        for f in ordered {
                             let field_matches: Vec<&MatchedTerm> =
-                                matched.iter().filter(|m| m.xpath == *xpath).collect();
+                                matched.iter().filter(|m| m.xpath == f.xpath).collect();
                             if field_matches.is_empty() {
                                 continue;
                             }
-
-                            //i love edgecases
-                            if *flattened && *row_keyed {
-                                //cast{name, surname, aliases:[..,..,..]}
-                                highlights.extend(highlight_field_row_keyed_flattened(
+                            let frags = if f.flattened && f.row_keyed {
+                                highlight_field_row_keyed_flattened(
                                     &value,
-                                    full_path,
-                                    analyzer,
+                                    &f.full_path,
+                                    &f.analyzer,
                                     &field_matches,
-                                    opts,
-                                ));
-                            } else if *flattened {
-                                //cast: ["tom holland", "kristians svikis"]
-                                let texts = field_texts(&value, full_path);
-                                highlights.extend(highlight_field_array(
-                                    &texts,
-                                    analyzer,
-                                    &field_matches,
-                                    opts,
-                                ));
-                            } else if *row_keyed {
-                                //cast: [{name, surname}, {name, surnames}]
-                                highlights.extend(highlight_field_row_keyed(
+                                    &f.opts,
+                                )
+                            } else if f.flattened {
+                                let texts = field_texts(&value, &f.full_path);
+                                highlight_field_array(&texts, &f.analyzer, &field_matches, &f.opts)
+                            } else if f.row_keyed {
+                                highlight_field_row_keyed(
                                     &value,
-                                    full_path,
-                                    analyzer,
+                                    &f.full_path,
+                                    &f.analyzer,
                                     &field_matches,
-                                    opts,
-                                ));
+                                    &f.opts,
+                                )
                             } else {
-                                //name: "..."
-                                for text in field_texts(&value, full_path) {
-                                    highlights.extend(highlight_field(
+                                let mut out = Vec::new();
+                                for text in field_texts(&value, &f.full_path) {
+                                    out.extend(highlight_field(
                                         &text,
-                                        analyzer,
+                                        &f.analyzer,
                                         &field_matches,
-                                        opts,
+                                        &f.opts,
                                     ));
                                 }
+                                out
+                            };
+                            if !frags.is_empty() {
+                                highlights
+                                    .entry(f.full_path.clone())
+                                    .or_default()
+                                    .extend(frags);
                             }
                         }
                     }
@@ -2361,6 +2378,7 @@ impl ShardManager {
         }
 
         let resolved: Vec<SearchDocumentHit> = resolved.into_iter().flatten().collect();
+
         let total = TotalHits {
             value: resolved.len() as u64,
             more,
@@ -2612,6 +2630,22 @@ struct PageRequest {
     fetch: usize,
 }
 
+#[derive(Clone)]
+struct FieldHighlight {
+    xpath: XPathId,
+    full_path: String,
+    analyzer: Analyzer,
+    opts: HighlightFieldOptions,
+    flattened: bool,
+    row_keyed: bool,
+}
+
+#[derive(Clone)]
+struct HighlightSpec {
+    explicit: Vec<FieldHighlight>,
+    auto: Option<Vec<FieldHighlight>>,
+}
+
 /// Everything a search decides before it asks a shard anything.
 /// holly porno
 struct CompiledSearch {
@@ -2622,7 +2656,7 @@ struct CompiledSearch {
     sort_xpaths: Option<Arc<Vec<XPathId>>>,
     semantic: Option<(String, Vec<XPathId>)>,
     //the bools are anything related to arrays
-    highlight: Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
+    highlight: Option<HighlightSpec>,
     plans_full: Arc<Vec<RankPlan>>,
     plans_no_fuzzy: Arc<Vec<RankPlan>>,
     match_mode: MatchMode,
@@ -2691,46 +2725,78 @@ fn highlight_request(
     policy: &IndexPolicy,
     analyzers: &AnalyzerSet,
     searched: &HashSet<XPathId>,
-) -> Result<
-    Option<Vec<(XPathId, String, Analyzer, HighlightFieldOptions, bool, bool)>>,
-    CorelamoError,
-> {
+) -> Result<Option<HighlightSpec>, CorelamoError> {
     let Some(cmd) = &command.highlight else {
         return Ok(None);
     };
-    let mut fields = Vec::with_capacity(cmd.fields.len());
+
+    let star = cmd.fields.get("*");
+    let auto_opts = cmd.fields.get("$auto");
+
+    let mut explicit: Vec<FieldHighlight> = Vec::new();
+    let mut seen: HashSet<XPathId> = HashSet::new();
+
     for (name, opts) in &cmd.fields {
+        if name == "*" || name == "$auto" {
+            continue;
+        }
         let field = policy
             .field_by_path(name)
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
-        let xpath = field.xpath(policy);
-
-        //a field can only be highlighted if the query actually searched it
-        if !searched.contains(&xpath) {
-            return Err(CorelamoError::InvalidData(format!(
-                "cannot highlight '{name}': it is not a searched field"
-            )));
-        }
-
         if field.kind != FieldKind::Text {
             return Err(CorelamoError::InvalidData(format!(
                 "cannot highlight '{name}': only text fields support highlighting"
             )));
         }
-
-        let analyzer = field_analyzer(field, analyzers).clone();
-        let flattened = field.repeated;
-        let row_keyed = field.row_keyed;
-        fields.push((
-            xpath,
-            field.full_path.clone(),
-            analyzer,
-            opts.clone(),
-            flattened,
-            row_keyed,
-        ));
+        let xpath = field.xpath(policy);
+        if !searched.contains(&xpath) {
+            return Err(CorelamoError::InvalidData(format!(
+                "cannot highlight '{name}': it is not a searched field"
+            )));
+        }
+        if seen.insert(xpath) {
+            explicit.push(FieldHighlight {
+                xpath,
+                full_path: field.full_path.clone(),
+                analyzer: field_analyzer(field, analyzers).clone(),
+                opts: opts.clone(),
+                flattened: field.repeated,
+                row_keyed: field.row_keyed,
+            });
+        }
     }
-    Ok(Some(fields))
+
+    // remaining searched text fields, defaulted by "$auto" (preferred) or "*"
+    let default_opts = auto_opts.or(star);
+    let mut rest: Vec<FieldHighlight> = Vec::new();
+    if let Some(default_opts) = default_opts {
+        for field in policy.searchable_fields() {
+            let xpath = field.xpath(policy);
+            if !searched.contains(&xpath) || field.kind != FieldKind::Text {
+                continue;
+            }
+            if !seen.insert(xpath) {
+                continue;
+            }
+            rest.push(FieldHighlight {
+                xpath,
+                full_path: field.full_path.clone(),
+                analyzer: field_analyzer(field, analyzers).clone(),
+                opts: default_opts.clone(),
+                flattened: field.repeated,
+                row_keyed: field.row_keyed,
+            });
+        }
+    }
+
+    let auto = if auto_opts.is_some() {
+        Some(rest)
+    } else {
+        explicit.extend(rest);
+        None
+    };
+
+    Ok(Some(HighlightSpec { explicit, auto }))
 }
 
 /// A typed word, analyzed by a group's analyzer, is in no document of that group's fields.

@@ -300,7 +300,7 @@ pub enum QueryCorrection {
     Suggested(String),
 }
 pub struct SearchResponse {
-    docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
+    docs: Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>,
     strip_id: Option<String>,
     total_hits: TotalHits,
     corrected_query: Option<QueryCorrection>,
@@ -308,7 +308,7 @@ pub struct SearchResponse {
 
 impl SearchResponse {
     pub fn new(
-        docs: Vec<(String, f32, DocumentOut, Vec<String>)>,
+        docs: Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>,
         strip_id: Option<String>,
         total_hits: TotalHits,
         corrected_query: Option<QueryCorrection>,
@@ -352,16 +352,25 @@ impl ResponseData for SearchResponse {
             out.extend_from_slice(score.to_string().as_bytes());
             out.extend_from_slice(b",\"data\":");
             out.extend_from_slice(bytes);
-            out.extend_from_slice(b",\"highlights\":[");
-            for (j, h) in highlights.iter().enumerate() {
+            out.extend_from_slice(b",\"highlights\":{");
+            for (j, (field, frags)) in highlights.iter().enumerate() {
                 if j > 0 {
                     out.push(b',');
                 }
                 out.push(b'"');
-                out.extend_from_slice(escape_json_text(h).as_bytes());
-                out.push(b'"');
+                out.extend_from_slice(escape_json_text(field).as_bytes());
+                out.extend_from_slice(b"\":[");
+                for (k, h) in frags.iter().enumerate() {
+                    if k > 0 {
+                        out.push(b',');
+                    }
+                    out.push(b'"');
+                    out.extend_from_slice(escape_json_text(h).as_bytes());
+                    out.push(b'"');
+                }
+                out.push(b']');
             }
-            out.extend_from_slice(b"]}");
+            out.extend_from_slice(b"}}");
         }
         out.push(b']');
         Some(out)
@@ -527,7 +536,7 @@ impl ResponseData for LookupResponse {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GetLogsRequest {
-    pub date: Option<String>, 
+    pub date: Option<String>,
     pub max_lines: Option<usize>,
 }
 
