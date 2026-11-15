@@ -113,6 +113,8 @@ pub struct SearchCommand {
     pub return_fields: Option<IndexMap<String, bool>>,
     pub sort: Option<SortCommand>,
     pub highlight: Option<HighlightCommand>,
+    #[serde(default = "wildcard_default")]
+    pub wildcard_enabled: bool,
 
     #[serde(default)]
     pub match_mode: MatchMode,
@@ -122,6 +124,10 @@ pub struct SearchCommand {
     /// false: never.
     #[serde(default)]
     pub semantic: Option<bool>,
+}
+
+fn wildcard_default() -> bool {
+    true
 }
 
 fn blank_query() -> OwnedValue {

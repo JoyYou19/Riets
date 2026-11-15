@@ -15,13 +15,17 @@ use core_index::{
 //decide between prefix (dat*), a wildcard (da?ab*e), or just a word.
 //`default` is the combinator a bare multi-word string gets: Query::Wand (query) or Query::And (filter).
 #[timed(search)]
-fn classify_word(word: &str, default: fn(Vec<Query>) -> Query) -> Query {
+fn classify_word(word: &str, default: fn(Vec<Query>) -> Query, wildcard_enabled: bool) -> Query {
     if word.trim().contains(char::is_whitespace) {
         let parts: Vec<Query> = word
             .split_whitespace()
-            .map(|w| classify_word(w, default))
+            .map(|w| classify_word(w, default, wildcard_enabled))
             .collect();
         return default(parts);
+    }
+    if !wildcard_enabled {
+        //wildcards disabled
+        return Query::Term(word.to_string());
     }
     let pattern = WildcardPattern::parse(word);
     if pattern.is_prefix_only() {
@@ -170,24 +174,25 @@ fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
 pub fn parse_json_query(
     v: &OwnedValue,
     default: fn(Vec<Query>) -> Query,
+    wildcard_enabled: bool,
 ) -> Result<Query, CorelamoError> {
     match v {
-        OwnedValue::String(s) => Ok(classify_word(s, default)),
+        OwnedValue::String(s) => Ok(classify_word(s, default, wildcard_enabled)),
         OwnedValue::Object(obj) => {
             if let Some(inner) = obj.get("AND") {
-                return combinator(inner, Query::And, default);
+                return combinator(inner, Query::And, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("OR") {
-                return combinator(inner, Query::Or, default);
+                return combinator(inner, Query::Or, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("WAND") {
-                return combinator(inner, Query::Wand, default);
+                return combinator(inner, Query::Wand, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("term") {
-                return leaf(inner, Leaf::Term, default);
+                return leaf(inner, Leaf::Term, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("exact") {
-                return leaf(inner, Leaf::Exact, default);
+                return leaf(inner, Leaf::Exact, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("phrase") {
                 return phrase(inner);
@@ -224,6 +229,7 @@ fn combinator(
     inner: &OwnedValue,
     make: fn(Vec<Query>) -> Query,
     default: fn(Vec<Query>) -> Query,
+    wildcard_enabled: bool,
 ) -> Result<Query, CorelamoError> {
     match inner {
         OwnedValue::Array(items) => {
@@ -231,10 +237,13 @@ fn combinator(
             for item in items.iter() {
                 match item {
                     OwnedValue::String(s) => {
-                        out.extend(s.split_whitespace().map(|w| classify_word(w, default)));
+                        out.extend(
+                            s.split_whitespace()
+                                .map(|w| classify_word(w, default, wildcard_enabled)),
+                        );
                     }
                     //recursion
-                    other => out.push(parse_json_query(other, default)?),
+                    other => out.push(parse_json_query(other, default, wildcard_enabled)?),
                 }
             }
             Ok(make(out))
@@ -242,7 +251,7 @@ fn combinator(
         OwnedValue::String(s) => {
             let items: Vec<Query> = s
                 .split_whitespace()
-                .map(|w| classify_word(w, default))
+                .map(|w| classify_word(w, default, wildcard_enabled))
                 .collect();
             Ok(make(items))
         }
@@ -256,6 +265,7 @@ fn leaf(
     inner: &OwnedValue,
     kind: Leaf,
     default: fn(Vec<Query>) -> Query,
+    wildcard_enabled: bool,
 ) -> Result<Query, CorelamoError> {
     let s = inner
         .as_str()
@@ -269,7 +279,7 @@ fn leaf(
                     "term takes one word — combine with AND/OR/WAND for multiple".into(),
                 ));
             }
-            classify_word(s, default)
+            classify_word(s, default, wildcard_enabled)
         }
     })
 }
