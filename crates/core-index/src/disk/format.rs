@@ -134,7 +134,6 @@
 
 use std::io;
 
-use regex::bytes;
 
 //                          ahahahahhahah
 pub const MAGIC: [u8; 8] = *b"BANANA_4";

@@ -734,7 +734,7 @@ fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Resul
     written
 }
 #[timed(writing_files)]
-pub fn write_merged_segment_to<'s, W: Write + Seek>(
+pub(crate) fn write_merged_segment_to<'s, W: Write + Seek>(
     out: &mut W,
     terms: impl Iterator<Item = (TermKey, Vec<MergeSource<'s>>)>,
     deleted: &DeleteSet,
