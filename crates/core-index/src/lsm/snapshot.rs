@@ -9,8 +9,14 @@ use crate::{
     fuzzy::{ FuzzyExpansion, FuzzyOptions },
     mem::MemIndex,
     numeric_values::{ NumericBound, NumericValue },
-    posting::{ DeleteSet, PostingList, ops::union_many },
-    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats },
+    posting::{
+        DeleteSet,
+        PostingCursor,
+        PostingList,
+        cursor::{ TermCursor, UnionCursor },
+        ops::union_many,
+    },
+    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo },
     types::{ ArrayRowId, DocId, XPathId },
     vector::{ SegmentVectors, VectorFilter, VectorHit, search_segments },
     wildcard::WildcardPattern,
@@ -32,7 +38,9 @@ impl SearchIndex for IndexSnapshot {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup(self, term, xpath)
     }
-
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
+        IndexSnapshot::term_cursor(self, term, xpath)
+    }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup_prefix(self, prefix, xpath)
     }
@@ -163,6 +171,15 @@ impl SearchIndex for IndexSnapshot {
         }
 
         out.into_values().collect()
+    }
+    fn doc_ids_into(&self, term: &str, xpath: XPathId, out: &mut RoaringTreemap) {
+        let mut ids = RoaringTreemap::new();
+        self.mem.doc_ids_into(term, xpath, &mut ids);
+        for segment in self.segments.iter() {
+            segment.doc_ids_into(term, xpath, &mut ids);
+        }
+        self.deleted.remove_from(&mut ids);
+        *out |= ids;
     }
 }
 
@@ -406,6 +423,34 @@ impl IndexSnapshot {
     ) -> std::io::Result<Vec<VectorHit>> {
         let filter = VectorFilter::new(&self.deleted, allowed);
         search_segments(&self.vectors, xpath, query, k, &filter)
+    }
+    #[timed(search)]
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
+        let mut children = Vec::with_capacity(1 + self.segments.len());
+        let mut doc_freq = 0u32;
+        let mut max_weight = 0u16;
+
+        if let Some(list) = self.mem.lookup(term, xpath).filter(|list| !list.is_empty()) {
+            doc_freq = doc_freq.saturating_add(u32::try_from(list.len()).unwrap_or(u32::MAX));
+            max_weight = max_weight.max(list.max_weight());
+            children.push(TermCursor::Slice(PostingCursor::new(list)));
+        }
+        for segment in self.segments.iter() {
+            if let Some(info) = segment.term_cursor(term, xpath) {
+                doc_freq = doc_freq.saturating_add(info.doc_freq);
+                max_weight = max_weight.max(info.max_weight);
+                children.push(info.cursor);
+            }
+        }
+        let cursor = if children.is_empty() {
+            return None;
+        } else if children.len() == 1 && self.deleted.is_empty() {
+            children.pop()?
+        } else {
+            TermCursor::Union(Box::new(UnionCursor::new(children, &self.deleted)))
+        };
+
+        Some(TermCursorInfo { cursor, doc_freq, max_weight })
     }
 }
 

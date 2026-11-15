@@ -1,36 +1,44 @@
-use std::{cmp::Ordering, collections::BinaryHeap};
+use std::{ cmp::Ordering, collections::BinaryHeap };
 
-use core_index::{
-    posting::{PostingList, cursor::PostingCursor},
-    search::SearchStats,
-    types::{DocId, XPathId},
-};
+use core_index::{ posting::cursor::TermCursor, search::SearchStats, types::{ DocId, XPathId } };
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
-use crate::{
-    ranking::COVERAGE_POWER,
-    scorer::{bm25_score_scaled, bm25_upper_bound},
-};
+use crate::{ ranking::COVERAGE_POWER, scorer::{ bm25_score_scaled, bm25_upper_bound } };
+use crate::executor::phrase_matches;
 
 /// One query term's postings in a field, borrowed from wherever they were read.
 pub struct TermRef<'a> {
-    pub postings: &'a PostingList,
+    pub cursor: TermCursor<'a>,
     pub doc_freq: u32,
     pub max_weight: u16,
 }
 
+struct MultiFieldTerm<'a> {
+    cursor: TermCursor<'a>,
+    field: usize,
+    doc_freq: u32,
+    upper_bound: u64,
+}
+pub struct WandTerm<'a> {
+    pub cursor: TermCursor<'a>,
+    pub doc_freq: u32,
+    pub upper_bound: u64,
+}
+
+impl<'a> WandTerm<'a> {
+    pub fn new(cursor: TermCursor<'a>, doc_freq: u32, max_weight: u16, doc_count: u64) -> Self {
+        Self {
+            cursor,
+            doc_freq,
+            upper_bound: bm25_upper_bound(max_weight, doc_count, doc_freq),
+        }
+    }
+}
 /// Postings for every query term within one field.
 pub struct FieldTerms<'a> {
     pub xpath: XPathId,
     pub terms: Vec<TermRef<'a>>,
-}
-
-struct MultiFieldTerm<'a> {
-    cursor: PostingCursor<'a>,
-    field: usize,
-    doc_freq: u32,
-    upper_bound: u64,
 }
 
 /// Smallest allowed doc id `>= d`, or `None` when the filter has no documents left.
@@ -45,11 +53,11 @@ fn next_allowed(allowed: &RoaringTreemap, d: DocId) -> Option<DocId> {
 /// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
 /// Each pair is an independent WAND cursor scored with its own field's statistics.
 #[timed(search)]
-pub fn wand_top_k_multi_field<S: SearchStats>(
+pub fn wand_top_k_multi_field<'a, S: SearchStats>(
     stats: &S,
-    fields: &[FieldTerms<'_>],
+    fields: Vec<FieldTerms<'a>>,
     k: usize,
-    restrict: Option<&RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>
 ) -> Vec<WandHit> {
     if k == 0 || fields.is_empty() {
         return Vec::new();
@@ -58,24 +66,19 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
     let field_stats: Vec<_> = fields
         .iter()
         .map(|field| {
-            (
-                field.xpath,
-                stats.doc_count(field.xpath),
-                stats.avg_doc_len(field.xpath),
-            )
+            (field.xpath, stats.doc_count(field.xpath), stats.avg_doc_len(field.xpath))
         })
         .collect();
-
-    let mut terms: Vec<MultiFieldTerm<'_>> = Vec::new();
-    for (field_index, field) in fields.iter().enumerate() {
+    let field_count = fields.len();
+    let mut terms: Vec<MultiFieldTerm<'a>> = Vec::new();
+    for (field_index, field) in fields.into_iter().enumerate() {
         let doc_count = field_stats[field_index].1;
-        for term in &field.terms {
-            let cursor = PostingCursor::new(term.postings);
-            if cursor.is_exhausted() {
+        for term in field.terms {
+            if term.cursor.is_exhausted() {
                 continue;
             }
             terms.push(MultiFieldTerm {
-                cursor,
+                cursor: term.cursor,
                 field: field_index,
                 doc_freq: term.doc_freq,
                 upper_bound: bm25_upper_bound(term.max_weight, doc_count, term.doc_freq),
@@ -84,7 +87,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
     }
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
-    let mut doc_len_cache: Vec<Option<u32>> = vec![None; fields.len()];
+    let mut doc_len_cache: Vec<Option<u32>> = vec![None; field_count];
 
     loop {
         terms.retain(|term| !term.cursor.is_exhausted());
@@ -93,11 +96,7 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
         }
         terms.sort_unstable_by_key(|term| term.cursor.doc_id().unwrap());
 
-        let threshold = if heap.len() < k {
-            0
-        } else {
-            heap.peek().map_or(0, |hit| hit.score)
-        };
+        let threshold = if heap.len() < k { 0 } else { heap.peek().map_or(0, |hit| hit.score) };
 
         let mut accumulated_upper_bound = 0u64;
         let mut pivot_index = None;
@@ -122,13 +121,72 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
         }
 
         if smallest_doc == pivot_doc {
-            doc_len_cache.fill(None);
-            let mut score = 0u64;
-            let mut matched_terms = 0usize;
+            // terms are sorted by doc: the ones on the pivot are a prefix
+            let on_pivot = terms
+                .iter()
+                .take_while(|term| term.cursor.doc_id() == Some(pivot_doc))
+                .count();
 
-            for term in &terms {
-                if term.cursor.doc_id() != Some(pivot_doc) {
+            // block-max: if the blocks these terms are in cannot beat the threshold together,
+            // no doc up to the end of the shortest of them can either: jump past it
+            if threshold > 0 {
+                let mut block_bound = 0u64;
+                let mut skip_to = terms.get(on_pivot).and_then(|term| term.cursor.doc_id());
+                for term in &terms[..on_pivot] {
+                    // no block bound (memory lists, unions, unknown doc lengths): the term's
+                    // whole-list bound, which holds for every doc and does not limit the skip
+                    let Some(entry) = term.cursor.block_entry().filter(|e| e.min_doc_len > 0) else {
+                        block_bound = block_bound.saturating_add(term.upper_bound);
+                        continue;
+                    };
+                    let (_, doc_count, avg_doc_len) = field_stats[term.field];
+                    block_bound = block_bound.saturating_add(
+                        bm25_score_scaled(
+                            entry.max_tf,
+                            entry.max_weight,
+                            entry.min_doc_len,
+                            avg_doc_len,
+                            doc_count,
+                            term.doc_freq
+                        )
+                    );
+                    let after_block = entry.last_doc_id.saturating_add(1);
+                    skip_to = Some(skip_to.map_or(after_block, |known| known.min(after_block)));
+                }
+                // `skip_to > pivot_doc`: a skip must move forward, or the loop would not end
+                if block_bound < threshold && let Some(skip_to) = skip_to && skip_to > pivot_doc {
+                    for term in &mut terms[..on_pivot] {
+                        term.cursor.advance_to(skip_to);
+                    }
                     continue;
+                }
+            }
+
+            if restrict.as_ref().is_none_or(|docs| docs.contains(pivot_doc)) {
+                doc_len_cache.fill(None);
+                let mut score = 0u64;
+                let mut matched_terms = 0usize;
+
+                for term in &mut terms {
+                    if term.cursor.doc_id() != Some(pivot_doc) {
+                        continue;
+                    }
+                    let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
+                    let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
+                        stats.doc_len(pivot_doc, xpath).unwrap_or(avg_doc_len as u32)
+                    });
+
+                    score = score.saturating_add(
+                        bm25_score_scaled(
+                            term.cursor.term_freq(),
+                            term.cursor.weight(),
+                            doc_len,
+                            avg_doc_len,
+                            doc_count,
+                            term.doc_freq
+                        )
+                    );
+                    matched_terms += 1;
                 }
                 let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
                 let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
@@ -166,21 +224,6 @@ pub fn wand_top_k_multi_field<S: SearchStats>(
 
     finish_heap(heap)
 }
-pub struct WandTerm<'a> {
-    pub cursor: PostingCursor<'a>,
-    pub doc_freq: u32,
-    pub upper_bound: u64,
-}
-
-impl<'a> WandTerm<'a> {
-    pub fn new(postings: &'a PostingList, doc_freq: u32, max_weight: u16, doc_count: u64) -> Self {
-        Self {
-            cursor: PostingCursor::new(postings),
-            doc_freq,
-            upper_bound: bm25_upper_bound(max_weight, doc_count, doc_freq),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WandHit {
@@ -205,10 +248,7 @@ struct HeapHit {
 
 impl Ord for HeapHit {
     fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .score
-            .cmp(&self.score)
-            .then_with(|| self.doc_id.cmp(&other.doc_id))
+        other.score.cmp(&self.score).then_with(|| self.doc_id.cmp(&other.doc_id))
     }
 }
 
@@ -224,7 +264,7 @@ fn push_top_k(
     score: u64,
     raw: u64,
     matched_terms: usize,
-    k: usize,
+    k: usize
 ) {
     let hit = HeapHit {
         doc_id,
@@ -278,8 +318,8 @@ struct FieldConjunction<'a> {
 
 impl<'a> FieldConjunction<'a> {
     /// `None` when the field cannot match: no terms, or a term without postings.
-    fn new<S: SearchStats>(stats: &S, field: &FieldTerms<'a>) -> Option<Self> {
-        if field.terms.is_empty() || field.terms.iter().any(|term| term.postings.is_empty()) {
+    fn new<S: SearchStats>(stats: &S, field: FieldTerms<'a>) -> Option<Self> {
+        if field.terms.is_empty() || field.terms.iter().any(|term| term.cursor.is_exhausted()) {
             return None;
         }
 
@@ -288,10 +328,9 @@ impl<'a> FieldConjunction<'a> {
             xpath: field.xpath,
             doc_count,
             avg_doc_len: stats.avg_doc_len(field.xpath),
-            terms: field
-                .terms
-                .iter()
-                .map(|term| WandTerm::new(term.postings, term.doc_freq, term.max_weight, doc_count))
+            terms: field.terms
+                .into_iter()
+                .map(|term| WandTerm::new(term.cursor, term.doc_freq, term.max_weight, doc_count))
                 .collect(),
             started: false,
         })
@@ -311,8 +350,7 @@ impl<'a> FieldConjunction<'a> {
                 return None;
             }
 
-            let target = self
-                .terms
+            let target = self.terms
                 .iter()
                 .map(|term| term.cursor.doc_id().unwrap())
                 .max()
@@ -326,33 +364,28 @@ impl<'a> FieldConjunction<'a> {
                 return None;
             }
 
-            if self
-                .terms
-                .iter()
-                .all(|term| term.cursor.doc_id() == Some(target))
-            {
+            if self.terms.iter().all(|term| term.cursor.doc_id() == Some(target)) {
                 return Some(target);
             }
         }
     }
 
     /// The BM25 score of the document the conjunction is currently on.
-    fn score<S: SearchStats>(&self, stats: &S, doc_id: DocId) -> u64 {
-        let doc_len = stats
-            .doc_len(doc_id, self.xpath)
-            .unwrap_or(self.avg_doc_len as u32);
+    fn score<S: SearchStats>(&mut self, stats: &S, doc_id: DocId) -> u64 {
+        let doc_len = stats.doc_len(doc_id, self.xpath).unwrap_or(self.avg_doc_len as u32);
 
         let mut score = 0u64;
-        for term in &self.terms {
-            let posting = term.cursor.current().unwrap();
-            score = score.saturating_add(bm25_score_scaled(
-                posting.positions.len() as u32,
-                posting.weight,
-                doc_len,
-                self.avg_doc_len,
-                self.doc_count,
-                term.doc_freq,
-            ));
+        for term in &mut self.terms {
+            score = score.saturating_add(
+                bm25_score_scaled(
+                    term.cursor.term_freq(),
+                    term.cursor.weight(),
+                    doc_len,
+                    self.avg_doc_len,
+                    self.doc_count,
+                    term.doc_freq
+                )
+            );
         }
         score
     }
@@ -361,18 +394,18 @@ impl<'a> FieldConjunction<'a> {
 /// `conjunctive_top_k` for several fields at once: a document's score is the sum of its scores
 /// in every field that holds all the terms.
 #[timed(search)]
-pub fn conjunctive_top_k_multi_field<S: SearchStats>(
+pub fn conjunctive_top_k_multi_field<'a, S: SearchStats>(
     stats: &S,
-    fields: &[FieldTerms<'_>],
+    fields: Vec<FieldTerms<'a>>,
     k: usize,
-    restrict: Option<&RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
     }
 
-    let mut conjunctions: Vec<FieldConjunction<'_>> = fields
-        .iter()
+    let mut conjunctions: Vec<FieldConjunction<'a>> = fields
+        .into_iter()
         .filter_map(|field| FieldConjunction::new(stats, field))
         .collect();
     let mut current: Vec<Option<DocId>> = conjunctions
@@ -387,7 +420,7 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
             let mut score = 0u64;
             let mut matched_terms = 0usize;
 
-            for (conjunction, at) in conjunctions.iter().zip(&current) {
+            for (conjunction, at) in conjunctions.iter_mut().zip(&current) {
                 if *at == Some(doc_id) {
                     score = score.saturating_add(conjunction.score(stats, doc_id));
                     matched_terms += conjunction.terms.len();
@@ -407,8 +440,6 @@ pub fn conjunctive_top_k_multi_field<S: SearchStats>(
     finish_heap(heap)
 }
 
-/// One way a query clause can match, scored with the statistics of field `xpath` (the exact field
-/// for an exact match).
 pub struct FormRef<'a> {
     pub xpath: XPathId,
     /// Which searched field the form is read in.d
@@ -416,6 +447,10 @@ pub struct FormRef<'a> {
     pub lists: Vec<TermRef<'a>>,
     /// Share of its score a match counts for, in thousandths.
     pub weight: u16,
+    /// `true`: the form matches a doc holding any of its lists and scores the ones it holds
+    /// (a synonym group's typed words); `false`: every list must be on the doc.
+    pub any: bool,
+    pub phrase: Option<Vec<u32>>,
 }
 
 /// The query clauses within one field: a word has one form, a synonym group several. A clause may
@@ -427,32 +462,43 @@ pub struct FieldClauses<'a> {
 
 struct FormCursor<'a> {
     field: usize,
-    // how rare the form's words are together (the sum of their idf in the form's field): what a
-    // match of this form is worth when a query's coverage is measured (see `wand_top_k_grouped`)
     idf: f32,
-    cursors: Vec<PostingCursor<'a>>,
+    cursors: Vec<TermCursor<'a>>,
     doc_freqs: Vec<u32>,
     xpath: XPathId,
     doc_count: u64,
     avg_doc_len: f32,
     weight: u16,
     upper_bound: u64,
+    // each list's best possible score (whole list), for cursors without block bounds
+    list_bounds: Vec<u64>,
+    // any of the lists is enough (the typed words of a synonym group), or all of them
+    any: bool,
     // the document every cursor is on, `None` once there is none left
     doc: Option<DocId>,
+    phrase: Option<Vec<u32>>,
+    positions: Vec<Vec<u32>>,
 }
 
 impl<'a> FormCursor<'a> {
-    /// `None` when the form cannot match (a list without postings).
-    fn new<S: SearchStats>(stats: &S, form: &FormRef<'a>) -> Option<Self> {
-        if form.lists.is_empty() || form.lists.iter().any(|list| list.postings.is_empty()) {
+    /// `None` when the form cannot match: no lists, or (all-form) a list without postings, or
+    /// (any-form) no list with postings.
+    fn new<S: SearchStats>(stats: &S, form: FormRef<'a>) -> Option<Self> {
+        let cannot_match = if form.any {
+            form.lists.iter().all(|list| list.cursor.is_exhausted())
+        } else {
+            form.lists.iter().any(|list| list.cursor.is_exhausted())
+        };
+        if form.lists.is_empty() || cannot_match {
             return None;
         }
         let doc_count = stats.doc_count(form.xpath);
-        let upper_bound = form
-            .lists
+        // both kinds: at most every list's best score added up
+        let list_bounds: Vec<u64> = form.lists
             .iter()
             .map(|list| bm25_upper_bound(list.max_weight, doc_count, list.doc_freq))
-            .fold(0u64, u64::saturating_add);
+            .collect();
+        let upper_bound = list_bounds.iter().copied().fold(0u64, u64::saturating_add);
         let rarity = |doc_freq: u32| -> f32 {
             let n = doc_count as f32;
             let df = (doc_freq as f32).min(n);
@@ -461,28 +507,44 @@ impl<'a> FormCursor<'a> {
             }
             ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
         };
+        let idf = form.lists
+            .iter()
+            .map(|list| rarity(list.doc_freq))
+            .sum();
+        let doc_freqs = form.lists
+            .iter()
+            .map(|list| list.doc_freq)
+            .collect();
         let mut cursor = Self {
             field: form.field,
-            idf: form.lists.iter().map(|list| rarity(list.doc_freq)).sum(),
-            cursors: form
-                .lists
-                .iter()
-                .map(|list| PostingCursor::new(list.postings))
+            idf,
+            list_bounds,
+            positions: vec![Vec::new(); form.lists.len()],
+            phrase: form.phrase,
+            cursors: form.lists
+                .into_iter()
+                .map(|list| list.cursor)
                 .collect(),
-            doc_freqs: form.lists.iter().map(|list| list.doc_freq).collect(),
+            doc_freqs,
             xpath: form.xpath,
             doc_count,
             avg_doc_len: stats.avg_doc_len(form.xpath),
             weight: form.weight,
             upper_bound: weighted(upper_bound, form.weight),
+            any: form.any,
             doc: None,
         };
         cursor.align();
         Some(cursor)
     }
 
-    /// Moves to the first document at or after the cursors' positions that all of them are on.
+    /// Moves to the form's next document at or after the cursors' positions: the smallest doc of
+    /// any list (any-form), or the first doc every list is on (all-form).
     fn align(&mut self) {
+        if self.any {
+            self.doc = self.cursors.iter().filter_map(TermCursor::doc_id).min();
+            return;
+        }
         loop {
             let mut target = None;
             for cursor in &self.cursors {
@@ -499,14 +561,25 @@ impl<'a> FormCursor<'a> {
             for cursor in &mut self.cursors {
                 cursor.advance_to(target);
             }
-            if self
-                .cursors
-                .iter()
-                .all(|cursor| cursor.doc_id() == Some(target))
-            {
-                self.doc = Some(target);
-                return;
+            if self.cursors.iter().all(|cursor| cursor.doc_id() == Some(target)) {
+                let Some(offsets) = &self.phrase else {
+                    self.doc = Some(target);
+                    return;
+                };
+                // a phrase form: the words must also be in order here
+                let read = self.cursors
+                    .iter_mut()
+                    .zip(self.positions.iter_mut())
+                    .all(|(cursor, buffer)| cursor.positions_into(buffer).is_ok());
+                let lists: Vec<&[u32]> = self.positions.iter().map(Vec::as_slice).collect();
+                if read && phrase_matches(&lists, offsets) {
+                    self.doc = Some(target);
+                    return;
+                }
+                // not a phrase here: next doc, and align again
+                self.cursors[0].next();
             }
+            
         }
     }
 
@@ -521,27 +594,39 @@ impl<'a> FormCursor<'a> {
 
     fn step_past(&mut self, doc: DocId) {
         if self.doc == Some(doc) {
-            self.cursors[0].next();
+            if self.any {
+                // every list on this doc moves on; the others are already past it
+                for cursor in &mut self.cursors {
+                    if cursor.doc_id() == Some(doc) {
+                        cursor.next();
+                    }
+                }
+            } else {
+                self.cursors[0].next();
+            }
             self.align();
         }
     }
 
-    /// The weighted score of the document the form is on.
-    fn score<S: SearchStats>(&self, stats: &S, doc: DocId) -> u64 {
-        let doc_len = stats
-            .doc_len(doc, self.xpath)
-            .unwrap_or(self.avg_doc_len as u32);
+    /// The weighted score of the document the form is on: the lists on it, added up.
+    fn score<S: SearchStats>(&mut self, stats: &S, doc: DocId) -> u64 {
+        let doc_len = stats.doc_len(doc, self.xpath).unwrap_or(self.avg_doc_len as u32);
         let mut score = 0u64;
-        for (cursor, &doc_freq) in self.cursors.iter().zip(&self.doc_freqs) {
-            let posting = cursor.current().unwrap();
-            score = score.saturating_add(bm25_score_scaled(
-                posting.positions.len() as u32,
-                posting.weight,
-                doc_len,
-                self.avg_doc_len,
-                self.doc_count,
-                doc_freq,
-            ));
+        for (cursor, &doc_freq) in self.cursors.iter_mut().zip(&self.doc_freqs) {
+            // all-forms: every list is on the doc; any-forms: only some are
+            if cursor.doc_id() != Some(doc) {
+                continue;
+            }
+            score = score.saturating_add(
+                bm25_score_scaled(
+                    cursor.term_freq(),
+                    cursor.weight(),
+                    doc_len,
+                    self.avg_doc_len,
+                    self.doc_count,
+                    doc_freq
+                )
+            );
         }
         weighted(score, self.weight)
     }
@@ -564,16 +649,20 @@ struct ClauseCursor<'a> {
 }
 impl<'a> ClauseCursor<'a> {
     /// `None` when no form of the clause can match in the field.
-    fn new<S: SearchStats>(stats: &S, forms: &[FormRef<'a>]) -> Option<Self> {
+    fn new<S: SearchStats>(stats: &S, forms: Vec<FormRef<'a>>) -> Option<Self> {
         let forms: Vec<FormCursor<'a>> = forms
-            .iter()
+            .into_iter()
             .filter_map(|form| FormCursor::new(stats, form))
             .collect();
         if forms.is_empty() {
             return None;
         }
         let upper_bound = best_per_field(forms.iter().map(|form| (form.field, form.upper_bound)));
-        let largest = forms.iter().map(|form| form.doc_count).max().unwrap_or(0);
+        let largest = forms
+            .iter()
+            .map(|form| form.doc_count)
+            .max()
+            .unwrap_or(0);
         let weight = forms
             .iter()
             .filter(|form| form.doc_count == largest)
@@ -588,7 +677,10 @@ impl<'a> ClauseCursor<'a> {
     }
 
     fn doc_id(&self) -> Option<DocId> {
-        self.forms.iter().filter_map(|form| form.doc).min()
+        self.forms
+            .iter()
+            .filter_map(|form| form.doc)
+            .min()
     }
 
     fn advance_to(&mut self, target: DocId) {
@@ -603,12 +695,12 @@ impl<'a> ClauseCursor<'a> {
         }
     }
 
-    fn score<S: SearchStats>(&self, stats: &S, doc: DocId) -> u64 {
+    fn score<S: SearchStats>(&mut self, stats: &S, doc: DocId) -> u64 {
         best_per_field(
             self.forms
-                .iter()
+                .iter_mut()
                 .filter(|form| form.doc == Some(doc))
-                .map(|form| (form.field, form.score(stats, doc))),
+                .map(|form| (form.field, form.score(stats, doc)))
         )
     }
 }
@@ -633,50 +725,42 @@ fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
 /// Up to this many allowed documents are visited one by one (see `wand_top_k_grouped`).
 const DIRECT_RESTRICT_MAX: usize = 4096;
 
-/// `wand_top_k_multi_field` for clauses that may be synonym groups: exact top-k over the sum,
-/// over every field and clause, of the clause's best weighted form in that field.
-///
-/// `coverage: Some(share)` ranks by how much of the query a document covers, with one clause per
-/// query word (`cross_fields)`: a clause is worth its word's idf, a document must be on clauses
-/// worth at least `share` of all of them, and its score is multiplied by (covered / all)², so
-/// missing a rare word costs much more than missing a common one. `None` adds the clauses up as
-/// they are (any clause is enough).
 #[timed(search)]
-pub fn wand_top_k_grouped<S: SearchStats>(
+pub fn wand_top_k_grouped<'a, S: SearchStats>(
     stats: &S,
-    fields: &[FieldClauses<'_>],
+    fields: Vec<FieldClauses<'a>>,
     k: usize,
     coverage: Option<f32>,
-    restrict: Option<&RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
     }
 
-    let mut clauses: Vec<ClauseCursor<'_>> = fields
-        .iter()
+    let mut clauses: Vec<ClauseCursor<'a>> = fields
+        .into_iter()
         .flat_map(|field| {
-            field
-                .clauses
-                .iter()
-                .filter_map(|forms| ClauseCursor::new(stats, forms))
+            field.clauses.into_iter().filter_map(|forms| ClauseCursor::new(stats, forms))
         })
         .collect();
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
 
     // the whole query's weight (the words the index has), and the part a document has to cover
-    let total_weight: f32 = clauses.iter().map(|clause| clause.weight).sum();
+    let total_weight: f32 = clauses
+        .iter()
+        .map(|clause| clause.weight)
+        .sum();
     let needed: f32 = coverage.map_or(0.0, |share| share.clamp(0.0, 1.0) * total_weight);
     // float sums of the same weights in another order may differ in the last bits
     let covers = |weight: f32| weight + 1e-4 >= needed;
     // a document's score from the clauses on it, scaled by how much of the query it covers;
     // `None` when it covers too little (or nothing)
-    let evaluate = |clauses: &[ClauseCursor<'_>], doc: DocId| -> Option<(u64, u64, usize)> {
+    let evaluate = |clauses: &mut [ClauseCursor<'_>], doc: DocId| -> Option<(u64, u64, usize)> {
         let mut score = 0u64;
         let mut matched_terms = 0usize;
         let mut matched_weight = 0.0f32;
-        for clause in clauses {
+        for clause in clauses.iter_mut() {
             if clause.doc_id() == Some(doc) {
                 score = score.saturating_add(clause.score(stats, doc));
                 matched_terms += 1;
@@ -689,21 +773,21 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         let raw = score;
         if coverage.is_some() && total_weight > 0.0 {
             let covered = f64::from((matched_weight / total_weight).min(1.0));
-            score = (score as f64 * covered.powf(f64::from(COVERAGE_POWER))) as u64;
+            score = ((score as f64) * covered.powf(f64::from(COVERAGE_POWER))) as u64;
         }
         Some((score, raw, matched_terms))
     };
 
     // a few allowed documents: go to each of them (the cursors gallop) instead of walking every
     // posting of every clause to find them
-    if let Some(docs) = restrict.filter(|docs| docs.len() <= DIRECT_RESTRICT_MAX as u64) {
+    if let Some(docs) = restrict.filter(|docs| docs.len() <= (DIRECT_RESTRICT_MAX as u64)) {
         let mut targets: Vec<DocId> = docs.iter().collect();
         targets.sort_unstable();
         for doc in targets {
             for clause in &mut clauses {
                 clause.advance_to(doc);
             }
-            if let Some((score, raw, matched_terms)) = evaluate(&clauses, doc) {
+            if let Some((score, raw, matched_terms)) = evaluate(&mut clauses, doc) {
                 push_top_k(&mut heap, doc, score, raw, matched_terms, k);
             }
         }
@@ -717,11 +801,7 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         }
         clauses.sort_unstable_by_key(|clause| clause.doc_id().unwrap());
 
-        let threshold = if heap.len() < k {
-            0
-        } else {
-            heap.peek().map_or(0, |hit| hit.score)
-        };
+        let threshold = if heap.len() < k { 0 } else { heap.peek().map_or(0, |hit| hit.score) };
 
         // the first clause where the clauses up to it can both beat the threshold and cover
         // enough of the query: a document before its document is on fewer of them than that.
@@ -732,9 +812,10 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         for (index, clause) in clauses.iter().enumerate() {
             accumulated_upper_bound = accumulated_upper_bound.saturating_add(clause.upper_bound);
             accumulated_weight += clause.weight;
-            if accumulated_upper_bound >= threshold
-                && accumulated_upper_bound > 0
-                && covers(accumulated_weight)
+            if
+                accumulated_upper_bound >= threshold &&
+                accumulated_upper_bound > 0 &&
+                covers(accumulated_weight)
             {
                 pivot_index = Some(index);
                 break;
@@ -755,7 +836,75 @@ pub fn wand_top_k_grouped<S: SearchStats>(
         }
 
         if smallest_doc == pivot_doc {
-            if let Some((score, raw, matched_terms)) = evaluate(&clauses, pivot_doc) {
+            // clauses are sorted by doc: the ones on the pivot are a prefix
+            let on_pivot = clauses
+                .iter()
+                .take_while(|clause| clause.doc_id() == Some(pivot_doc))
+                .count();
+
+            // block-max: if the blocks the pivot's clauses are in cannot beat the threshold
+            // together, no doc up to the end of the shortest of those blocks can: jump past it
+            if threshold > 0 {
+                let mut block_bound = 0u64;
+                let mut skip_to = clauses.get(on_pivot).and_then(|clause| clause.doc_id());
+                for clause in &clauses[..on_pivot] {
+                    let mut per_form = Vec::with_capacity(clause.forms.len());
+                    for form in &clause.forms {
+                        // a finished form scores nothing from here on; its cursors may sit
+                        // behind the pivot and must not shape the skip
+                        if form.doc.is_none() {
+                            continue;
+                        }
+                        let mut form_bound = 0u64;
+                        for ((cursor, &doc_freq), &list_bound) in form.cursors
+                            .iter()
+                            .zip(&form.doc_freqs)
+                            .zip(&form.list_bounds) {
+                            // an exhausted list adds nothing to any later doc
+                            if cursor.is_exhausted() {
+                                continue;
+                            }
+                            // no block bound (memory lists, unions, unknown doc lengths): the
+                            // list's whole bound, which holds for every doc and does not limit
+                            // how far we skip
+                            let Some(entry) = cursor
+                                .block_entry()
+                                .filter(|e| e.min_doc_len > 0) else {
+                                form_bound = form_bound.saturating_add(list_bound);
+                                continue;
+                            };
+                            form_bound = form_bound.saturating_add(
+                                bm25_score_scaled(
+                                    entry.max_tf,
+                                    entry.max_weight,
+                                    entry.min_doc_len,
+                                    form.avg_doc_len,
+                                    form.doc_count,
+                                    doc_freq
+                                )
+                            );
+                            let after_block = entry.last_doc_id.saturating_add(1);
+                            skip_to = Some(
+                                skip_to.map_or(after_block, |known| known.min(after_block))
+                            );
+                        }
+                        per_form.push((form.field, weighted(form_bound, form.weight)));
+                    }
+                    block_bound = block_bound.saturating_add(best_per_field(per_form.into_iter()));
+                }
+                // `skip_to > pivot_doc`: a skip must move forward, or the loop would not end
+                if block_bound < threshold && let Some(skip_to) = skip_to && skip_to > pivot_doc {
+                    for clause in &mut clauses[..on_pivot] {
+                        clause.advance_to(skip_to);
+                    }
+                    continue;
+                }
+            }
+
+            if
+                restrict.is_none_or(|docs| docs.contains(pivot_doc)) &&
+                let Some((score, raw, matched_terms)) = evaluate(&mut clauses, pivot_doc)
+            {
                 push_top_k(&mut heap, pivot_doc, score, raw, matched_terms, k);
             }
 
@@ -778,26 +927,25 @@ pub fn wand_top_k_grouped<S: SearchStats>(
 /// match in the same field (by any of its forms); a document's score is the sum of its scores in
 /// every field where they all do.
 #[timed(search)]
-pub fn conjunctive_top_k_grouped<S: SearchStats>(
+pub fn conjunctive_top_k_grouped<'a, S: SearchStats>(
     stats: &S,
-    fields: &[FieldClauses<'_>],
+    fields: Vec<FieldClauses<'a>>,
     k: usize,
-    restrict: Option<&RoaringTreemap>,
+    restrict: Option<&RoaringTreemap>
 ) -> Vec<WandHit> {
     if k == 0 {
         return Vec::new();
     }
 
     // every clause of a field, or none when one of them cannot match there
-    let mut conjunctions: Vec<Vec<ClauseCursor<'_>>> = fields
-        .iter()
+    let mut conjunctions: Vec<Vec<ClauseCursor<'a>>> = fields
+        .into_iter()
         .filter_map(|field| {
             if field.clauses.is_empty() {
                 return None;
             }
-            field
-                .clauses
-                .iter()
+            field.clauses
+                .into_iter()
                 .map(|forms| ClauseCursor::new(stats, forms))
                 .collect::<Option<Vec<_>>>()
         })
@@ -813,9 +961,9 @@ pub fn conjunctive_top_k_grouped<S: SearchStats>(
         if restrict.as_ref().is_none_or(|docs| docs.contains(doc_id)) {
             let mut score = 0u64;
             let mut matched_terms = 0usize;
-            for (clauses, at) in conjunctions.iter().zip(&current) {
+            for (clauses, at) in conjunctions.iter_mut().zip(&current) {
                 if *at == Some(doc_id) {
-                    for clause in clauses {
+                    for clause in clauses.iter_mut() {
                         score = score.saturating_add(clause.score(stats, doc_id));
                     }
                     matched_terms += clauses.len();

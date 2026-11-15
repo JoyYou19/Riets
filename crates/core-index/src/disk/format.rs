@@ -132,15 +132,90 @@
 //! +92  bool_fields_len         u64
 //! ```
 
+use std::io;
+
+use regex::bytes;
+
 //                          ahahahahhahah
 pub const MAGIC: [u8; 8] = *b"BANANA_4";
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 14;
 
 pub const HEADER_LEN: usize = 8 + 4;
-
+pub const BLOCK_LEN:usize =128;
 //100B
 pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8 + 8;
+//skips entries for things in blocks
+pub const SKIP_ENTRY_LEN: usize = 8 + 8 + 4 + 4 + 4 + 4 + 4 + 2 + 1;
 
+fn invalid(message:&'static str) -> io::Error{
+        io::Error::new(io::ErrorKind::InvalidData, message)
+    }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+//posting block entry for skipping the block
+pub struct SkipEntry{
+    pub first_doc_id:u64,
+    pub last_doc_id :u64,
+    //byte offset of the block realtive to start of term blocks
+    pub block_start_offset:u32,
+    //byte offset of first document in terms positions
+    pub positions_start_offset:u32,
+    //byte offset of blocks first document in terms offset
+    pub offsets_start_offset:u32,
+    //max term frequency
+    pub max_tf:u32,
+    //shortest doc
+    pub min_doc_len:u32,
+    //max weight in block
+    pub max_weight:u16,
+    //docs in block up to 128
+    pub len:u8
+}
+impl SkipEntry{
+    pub fn write_to(&self, out:&mut Vec<u8>){
+        out.extend_from_slice(&self.first_doc_id.to_le_bytes());
+        out.extend_from_slice(&self.last_doc_id.to_le_bytes());
+        out.extend_from_slice(&self.block_start_offset.to_le_bytes());
+        out.extend_from_slice(&self.positions_start_offset.to_le_bytes());
+        out.extend_from_slice(&self.offsets_start_offset.to_le_bytes());
+        out.extend_from_slice(&self.max_tf.to_le_bytes());
+        out.extend_from_slice(&self.min_doc_len.to_le_bytes());
+        out.extend_from_slice(&self.max_weight.to_le_bytes());
+        out.extend_from_slice(&self.len.to_le_bytes());
+    }
+    pub fn read_at(table:&[u8], index:usize)-> io::Result<Self>{
+        let start=index.checked_mul(SKIP_ENTRY_LEN).ok_or_else(|| invalid("skip entry index overflow"))?;
+        let bytes=table.get(start..start+SKIP_ENTRY_LEN)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "skip entry past end"))?;
+        let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
+        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+
+        let entry = Self {
+            first_doc_id: u64_at(0),
+            last_doc_id: u64_at(8),
+            block_start_offset: u32_at(16),
+            positions_start_offset: u32_at(20),
+            offsets_start_offset: u32_at(24),
+            max_tf: u32_at(28),
+            min_doc_len: u32_at(32),
+            max_weight: u16::from_le_bytes([bytes[36], bytes[37]]),
+            len: bytes[38],
+        };
+        if entry.len ==0|| usize::from(entry.len) >BLOCK_LEN|| entry.last_doc_id<entry.first_doc_id{
+            return Err(invalid("corrupt skip entry"));
+        }
+        Ok(entry)
+    }
+    pub fn last_doc_at(table:&[u8], index:usize) -> io::Result<u64>{
+        let start =index 
+        .checked_mul(SKIP_ENTRY_LEN)
+        .and_then(|at| at.checked_add(8))
+        .ok_or_else(|| invalid("skip entry index overflow"))?;
+        let bytes=table.get(start..start+8)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "skip entry past end "))?;
+        Ok(u64::from_le_bytes(bytes.try_into().expect("8 bytes")))
+    }
+    
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentHeader {
     pub magic: [u8; 8],
