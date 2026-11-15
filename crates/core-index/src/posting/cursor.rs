@@ -157,13 +157,6 @@ impl <'a> UnionCursor<'a>{
         cursor
     }
 
-    /// The children on the current document, in source order (memtable first).
-    fn on_current(&self) -> impl Iterator<Item = &TermCursor<'a>> {
-        let current = self.current;
-        self.children
-            .iter()
-            .filter(move |child| current.is_some() && child.doc_id() == current)
-    }
     fn on_current_mut(&mut self) -> impl Iterator<Item = &mut TermCursor<'a>> {
     let current = self.current;
     self.children

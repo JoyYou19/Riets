@@ -188,25 +188,9 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                     );
                     matched_terms += 1;
                 }
-                let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
-                let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
-                    stats
-                        .doc_len(pivot_doc, xpath)
-                        .unwrap_or(avg_doc_len as u32)
-                });
-                let posting = term.cursor.current().unwrap();
-
-                score = score.saturating_add(bm25_score_scaled(
-                    posting.positions.len() as u32,
-                    posting.weight,
-                    doc_len,
-                    avg_doc_len,
-                    doc_count,
-                    term.doc_freq,
-                ));
-                matched_terms += 1;
+                push_top_k(&mut heap, pivot_doc, score, score, matched_terms, k);
             }
-            push_top_k(&mut heap, pivot_doc, score, score, matched_terms, k);
+            
 
             for term in &mut terms {
                 if term.cursor.doc_id() == Some(pivot_doc) {
