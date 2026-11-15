@@ -697,29 +697,42 @@ where
             // candidates, but not the fuzzy union, i was told that this optimization migh bee
             // negligable, we can cache it if needed - norca
             Query::Fuzzy(raw, fuzziness, fuzzy_spec) => {
+                let words = self.fuzzy_words(raw);
                 for &ctx in ctxs {
-                    let list = self.execute_fuzzy(raw, ctx.xpath, *fuzziness, *fuzzy_spec);
-                    //WARN: we will need to come back to this a bit later this is aprox
-                    let weight = bm25_idf(list.len() as u32, self.stats().doc_count(ctx.xpath));
-                    if ctx.row_keyed {
-                        for posting in list.items() {
-                            if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id))
-                                == Some(doc_id)
-                            {
-                                if !posting.positions.is_empty() {
-                                    out.push(MatchedTerm {
-                                        xpath: ctx.xpath,
-                                        row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
-                                        row_path: Vec::new(),
-                                        positions: posting.positions.to_vec(),
-                                        weight,
-                                        offsets: posting.offsets.to_vec(),
-                                    });
+                    let doc_count = self.stats().doc_count(ctx.xpath);
+                    for word in &words {
+                        let opts = fuzzy_options(word, *fuzziness, *fuzzy_spec);
+                        let candidates = self
+                            .fuzzy_candidates(word, ctx.xpath, opts)
+                            .into_iter()
+                            .map(|e| (e.term, e.edits, e.doc_freq));
+                        for expansion in
+                            select_expansions(word, candidates, fuzzy_spec.max_expansions)
+                        {
+                            let list = self.index.lookup(&expansion.term, ctx.xpath);
+                            let weight = bm25_idf(expansion.doc_freq, doc_count)
+                                * fuzzy_decay(expansion.edits);
+                            if ctx.row_keyed {
+                                for posting in list.items() {
+                                    if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id))
+                                        == Some(doc_id)
+                                    {
+                                        if !posting.positions.is_empty() {
+                                            out.push(MatchedTerm {
+                                                xpath: ctx.xpath,
+                                                row_id: Some(ArrayRowId::from_raw(posting.doc_id)),
+                                                row_path: Vec::new(),
+                                                positions: posting.positions.to_vec(),
+                                                offsets: posting.offsets.to_vec(),
+                                                weight,
+                                            });
+                                        }
+                                    }
                                 }
+                            } else {
+                                self.push_leaf_matches(&list, doc_id, ctx.xpath, weight, out);
                             }
                         }
-                    } else {
-                        self.push_leaf_matches(&list, doc_id, ctx.xpath, weight, out);
                     }
                 }
             }

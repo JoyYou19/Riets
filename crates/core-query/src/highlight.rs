@@ -374,8 +374,8 @@ fn fragments_by_sentence(text: &str, ranges: &[Span], opts: &HighlightFieldOptio
                     (start, anchored_we)
                 } else {
                     (
-                        snap_down(text, best.start.saturating_sub(half)),
-                        snap_up(text, (best.end + half).min(end)),
+                        snap_word_down(text, best.start.saturating_sub(half)),
+                        snap_word_up(text, (best.end + half).min(end)),
                     )
                 }
             };
@@ -413,6 +413,26 @@ fn snap_up(text: &str, mut i: usize) -> usize {
     i
 }
 
+fn snap_word_down(text: &str, i: usize) -> usize {
+    let i = snap_down(text, i);
+    for (idx, c) in text[..i].char_indices().rev() {
+        if c.is_whitespace() {
+            return idx + c.len_utf8();
+        }
+    }
+    0
+}
+
+fn snap_word_up(text: &str, i: usize) -> usize {
+    let i = snap_up(text, i);
+    for (idx, c) in text[i..].char_indices() {
+        if c.is_whitespace() {
+            return i + idx;
+        }
+    }
+    text.len()
+}
+
 //stupid smart function that combines spans that are in the same window
 fn fragment_windows(text: &str, spans: &[Span], fragment_size: usize) -> Vec<(usize, usize)> {
     let mut windows: Vec<(usize, usize)> = Vec::new();
@@ -422,8 +442,8 @@ fn fragment_windows(text: &str, spans: &[Span], fragment_size: usize) -> Vec<(us
                 *we = snap_up(text, span.end.max(*we));
             }
             _ => {
-                let ws = snap_down(text, span.start);
-                let we = snap_up(text, (ws + fragment_size).max(span.end).min(text.len()));
+                let ws = snap_word_down(text, span.start);
+                let we = snap_word_up(text, (ws + fragment_size).max(span.end).min(text.len()));
                 windows.push((ws, we));
             }
         }
