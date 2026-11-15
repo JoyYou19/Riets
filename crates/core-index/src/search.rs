@@ -1,11 +1,7 @@
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton},
-    numeric_values::{NumericBound, NumericValue},
-    posting::PostingList,
-    types::{ArrayRowId, DocId, XPathId},
-    wildcard::WildcardPattern,
+    fuzzy::{ DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_EXPANSIONS, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton }, numeric_values::{ NumericBound, NumericValue }, posting::{ PostingList, cursor::TermCursor }, types::{ ArrayRowId, DocId, XPathId }, wildcard::WildcardPattern,
 };
 
 #[derive(Debug, Clone)]
@@ -14,7 +10,11 @@ pub struct TermPostings {
     pub doc_freq: u32,
     pub max_weight: u16,
 }
-
+pub struct TermCursorInfo<'a> {
+    pub cursor: TermCursor<'a>,
+    pub doc_freq: u32,
+    pub max_weight: u16,
+}
 // Every searchable segment should implement this, simply functions that we are going to need for
 // every type of segment either it is Immutable, Snapshot or in Memory
 pub trait SearchIndex {
@@ -31,6 +31,7 @@ pub trait SearchIndex {
     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)>;
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList;
 
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>>;
     //All indexed terms for a field (for the fuzzy automaton scan).
     fn terms(&self, xpath: XPathId) -> Vec<String>;
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32;
@@ -65,13 +66,20 @@ pub trait SearchIndex {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         //one automaton for k = 0, 1 and 2, so all three use the same rules
         //(transpositions, unicode, prefix lock)
         let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
 
         let mut candidates: Vec<(String, u8, u32)> = Vec::new();
+        candidates.sort_by(|a, b| {
+            a.1
+                .cmp(&b.1) // fewer edits first
+                .then_with(|| b.2.cmp(&a.2)) // then higher doc_freq
+        });
+
+        candidates.truncate(DEFAULT_MAX_EXPANSIONS);
         for t in self.terms(xpath) {
             let t: &str = &t;
             let Some(edits) = aut.distance_to(t) else {
@@ -105,6 +113,12 @@ pub trait SearchIndex {
 
         PostingList::from_items(items)
     }
+    fn doc_ids_into(&self, term: &str, xpath: XPathId, out: &mut RoaringTreemap) {
+    let ids = self.lookup(term, xpath).items().iter().map(|p| p.doc_id).collect::<Vec<_>>();
+    if let Ok(ids) = RoaringTreemap::from_sorted_iter(ids) {
+        *out |= ids;
+    }
+}
 }
 
 // How are these documents going to be scored? Used for BM25, is needed for the math equation
@@ -130,7 +144,7 @@ pub trait SearchNumeric {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> RoaringTreemap;
 
     //quick docid+xpath->numeric_value
