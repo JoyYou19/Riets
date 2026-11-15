@@ -113,6 +113,7 @@ pub struct SearchCommand {
     pub return_fields: Option<IndexMap<String, bool>>,
     pub sort: Option<SortCommand>,
     pub highlight: Option<HighlightCommand>,
+
     #[serde(default = "wildcard_default")]
     pub wildcard_enabled: bool,
 
