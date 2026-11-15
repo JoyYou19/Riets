@@ -6,7 +6,6 @@ use core_index::{
         PostingCursor,
         PostingList,
         cursor::TermCursor,
-        ops::{ intersection, union_many },
     },
     search::{ SearchIndex, SearchNumeric, SearchStats },
     types::{ ArrayRowId, DocId, XPathId, position_span, position_start },
@@ -786,45 +785,30 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
     //Kindof the fuzzy entry point the whole porno logic starts here
     #[timed(search)]
-    fn execute_fuzzy(
-        &self,
-        raw: &str,
-        xpath: XPathId,
-        fuzziness: Fuzziness,
-        spec: FuzzySpec
-    ) -> PostingList {
-        //"butman and robin" -> [butman, robin]
-        let words = self.fuzzy_words(raw);
-
-        if words.is_empty() {
-            return PostingList::default();
+    
+    /// Documents holding every word of `raw` (through any chosen expansion), as ids only.
+fn execute_fuzzy(&self, raw: &str, xpath: XPathId, fuzziness: Fuzziness, spec: FuzzySpec) -> RoaringTreemap {
+    let mut result: Option<RoaringTreemap> = None;
+    for word in self.fuzzy_words(raw) {
+        let opts = fuzzy_options(&word, fuzziness, spec);
+        let candidates = self
+            .fuzzy_candidates(&word, xpath, opts)
+            .into_iter()
+            .map(|e| (e.term, e.edits, e.doc_freq));
+        let mut docs = RoaringTreemap::new();
+        for pick in select_expansions(&word, candidates, spec.max_expansions) {
+            self.index.doc_ids_into(&pick.term, xpath, &mut docs);
         }
-
-        let lists: Vec<PostingList> = words
-            .iter()
-            .map(|w| {
-                let opts = fuzzy_options(w, fuzziness, spec);
-                let candidates = self
-                    .fuzzy_candidates(w, xpath, opts)
-                    .into_iter()
-                    .map(|e| (e.term, e.edits, e.doc_freq));
-                let picks = select_expansions(w, candidates, spec.max_expansions);
-                let lists: Vec<PostingList> = picks
-                    .iter()
-                    .map(|p| self.index.lookup(&p.term, xpath))
-                    .collect();
-                union_many(lists.iter())
-            })
-            .collect();
-
-        let mut iter = lists.into_iter();
-        let mut result = iter.next().unwrap_or_default();
-        for next in iter {
-            result = intersection(&result, &next);
+        result = Some(match result {
+            Some(current) => current & docs,
+            None => docs,
+        });
+        if result.as_ref().is_some_and(RoaringTreemap::is_empty) {
+            break;
         }
-        result
     }
-
+    result.unwrap_or_default()
+}
     //Splits the string into fuzzable words split by white space and lowercased
     #[timed(search)]
     fn fuzzy_words(&self, raw: &str) -> Vec<String> {
@@ -879,7 +863,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     EvalMode::Filter => {
                         let mut out = RoaringTreemap::new();
                         for &ctx in ctxs {
-                            out |= self.posting_ids(&self.execute_fuzzy(v, ctx.xpath, *fz, *spec));
+                            out |= self.execute_fuzzy(v, ctx.xpath, *fz, *spec);
                         }
                         EvalOutcome::Docs(out)
                     }
@@ -948,14 +932,25 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     if ctx.row_keyed {
                         self.push_row_matches(query, doc_id, ctx, out);
                     } else if let Query::Term(term) = query {
+                        let weight = bm25_idf(
+                            self.term_doc_freq(term, ctx.xpath),
+                            self.stats().doc_count(ctx.xpath)
+                        );
                         let posting = self.posting_for(term, ctx.xpath, doc_id);
-                        Self::push_leaf_matches(posting.as_ref(), ctx.xpath, out);
+                        self.push_leaf_matches(posting.as_ref(), ctx.xpath, weight, out);
                     } else if let Some(leaf) = self.leaf(query, ctx) {
-                        //compute relevance weight 3000
-                        let doc_freq =
-                            self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+                        let doc_freq = self.leaf_doc_freq(
+                            leaf.xpath,
+                            &leaf.key,
+                            leaf.postings.len()
+                        );
                         let weight = bm25_idf(doc_freq, self.stats().doc_count(leaf.xpath));
-                        self.push_leaf_matches(&leaf.postings, doc_id, ctx.xpath, weight, out);
+                        let items = leaf.postings.items();
+                        let posting = items
+                            .binary_search_by_key(&doc_id, |p| p.doc_id)
+                            .ok()
+                            .map(|i| &items[i]);
+                        self.push_leaf_matches(posting, ctx.xpath, weight, out);
                     }
                 }
             }
@@ -979,16 +974,22 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             .fuzzy_candidates(word, ctx.xpath, opts)
                             .into_iter()
                             .map(|e| (e.term, e.edits, e.doc_freq));
-                        for expansion in
-                            select_expansions(word, candidates, fuzzy_spec.max_expansions)
-                        {
-                            let list = self.index.lookup(&expansion.term, ctx.xpath);
-                            let weight = bm25_idf(expansion.doc_freq, doc_count)
-                                * fuzzy_decay(expansion.edits);
+                        for expansion in select_expansions(
+                            word,
+                            candidates,
+                            fuzzy_spec.max_expansions
+                        ) {
+                          
+                            let weight =
+                                bm25_idf(expansion.doc_freq, doc_count) *
+                                fuzzy_decay(expansion.edits);
                             if ctx.row_keyed {
+                                let list = self.index.lookup(&expansion.term, ctx.xpath);
                                 for posting in list.items() {
-                                    if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id))
-                                        == Some(doc_id)
+                                    if
+                                        self.index.doc_of_row(
+                                            ArrayRowId::from_raw(posting.doc_id)
+                                        ) == Some(doc_id)
                                     {
                                         if !posting.positions.is_empty() {
                                             out.push(MatchedTerm {
@@ -1003,7 +1004,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                     }
                                 }
                             } else {
-                                self.push_leaf_matches(&list, doc_id, ctx.xpath, weight, out);
+                                let posting = self.posting_for(&expansion.term, ctx.xpath, doc_id);
+                                self.push_leaf_matches(posting.as_ref(), ctx.xpath, weight, out);
                             }
                         }
                     }
@@ -1028,16 +1030,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
 
     fn push_leaf_matches(
         &self,
-        list: &PostingList,
-        doc_id: DocId,
+        posting: Option<&Posting>,
         xpath: XPathId,
         weight: f32,
-        out: &mut Vec<MatchedTerm>,
+        out: &mut Vec<MatchedTerm>
     ) {
-        if let Some(p) = Self::posting_for(list, doc_id) {
+        if let Some(p) = posting {
             if !p.positions.is_empty() {
-                //offsets migh be empty here, the re-analyzing and all the magic happens later in
-                //highlight.rs
                 out.push(MatchedTerm {
                     xpath,
                     row_id: None,
@@ -1181,9 +1180,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         let word_postings: Vec<Option<Posting>> = terms
             .iter()
             .map(|t| {
-                let (list, doc_freq) = self.fetch_term_list(&t.text, xpath);
-                weight += bm25_idf(doc_freq, doc_count);
-                Self::posting_for(&list, doc_id).cloned()
+                weight += bm25_idf(self.term_doc_freq(&t.text, xpath), doc_count);
+                self.posting_for(&t.text, xpath, doc_id)
             })
             .collect();
         Self::push_phrase_matches(terms, xpath, None, weight, &word_postings, out);
@@ -1205,15 +1203,19 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             .iter()
             .map(|t| self.fetch_term_list(&t.text, xpath))
             .collect();
-        let weight: f32 = lists.iter().map(|(_, df)| bm25_idf(*df, doc_count)).sum();
+        let weight: f32 = lists
+            .iter()
+            .map(|(_, df)| bm25_idf(*df, doc_count))
+            .sum();
+
         for posting in lists[0].0.items() {
             if self.index.doc_of_row(ArrayRowId::from_raw(posting.doc_id)) != Some(doc_id) {
                 continue;
             }
             let row_id = posting.doc_id;
-            let word_postings: Vec<Option<Posting>> = lists
+            let word_postings: Vec<Option<Posting>> = terms
                 .iter()
-                .map(|(l, _)| Self::posting_for(l, row_id).cloned())
+                .map(|t| self.posting_for(&t.text, xpath, row_id))
                 .collect();
             Self::push_phrase_matches(
                 terms,
@@ -1295,6 +1297,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     ) -> Vec<ScoredPosting> {
         let stats = self.stats();
         let mut acc: Vec<ScoredPosting> = Vec::new();
+        let mut merged: Vec<ScoredPosting> = Vec::new();
         let mut doc_len: HashMap<DocId, f32> = HashMap::new();
         let mut scored: Vec<ScoredPosting> = Vec::new();
 
@@ -1335,7 +1338,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             // Multiple array rows can fold onto the same document: merge them now.
             if field_scored.len() > 1 {
                 let mut deduped: Vec<ScoredPosting> = Vec::with_capacity(field_scored.len());
-                for mut hit in field_scored {
+                for  hit in field_scored {
                     if let Some(last) = deduped.last_mut() && last.doc_id == hit.doc_id {
                         last.score = last.score.saturating_add(hit.score);
                         last.matched_terms = last.matched_terms.saturating_add(hit.matched_terms);
@@ -1346,16 +1349,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 field_scored = deduped;
             }
 
-            let mut acc: Vec<ScoredPosting> = Vec::new(); // holds current result
-            let mut merged: Vec<ScoredPosting> = Vec::new(); // empty scratch buffer
-
-            for (index, &ctx) in ctxs.iter().enumerate() {
-                // ... build field_scored ...
-
-                merged.clear(); // reuse existing capacity
-                merge_scored(&acc, &field_scored, &mut merged);
-                std::mem::swap(&mut acc, &mut merged); // swap contents, not capacity
-            }
+            merged.clear();
+            merge_scored(&acc, &field_scored, &mut merged);
+            std::mem::swap(&mut acc, &mut merged);
         }
 
         acc
@@ -1386,17 +1382,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             return EvalOutcome::Docs(out);
         }
 
-        let typed_doc_freqs: Vec<Option<u32>> = match forms.first().map(|form| &form.query) {
-            Some(typed @ Query::Term(_)) =>
+         let typed_doc_freqs: Vec<Option<u32>> = match forms.first().map(|form| &form.query) {
+            Some(Query::Term(typed)) =>
                 ctxs
                     .iter()
                     .map(|&ctx| {
-                        let leaf = self.leaf(typed, ctx)?;
-                        let doc_freq = self.leaf_doc_freq(
-                            leaf.xpath,
-                            &leaf.key,
-                            leaf.postings.len()
-                        );
+                        let doc_freq = self.term_doc_freq(typed, ctx.xpath);
                         (doc_freq > 0).then_some(doc_freq)
                     })
                     .collect(),
@@ -2246,7 +2237,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             // A document whose name is a run of the query's words is what the query is about:
             // "Vera Wang was born in March" is about Vera Wang. Every candidate is checked,
             // wherever it came from, and named documents no source found are added.
-            let shares = self.name_shares(plan, ctxs, restrict, relevance.keys().copied());
+            let shares = self.name_shares(plan, ctxs, restrict);
             let missing: RoaringTreemap = shares
                 .keys()
                 .copied()
@@ -2319,7 +2310,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         plan: &RankPlan,
         ctxs: &[FieldCtx],
         restrict: Option<&RoaringTreemap>,
-        candidates: impl Iterator<Item = DocId>
+       
     ) -> HashMap<DocId, f32> {
         let mut shares: HashMap<DocId, f32> = HashMap::new();
         if plan.words.is_empty() {
@@ -2516,36 +2507,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         acc.into_values().collect()
     }
 
-    /// `score_phrase_as_words` for the WAND path: each word's list in this field, kept to the
-    /// documents where the words form the phrase, scored with the word's own document frequency.
-    fn phrase_form(
-        &self,
-        phrase: &Query,
-        terms: &[PhraseTerm],
-        ctx: FieldCtx,
-        weight: u16
-    ) -> Option<FormLists<'a>> {
-        let leaf = self.leaf(phrase, ctx)?;
-        let docs: Vec<DocId> = leaf.postings
-            .items()
-            .iter()
-            .map(|p| p.doc_id)
-            .collect();
-        let lists = terms
-            .iter()
-            .map(|term| {
-                let kept = postings_of_cursor(self.open_term_cursor(&term.text, ctx.xpath), &docs);
-                (ListSource::Decoded(Cow::Owned(kept)), self.term_doc_freq(&term.text, ctx.xpath))
-            })
-            .collect();
-        Some(FormLists {
-            xpath: ctx.xpath,
-            lists,
-            weight,
-            any: false,
-            phrase: None,
-        })
-    }
+
 
     /// Documents containing the phrase in at least one plain field.
     fn phrase_docs(&self, terms: &[PhraseTerm], ctxs: &[FieldCtx]) -> HashSet<DocId> {
