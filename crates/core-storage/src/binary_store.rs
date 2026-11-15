@@ -56,7 +56,9 @@ struct CompactionPermit;
 impl CompactionPermit {
     fn acquire() -> Self {
         let (lock, available) = &COMPACTION_SLOTS;
-        let mut running = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut running = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while *running >= MAX_CONCURRENT_COMPACTIONS {
             running = available
                 .wait(running)
@@ -70,7 +72,9 @@ impl CompactionPermit {
 impl Drop for CompactionPermit {
     fn drop(&mut self) {
         let (lock, available) = &COMPACTION_SLOTS;
-        let mut running = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut running = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *running -= 1;
         available.notify_one();
     }
@@ -106,26 +110,31 @@ fn with_path(err: io::Error, path: &Path) -> io::Error {
     io::Error::new(err.kind(), format!("{}: {}", path.display(), err))
 }
 
-pub struct StoreSnapshot{
-    dir:PathBuf,
-    entries:Vec<(String,DocLocation)>,
-    highest_id:DocId
+pub struct StoreSnapshot {
+    dir: PathBuf,
+    entries: Vec<(String, DocLocation)>,
+    highest_id: DocId,
 }
 impl StoreSnapshot {
     pub fn capture(
-        dir:PathBuf,
+        dir: PathBuf,
         locations: &DashMap<String, DocLocation>,
-        highest_id: DocId
-    ) -> Self{
-        let mut entries:Vec<(String,DocLocation)> =locations
-        .iter().map(|entry|(entry.key().clone(), *entry.value())).collect();
-    entries.sort_unstable_by_key(|(_,location)|(location.segment, location.offset));
-    Self { dir, entries, highest_id }
+        highest_id: DocId,
+    ) -> Self {
+        let mut entries: Vec<(String, DocLocation)> = locations
+            .iter()
+            .map(|entry| (entry.key().clone(), *entry.value()))
+            .collect();
+        entries.sort_unstable_by_key(|(_, location)| (location.segment, location.offset));
+        Self {
+            dir,
+            entries,
+            highest_id,
+        }
     }
-
 }
-fn read_only()->io::Error{
-    io::Error::new(io::ErrorKind::Unsupported,"store snapshot is read-only")
+fn read_only() -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "store snapshot is read-only")
 }
 impl DocumentStore for StoreSnapshot {
     fn put(&mut self, _doc: StoredDocument) -> io::Result<()> {
@@ -305,9 +314,10 @@ impl BinaryDocumentStore {
             if let Some(rest) = name
                 .strip_prefix("seg_")
                 .and_then(|r| r.strip_suffix(".bin"))
-                && let Ok(id) = rest.parse::<u32>() {
-                    ids.push(id);
-                }
+                && let Ok(id) = rest.parse::<u32>()
+            {
+                ids.push(id);
+            }
         }
         ids.sort_unstable();
         Ok(ids)
@@ -493,10 +503,11 @@ impl BinaryDocumentStore {
         let mut installed = 0usize;
         for (external_id, new_location) in completed.new_locations {
             if let Some(mut current) = self.locations.get_mut(&external_id)
-                && completed.old_segment_ids.contains(&current.segment) {
-                    *current = new_location;
-                    installed += 1;
-                }
+                && completed.old_segment_ids.contains(&current.segment)
+            {
+                *current = new_location;
+                installed += 1;
+            }
         }
         self.sync()?;
         // The persisted map must stop referencing the old segments before they are deleted.
@@ -508,9 +519,10 @@ impl BinaryDocumentStore {
         for old_id in &completed.old_segment_ids {
             let old_path = self.path.join(Self::segment_filename(*old_id));
             if let Err(err) = std::fs::remove_file(&old_path)
-                && err.kind() != io::ErrorKind::NotFound {
-                    return Err(with_path(err, &old_path));
-                }
+                && err.kind() != io::ErrorKind::NotFound
+            {
+                return Err(with_path(err, &old_path));
+            }
         }
 
         save_maps(
@@ -578,9 +590,14 @@ impl BinaryDocumentStore {
                         self.highest_id
                             .fetch_max(doc.internal_id, Ordering::Relaxed);
                         let len = (start + reader.position() - doc_offset) as u32;
-                        let newer_than_current= self.locations.get(&doc.external_id).is_none_or(|current| current.internal_id <=doc.internal_id);
-                        let newer_than_delete= deleted_versions.get(&doc.external_id).is_none_or(|&deleted| doc.internal_id>deleted);
-                        if!(newer_than_current &&newer_than_delete){
+                        let newer_than_current = self
+                            .locations
+                            .get(&doc.external_id)
+                            .is_none_or(|current| current.internal_id <= doc.internal_id);
+                        let newer_than_delete = deleted_versions
+                            .get(&doc.external_id)
+                            .is_none_or(|&deleted| doc.internal_id > deleted);
+                        if !(newer_than_current && newer_than_delete) {
                             return;
                         }
                         if let Some(old) = self.locations.insert(
@@ -591,10 +608,10 @@ impl BinaryDocumentStore {
                                 segment: id,
                                 len,
                             },
-                        )
-                            && old.internal_id != doc.internal_id {
-                                self.internal_to_external.remove(&old.internal_id);
-                            }
+                        ) && old.internal_id != doc.internal_id
+                        {
+                            self.internal_to_external.remove(&old.internal_id);
+                        }
                         self.internal_to_external
                             .insert(doc.internal_id, doc.external_id.clone());
                         self.docs.invalidate(&doc.external_id);
@@ -607,10 +624,9 @@ impl BinaryDocumentStore {
                         .locations
                         .get(&external_id)
                         .is_some_and(|current| current.internal_id <= deleted);
-                    if is_current
-                        && let Some((_, loc)) = self.locations.remove(&external_id) {
-                            self.internal_to_external.remove(&loc.internal_id);
-                        }
+                    if is_current && let Some((_, loc)) = self.locations.remove(&external_id) {
+                        self.internal_to_external.remove(&loc.internal_id);
+                    }
                     let entry = deleted_versions
                         .entry(external_id.clone())
                         .or_insert(deleted);
@@ -777,7 +793,8 @@ impl DocumentStore for BinaryDocumentStore {
             let doc_offset = writer.position();
             write_document(&mut writer, &doc)?;
             let len = (writer.position() - doc_offset) as u32;
-            self.highest_id.fetch_max( doc.internal_id, Ordering::Relaxed);
+            self.highest_id
+                .fetch_max(doc.internal_id, Ordering::Relaxed);
             self.internal_to_external
                 .insert(doc.internal_id, doc.external_id.clone());
             self.locations.insert(
@@ -790,8 +807,6 @@ impl DocumentStore for BinaryDocumentStore {
                 },
             );
             self.docs.insert(doc.external_id.clone(), doc);
-        
-           
         }
 
         writer.flush()?;
@@ -877,7 +892,7 @@ impl DocumentStore for BinaryDocumentStore {
                     }
                     Ok(OP_DELETE) => {
                         let _external_id = read_string(&mut reader)?;
-                        let _internal_id= read_u64(&mut reader)?;
+                        let _internal_id = read_u64(&mut reader)?;
                     }
                     Ok(other) => {
                         return Err(io::Error::new(

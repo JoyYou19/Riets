@@ -1,0 +1,367 @@
+[
+    {
+        "slug": "doc-001-spiderman",
+        "title": "Running Spider-Man Tutorial",
+        "author": "Jānis Bērziņš",
+        "body": "Running through the city, Spider-Man swings between buildings. The runners were running faster than the cars that run on the streets.",
+        "summary": "A tutorial about running and swinging.",
+        "weighted": "spiderman swinging weighted field",
+        "url": "https://www.Example.com/Tutorials/spider-man?ref=home",
+        "tracking_url": "https://shop.example.com/spiderman?utm_source=newsletter&utm_medium=email",
+        "source_code": "getHTTPResponse(userId) { return parseJSONBody(response_data); }",
+        "repo_path": "src/core/shard_db.rs",
+        "readme": "<h1>Spider-Man</h1><p>Running <b>fast</b> through the <i>city</i>.</p>",
+        "notes_md": "# Heading\n\nSome **bold** text and a [link to docs](https://docs.example.com) about running.",
+        "chained": "<p>Public text [REDACTED] with running shoes</p>",
+        "kw_field": "Spider-Man Origins",
+        "ws_field": "Spider-Man Origins",
+        "std_field": "Spider-Man Origins",
+        "stop_en_field": "the quick brown fox jumps over the lazy dog",
+        "stop_custom_field": "foo and bar and baz and qux",
+        "german_field": "Die schönen Häuser stehen in München",
+        "lengths_field": "a ab abc abcd abcdefghij abcdefghijk",
+        "no_original_field": "Running Runners Runs",
+        "literal_field": "snake_case #hashtag user@example mixed-dash",
+        "case_field": "CamelCase Example",
+        "tags": [
+            "superhero",
+            "tutorial",
+            "Running Shoes"
+        ],
+        "years": [
+            2001,
+            2002,
+            2024
+        ],
+        "year": 2024,
+        "count": 10,
+        "rating": 4.5,
+        "published": "2024-03-15",
+        "is_public": true,
+        "secret_note": "hidden-note-alpha confidential",
+        "internal_id": 1001,
+        "debug": "debug-info-one",
+        "embedding": "a superhero swinging between city buildings",
+        "items": [
+            {
+                "sku": "WEB-100",
+                "qty": 2,
+                "price": 19.99
+            },
+            {
+                "sku": "WEB-200",
+                "qty": 1,
+                "price": 5.5
+            }
+        ],
+        "address": {
+            "street": "12 Baker Street",
+            "city": "Rīga",
+            "zip": 1010,
+            "geo": {
+                "lat": 56.9496,
+                "lon": 24.1052
+            }
+        },
+        "orders": [
+            {
+                "sku": "ORD-1",
+                "ship_to": {
+                    "city": "Riga",
+                    "zip": 1010
+                }
+            },
+            {
+                "sku": "ORD-2",
+                "ship_to": {
+                    "city": "Tallinn",
+                    "zip": 10111
+                }
+            }
+        ],
+        "tag": "Spider-Man Origins",
+        "empty_field": "I am running a b c x1 Running"
+    },
+    {
+        "slug": "doc-002-search-engine",
+        "title": "Building a Search Engine in Rust",
+        "author": "José Núñez",
+        "body": "This article explains how an inverted index works. Searching documents requires tokenizing, stemming, and scoring. Searches are fast when indexes are well built.",
+        "summary": "Inverted index internals and scoring.",
+        "weighted": "search engine rust scoring weighted",
+        "url": "https://github.com/example/search-engine/blob/main/README.md",
+        "tracking_url": "https://blog.example.org/search-engine?utm_campaign=launch",
+        "source_code": "fn tokenize_text(inputString: &str) -> Vec<Token> { HTMLParser::parse(inputString) }",
+        "repo_path": "C:\\projects\\engine\\src\\index\\writer.rs",
+        "readme": "<div class=\"intro\"><h2>Search Engine</h2><p>Indexes <em>documents</em> quickly.</p></div>",
+        "notes_md": "## Notes\n\n- item one about **indexing**\n- item two with `inline code`\n\nSee [the spec](https://spec.example.com/index).",
+        "chained": "<div>Searching [REDACTED] documents</div>",
+        "kw_field": "Search Engine",
+        "ws_field": "Search-Engine v2.0",
+        "std_field": "Search-Engine v2.0",
+        "stop_en_field": "to be or not to be that is the question",
+        "stop_custom_field": "foo bar baz are removed but quux stays",
+        "german_field": "Die Suchmaschine findet alle Dokumente schnell",
+        "lengths_field": "tiny small medium extraordinarily",
+        "no_original_field": "Searching Searches Searched",
+        "literal_field": "tokenize_text #rustlang dev@search.io",
+        "case_field": "RustLang Engine",
+        "tags": [
+            "rust",
+            "search",
+            "indexing"
+        ],
+        "years": [
+            2020,
+            2023
+        ],
+        "year": 2023,
+        "count": 42,
+        "rating": 4.9,
+        "published": "2023-11-02",
+        "is_public": true,
+        "secret_note": "hidden-note-beta",
+        "internal_id": 1002,
+        "debug": "debug-info-two",
+        "embedding": "inverted index full text search engine written in rust",
+        "items": [
+            {
+                "sku": "BOOK-1",
+                "qty": 3,
+                "price": 39.0
+            }
+        ],
+        "address": {
+            "street": "5 Rue de la Paix",
+            "city": "José's Café",
+            "zip": 75002,
+            "geo": {
+                "lat": 48.8686,
+                "lon": 2.3314
+            }
+        },
+        "orders": [
+            {
+                "sku": "ORD-10",
+                "ship_to": {
+                    "city": "Paris",
+                    "zip": 75001
+                }
+            }
+        ],
+        "tag": "Search Engine",
+        "empty_field": "Searches a b I/O searching"
+    },
+    {
+        "slug": "doc-003-legacy-notes",
+        "title": "The Quick Brown Fox",
+        "author": "Zoë O'Brien-Müller",
+        "body": "The quick brown fox jumps over the lazy dog. Foxes are running and jumping; the dogs bark loudly.",
+        "summary": "Pangram and legacy notes.",
+        "weighted": "fox dog pangram weighted",
+        "url": "http://old-site.example.net:8080/path/to/page.html#section",
+        "tracking_url": "https://example.net/page?utm_source=twitter",
+        "source_code": "class UserAccountManager { void resetPassword_v2(String user_name) {} }",
+        "repo_path": "lib/utils/string_helpers.py",
+        "readme": "<ul><li>Fox</li><li>Dog</li></ul><script>alert('x')</script>",
+        "notes_md": "> A quote about foxes\n\n1. First **step**\n2. Second step with _emphasis_",
+        "chained": "Plain text without tags or redactions about foxes",
+        "kw_field": "quick brown fox",
+        "ws_field": "quick-brown fox",
+        "std_field": "quick-brown fox",
+        "stop_en_field": "an apple a day keeps the doctor away",
+        "stop_custom_field": "bar baz foo",
+        "german_field": "Der Fuchs springt über den faulen Hund",
+        "lengths_field": "cat dogs horses elephants hippopotamus",
+        "no_original_field": "Jumping Jumps Jumped",
+        "literal_field": "user_name #fox contact@fox.org",
+        "case_field": "quick brown fox",
+        "tags": [
+            "pangram",
+            "animals",
+            "Running"
+        ],
+        "years": [
+            1999
+        ],
+        "year": 1999,
+        "count": 0,
+        "rating": 3.2,
+        "published": "1999-12-31",
+        "is_public": false,
+        "secret_note": "hidden-note-gamma",
+        "internal_id": 1003,
+        "debug": "debug-info-three",
+        "embedding": "fox jumping over a dog",
+        "items": [
+            {
+                "sku": "FOX-1",
+                "qty": 10,
+                "price": 0.99
+            },
+            {
+                "sku": "FOX-2",
+                "qty": 20,
+                "price": 1.49
+            },
+            {
+                "sku": "DOG-1",
+                "qty": 5,
+                "price": 2.0
+            }
+        ],
+        "address": {
+            "street": "1 Forest Lane",
+            "city": "Zürich",
+            "zip": 8001,
+            "geo": {
+                "lat": 47.3769,
+                "lon": 8.5417
+            }
+        },
+        "orders": [
+            {
+                "sku": "ORD-20",
+                "ship_to": {
+                    "city": "Zürich",
+                    "zip": 8001
+                }
+            },
+            {
+                "sku": "ORD-21",
+                "ship_to": {
+                    "city": "Bern",
+                    "zip": 3001
+                }
+            }
+        ],
+        "tag": "Quick Brown Fox",
+        "empty_field": "Jumps over x y z Jumping"
+    },
+    {
+        "slug": "doc-004-code-review",
+        "title": "Code Review Checklist for Developers",
+        "author": "Aleksandrs Ozoliņš",
+        "body": "Reviewing code means reading diffs carefully. Reviewers reviewed the changes and recommended refactoring before merging.",
+        "summary": "A practical checklist for reviewing pull requests.",
+        "weighted": "code review checklist developers",
+        "url": "https://www.dev-tools.example.com/reviews/checklist?lang=en",
+        "tracking_url": "https://dev-tools.example.com/checklist?utm_term=review&utm_content=cta",
+        "source_code": "def parse_http_request(rawBytes): return XMLHttpRequest(rawBytes)",
+        "repo_path": "src/review/checklist.test.js",
+        "readme": "<table><tr><td>Checklist</td><td>Review</td></tr></table>",
+        "notes_md": "**Important:** always check [tests](./tests) and `lint` before merging.",
+        "chained": "<span>Review [REDACTED] checklist</span> for developers",
+        "kw_field": "Code Review",
+        "ws_field": "Code-Review checklist",
+        "std_field": "Code-Review checklist",
+        "stop_en_field": "this is a test of the stopword filter",
+        "stop_custom_field": "foo only",
+        "german_field": "Programmierer prüfen den Quellcode sorgfältig",
+        "lengths_field": "go run test build deployment",
+        "no_original_field": "Reviewing Reviewers Reviewed",
+        "literal_field": "parse_http_request #review qa@dev.com",
+        "case_field": "Code Review",
+        "tags": [
+            "code",
+            "review",
+            "checklist"
+        ],
+        "years": [
+            2022,
+            2024
+        ],
+        "year": 2022,
+        "count": 7,
+        "rating": 4.0,
+        "published": "2022-06-01",
+        "is_public": true,
+        "secret_note": "hidden-note-delta",
+        "internal_id": 1004,
+        "debug": "debug-info-four",
+        "embedding": "reviewing pull requests and giving feedback on code",
+        "items": [
+            {
+                "sku": "CHK-1",
+                "qty": 1,
+                "price": 0.0
+            }
+        ],
+        "address": {
+            "street": "99 Dev Avenue",
+            "city": "Rīga",
+            "zip": 1050,
+            "geo": {
+                "lat": 56.9677,
+                "lon": 24.1056
+            }
+        },
+        "orders": [
+            {
+                "sku": "ORD-30",
+                "ship_to": {
+                    "city": "Riga",
+                    "zip": 1050
+                }
+            }
+        ],
+        "tag": "Code Review",
+        "empty_field": "Reviews a1 b2 c3 Reviewing"
+    },
+    {
+        "slug": "doc-005-misc-edge-cases",
+        "title": "Edge Cases: ÄÖÜ, Ünïcödé & Symbols!",
+        "author": "李 雷 (Li Lei)",
+        "body": "Edge-case testing: numbers like 3.14159, e-mail user@test.com, price $19.99, and a very long token supercalifragilisticexpialidocious.",
+        "summary": "Unicode, punctuation, numbers and long tokens.",
+        "weighted": "edge cases unicode symbols",
+        "url": "https://münchen.example.de/straße/über?q=ä",
+        "tracking_url": "https://example.com/a/b/c?utm_source=x",
+        "source_code": "const MAX_RETRY_COUNT = 5; let camelCaseVariable = kebab-case-name; HTTP2Server.start();",
+        "repo_path": "/usr/local/lib/node_modules/pkg/index.d.ts",
+        "readme": "<p>Tom &amp; Jerry &lt;3 &copy; 2026</p>",
+        "notes_md": "~~strikethrough~~ and *italic* and ![image](https://img.example.com/a.png)",
+        "chained": "<p>[REDACTED]</p>",
+        "kw_field": "ÄÖÜ Ünïcödé",
+        "ws_field": "ÄÖÜ  Ünïcödé   spaced",
+        "std_field": "ÄÖÜ Ünïcödé 3.14159",
+        "stop_en_field": "the and of to in",
+        "stop_custom_field": "qux",
+        "german_field": "Größe Straße Fußball Äpfel",
+        "lengths_field": "xx xxx xxxx xxxxxxxxxx xxxxxxxxxxx",
+        "no_original_field": "Testing Tests Tested",
+        "literal_field": "_leading trailing_ #  @ mid_dle",
+        "case_field": "UPPER lower MiXeD",
+        "tags": [
+            "unicode",
+            "edge-case",
+            "ÄÖÜ"
+        ],
+        "years": [
+            1,
+            2026
+        ],
+        "year": 2026,
+        "count": -5,
+        "rating": 0.0,
+        "published": "2026-11-12",
+        "is_public": true,
+        "secret_note": "hidden-note-epsilon",
+        "internal_id": 1005,
+        "debug": "debug-info-five",
+        "embedding": "unicode normalization and tokenizer edge cases",
+        "items": [],
+        "address": {
+            "street": "Straße 7",
+            "city": "München",
+            "zip": 80331,
+            "geo": {
+                "lat": 48.1351,
+                "lon": 11.582
+            }
+        },
+        "orders": [],
+        "tag": "ÄÖÜ Edge Case",
+        "empty_field": "q w e r t y Testing"
+    }
+]

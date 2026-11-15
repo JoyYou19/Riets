@@ -68,6 +68,18 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
 }
 
 pub fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
+    let a = field
+        .analyzer
+        .as_deref()
+        .and_then(|name| analyzers.get(name));
+    // eprintln!(
+    //     "[query] field={} name={:?} found={}",
+    //     field.name,
+    //     field.analyzer,
+    //     a.is_some()
+    // );
+    a.unwrap_or_else(|| analyzers.default_analyzer());
+
     field
         .analyzer
         .as_deref()
@@ -107,7 +119,7 @@ pub fn compile_query(
 
     // group fields by analyzer name; analyze once per analyzer, then reuse
     let mut by_name: BTreeMap<Option<String>, (Analyzer, Option<Query>, Vec<FieldCtx>)> =
-    BTreeMap::new();
+        BTreeMap::new();
     for field in fields {
         let key = field.analyzer.clone();
         let entry = by_name.entry(key).or_insert_with(|| {

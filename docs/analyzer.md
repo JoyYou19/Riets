@@ -1,4 +1,3 @@
-analyzer```markdown
 # Analyzers in the policy
 
 Text analysis is configured **per field**. You define named **analyzers** in one
@@ -26,11 +25,11 @@ An analyzer is one object with these optional keys (every key has a default):
 ```json
 "name": {
   "tokenizer":         "word_delimiter",   // see §3
-  "stemming":          "english",          // language, or omit = no stemming
+  "stemming":          "english",          // language, or omit/null = no stemming
   "lowercase":         true,               // default true
   "ascii_folding":     false,              // default false (Jānis -> Janis)
-  "stopwords":         "english",          // "english" | ["a","the"] | omit = none
-  "min_length":        2,                  // drop tokens shorter than this
+  "stopwords":         ["a", "the", "and"],// array of words, or omit = none
+  "min_length":        1,                  // drop tokens shorter than this
   "max_length":        40,                 // drop tokens longer than this
   "preserve_original": true,               // keep the raw token too
   "literal_symbols":    ["_"],             // chars kept inside words
@@ -47,7 +46,7 @@ An analyzer is one object with these optional keys (every key has a default):
 | `lowercase` | `true` | |
 | `ascii_folding` | `false` | |
 | `stopwords` | *(none)* | no stopword removal |
-| `min_length` | `2` | tokens < 2 chars dropped |
+| `min_length` | `1` | tokens < 1 chars dropped |
 | `max_length` | `40` | tokens > 40 chars dropped |
 | `preserve_original` | `true` | |
 | `literal_symbols` | `["_"]` | underscore stays part of the word |
@@ -59,12 +58,11 @@ An analyzer is one object with these optional keys (every key has a default):
 italian, norwegian, portuguese, romanian, russian, spanish, swedish, tamil,
 turkish`
 
-Omit `stemming` (or set `stemming: null`) for **no stemming** — e.g. a `title`
-analyzer that should not collapse "running" → "run".
+Omit `stemming` **or** set `stemming: null` for **no stemming** — e.g. a
+`title` analyzer that should not collapse "running" → "run".
 
 ### `stopwords`
 
-- `"english"` → the built-in English stopword list.
 - `["a", "the", "of"]` → an explicit list.
 - omit → no stopword removal.
 
@@ -72,15 +70,19 @@ analyzer that should not collapse "running" → "run".
 
 ## 3. Tokenizers
 
-| name | behavior | example (`"Spider-Man"`, unless noted) |
+| name | behavior | example |
 |---|---|---|
-| `word_delimiter` | split on non-alphanumerics, keep original + parts + joined form | `spider-man`, `spider`, `man`, `spiderman` |
+| `word_delimiter` | split on non-alphanumerics, keep original + parts + joined form | `"Spider-Man"` → `spider-man`, `spider`, `man`, `spiderman` |
 | `keyword` | the whole value is **one** token | `Spider-Man` → `spider-man` |
 | `whitespace` | split only on spaces | `Spider-Man` (unchanged) |
 | `standard` | split on non-alphanumerics, no rejoin | `spider`, `man` |
 | `url` | keep whole URL + host + domain + parts | `https://www.Example.com/path` → whole, `Example.com`, `https`, `www`, `Example`, `com`, `path` |
-| `code` | split camelCase / snake_case / kebab / numerics, keep original | `getHTTPResponse` → `getHTTPResponse`, `get`, `HTTP`, `Response` |
+| `code` | word-delimiter splitting **plus** camelCase / snake_case / digit-letter splitting | `getHTTPResponse` → `getHTTPResponse`, `get`, `HTTP`, `Response` |
 | `filepath` | split on `/`, `\`, `.` (Unix + Windows) | `src/core/shard_db.rs` → `src`, `core`, `shard_db`, `rs` |
+
+> `code` is not a separate tokenizer — it is `word_delimiter` with the two
+> code-splitting switches (`camelCase` and `foo123`) turned on. So `code`
+> already does "word delimiters + code".
 
 (`keyword` is what powers the `$exact` copy — see §6.)
 
@@ -126,14 +128,14 @@ for fields that don't specify `$analyzer`:
 }
 ```
 
-If `$default` is absent, the engine falls back to a **built-in default**, which
-is equivalent to:
+If `$default` is absent, the engine falls back to a **built-in default**,
+equivalent to:
 
 ```json
 {
   "tokenizer": "word_delimiter",
   "lowercase": true,
-  "min_length": 2,
+  "min_length": 1,
   "max_length": 40,
   "preserve_original": true,
   "stemming": "english"
@@ -141,6 +143,49 @@ is equivalent to:
 ```
 
 (no stopwords, no ascii folding).
+
+> ⚠️ Two different "no stemming" defaults, don't confuse them:
+> - a **named** analyzer that omits `stemming` → **no stemming**,
+> - the **built-in** default (no `$default`) → **English stemming**.
+> If you want a fallback without stemming, define `"$default": {}` explicitly.
+
+---
+
+## 5b. Defining an analyzer — every variant
+
+All the ways to specify analysis, from least to most config:
+
+```jsonc
+// A. Nothing at all — omit `analyzers`.
+//    Every text field uses the built-in default (English full-text).
+{ "document": { "title": { "$type": "text" } } }
+
+// B. Only a fallback.
+{ "analyzers": { "$default": { "stemming": "english" } }, "document": { ... } }
+
+// C. Fallback + named analyzers (the common case).
+{ "analyzers": { "$default": { }, "url": { "tokenizer": "url" } }, "document": { ... } }
+
+// D. Named only, no $default.
+//    Fields with $analyzer use their named analyzer; the rest use the built-in default.
+{ "analyzers": { "url": { "tokenizer": "url" } }, "document": { ... } }
+
+// E. Minimal named analyzer — every key defaulted.
+//    "title": {}  ==  word_delimiter, lowercase, no stemming, no stopwords.
+{ "analyzers": { "title": {} }, "document": { "title": { "$type": "text", "$analyzer": "title" } } }
+
+// F. One-key analyzer.
+{ "analyzers": { "url": { "tokenizer": "url" } }, "document": { ... } }
+
+// G. Explicitly no stemming (equivalent to omitting it).
+{ "analyzers": { "title": { "stemming": null } }, "document": { ... } }
+
+// H. A field without $analyzer vs with — mixing in one document.
+{ "document": {
+    "body":  { "$type": "text" },                       // -> $default / built-in
+    "title": { "$type": "text", "$analyzer": "title" }  // -> named
+} }
+```
 
 ---
 
@@ -160,35 +205,7 @@ independent of the field's main analyzer:
 
 ---
 
-## 7. Full example
-
-```json
-{
-  "analyzers": {
-    "$default": { "stemming": "english" },
-    "title":    { "stemming": null },
-    "name":     { "ascii_folding": true },
-    "url":      { "tokenizer": "url", "ascii_folding": true },
-    "code":     { "tokenizer": "code", "lowercase": false },
-    "filepath": { "tokenizer": "filepath" },
-    "html":     { "char_filters": [ { "html_strip": {} } ], "stemming": "english" }
-  },
-  "document": {
-    "id":        { "$type": "id_auto" },
-    "title":     { "$type": "text", "$analyzer": "title", "$exact": true },
-    "body":      { "$type": "text" },
-    "author":    { "$type": "text", "$analyzer": "name", "$exact": true },
-    "url":       { "$type": "text", "$analyzer": "url", "$exact": true },
-    "source_code": { "$type": "text", "$analyzer": "code" },
-    "repo_path":   { "$type": "text", "$analyzer": "filepath" },
-    "readme":      { "$type": "text", "$analyzer": "html" }
-  }
-}
-```
-
----
-
-## 8. Char filters (pre-tokenization)
+## 7. Char filters (pre-tokenization)
 
 `char_filters` run on the raw string **before** tokenizing:
 
@@ -200,7 +217,7 @@ Order matters; they run in the order listed.
 
 ---
 
-## 9. Changing an analyzer
+## 8. Changing an analyzer
 
 Changing an analyzer (or the schema) affects how documents are indexed. When
 you `set-policy` with a changed analyzer or field schema, the API returns a
@@ -210,6 +227,36 @@ warning:
 
 New and updated documents use the new policy immediately; existing documents
 keep their old terms until you run a **reindex**.
-```
 
-That's the complete single-file doc — save it as `docs/analyzers.md`.
+---
+
+## 9. Complete `policy.json` example
+
+```json
+{
+  "analyzers": {
+    "$default":  { "stemming": "english" },
+    "title":     { "stemming": null },
+    "name":      { "ascii_folding": true },
+    "url":       { "tokenizer": "url", "ascii_folding": true },
+    "code":      { "tokenizer": "code", "lowercase": false },
+    "filepath":  { "tokenizer": "filepath" },
+    "html":      { "char_filters": [ { "html_strip": {} } ], "stemming": "english" },
+    "exact_tag": { "tokenizer": "keyword", "lowercase": true }
+  },
+  "document": {
+    "id":          { "$type": "id_auto" },
+    "title":       { "$type": "text", "$analyzer": "title", "$exact": true },
+    "author":      { "$type": "text", "$analyzer": "name",  "$exact": true },
+    "body":        { "$type": "text" },
+    "tag":         { "$type": "text", "$analyzer": "exact_tag" },
+    "url":         { "$type": "text", "$analyzer": "url",  "$exact": true },
+    "rating":      { "$type": "float" },
+    "year":        { "$type": "integer" },
+    "published":   { "$type": "date" },
+    "is_public":   { "$type": "bool" },
+    "source_code": { "$type": "text", "$analyzer": "code" },
+    "repo_path":   { "$type": "text", "$analyzer": "filepath" },
+    "readme":      { "$type": "text", "$analyzer": "html" }
+  }
+}

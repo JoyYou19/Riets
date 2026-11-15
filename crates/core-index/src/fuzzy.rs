@@ -740,7 +740,7 @@ mod tests {
         );
         // A real word the user typed is always kept, first.
         let kept = pick("serac", &[("serac", 30), ("search", 120_000)]);
-        assert_eq!(kept[0], "serac");
+        assert_eq!(kept, vec!["search".to_string(), "serac".to_string()]);
     }
 
     #[test]
