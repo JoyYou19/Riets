@@ -6,7 +6,7 @@ use core_protocol::command_reponse_definitions::{
 };
 use core_protocol::errors::{CorelamoError, DocFailure, FailReason};
 use core_query::SearchHit;
-use core_query::resolver::{FieldQuery, compile_filters as resolve_filters};
+use core_query::resolver::{FieldQuery, resolve_filters};
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -26,15 +26,17 @@ pub struct ResolvedSort {
     pub fields: Arc<Vec<SortField>>,
 }
 
-pub(crate) trait WriteReport:Send + 'static{
+pub(crate) trait WriteReport: Send + 'static {
     fn empty() -> Self;
     fn merge(&mut self, other: Self);
     fn failures_mut(&mut self) -> &mut Vec<DocFailure>;
-
 }
-impl WriteReport for InsertReport{
+impl WriteReport for InsertReport {
     fn empty() -> Self {
-        Self { inserted: 0, failures: Vec::new()}
+        Self {
+            inserted: 0,
+            failures: Vec::new(),
+        }
     }
     fn merge(&mut self, other: Self) {
         self.inserted += other.inserted;
@@ -44,9 +46,12 @@ impl WriteReport for InsertReport{
         &mut self.failures
     }
 }
-impl WriteReport for ReplaceReport{
+impl WriteReport for ReplaceReport {
     fn empty() -> Self {
-        Self { replaced: 0, failures: Vec::new()}
+        Self {
+            replaced: 0,
+            failures: Vec::new(),
+        }
     }
     fn merge(&mut self, other: Self) {
         self.replaced += other.replaced;
@@ -56,9 +61,12 @@ impl WriteReport for ReplaceReport{
         &mut self.failures
     }
 }
-impl WriteReport for DeleteReport{
+impl WriteReport for DeleteReport {
     fn empty() -> Self {
-        Self { deleted: 0, failures: Vec::new()}
+        Self {
+            deleted: 0,
+            failures: Vec::new(),
+        }
     }
     fn merge(&mut self, other: Self) {
         self.deleted += other.deleted;
@@ -79,15 +87,29 @@ pub(crate) fn set_request_positions(failures: &mut [DocFailure], ids: &[(usize, 
     }
     for failure in failures.iter_mut() {
         // the shard's index is the item's place in its own batch, which is ids[i]
-        let by_index = failure.index.and_then(|i| ids.get(i)).map(|(position, _)| *position);
-        let by_id = failure.id.as_deref().and_then(|id| first_position.get(id).copied());
+        let by_index = failure
+            .index
+            .and_then(|i| ids.get(i))
+            .map(|(position, _)| *position);
+        let by_id = failure
+            .id
+            .as_deref()
+            .and_then(|id| first_position.get(id).copied());
         failure.index = by_index.or(by_id);
     }
 }
-pub(crate)fn mark_all_failed(failures: &mut Vec<DocFailure>, ids:Vec<(usize,String)>, error:&CorelamoError){
-     let reason = error.to_string();
+pub(crate) fn mark_all_failed(
+    failures: &mut Vec<DocFailure>,
+    ids: Vec<(usize, String)>,
+    error: &CorelamoError,
+) {
+    let reason = error.to_string();
     failures.extend(ids.into_iter().map(|(position, id)| {
-        DocFailure::new(Some(position), Some(id), FailReason::Internal(reason.clone()))
+        DocFailure::new(
+            Some(position),
+            Some(id),
+            FailReason::Internal(reason.clone()),
+        )
     }));
 }
 fn cmp_desc(a: Option<f64>, b: Option<f64>) -> Ordering {
@@ -259,7 +281,12 @@ pub fn compile_filters(
     let Some(filters) = command.filters.as_ref() else {
         return Ok(None);
     };
-    Ok(Some(Arc::new(resolve_filters(filters, analyzers, policy)?)))
+    Ok(Some(Arc::new(resolve_filters(
+        filters,
+        analyzers,
+        policy,
+        command.wildcard_enabled,
+    )?)))
 }
 
 pub fn resolve_sorts(

@@ -93,6 +93,7 @@ pub fn compile_query(
     analyzers: &AnalyzerSet,
     policy: &IndexPolicy,
     synonyms: Option<&Synonyms>,
+    wildcards_enabled: bool,
 ) -> Result<Arc<Vec<QueryGroup>>, CorelamoError> {
     if is_blank_query(raw) {
         let fields: Vec<&FieldPolicy> = match search_fields {
@@ -109,7 +110,7 @@ pub fn compile_query(
 
     reject_filter_only_operators(raw)?;
 
-    let raw_query = parse_json_query(raw, Query::Wand)?;
+    let raw_query = parse_json_query(raw, Query::Wand, wildcards_enabled)?;
     let needs_exact = tree_has_exact(&raw_query);
 
     let fields: Vec<&FieldPolicy> = match search_fields {
@@ -227,10 +228,11 @@ fn tree_has_exact(q: &Query) -> bool {
     }
 }
 
-pub fn compile_filters(
+pub fn resolve_filters(
     filters: &IndexMap<String, OwnedValue>,
     analyzers: &AnalyzerSet,
     policy: &IndexPolicy,
+    wildcards_enabled: bool,
 ) -> Result<HashMap<String, FieldQuery>, CorelamoError> {
     let mut out = HashMap::with_capacity(filters.len());
 
@@ -248,11 +250,11 @@ pub fn compile_filters(
                 unreachable!()
             };
             let inner = obj.get("same_element").unwrap();
-            let (q, b) = resolve_same_element(field, inner, analyzers, policy)?
+            let (q, b) = resolve_same_element(field, inner, analyzers, policy, wildcards_enabled)?
                 .ok_or_else(|| CorelamoError::InvalidData(format!("blank filter '{name}'")))?;
             (q, Some(b))
         } else {
-            match build_node(raw, field, analyzers)? {
+            match build_node(raw, field, analyzers, wildcards_enabled)? {
                 Some(q) => (q, None),
                 None => continue,
             }
@@ -293,6 +295,7 @@ fn build_node(
     v: &OwnedValue,
     field: &FieldPolicy,
     analyzers: &AnalyzerSet,
+    wildcards_enabled: bool,
 ) -> Result<Option<Query>, CorelamoError> {
     if let OwnedValue::Object(obj) = v
         && let Some(inner) = obj.get("range")
@@ -318,7 +321,7 @@ fn build_node(
         return resolve_numeric_filter(field, v);
     }
 
-    let node = parse_json_query(v, Query::And)?;
+    let node = parse_json_query(v, Query::And, wildcards_enabled)?;
     Ok(analyze_query(node, field_analyzer(field, analyzers)))
 }
 
@@ -365,6 +368,7 @@ fn resolve_same_element(
     inner: &OwnedValue,
     analyzers: &AnalyzerSet,
     policy: &IndexPolicy,
+    wildcards_enabled: bool,
 ) -> Result<Option<(Query, SameElementBinding)>, CorelamoError> {
     if field.kind != FieldKind::Struct {
         return Err(CorelamoError::InvalidData(format!(
@@ -393,11 +397,14 @@ fn resolve_same_element(
         if let OwnedValue::Object(o) = sub_v
             && o.contains_key("same_element")
         {
-            let (sub_query, sub_binding) =
-                resolve_same_element(sub_field, o.get("same_element").unwrap(), analyzers, policy)?
-                    .ok_or_else(|| {
-                        CorelamoError::InvalidData(format!("blank clause '{sub_name}'"))
-                    })?;
+            let (sub_query, sub_binding) = resolve_same_element(
+                sub_field,
+                o.get("same_element").unwrap(),
+                analyzers,
+                policy,
+                wildcards_enabled,
+            )?
+            .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
 
             clauses.push(ClauseBinding {
                 ctx: FieldCtx {
@@ -412,7 +419,7 @@ fn resolve_same_element(
             continue;
         }
 
-        let sub = build_node(sub_v, sub_field, analyzers)?
+        let sub = build_node(sub_v, sub_field, analyzers, wildcards_enabled)?
             .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
 
         if tree_has_exact(&sub) && sub_field.exact_xpath(policy).is_none() {

@@ -1271,6 +1271,7 @@ impl ShardManager {
                 &analyzers,
                 &policy,
                 Some(&dictionary),
+                command.wildcard_enabled,
             )?;
             (groups, compile_filters(&analyzers, command, &policy)?)
         };
