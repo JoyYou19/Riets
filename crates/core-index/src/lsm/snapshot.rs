@@ -6,7 +6,20 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{ FuzzyExpansion, FuzzyOptions }, mem::MemIndex, numeric_values::{ NumericBound, NumericValue }, posting::{ DeleteSet, PostingCursor, PostingList, cursor::{TermCursor, UnionCursor}, ops::union_many }, search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo }, types::{ ArrayRowId, DocId, XPathId }, vector::{ SegmentVectors, VectorFilter, VectorHit, search_segments }, wildcard::WildcardPattern,
+    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    mem::MemIndex,
+    numeric_values::{ NumericBound, NumericValue },
+    posting::{
+        DeleteSet,
+        PostingCursor,
+        PostingList,
+        cursor::{ TermCursor, UnionCursor },
+        ops::union_many,
+    },
+    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo },
+    types::{ ArrayRowId, DocId, XPathId },
+    vector::{ SegmentVectors, VectorFilter, VectorHit, search_segments },
+    wildcard::WildcardPattern,
 };
 
 /*
@@ -159,8 +172,15 @@ impl SearchIndex for IndexSnapshot {
 
         out.into_values().collect()
     }
-
-    
+    fn doc_ids_into(&self, term: &str, xpath: XPathId, out: &mut RoaringTreemap) {
+        let mut ids = RoaringTreemap::new();
+        self.mem.doc_ids_into(term, xpath, &mut ids);
+        for segment in self.segments.iter() {
+            segment.doc_ids_into(term, xpath, &mut ids);
+        }
+        self.deleted.remove_from(&mut ids);
+        *out |= ids;
+    }
 }
 
 impl SearchNumeric for IndexSnapshot {
@@ -405,7 +425,7 @@ impl IndexSnapshot {
         search_segments(&self.vectors, xpath, query, k, &filter)
     }
     #[timed(search)]
-     fn term_cursor(&self,term:&str,xpath: XPathId) -> Option<TermCursorInfo<'_>> {
+    fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
         let mut children = Vec::with_capacity(1 + self.segments.len());
         let mut doc_freq = 0u32;
         let mut max_weight = 0u16;
@@ -432,7 +452,6 @@ impl IndexSnapshot {
 
         Some(TermCursorInfo { cursor, doc_freq, max_weight })
     }
-       
 }
 
 #[derive(Clone)]

@@ -204,81 +204,60 @@ impl TermDict {
     /// Callers that also look the term up exactly can rely on the posting merge
     /// to dedupe.
     pub fn fuzzy_expansions(
-        &self,
-        term: &str,
-        opts: FuzzyOptions,
-    ) -> Vec<(FuzzyExpansion, TermMeta)> {
-        let Some(map) = self.map.as_ref() else {
-            return Vec::new();
-        };
+     &self,
+     term: &str,
+     opts: FuzzyOptions,
+ ) -> Vec<(FuzzyExpansion, TermMeta)> {
+     let Some(map) = self.map.as_ref() else {
+         return Vec::new();
+     };
 
-        let exact = |edits: u8| -> Vec<(FuzzyExpansion, TermMeta)> {
-            match self.get(term) {
-                Some(meta) => vec![(FuzzyExpansion::new(term, edits, meta.doc_freq), meta)],
-                None => Vec::new(),
-            }
-        };
+     let exact = |edits: u8| -> Vec<(FuzzyExpansion, TermMeta)> {
+         self.get(term)
+             .map(|meta| vec![(FuzzyExpansion::new(term, edits, meta.doc_freq), meta)])
+             .unwrap_or_default()
+     };
 
-        // d=0 is just an exact lookup.
-        if opts.max_edits == 0 {
-            return exact(0);
-        }
+     if opts.max_edits == 0 {
+         return exact(0);
+     }
 
-        let (prefix, suffix) = split_prefix(term, opts.prefix_length);
+     let (prefix, suffix) = split_prefix(term, opts.prefix_length);
+     if suffix.is_empty() {
+         return exact(0);
+     }
 
-        // The whole query is pinned, so fuzziness has nothing left to chew on.
-        if suffix.is_empty() {
-            return exact(0);
-        }
+     let dfa = builder(opts.max_edits).build_dfa(suffix);
+     let mut out = Vec::new();
+     const MAX_CANDIDATES: usize = 2_048; // well above select_expansions' usual 3-50
 
-        // transposition = true keeps the current Damerau behaviour.
-        let dfa = builder(opts.max_edits).build_dfa(suffix);
-
-        let mut out = Vec::new();
-
-        if prefix.is_empty() {
-            // Fast path: no fixed prefix, so let the FST walk the automaton.
-            // `search_with_state` hands back the automaton state per match, and
-            // that is where the exact edit count comes from. We pass `&dfa`
-            // (fst has `impl Automaton for &A`) so `dfa` stays usable here -
-            // `levenshtein_automata::DFA` is not Clone.
-            let mut stream = map.search_with_state(&dfa).into_stream();
-
-            while let Some((t, ord, state)) = stream.next() {
-                let Distance::Exact(edits) = dfa.distance(state) else {
-                    continue;
-                };
-
-                let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
-                let term = String::from_utf8_lossy(t).into_owned();
-
-                out.push((FuzzyExpansion::new(term, edits, meta.doc_freq), meta));
-            }
-
-            return out;
-        }
-
-        // Fixed prefix: the key range is already narrow, so scan it and
-        // evaluate the automaton against each key's suffix.
-        let mut stream = map.range().ge(prefix.as_bytes()).into_stream();
-
-        while let Some((t, ord)) = stream.next() {
-            let Ok(t) = std::str::from_utf8(t) else {
-                break;
-            };
-
-            let Some(rest) = t.strip_prefix(prefix) else {
-                break;
-            };
-
-            if let Distance::Exact(edits) = dfa.eval(rest) {
-                let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
-                out.push((FuzzyExpansion::new(t, edits, meta.doc_freq), meta));
-            }
-        }
-
-        out
-    }
+     if prefix.is_empty() {
+         let mut stream = map.search_with_state(&dfa).into_stream();
+         while let Some((t, ord, state)) = stream.next() {
+             if out.len() >= MAX_CANDIDATES {
+                 break;
+             }
+             let Distance::Exact(edits) = dfa.distance(state) else { continue };
+             let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+             let term = String::from_utf8_lossy(t).into_owned();
+             out.push((FuzzyExpansion::new(term, edits, meta.doc_freq), meta));
+         }
+     } else {
+         let mut stream = map.range().ge(prefix.as_bytes()).into_stream();
+         while let Some((t, ord)) = stream.next() {
+             if out.len() >= MAX_CANDIDATES {
+                 break;
+             }
+             let Ok(t) = std::str::from_utf8(t) else { break };
+             let Some(rest) = t.strip_prefix(prefix) else { break };
+             if let Distance::Exact(edits) = dfa.eval(rest) {
+                 let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+                 out.push((FuzzyExpansion::new(t, edits, meta.doc_freq), meta));
+             }
+         }
+     }
+     out
+ }
 }
 
 /// Every field's term dictionary in one segment.

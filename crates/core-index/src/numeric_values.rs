@@ -225,16 +225,10 @@ impl PartialOrd for NumericValue {
 }
 
 impl Ord for NumericValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (NumericValue::Int(a), NumericValue::Int(b)) => a.cmp(b),
-            (NumericValue::Float(a), NumericValue::Float(b)) => a.total_cmp(b),
-            //this is kind of wrong but a field would never hold both int and float
-            (NumericValue::Int(_), NumericValue::Float(_)) => Ordering::Less,
-            (NumericValue::Float(_), NumericValue::Int(_)) => Ordering::Greater,
-        }
-    }
-}
+     fn cmp(&self, other: &Self) -> Ordering {
+         self.as_f64().total_cmp(&other.as_f64())
+     }
+ }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumericBound {
@@ -244,12 +238,9 @@ pub struct NumericBound {
 
 impl NumericBound {
     pub fn below_lo(self, value: NumericValue) -> bool {
-        match value.cmp(&self.value) {
-            Ordering::Less => true,
-            Ordering::Equal => !self.inclusive,
-            Ordering::Greater => false,
-        }
-    }
+         value.as_f64().total_cmp(&self.value.as_f64()) == Ordering::Less
+             || (value.as_f64() == self.value.as_f64() && !self.inclusive)
+     }
 
     pub fn past_hi(self, value: NumericValue) -> bool {
         match value.cmp(&self.value) {

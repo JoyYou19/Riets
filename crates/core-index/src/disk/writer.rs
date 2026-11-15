@@ -194,7 +194,7 @@ impl BlockWriter {
                 if !deleted.contains(doc) {
                     let mut weight = 0u16;
                     let mut found = 0usize;
-                    for cursor in cursors.iter().filter(|cursor| cursor.doc_id() == Some(doc)) {
+                    for cursor in cursors.iter_mut().filter(|cursor| cursor.doc_id() == Some(doc)) {
                         weight = weight.max(cursor.weight());
                         if found == 0 {
                             cursor.positions_into(&mut positions)?;

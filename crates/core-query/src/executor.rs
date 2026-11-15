@@ -142,8 +142,8 @@ struct FormLists<'a> {
     xpath: XPathId,
     lists: Vec<(ListSource<'a>, u32)>,
     weight: u16,
-    any:bool,
-     phrase: Option<Vec<u32>>,
+    any: bool,
+    phrase: Option<Vec<u32>>,
 }
 
 impl FormLists<'_> {
@@ -164,9 +164,8 @@ impl FormLists<'_> {
                 })
                 .collect(),
             weight: self.weight,
-            any:self.any,
-            phrase: self.phrase.clone()
-            
+            any: self.any,
+            phrase: self.phrase.clone(),
         }
     }
 }
@@ -351,8 +350,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             );
         }
 
-        //conjunctive flat-term case (And) -> conjunctive top-k
-        if let Query::And(parts) = query && parts.iter().all(|p| matches!(p, Query::Term(_))) {
+        // conjunctive flat-term case (And) -> conjunctive top-k
+        if
+            let Query::And(parts) = query &&
+            parts.iter().all(|p| matches!(p, Query::Term(_))) &&
+            xpaths.len() == 1
+        {
             let terms: Vec<&str> = parts
                 .iter()
                 .filter_map(|p| {
@@ -409,8 +412,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                                 expansion.doc_freq,
                                             )],
                                             weight: 1000 / (1 + u16::from(expansion.edits)),
-                                            any:false,
-                                            phrase: None
+                                            any: false,
+                                            phrase: None,
                                         },
                                     )
                                 })
@@ -528,13 +531,22 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 Query::Term(_) => self.leaf_form(&form.query, ctx, floor, form.weight),
                 // a phrase form adds up its words' scores on the documents where they form the
                 // phrase, the way the typed words' AND does: the two compete on the same scale
-                 Query::Phrase(terms) => Some(FormLists {
-                    xpath: ctx.xpath,
-                    lists: terms.iter().map(|term| self.term_source(&term.text, ctx.xpath)).collect(),
-                    weight: form.weight,
-                    any: false,
-                    phrase: Some(terms.iter().map(|term| term.offset).collect()),
-                }),
+                Query::Phrase(terms) =>
+                    Some(FormLists {
+                        xpath: ctx.xpath,
+                        lists: terms
+                            .iter()
+                            .map(|term| self.term_source(&term.text, ctx.xpath))
+                            .collect(),
+                        weight: form.weight,
+                        any: false,
+                        phrase: Some(
+                            terms
+                                .iter()
+                                .map(|term| term.offset)
+                                .collect()
+                        ),
+                    }),
                 Query::Exact(raw) => {
                     // a single term in the exact field (as `execute_exact` reads it): a cursor,
                     // so its blocks can be skipped like any other word's
@@ -581,16 +593,18 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         xpath: ctx.xpath,
                         lists,
                         weight: form.weight,
-                        any:false,
-                        phrase:None
+                        any: false,
+                        phrase: None,
                     })
                 }
                 Query::Wand(words) if words.iter().all(|word| matches!(word, Query::Term(_))) => {
                     let lists = words
                         .iter()
-                        .filter_map(|word| match word {
-                            Query::Term(term) => Some(self.term_source(term, ctx.xpath)),
-                            _ => None,
+                        .filter_map(|word| {
+                            match word {
+                                Query::Term(term) => Some(self.term_source(term, ctx.xpath)),
+                                _ => None,
+                            }
                         })
                         .collect();
                     Some(FormLists {
@@ -598,7 +612,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         lists,
                         weight: form.weight,
                         any: true,
-                        phrase:None
+                        phrase: None,
                     })
                 }
                 _ => None,
@@ -637,8 +651,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             xpath,
             lists: vec![(source, doc_freq)],
             weight,
-            any:false,
-            phrase:None
+            any: false,
+            phrase: None,
         })
     }
 
@@ -674,11 +688,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     // A document matches only if rust and database appear in it in order rust + database so
     // position and position + 1
     #[timed(search)]
-    #[timed(search)]
     fn execute_phrase(&self, terms: &[PhraseTerm], xpath: XPathId) -> PostingList {
         if terms.is_empty() {
             return PostingList::default();
         }
+
         let mut cursors: Vec<TermCursor<'a>> = terms
             .iter()
             .map(|term| self.open_term_cursor(&term.text, xpath))
@@ -691,16 +705,15 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             .iter()
             .map(|term| term.offset)
             .collect();
-        // walk the rarest word's documents: the cost is that of the rarest word, not the first
+
+        // Walk the rarest word's documents; phrase matching still uses word 0 as the driver.
         let rarest = (0..terms.len())
             .min_by_key(|&i| self.local_doc_freq(&terms[i].text, xpath))
             .unwrap_or(0);
 
-        let mut buffers: Vec<Vec<u32>> = vec![Vec::new(); terms.len()];
         let mut result = Vec::new();
 
         while let Some(doc_id) = cursors[rarest].doc_id() {
-            // move every other word to this document; remember the furthest any of them went
             let mut skip_to = None;
             for (i, cursor) in cursors.iter_mut().enumerate() {
                 if i == rarest {
@@ -708,9 +721,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 }
                 cursor.advance_to(doc_id);
                 match cursor.doc_id() {
-                    Some(doc) if doc == doc_id => {}
-                    Some(doc) => {
-                        skip_to = Some(skip_to.map_or(doc, |known: DocId| known.max(doc)));
+                    Some(d) if d == doc_id => {}
+                    Some(d) => {
+                        skip_to = Some(skip_to.map_or(d, |known: DocId| known.max(d)));
                     }
                     None => {
                         return PostingList::from_items(result);
@@ -723,19 +736,48 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 continue;
             }
 
-            let read = cursors
-                .iter()
-                .zip(buffers.iter_mut())
-                .all(|(cursor, buffer)| cursor.positions_into(buffer).is_ok());
-            if read {
-                let position_lists: Vec<&[u32]> = buffers.iter().map(Vec::as_slice).collect();
-                if phrase_matches(&position_lists, &offsets) {
-                    // the first word's posting, as before, so phrase scoring is unchanged
-                    result.push(
-                        Posting::with_weight(doc_id, buffers[0].clone(), cursors[0].weight())
-                    );
+            let mut found = false;
+            loop {
+                let Some(start_pos) = cursors[0].current_position() else {
+                    break;
+                };
+
+                let mut next = position_start(start_pos) + position_span(start_pos);
+                let mut ok = true;
+
+                for i in 1..terms.len() {
+                    let gap = offsets[i].saturating_sub(offsets[i - 1]).saturating_sub(1);
+                    let want = next + gap;
+
+                    if !cursors[i].advance_to_position(want).unwrap_or(false) {
+                        ok = false;
+                        break;
+                    }
+                    let pos = cursors[i].current_position().unwrap();
+                    if position_start(pos) != want {
+                        ok = false;
+                        break;
+                    }
+                    next = want + position_span(pos);
+                }
+
+                if ok {
+                    found = true;
+                    break;
+                }
+
+                if !cursors[0].advance_to_position(position_start(start_pos) + 1).unwrap_or(false) {
+                    break;
                 }
             }
+
+            if found {
+                let mut positions = Vec::new();
+                if cursors[0].positions_into(&mut positions).is_ok() {
+                    result.push(Posting::with_weight(doc_id, positions, cursors[0].weight()));
+                }
+            }
+
             cursors[rarest].next();
         }
 
@@ -1212,8 +1254,13 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             EvalMode::Filter => {
                 let mut out = RoaringTreemap::new();
                 for &ctx in ctxs {
-                    if let Some(leaf) = self.leaf(query, ctx) {
-                        out |= self.posting_ids(&leaf.postings);
+                    match query {
+                        Query::Term(term) => self.index.doc_ids_into(term, ctx.xpath, &mut out),
+                        _ => {
+                            if let Some(leaf) = self.leaf(query, ctx) {
+                                out |= self.posting_ids(&leaf.postings);
+                            }
+                        }
                     }
                 }
                 EvalOutcome::Docs(out)
@@ -1231,9 +1278,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         min_doc_freqs: &[Option<u32>]
     ) -> Vec<ScoredPosting> {
         let stats = self.stats();
-        let mut acc: HashMap<DocId, ScoredPosting> = HashMap::new();
-        //one map and one buffer for all the fields: the fields of a query land on the
-        //same documents, and the per-field Vec only ever got drained into acc
+        let mut acc: Vec<ScoredPosting> = Vec::new();
         let mut doc_len: HashMap<DocId, f32> = HashMap::new();
         let mut scored: Vec<ScoredPosting> = Vec::new();
 
@@ -1248,8 +1293,6 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             };
 
             scored.clear();
-            // lengths are per field: a cached title length must not score the text, or a long
-            // article's text length its title
             doc_len.clear();
             score_term_into(
                 &stats,
@@ -1260,26 +1303,46 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 &mut scored
             );
 
-            for mut hit in scored.drain(..) {
-                //match array row to document
-                let Some(doc) = self.fold_to_doc(ctx, hit.doc_id) else {
-                    continue;
-                };
-                hit.doc_id = doc;
+            // Fold row-keyed postings onto their document, dropping rows that have no parent.
+            let mut field_scored: Vec<ScoredPosting> = scored
+                .drain(..)
+                .filter_map(|mut hit| {
+                    self.fold_to_doc(ctx, hit.doc_id).map(|doc| {
+                        hit.doc_id = doc;
+                        hit
+                    })
+                })
+                .collect();
 
-                match acc.entry(hit.doc_id) {
-                    Entry::Vacant(e) => {
-                        e.insert(hit);
-                    }
-                    Entry::Occupied(mut e) => {
-                        let cur = e.get_mut();
-                        cur.score = cur.score.saturating_add(hit.score);
-                        cur.matched_terms = cur.matched_terms.saturating_add(hit.matched_terms);
+            field_scored.sort_by_key(|h| h.doc_id);
+
+            // Multiple array rows can fold onto the same document: merge them now.
+            if field_scored.len() > 1 {
+                let mut deduped: Vec<ScoredPosting> = Vec::with_capacity(field_scored.len());
+                for mut hit in field_scored {
+                    if let Some(last) = deduped.last_mut() && last.doc_id == hit.doc_id {
+                        last.score = last.score.saturating_add(hit.score);
+                        last.matched_terms = last.matched_terms.saturating_add(hit.matched_terms);
+                    } else {
+                        deduped.push(hit);
                     }
                 }
+                field_scored = deduped;
+            }
+
+            let mut acc: Vec<ScoredPosting> = Vec::new(); // holds current result
+            let mut merged: Vec<ScoredPosting> = Vec::new(); // empty scratch buffer
+
+            for (index, &ctx) in ctxs.iter().enumerate() {
+                // ... build field_scored ...
+
+                merged.clear(); // reuse existing capacity
+                merge_scored(&acc, &field_scored, &mut merged);
+                std::mem::swap(&mut acc, &mut merged); // swap contents, not capacity
             }
         }
-        acc.into_values().collect()
+
+        acc
     }
 
     /// A synonym group counts as one part of the query: a document scores by the best weighted
@@ -1356,11 +1419,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
     }
 
     fn posting_ids(&self, postings: &PostingList) -> RoaringTreemap {
-        postings
-            .items()
-            .iter()
-            .map(|p| p.doc_id)
-            .collect()
+        RoaringTreemap::from_sorted_iter(
+            postings
+                .items()
+                .iter()
+                .map(|p| p.doc_id)
+        ).unwrap_or_default()
     }
 
     fn eval_union(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
@@ -1418,25 +1482,36 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 EvalOutcome::Docs(candidates.unwrap_or_default())
             }
             EvalMode::Rank => {
-                //every part scores doc-keyed (row -> doc folded), intersect the doc ids, add scores.
-                //Each part is evaluated once: scoring a part reads and scores all its postings
                 let mut scored_parts: Vec<Vec<ScoredPosting>> = Vec::with_capacity(parts.len());
+                let mut restrict: Option<RoaringTreemap> = None;
+
                 for part in parts {
                     match self.evaluate(part, ctxs, EvalMode::Rank) {
                         EvalOutcome::Scored(scored) if !scored.is_empty() => {
                             scored_parts.push(scored);
+                        }
+                        EvalOutcome::Docs(docs) => {
+                            restrict = Some(match restrict {
+                                Some(cur) => cur & docs,
+                                None => docs,
+                            });
                         }
                         _ => {
                             return EvalOutcome::Scored(Vec::new());
                         }
                     }
                 }
-                // smallest part first: the candidate set only shrinks from there
+
+                if scored_parts.is_empty() {
+                    return EvalOutcome::Scored(Vec::new());
+                }
+
                 scored_parts.sort_by_key(Vec::len);
                 let mut candidates: HashSet<DocId> = scored_parts[0]
                     .iter()
                     .map(|p| p.doc_id)
                     .collect();
+
                 for scored in &scored_parts[1..] {
                     let docs: HashSet<DocId> = scored
                         .iter()
@@ -1444,6 +1519,14 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         .filter(|doc| candidates.contains(doc))
                         .collect();
                     candidates = docs;
+                    if candidates.is_empty() {
+                        return EvalOutcome::Scored(Vec::new());
+                    }
+                }
+
+                // apply filter-only restriction
+                if let Some(restrict) = restrict {
+                    candidates.retain(|doc| restrict.contains(*doc));
                     if candidates.is_empty() {
                         return EvalOutcome::Scored(Vec::new());
                     }
@@ -1516,8 +1599,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         let mut prepared = PreparedQuery::default();
         for query in queries {
             // the grouped (WAND) path reads synonym phrase forms through cursors itself
-            let lazy_phrases = ctxs.iter().all(|ctx| !ctx.row_keyed)
-                && grouped_parts(query, false).is_some();
+            let lazy_phrases =
+                ctxs.iter().all(|ctx| !ctx.row_keyed) && grouped_parts(query, false).is_some();
             for &ctx in ctxs {
                 self.prepare_leaves(query, ctx, &mut prepared, lazy_phrases);
             }
@@ -1525,11 +1608,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         prepared
     }
 
-    fn prepare_leaves(&self, query: &Query, ctx: FieldCtx, out: &mut PreparedQuery, lazy_phrases:bool) {
+    fn prepare_leaves(
+        &self,
+        query: &Query,
+        ctx: FieldCtx,
+        out: &mut PreparedQuery,
+        lazy_phrases: bool
+    ) {
         match query {
             Query::Wand(parts) | Query::Or(parts) | Query::And(parts) => {
                 for part in parts {
-                    self.prepare_leaves(part, ctx, out,lazy_phrases);
+                    self.prepare_leaves(part, ctx, out, lazy_phrases);
                 }
             }
             Query::Synonym(forms) => {
@@ -1544,7 +1633,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                     &Query::Term(term.text.clone()),
                                     ctx,
                                     out,
-                                    lazy_phrases,
+                                    lazy_phrases
                                 );
                             }
                         }
@@ -1556,7 +1645,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             Query::Phrase(terms) => {
                 // phrase forms are also scored by their words (score_phrase_as_words)
                 for term in terms {
-                    self.prepare_leaves(&Query::Term(term.text.clone()), ctx, out,lazy_phrases);
+                    self.prepare_leaves(&Query::Term(term.text.clone()), ctx, out, lazy_phrases);
                 }
                 let Some((key, xpath)) = Self::leaf_key(query, ctx) else {
                     return;
@@ -2195,7 +2284,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 keep(&mut found, hit);
             }
         }
-        
+
         let mut hits: Vec<SearchHit> = found.into_values().collect();
         let clause_weights = self.clause_masks(&plan.clauses, ctxs, &mut hits);
         self.apply_density(&mut hits, &plan.terms, &plain_xpaths);
@@ -2290,12 +2379,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                 .filter(|ctx| !ctx.row_keyed)
                 .flat_map(|&ctx| self.clause_forms(clause, ctx))
                 .filter(|form| {
-                    !form.lists.is_empty()
-                        && if form.any {
+                    !form.lists.is_empty() &&
+                        (if form.any {
                             form.lists.iter().any(|(list, _)| !list.is_empty())
                         } else {
                             form.lists.iter().all(|(list, _)| !list.is_empty())
-                        }
+                        })
                 })
                 .collect();
             let largest = forms
@@ -2321,14 +2410,17 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         order.sort_unstable_by_key(|&i| hits[i].doc_id);
 
         let index: &'a I = self.index;
-                for (clause_index, forms) in clause_forms.iter().enumerate() {
-                        let mut cursors: Vec<(bool, Option<&Vec<u32>>, Vec<TermCursor<'_>>)> = forms
+        for (clause_index, forms) in clause_forms.iter().enumerate() {
+            let mut cursors: Vec<(bool, Option<&Vec<u32>>, Vec<TermCursor<'_>>)> = forms
                 .iter()
                 .map(|form| {
                     (
                         form.any,
                         form.phrase.as_ref(),
-                        form.lists.iter().map(|(source, _)| source.open(index).0).collect(),
+                        form.lists
+                            .iter()
+                            .map(|(source, _)| source.open(index).0)
+                            .collect(),
                     )
                 })
                 .collect();
@@ -2345,10 +2437,12 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     if !form.iter_mut().all(on) {
                         return false;
                     }
-                    let Some(offsets) = phrase else { return true };
+                    let Some(offsets) = phrase else {
+                        return true;
+                    };
                     let mut buffers: Vec<Vec<u32>> = vec![Vec::new(); form.len()];
                     let read = form
-                        .iter()
+                        .iter_mut()
                         .zip(buffers.iter_mut())
                         .all(|(cursor, buffer)| cursor.positions_into(buffer).is_ok());
                     let lists: Vec<&[u32]> = buffers.iter().map(Vec::as_slice).collect();
@@ -2432,8 +2526,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             xpath: ctx.xpath,
             lists,
             weight,
-            any:false,
-            phrase:None
+            any: false,
+            phrase: None,
         })
     }
 
@@ -2881,7 +2975,34 @@ fn top_k_from_hits(hits: impl IntoIterator<Item = SearchHit>, k: usize) -> Vec<S
     hits.sort_by(rank_order);
     hits
 }
+fn merge_scored(a: &[ScoredPosting], b: &[ScoredPosting], out: &mut Vec<ScoredPosting>) {
+    let mut i = 0;
+    let mut j = 0;
 
+    while i < a.len() && j < b.len() {
+        match a[i].doc_id.cmp(&b[j].doc_id) {
+            std::cmp::Ordering::Less => {
+                out.push(a[i].clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                out.push(b[j].clone());
+                j += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                let mut merged = a[i].clone();
+                merged.score = merged.score.saturating_add(b[j].score);
+                merged.matched_terms = merged.matched_terms.saturating_add(b[j].matched_terms);
+                out.push(merged);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+
+    out.extend_from_slice(&a[i..]);
+    out.extend_from_slice(&b[j..]);
+}
 //derives how much a word can be fuzzed basically
 pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {
     // a number is never a typo: 2021 must not also match 2020 or 2022
