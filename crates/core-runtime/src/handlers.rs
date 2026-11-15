@@ -31,6 +31,7 @@ use core_storage::document_projections::id_path_to_strip;
 use core_timing::timed;
 
 use hyper::HeaderMap;
+use indexmap::IndexMap;
 use simd_json::owned::Object;
 use simd_json::{OwnedValue, json};
 use slog::{error, info, o, warn};
@@ -443,7 +444,7 @@ pub(crate) async fn search_handler(
     )
     .map(String::from);
 
-    let docs: Vec<(String, f32, DocumentOut, Vec<String>)> = hits
+    let docs: Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)> = hits
         .0
         .into_iter()
         .map(|hit| (hit.external_id, hit.score, hit.doc, hit.highlights))

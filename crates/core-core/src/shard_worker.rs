@@ -676,7 +676,7 @@ impl ShardHandle {
                 score: hits[i].score,
                 doc: doc_out,
                 full_doc,
-                highlights: Vec::new(),
+                highlights: IndexMap::new(),
             });
         }
 
