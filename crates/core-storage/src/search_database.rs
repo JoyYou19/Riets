@@ -310,31 +310,28 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
     #[timed(inserting)]
     pub fn put_document(&mut self, input: DocumentInput, mode: IndexMode) -> io::Result<()> {
-     let internal_id = self.allocate_internal_id()?;
+        let internal_id = self.allocate_internal_id()?;
 
-     
-
-     if mode == IndexMode::StoreAndIndex {
-         let indexed = index_document(
-             internal_id,
-             &input.parsed,
-             &self.policy,
-             &mut self.array_row_allocator
-         );
-         self.index_worker.add_indexed_documents_wait(
-             vec![indexed.analyze(&self.analyzer_set)]
-         )?;
-     }
-     let doc = StoredDocument {
-         external_id: input.external_id,
-         internal_id,
-         source: Arc::from(input.source),
-         format: input.format,
-     };
-     self.store.put(doc)?;
-     self.store.sync()?;
-     Ok(())
- }
+        if mode == IndexMode::StoreAndIndex {
+            let indexed = index_document(
+                internal_id,
+                &input.parsed,
+                &self.policy,
+                &mut self.array_row_allocator,
+            );
+            self.index_worker
+                .add_indexed_documents_wait(vec![indexed.analyze(&self.analyzer_set)])?;
+        }
+        let doc = StoredDocument {
+            external_id: input.external_id,
+            internal_id,
+            source: Arc::from(input.source),
+            format: input.format,
+        };
+        self.store.put(doc)?;
+        self.store.sync()?;
+        Ok(())
+    }
 
     pub fn begin_import(
         &mut self,

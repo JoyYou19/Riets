@@ -18,8 +18,8 @@ use core_core::{DatabaseOptions, shard_manager::ShardManager};
 use core_index::lsm::index_worker::ReindexStatus;
 use core_protocol::{
     command_reponse_definitions::{
-        Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest, GetLogsRequest,
-        InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand,
+        AnalyzeRequest, Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest,
+        GetLogsRequest, InfoWordsRequest, LoginResponse, LookupCommand, PartialReplaceCommand,
         RenameDatabaseRequest, RetrieveCommand, RetrieveResponse, SearchCommand, SearchResponse,
         TimingsRequest,
     },
@@ -611,6 +611,80 @@ pub(crate) async fn lookup_handler(
 
     let hit_count = resp.docs.len();
     HttpOk::with_response(format!("looked up {hit_count} document(s)"), resp, &ctx).into_response()
+}
+
+#[timed(retrieve_opps)]
+pub(crate) async fn analyze_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+    Extension(ctx): Extension<RequestContext>,
+    Extension(principal): Extension<Principal>,
+    body: String,
+) -> Response {
+    if let Err(e) = check_permission(&state, &principal, Permission::AnalyzeDoc) {
+        return HttpError::from_corelamo(e, &ctx).into_response();
+    }
+    let body = match require_body(body) {
+        Ok(b) => b,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+    let (handle, _gate) = match state.db_read(&db_name).await {
+        Ok(x) => x,
+        Err(e) => {
+            return HttpError::from_corelamo(e, &ctx).into_response();
+        }
+    };
+    let req: AnalyzeRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpError::from_corelamo(CorelamoError::InvalidData(e.to_string()), &ctx)
+                .into_response();
+        }
+    };
+    let full = req.options.full;
+
+    // serde_json envelope -> simd_json value so we reuse insert's validate_leaf
+    let docs_str = match serde_json::to_string(&req.docs) {
+        Ok(s) => s,
+        Err(e) => {
+            return HttpError::from_corelamo(CorelamoError::Internal(e.to_string()), &ctx)
+                .into_response();
+        }
+    };
+    let mut buf = docs_str.into_bytes();
+    let docs: OwnedValue = match simd_json::to_owned_value(&mut buf) {
+        Ok(v) => v,
+        Err(e) => {
+            return HttpError::from_corelamo(CorelamoError::from(e), &ctx).into_response();
+        }
+    };
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    match docs {
+        OwnedValue::Array(items) => {
+            for item in items.iter() {
+                match handle.analyze_document(item, full) {
+                    Ok(a) => results.push(a),
+                    Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+                }
+            }
+        }
+        single => match handle.analyze_document(&single, full) {
+            Ok(a) => results.push(a),
+            Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+        },
+    }
+
+    let rescount = results.len();
+    let data = if results.len() == 1 {
+        results.into_iter().next().unwrap()
+    } else {
+        serde_json::Value::Array(results)
+    };
+
+    HttpOk::with_data(format!("analyzed {} document(s)", rescount), data, &ctx).into_response()
 }
 
 #[timed(inserting)]

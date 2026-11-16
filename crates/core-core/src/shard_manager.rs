@@ -11,9 +11,9 @@ use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
 use core_index::analyzer::analyzer::AnalyzerSet;
-use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
+use core_index::document::{FieldPolicy, IndexPolicy};
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, select_expansions};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{DocId, ShardId, XPathId, shard_of};
@@ -38,13 +38,14 @@ use core_query::resolver::{
 use core_query::{CorpusStats, MatchedTerm, SearchHit, rank_order};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
+use core_storage::json_parse::{leaf_text, validate_leaf};
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 use core_timing::timed;
 use crossbeam_channel::bounded;
 use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
-use simd_json::OwnedValue;
+use simd_json::{OwnedValue, StaticNode};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -678,6 +679,18 @@ impl ShardManager {
         )
         .await
     }
+
+    //just analyzez a document and returns results
+    pub fn analyze_document(
+        &self,
+        doc: &OwnedValue,
+        full: bool,
+    ) -> Result<serde_json::Value, CorelamoError> {
+        let policy = self.policy.read().clone();
+        let analyzers = self.analyzer_set.read().clone();
+        analyze_json(doc, None, &policy, &analyzers, full)
+    }
+
     #[timed(inserting)]
     pub async fn insert(
         &self,
@@ -709,6 +722,7 @@ impl ShardManager {
         }
         self.update_all_fields_from_fields(&names)
     }
+
     #[timed(database_lifecycle)]
     pub async fn clear_all(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
@@ -2877,4 +2891,96 @@ fn merge_and_sort(
         }
     }
     items
+}
+
+fn analyze_json(
+    value: &OwnedValue,
+    field: Option<&FieldPolicy>,
+    policy: &IndexPolicy,
+    analyzers: &AnalyzerSet,
+    full: bool,
+) -> Result<serde_json::Value, CorelamoError> {
+    match value {
+        OwnedValue::Object(obj) => {
+            let mut out = serde_json::Map::new();
+            for (name, v) in obj.iter() {
+                let sub = child_field(field, name, policy);
+                out.insert(name.clone(), analyze_json(v, sub, policy, analyzers, full)?);
+            }
+            Ok(serde_json::Value::Object(out))
+        }
+        OwnedValue::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                out.push(analyze_json(item, field, policy, analyzers, full)?);
+            }
+            Ok(serde_json::Value::Array(out))
+        }
+        leaf => {
+            let raw = leaf_text(leaf).unwrap_or_default();
+            match field {
+                Some(f) if f.kind == FieldKind::Text => {
+                    let analyzer = field_analyzer(f, analyzers);
+                    let (filtered, tokens) = analyzer.analyze_text(&raw);
+                    if full {
+                        let tokens_json: Vec<serde_json::Value> = tokens
+                            .iter()
+                            .map(|t| {
+                                serde_json::json!({
+                                    "text": t.text,
+                                    "position": t.position,
+                                    "position_length": t.position_length,
+                                    "start": t.start_byte,
+                                    "end": t.end_byte,
+                                })
+                            })
+                            .collect();
+                        Ok(serde_json::json!({
+                            "value": raw,
+                            "filtered": filtered,
+                            "tokens": tokens_json,
+                        }))
+                    } else {
+                        Ok(serde_json::Value::String(
+                            tokens
+                                .iter()
+                                .map(|t| t.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        ))
+                    }
+                }
+                Some(f) => {
+                    // same rule insert uses ("year": "eight" -> invalid_field)
+                    validate_leaf(f, leaf, &raw)
+                        .map_err(|e| CorelamoError::InvalidData(e.to_string()))?;
+                    Ok(owned_to_json(leaf))
+                }
+                None => Ok(owned_to_json(leaf)),
+            }
+        }
+    }
+}
+
+fn child_field<'a>(
+    parent: Option<&'a FieldPolicy>,
+    name: &str,
+    policy: &'a IndexPolicy,
+) -> Option<&'a FieldPolicy> {
+    match parent {
+        Some(p) => p.subfields.iter().find(|s| s.name == name),
+        None => policy.field_by_path(name),
+    }
+}
+
+fn owned_to_json(value: &OwnedValue) -> serde_json::Value {
+    match value {
+        OwnedValue::String(s) => serde_json::Value::String(s.clone()),
+        OwnedValue::Static(StaticNode::Null) => serde_json::Value::Null,
+        OwnedValue::Static(StaticNode::Bool(b)) => serde_json::Value::Bool(*b),
+        OwnedValue::Static(StaticNode::I64(i)) => serde_json::Value::from(*i),
+        OwnedValue::Static(StaticNode::U64(u)) => serde_json::Value::from(*u),
+        OwnedValue::Static(StaticNode::F64(f)) => serde_json::Value::from(*f),
+        _ => serde_json::Value::Null,
+    }
 }

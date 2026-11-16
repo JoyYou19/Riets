@@ -153,14 +153,16 @@ fn walk_fields(
     Ok(())
 }
 
-fn validate_leaf(field: &FieldPolicy, value: &OwnedValue, raw: &str) -> Result<(), FailReason> {
-    use simd_json::StaticNode::{F64, I64, U64};
+pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue, raw: &str) -> Result<(), FailReason> {
+    use simd_json::StaticNode::{Bool as JsonBool, F64, I64, U64};
+
     let already_valid = match (field.kind, value) {
         (FieldKind::Integer | FieldKind::Float, OwnedValue::Static(I64(_) | U64(_))) => true,
         (FieldKind::Float, OwnedValue::Static(F64(_))) => true,
+        (FieldKind::Bool, OwnedValue::Static(JsonBool(_))) => true,
         _ => false,
     };
-    if already_valid || !field.kind.is_numeric() || raw.trim().is_empty() {
+    if already_valid || raw.trim().is_empty() {
         return Ok(());
     }
     field
@@ -172,7 +174,6 @@ fn validate_leaf(field: &FieldPolicy, value: &OwnedValue, raw: &str) -> Result<(
             got: raw.to_string(),
         })
 }
-
 fn get_by_path<'a>(mut value: &'a OwnedValue, path: &str) -> Option<&'a OwnedValue> {
     for segment in path.split('/') {
         let OwnedValue::Object(map) = value else {
@@ -183,7 +184,7 @@ fn get_by_path<'a>(mut value: &'a OwnedValue, path: &str) -> Option<&'a OwnedVal
     Some(value)
 }
 
-fn leaf_text(value: &OwnedValue) -> Option<String> {
+pub fn leaf_text(value: &OwnedValue) -> Option<String> {
     match value {
         OwnedValue::String(s) => Some(s.clone()),
         OwnedValue::Static(simd_json::StaticNode::Null) => None,

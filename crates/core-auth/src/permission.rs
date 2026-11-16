@@ -10,6 +10,7 @@ pub enum Permission {
     Delete,
     Status,
     Replace,
+    AnalyzeDoc,
     ClearDB,
     GetLogs,
     ClearLogs,
