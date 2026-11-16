@@ -35,7 +35,7 @@ use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
     FieldQuery, QueryGroup, compile_query, field_analyzer, parse_fuzziness, resolve_suggest_xpaths,
 };
-use core_query::{CorpusStats, MatchedTerm, SearchHit, rank_order};
+use core_query::{CorpusStats, MatchedTerm, Query, SearchHit, rank_order};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
 use core_storage::json_parse::{leaf_text, validate_leaf};
@@ -1300,6 +1300,12 @@ impl ShardManager {
         };
 
         let sorts = resolve_sorts(command, &policy)?;
+
+        let sort_only = sorts.is_some()
+            && groups
+                .iter()
+                .all(|g| matches!(g.query.as_ref(), Some(Query::MatchAll)));
+
         let strict_sort = sorts
             .as_ref()
             .is_some_and(|s| matches!(s.mode, SortMode::Strict));
@@ -1330,15 +1336,13 @@ impl ShardManager {
             let analyzers = self.analyzer_set.read();
             highlight_request(command, &policy, &analyzers, &searched)?
         };
-        let sort_xpaths = sorts
-            .as_ref()
-            .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
+
         Ok(CompiledSearch {
             policy,
             groups,
             filters,
             sorts,
-            sort_xpaths,
+            sort_only,
             semantic,
             highlight,
             plans_full,
@@ -1477,18 +1481,20 @@ impl ShardManager {
             let corpus = Arc::clone(&stats.corpus);
             let groups = Arc::clone(&search.groups);
             let plans = Arc::clone(&stats.plans);
-            let sort_xpaths = search.sort_xpaths.clone();
+            let sort_fields = search.sorts.as_ref().map(|s| Arc::clone(&s.fields));
             let (window, word_fetch, match_mode) =
                 (search.window, search.word_fetch, search.match_mode);
-            set.spawn_blocking(move || match sort_xpaths.as_ref() {
-                Some(sort_xpaths) => handle.rank_sorted(
+            let sort_only = search.sort_only;
+            set.spawn_blocking(move || match sort_fields.as_ref() {
+                Some(sort_fields) => handle.rank_sorted(
                     &prepared,
                     &corpus,
                     &groups,
                     &plans,
-                    sort_xpaths,
+                    sort_fields,
                     window,
                     match_mode,
+                    sort_only,
                 ),
                 None => {
                     handle.rank_top_k(&prepared, &corpus, &groups, &plans, word_fetch, match_mode)
@@ -2677,7 +2683,6 @@ struct CompiledSearch {
     groups: Arc<Vec<QueryGroup>>,
     filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
     sorts: Option<ResolvedSort>,
-    sort_xpaths: Option<Arc<Vec<XPathId>>>,
     semantic: Option<(String, Vec<XPathId>)>,
     //the bools are anything related to arrays
     highlight: Option<HighlightSpec>,
@@ -2688,6 +2693,8 @@ struct CompiledSearch {
     word_fetch: usize,
     /// hits each shard ranks for a sorted search
     window: usize,
+    //when pnly asked for example just the lasets movies..
+    sort_only: bool,
 }
 
 impl CompiledSearch {
