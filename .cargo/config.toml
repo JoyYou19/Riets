@@ -1,5 +1,11 @@
+# Linux x86-64: plain baseline (SSE2 only) so the binary runs on any x86-64 CPU,
+# including ones from before 2013. Faster kernels need runtime dispatch.
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=x86-64-v3"]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+# Linux ARM: NEON is always on; generic keeps it portable across ARM servers
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=generic"]
 
 # Apple Silicon: NEON is always on; this tunes for the M-series cores
 [target.aarch64-apple-darwin]

@@ -39,6 +39,11 @@ pub trait SearchIndex {
     fn is_deleted(&self, _doc_id: DocId) -> bool {
         false
     }
+    /// Every live document id. The default checks each id; an index with a delete set
+    /// overrides it with one bulk subtraction.
+    fn live_doc_ids(&self) -> Option<RoaringTreemap> {
+        None
+    }
 
     fn resolve_array_rows(&self, rows: &RoaringTreemap) -> RoaringTreemap;
 

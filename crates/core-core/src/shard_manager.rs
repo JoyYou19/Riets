@@ -1329,7 +1329,7 @@ impl ShardManager {
     /// Every shard reads the query and reports its statistics; merged, they make scores the
     /// same whichever shard a document is in. Fuzzy expansions are the costly part, so they are
     /// collected only when a typed word is in no document at all (a second round).
-    async fn collect_statistics(
+        async fn collect_statistics(
         &self,
         search: &CompiledSearch,
         typed: &OwnedValue,
@@ -1339,6 +1339,7 @@ impl ShardManager {
                 &search.groups,
                 &search.plans_no_fuzzy,
                 search.filters.clone(),
+                None,
             )
             .await?;
         let unknown_word = has_unknown_word(typed, &search.groups, &corpus);
@@ -1350,49 +1351,63 @@ impl ShardManager {
         if !(unknown_word && has_fuzzy) {
             return Ok(ShardStatistics {
                 corpus: Arc::new(corpus),
-                shards,
+                shards: shards.into_iter().map(Arc::new).collect(),
                 plans: Arc::clone(&search.plans_no_fuzzy),
                 unknown_word,
             });
         }
+        // only the fuzzy leaves are new: everything else is already in `shards`
         let (corpus, shards) = self
-            .collect_statistics_once(&search.groups, &search.plans_full, search.filters.clone())
+            .collect_statistics_once(
+                &search.groups,
+                &search.plans_full,
+                search.filters.clone(),
+                Some(shards),
+            )
             .await?;
         Ok(ShardStatistics {
             corpus: Arc::new(corpus),
-            shards,
+            shards: shards.into_iter().map(Arc::new).collect(),
             plans: Arc::clone(&search.plans_full),
             unknown_word,
         })
     }
 
-    /// One round of `collect_statistics` on every shard.
+        /// One round of `collect_statistics` on every shard. `previous`: the first round's shards,
+    /// which a second round extends instead of preparing again.
     async fn collect_statistics_once(
         &self,
         groups: &Arc<Vec<QueryGroup>>,
         plans: &Arc<Vec<RankPlan>>,
         filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
-    ) -> Result<(CorpusStats, Vec<Arc<PreparedShardSearch>>), CorelamoError> {
+        previous: Option<Vec<PreparedShardSearch>>,
+    ) -> Result<(CorpusStats, Vec<PreparedShardSearch>), CorelamoError> {
+        let mut previous: Vec<Option<PreparedShardSearch>> = match previous {
+            Some(shards) => shards.into_iter().map(Some).collect(),
+            None => (0..self.shards.len()).map(|_| None).collect(),
+        };
         let mut set = JoinSet::new();
         for (index, handle) in self.shards.iter().enumerate() {
             let handle = handle.clone();
             let groups = Arc::clone(groups);
             let plans = Arc::clone(plans);
             let filters = filters.clone();
+            let base = previous.get_mut(index).and_then(Option::take);
             set.spawn_blocking(move || {
                 (
                     index,
-                    handle.prepare_search(&groups, &plans, filters.as_deref()),
+                    handle.prepare_search(&groups, &plans, filters.as_deref(), base),
                 )
             });
         }
-        let mut prepared: Vec<Option<Arc<PreparedShardSearch>>> = vec![None; self.shards.len()];
+        let mut prepared: Vec<Option<PreparedShardSearch>> =
+            (0..self.shards.len()).map(|_| None).collect();
         let mut corpus = CorpusStats::new();
         while let Some(res) = set.join_next().await {
             let (index, shard) =
                 res.map_err(|je| CorelamoError::Internal(format!("shard prepare panicked: {je}")))?;
             corpus.merge(shard.stats());
-            prepared[index] = Some(Arc::new(shard));
+            prepared[index] = Some(shard);
         }
         let shards = prepared
             .into_iter()
@@ -2125,9 +2140,11 @@ impl ShardManager {
         //stupid but so that this works too insetead of passing filters
         let empty_groups = Arc::new(Vec::<QueryGroup>::new());
         let empty_plans = Arc::new(Vec::<RankPlan>::new());
-        let (_, prepared_shards) = self
-            .collect_statistics_once(&empty_groups, &empty_plans, filters)
+          let (_, prepared_shards) = self
+            .collect_statistics_once(&empty_groups, &empty_plans, filters, None)
             .await?;
+        let prepared_shards: Vec<Arc<PreparedShardSearch>> =
+            prepared_shards.into_iter().map(Arc::new).collect();
         let hits = self
             .spawn_vector_search(request.text, xpaths, k, prepared_shards)
             .await
@@ -2229,24 +2246,27 @@ impl ShardManager {
             let bare_hits: Vec<SearchHit> = hits.into_iter().map(|(_, h)| h).collect();
             let plans = Arc::clone(&plans);
             set.spawn(async move {
-                let matched = if want_matches {
-                    match (&prepared, &corpus) {
-                        (Some(prep), Some(corp)) => handle.matched_terms_for(
-                            &bare_hits,
-                            groups.as_slice(),
-                            &plans,
-                            prep,
-                            corp,
-                        ),
-                        _ => vec![Vec::new(); bare_hits.len()],
+                let hit_count = bare_hits.len();
+               
+                let matching = match (want_matches, prepared, corpus) {
+                    (true, Some(prep), Some(corp)) => {
+                        let handle = handle.clone();
+                        let hits = bare_hits.clone();
+                        Some(tokio::task::spawn_blocking(move || {
+                            handle.matched_terms_for(&hits, groups.as_slice(), &plans, &prep, &corp)
+                        }))
                     }
-                } else {
-                    vec![Vec::new(); bare_hits.len()]
+                    _ => None,
                 };
                 let resolved = handle
                     .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
                     .await;
-
+                let matched = match matching {
+                    Some(task) => task.await.map_err(|je| {
+                        CorelamoError::Internal(format!("highlight matching panicked: {je}"))
+                    }),
+                    None => Ok(vec![Vec::new(); hit_count]),
+                };
                 (positions, resolved, matched)
             });
         }
@@ -2257,7 +2277,7 @@ impl ShardManager {
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
-                Ok((positions, Ok(hits), matched)) => {
+                Ok((positions, Ok(hits), Ok(matched))) => {
                     for (pos, (hit, m)) in positions.into_iter().zip(hits.into_iter().zip(matched))
                     {
                         if let Some(h) = hit {
@@ -2536,6 +2556,7 @@ impl ShardManager {
         })
     }
 }
+
 //VECTOR
 /// Semantic fusion that keeps what the query names first: hits from the name and exact tiers
 /// (tiers below `named_limit`) stay on top in their order; the others are fused with the
