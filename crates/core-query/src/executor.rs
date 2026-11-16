@@ -1,9 +1,5 @@
 use core_index::{
-    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY },
-    fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions },
-    posting::{ Posting, PostingCursor, PostingList, cursor::TermCursor },
-    search::{ SearchIndex, SearchNumeric, SearchStats },
-    types::{ ArrayRowId, DocId, XPathId, position_span, position_start },
+    analyzer::{analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, word_delimiter}, fuzzy::{ FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingCursor, PostingList, cursor::TermCursor }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ ArrayRowId, DocId, XPathId, position_span, position_start },
 };
 use roaring::RoaringTreemap;
 use std::{ borrow::Cow, collections::{ BinaryHeap, HashMap, hash_map::Entry } };
@@ -35,6 +31,7 @@ use crate::{
         conjunctive_top_k_grouped,
         conjunctive_top_k_multi_field,
         wand_top_k_grouped,
+        wand_top_k_grouped_with_any,
         wand_top_k_multi_field,
     },
 };
@@ -389,8 +386,9 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                 .fuzzy_candidates(word, xpath, opts)
                                 .into_iter()
                                 .map(|e| (e.term, e.edits, e.doc_freq));
-                            select_expansions(word, candidates, spec.max_expansions)
-                                .into_iter()
+                            let expansions=select_expansions(word, candidates, spec.max_expansions);
+                            let blended =blended_doc_freq(&expansions);
+                            expansions.into_iter()
                                 .map(move |expansion| {
                                     let local = self.local_doc_freq(&expansion.term, xpath);
                                     (
@@ -403,7 +401,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                                     xpath,
                                                     local,
                                                 },
-                                                expansion.doc_freq,
+                                                blended
                                             )],
                                             weight: 1000 / (1 + u16::from(expansion.edits)),
                                             any: false,
@@ -449,27 +447,64 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
         k: usize,
         restrict: Option<&RoaringTreemap>,
         cross_fields: bool,
-        coverage: Option<f32>
+        coverage: Option<f32>,
+        required_phrase: Option<&[PhraseTerm]>,
+        // also the top `.1` docs holding any part, by plain score, into `.0` (WAND only)
+        any: Option<(&mut Vec<WandHit>, usize)>
     ) -> Option<Vec<WandHit>> {
         let (conjunctive, parts) = grouped_parts(query, !cross_fields)?;
+        // a required phrase filters an AND; in an OR it would mean something else
+        if required_phrase.is_some() && (!conjunctive || !cross_fields) {
+            return None;
+        }
         // the forms of every part, each with the field it counts for
         let lists: Vec<Vec<Vec<(usize, FormLists<'a>)>>> = if cross_fields {
             // one clause per part, its forms in every field (a field's forms next to each other)
-            vec![
-                parts
-                    .iter()
-                    .map(|part| {
-                        ctxs.iter()
-                            .enumerate()
-                            .flat_map(|(field, &ctx)| {
-                                self.clause_forms(part, ctx)
-                                    .into_iter()
-                                    .map(move |form| (field, form))
-                            })
-                            .collect()
-                    })
-                    .collect()
-            ]
+            let mut clauses: Vec<Vec<(usize, FormLists<'a>)>> = parts
+                .iter()
+                .map(|part| {
+                    ctxs.iter()
+                        .enumerate()
+                        .flat_map(|(field, &ctx)| {
+                            self.clause_forms(part, ctx)
+                                .into_iter()
+                                .map(move |form| (field, form))
+                        })
+                        .collect()
+                })
+                .collect();
+            // the phrase in some plain field: one more clause that must match but scores
+            // nothing (weight 0), so the documents keep the AND's score
+            if let Some(terms) = required_phrase {
+                clauses.push(
+                    ctxs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ctx)| !ctx.row_keyed)
+                        .map(|(field, ctx)| {
+                            (
+                                field,
+                                FormLists {
+                                    xpath: ctx.xpath,
+                                    lists: terms
+                                        .iter()
+                                        .map(|term| self.term_source(&term.text, ctx.xpath))
+                                        .collect(),
+                                    weight: 0,
+                                    any: false,
+                                    phrase: Some(
+                                        terms
+                                            .iter()
+                                            .map(|term| term.offset)
+                                            .collect()
+                                    ),
+                                },
+                            )
+                        })
+                        .collect()
+                );
+            }
+            vec![clauses]
         } else {
             ctxs.iter()
                 .enumerate()
@@ -506,7 +541,21 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
             if conjunctive {
                 conjunctive_top_k_grouped(&stats, fields, k, restrict)
             } else {
-                wand_top_k_grouped(&stats, fields, k, coverage, restrict)
+                match any {
+                    Some((out, any_k)) => {
+                        let (hits, any_hits) = wand_top_k_grouped_with_any(
+                            &stats,
+                            fields,
+                            k,
+                            coverage,
+                            restrict,
+                            any_k
+                        );
+                        *out = any_hits;
+                        hits
+                    }
+                    None => wand_top_k_grouped(&stats, fields, k, coverage, restrict),
+                }
             }
         )
     }
@@ -996,13 +1045,11 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             .into_iter()
                             .map(|e| (e.term, e.edits, e.doc_freq));
                         // expansions are chosen once per word, not once per hit
-                        for expansion in select_expansions(
-                            word,
-                            candidates,
-                            fuzzy_spec.max_expansions
-                        ) {
+                        let expansions = select_expansions(word, candidates, fuzzy_spec.max_expansions);
+                        let blended = blended_doc_freq(&expansions);
+                        for expansion in expansions{
                             let weight =
-                                bm25_idf(expansion.doc_freq, doc_count) *
+                                bm25_idf(blended, doc_count) *
                                 fuzzy_decay(expansion.edits);
                             if ctx.row_keyed {
                                 let list = self.index.lookup(&expansion.term, ctx.xpath);
@@ -1875,7 +1922,16 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             .copied()
                             .filter(|ctx| !ctx.row_keyed)
                             .collect();
-                        self.execute_grouped_retrieval(query, &plain, k, restrict, false, None)
+                        self.execute_grouped_retrieval(
+                            query,
+                            &plain,
+                            k,
+                            restrict,
+                            false,
+                            None,
+                            None,
+                            None
+                        )
                     })
                 };
                 let ranked_flat = flat_hits.is_some();
@@ -1910,6 +1966,18 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         MatchMode::BestFields
                     );
                 }
+                // fuzzy over plain fields: one clause per word, its expansions in every field, a
+                // document needing every word somewhere (the same rule `execute_scored_fuzzy`
+                // applies), walked to the top k instead of scoring every match
+                if matches!(query, Query::Fuzzy(..)) && ctxs.iter().all(|ctx| !ctx.row_keyed) {
+                    let xpaths: Vec<XPathId> = ctxs
+                        .iter()
+                        .map(|ctx| ctx.xpath)
+                        .collect();
+                    if let Some(hits) = self.execute_top_k_retrieval(query, &xpaths, k, restrict) {
+                        return hits.into_iter().map(wand_hit_to_search_hit).collect();
+                    }
+                }
                 // flat queries (words and synonym groups, all of them or any of them): one
                 // document at a time, instead of scoring every match and cutting to k after
                 if
@@ -1920,6 +1988,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                         k,
                         restrict,
                         true,
+                        None,
+                        None,
                         None
                     )
                 {
@@ -2196,19 +2266,35 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             .iter()
                             .any(|tier| matches!(tier, Tier::AllButOne(_) | Tier::Any(_)));
                         let min_coverage = if partial_allowed { MIN_COVERAGE } else { 1.0 };
-                        self.execute_grouped_retrieval(
-                            &pool_query,
-                            ctxs,
-                            fetch.max(POOL_SIZE),
-                            restrict,
-                            true,
-                            Some(min_coverage)
-                        )
-                            .map(|hits| hits.into_iter().map(wand_hit_to_search_hit).collect())
-                            .unwrap_or_default()
+                        // the "any word" source from the same walk, when the plan has one
+                        let any_k = if plan.tiers.iter().any(|tier| matches!(tier, Tier::Any(_))) {
+                            fetch.max(ANY_POOL_SIZE)
+                        } else {
+                            0
+                        };
+                        let mut any_hits: Vec<WandHit> = Vec::new();
+                        let pool_hits = self
+                            .execute_grouped_retrieval(
+                                &pool_query,
+                                ctxs,
+                                fetch.max(POOL_SIZE),
+                                restrict,
+                                true,
+                                Some(min_coverage),
+                                None,
+                                (any_k > 0).then_some((&mut any_hits, any_k))
+                            )
+                            .unwrap_or_default();
+                        // the relevance sources share one tier and `keep` keeps a doc's best
+                        // score, so both lists can go in here whatever the tiers' order
+                        pool_hits.into_iter().chain(any_hits).map(wand_hit_to_search_hit).collect()
                     }
                     // the pool already admits documents missing a word
                     Tier::AllButOne(_) if pool_parts.is_some() => {
+                        continue;
+                    }
+                    // the pool's walk already took the "any word" documents
+                    Tier::Any(_) if pool_parts.is_some() => {
                         continue;
                     }
                     Tier::AllButOne(Query::Wand(parts)) => {
@@ -2226,6 +2312,26 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                             })
                             .collect();
                         ranked(&Query::Or(alternatives), fetch, None)
+                    }
+                    // flat query over plain fields: the AND walked once, with the phrase as a
+                    // clause that must match, instead of collecting the phrase's documents first
+                    Tier::Phrase { terms, score_with } if
+                        matches!(match_mode, MatchMode::CrossFields) &&
+                        flat_fields &&
+                        grouped_parts(score_with, false).is_some_and(|(conjunctive, _)| conjunctive)
+                    => {
+                        self.execute_grouped_retrieval(
+                            score_with,
+                            ctxs,
+                            fetch,
+                            restrict,
+                            true,
+                            None,
+                            Some(terms.as_slice()),
+                            None
+                        )
+                            .map(|hits| hits.into_iter().map(wand_hit_to_search_hit).collect())
+                            .unwrap_or_default()
                     }
                     Tier::Phrase { terms, score_with } => {
                         let matched = self.phrase_docs(terms, ctxs);
@@ -2280,6 +2386,8 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                                 missing.len() as usize,
                                 Some(&missing),
                                 true,
+                                None,
+                                None,
                                 None
                             )
                             .map(|hits| hits.into_iter().map(wand_hit_to_search_hit).collect())
@@ -2814,7 +2922,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     .into_iter()
                     .map(|e| (e.term, e.edits, e.doc_freq));
                 let expansions = select_expansions(word, candidates, spec.max_expansions);
-
+                let blended =blended_doc_freq(&expansions);
                 //one word counts onces per firled so "Spiderman" and "Spidermen" count as one match not two
                 let mut best_in_field: HashMap<DocId, ScoredPosting> = HashMap::new();
                 //iterate all possible hits
@@ -2823,7 +2931,7 @@ impl<'a, I> QueryExecutor<'a, I> where I: SearchIndex + SearchStats + SearchNume
                     let postings = self.index.lookup(&expansion.term, ctx.xpath);
 
                     scored_buf.clear();
-                    let true_df = expansion.doc_freq;
+                    let true_df = blended ;
                     //BM25 scoring
                     score_term_into(
                         &self.stats(),
@@ -3040,7 +3148,17 @@ pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> Fuzzy
         max_expansions: spec.max_expansions,
     }
 }
-
+/// The document count every expansion of one typed word is scored with: the highest among
+/// them (blended frequencies, as Lucene's fuzzy query does). Scored by its own count, a rare
+/// far expansion ("eng" for "englis") outweighs the common close one ("english"); with one
+/// shared count, only the match in the document and the edit decay decide.
+fn blended_doc_freq(expansions: &[FuzzyExpansion]) -> u32 {
+    expansions
+        .iter()
+        .map(|expansion| expansion.doc_freq)
+        .max()
+        .unwrap_or(0)
+}
 //fuzzable words for did_you_mean
 pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
     raw.split_whitespace()
