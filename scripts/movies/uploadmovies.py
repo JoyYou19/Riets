@@ -23,7 +23,7 @@ POLICY = """\
   },
 
   "document": {
-    "id": "id_auto",
+    "id": {"$type":"id_auto", "$searchable": true},
 
     "title": {
       "$type": "text",

@@ -389,22 +389,23 @@ impl ShardManager {
 
     //peak name ik
     #[timed(shard_manager_doc_modifying)]
-    fn update_all_fields_from_fields(&self, fields: &BTreeSet<&str>) -> Result<(), CorelamoError> {
+    fn update_all_fields_from_fields(
+        &self,
+        fields: &BTreeSet<String>,
+    ) -> Result<(), CorelamoError> {
         if fields.is_empty() {
             return Ok(());
         }
 
-        let wanted: Vec<(&str, FieldKind)> = {
+        let wanted: Vec<(String, FieldKind)> = {
             let policy = self.policy.read();
             fields
                 .iter()
-                .map(|&xpath| {
+                .map(|xpath| {
                     let kind = policy
-                        .fields
-                        .iter()
-                        .find(|f| f.name == xpath)
+                        .field_by_path(xpath)
                         .map_or(FieldKind::None, |f| f.kind);
-                    (xpath, kind)
+                    (xpath.clone(), kind)
                 })
                 .collect()
         };
@@ -412,19 +413,18 @@ impl ShardManager {
             let current = self.all_fields.read();
             if wanted
                 .iter()
-                .all(|(xpath, kind)| current.get_fields().get(*xpath) == Some(kind))
+                .all(|(xpath, kind)| current.get_fields().get(xpath) == Some(kind))
             {
                 return Ok(());
             }
         }
 
-        // one writer at a time: the check, the save and the swap see the same map
         let mut guard = self.all_fields.write();
         let mut updated = guard.clone();
         let mut changed = false;
         for (xpath, kind) in wanted {
-            if updated.get_fields().get(xpath) != Some(&kind) {
-                updated.get_fields_mut().insert(xpath.to_owned(), kind);
+            if updated.get_fields().get(&xpath) != Some(&kind) {
+                updated.get_fields_mut().insert(xpath, kind);
                 changed = true;
             }
         }
@@ -716,9 +716,9 @@ impl ShardManager {
     }
 
     fn update_all_fields_for(&self, inputs: &[DocumentInput]) -> Result<(), CorelamoError> {
-        let mut names: BTreeSet<&str> = BTreeSet::new();
+        let mut names: BTreeSet<String> = BTreeSet::new();
         for input in inputs {
-            input.parsed.collect_field_names(&mut names);
+            collect_raw_field_names(&input.source, &mut names)?;
         }
         self.update_all_fields_from_fields(&names)
     }
@@ -2962,6 +2962,7 @@ fn analyze_json(
     }
 }
 
+//analyze helpers
 fn child_field<'a>(
     parent: Option<&'a FieldPolicy>,
     name: &str,
@@ -2982,5 +2983,35 @@ fn owned_to_json(value: &OwnedValue) -> serde_json::Value {
         OwnedValue::Static(StaticNode::U64(u)) => serde_json::Value::from(*u),
         OwnedValue::Static(StaticNode::F64(f)) => serde_json::Value::from(*f),
         _ => serde_json::Value::Null,
+    }
+}
+
+//all-fields helpers
+fn collect_raw_field_names(source: &[u8], out: &mut BTreeSet<String>) -> Result<(), CorelamoError> {
+    let mut buf = source.to_vec();
+    let value: OwnedValue = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
+    walk_raw_fields(&value, "", out);
+    Ok(())
+}
+
+fn walk_raw_fields(value: &OwnedValue, prefix: &str, out: &mut BTreeSet<String>) {
+    match value {
+        OwnedValue::Object(obj) => {
+            for (name, v) in obj.iter() {
+                let path = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                out.insert(path.clone());
+                walk_raw_fields(v, &path, out);
+            }
+        }
+        OwnedValue::Array(items) => {
+            for item in items.iter() {
+                walk_raw_fields(item, prefix, out);
+            }
+        }
+        _ => {}
     }
 }
