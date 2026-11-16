@@ -1127,9 +1127,18 @@ impl ShardManager {
                 .push(id);
         }
 
-        let mut out = Vec::with_capacity(position.len());
+        //paralel 3000
+        let mut set = JoinSet::new();
         for (idx, batch) in by_shard {
-            out.extend(self.shards[idx].get_document_direct(&batch).await?);
+            let handle = self.shards[idx].clone();
+            set.spawn(async move { handle.get_document_direct(&batch).await });
+        }
+
+        let mut out = Vec::with_capacity(position.len());
+        while let Some(res) = set.join_next().await {
+            let docs = res
+                .map_err(|je| CorelamoError::Internal(format!("retrieve task panicked: {je}")))??;
+            out.extend(docs);
         }
         out.sort_by_key(|(id, _)| position.get(id).copied().unwrap_or(usize::MAX));
         Ok(out)

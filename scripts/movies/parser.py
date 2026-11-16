@@ -90,6 +90,7 @@ def main():
 
         # Add a random boolean field for each movie
         doc["is_cool"] = random.choice([True, False])
+        doc["id"] = i
 
         # Add an array of two structs, each with num1 and num2, at the bottom of the document
         doc["random_nums"] = [

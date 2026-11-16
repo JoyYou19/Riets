@@ -568,19 +568,24 @@ impl ShardHandle {
         ids: &[String],
     ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
         self.ensure_readable()?;
-        let mut out = Vec::with_capacity(ids.len());
-        //INFO: shared state is responsible for either giving from RAM or reading from disk thus
-        //making this funciton look quite primitive
-        for id in ids {
-            let doc = self
-                .shared
-                .get_document(id)
-                .await
-                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            out.push((id.clone(), doc));
+
+        let mut set = JoinSet::new();
+        for (i, id) in ids.iter().enumerate() {
+            let shared = Arc::clone(&self.shared);
+            let id = id.clone();
+            set.spawn(async move { (i, shared.get_document(&id).await) });
         }
 
-        Ok(out)
+        let mut slots: Vec<Option<(String, Option<StoredDocument>)>> = vec![None; ids.len()];
+        while let Some(outcome) = set.join_next().await {
+            let (i, res) = outcome.map_err(|je| {
+                CorelamoError::Internal(format!("get document task panicked: {je}"))
+            })?;
+            let doc = res.map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            slots[i] = Some((ids[i].clone(), doc));
+        }
+
+        Ok(slots.into_iter().flatten().collect())
     }
 
     pub fn get_logs_direct(
@@ -606,16 +611,24 @@ impl ShardHandle {
         policy: &IndexPolicy,
     ) -> Result<LookupResponse, CorelamoError> {
         self.ensure_readable()?;
+
+        let mut set = JoinSet::new();
+        for (i, id) in ids.iter().enumerate() {
+            let shared = Arc::clone(&self.shared);
+            let id = id.clone();
+            set.spawn(async move { (i, shared.get_document(&id).await) });
+        }
+
+        let mut docs: Vec<Option<StoredDocument>> = vec![None; ids.len()];
+        while let Some(outcome) = set.join_next().await {
+            let (i, res) = outcome
+                .map_err(|je| CorelamoError::Internal(format!("lookup task panicked: {je}")))?;
+            docs[i] = res.map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        }
+
         let mut found = Vec::new();
         let mut not_found = Vec::new();
-
-        for id in ids {
-            let doc = self
-                .shared
-                .get_document(id)
-                .await
-                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
+        for (id, doc) in ids.iter().zip(docs) {
             match doc {
                 Some(doc) => found.push((
                     doc.external_id.clone(),
