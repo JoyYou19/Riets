@@ -6,12 +6,12 @@ use roaring::RoaringTreemap;
 use crate::{
     array_rows::ArrayRowIndex,
     document::document::BoolField,
-    numeric_values::{ NumericBound, NumericFields, NumericValue },
-    posting::{ PostingCursor, PostingList, cursor::TermCursor },
-    search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo },
-    segment::{ build_field_stats, compute_doc_id_range },
-    types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId },
-    wildcard::{ WildcardPattern, capped_union },
+    numeric_values::{NumericBound, NumericFields, NumericValue},
+    posting::{PostingCursor, PostingList, cursor::TermCursor},
+    search::{SearchIndex, SearchNumeric, SearchStats, TermCursorInfo},
+    segment::{build_field_stats, compute_doc_id_range},
+    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
+    wildcard::{WildcardPattern, capped_union},
 };
 
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
@@ -124,9 +124,18 @@ impl SearchNumeric for ImmutableSegment {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> RoaringTreemap {
         self.numeric_fields.range(xpath, lo, hi)
+    }
+
+    fn numeric_top(
+        &self,
+        xpath: XPathId,
+        k: usize,
+        descending: bool,
+    ) -> Vec<(DocId, NumericValue)> {
+        self.numeric_fields.top(xpath, k, descending)
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -163,7 +172,7 @@ impl ImmutableSegment {
         field_stats: BTreeMap<XPathId, FieldStats>,
         numeric_fields: NumericFields,
         bool_fields: BTreeMap<XPathId, BoolField>,
-        array_row_index: ArrayRowIndex
+        array_row_index: ArrayRowIndex,
     ) -> Self {
         debug_assert_eq!(
             field_stats,

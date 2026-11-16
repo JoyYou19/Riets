@@ -51,6 +51,12 @@ impl NumericFields {
         }
     }
 
+    pub fn top(&self, xpath: XPathId, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
+        self.field(xpath)
+            .map(|field| field.bkd.top(k, descending))
+            .unwrap_or_default()
+    }
+
     pub fn bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
         self.field(xpath).map_or((None, None), NumericField::bounds)
     }
@@ -111,6 +117,19 @@ impl NumericPoints {
 
     pub fn build(self) -> NumericFields {
         NumericFields::from_points(self.points)
+    }
+
+    pub fn top(&self, xpath: XPathId, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
+        let Some(points) = self.points.get(&xpath) else {
+            return Vec::new();
+        };
+        let mut sorted: Vec<(DocId, NumericValue)> = points.clone();
+        sorted.sort_by_key(|(_, v)| *v);
+        if descending {
+            sorted.reverse();
+        }
+        sorted.truncate(k);
+        sorted
     }
 
     pub fn get(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -225,10 +244,10 @@ impl PartialOrd for NumericValue {
 }
 
 impl Ord for NumericValue {
-     fn cmp(&self, other: &Self) -> Ordering {
-         self.as_f64().total_cmp(&other.as_f64())
-     }
- }
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_f64().total_cmp(&other.as_f64())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumericBound {
@@ -238,9 +257,9 @@ pub struct NumericBound {
 
 impl NumericBound {
     pub fn below_lo(self, value: NumericValue) -> bool {
-         value.as_f64().total_cmp(&self.value.as_f64()) == Ordering::Less
-             || (value.as_f64() == self.value.as_f64() && !self.inclusive)
-     }
+        value.as_f64().total_cmp(&self.value.as_f64()) == Ordering::Less
+            || (value.as_f64() == self.value.as_f64() && !self.inclusive)
+    }
 
     pub fn past_hi(self, value: NumericValue) -> bool {
         match value.cmp(&self.value) {
