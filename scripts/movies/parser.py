@@ -92,6 +92,8 @@ def main():
         doc["is_cool"] = random.choice([True, False])
         doc["id"] = i
 
+        doc["rating"] = round(random.uniform(0.0, 9.9), 1)
+
         # Add an array of two structs, each with num1 and num2, at the bottom of the document
         doc["random_nums"] = [
             {
