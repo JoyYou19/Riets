@@ -412,6 +412,10 @@ async fn run() -> io::Result<()> {
             delete(handlers::delete_document_handler),
         )
         .route(
+            "/api/databases/{db_name}/analyze",
+            post(handlers::analyze_handler),
+        )
+        .route(
             "/api/databases/{db_name}/did-you-mean",
             post(handlers::did_you_mean_handler),
         )

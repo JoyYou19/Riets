@@ -1,24 +1,22 @@
 use std::sync::Arc;
 
-use ahash::{ HashMap, HashMapExt };
+use ahash::{HashMap, HashMapExt};
 use arc_swap::ArcSwap;
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
     mem::MemIndex,
-    numeric_values::{ NumericBound, NumericValue },
+    numeric_values::{NumericBound, NumericValue},
     posting::{
-        DeleteSet,
-        PostingCursor,
-        PostingList,
-        cursor::{ TermCursor, UnionCursor },
+        DeleteSet, PostingCursor, PostingList,
+        cursor::{TermCursor, UnionCursor},
         ops::union_many,
     },
-    search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo },
-    types::{ ArrayRowId, DocId, XPathId },
-    vector::{ SegmentVectors, VectorFilter, VectorHit, search_segments },
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo},
+    types::{ArrayRowId, DocId, XPathId},
+    vector::{SegmentVectors, VectorFilter, VectorHit, search_segments},
     wildcard::WildcardPattern,
 };
 
@@ -55,10 +53,11 @@ impl SearchIndex for IndexSnapshot {
     }
     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
         let mut freq: HashMap<String, u32> = HashMap::new();
-        for (term, df) in self.mem
-            .prefix_terms(prefix, xpath)
-            .into_iter()
-            .chain(self.segments.iter().flat_map(|s| s.prefix_terms(prefix, xpath))) {
+        for (term, df) in self.mem.prefix_terms(prefix, xpath).into_iter().chain(
+            self.segments
+                .iter()
+                .flat_map(|s| s.prefix_terms(prefix, xpath)),
+        ) {
             *freq.entry(term).or_default() += df;
         }
         freq.into_iter().collect()
@@ -68,7 +67,9 @@ impl SearchIndex for IndexSnapshot {
         if let Some(e) = self.mem.element_index_of_row(row) {
             return Some(e);
         }
-        self.segments.iter().find_map(|seg| seg.element_index_of_row(row))
+        self.segments
+            .iter()
+            .find_map(|seg| seg.element_index_of_row(row))
     }
 
     fn is_deleted(&self, doc_id: DocId) -> bool {
@@ -121,7 +122,9 @@ impl SearchIndex for IndexSnapshot {
         if let Some(value) = self.mem.bool_value(xpath, doc_id) {
             return Some(value);
         }
-        self.segments.iter().find_map(|seg| seg.bool_value(xpath, doc_id))
+        self.segments
+            .iter()
+            .find_map(|seg| seg.bool_value(xpath, doc_id))
     }
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
@@ -146,18 +149,19 @@ impl SearchIndex for IndexSnapshot {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
-        let mut out: std::collections::BTreeMap<
-            String,
-            FuzzyExpansion
-        > = std::collections::BTreeMap::new();
+        let mut out: std::collections::BTreeMap<String, FuzzyExpansion> =
+            std::collections::BTreeMap::new();
 
-        let all = self.mem
+        let all = self
+            .mem
             .fuzzy_expansions(term, xpath, opts)
             .into_iter()
             .chain(
-                self.segments.iter().flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts))
+                self.segments
+                    .iter()
+                    .flat_map(|segment| segment.fuzzy_expansions(term, xpath, opts)),
             );
 
         for expansion in all {
@@ -188,7 +192,7 @@ impl SearchNumeric for IndexSnapshot {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> RoaringTreemap {
         let mut out = self.mem.numeric_range(xpath, lo, hi);
         for segment in self.segments.iter() {
@@ -216,6 +220,42 @@ impl SearchNumeric for IndexSnapshot {
         None
     }
 
+    fn numeric_top(
+        &self,
+        xpath: XPathId,
+        k: usize,
+        descending: bool,
+    ) -> Vec<(DocId, NumericValue)> {
+        let mut doc_ids: Vec<DocId> = self
+            .mem
+            .numeric_top(xpath, k, descending)
+            .into_iter()
+            .map(|(doc_id, _)| doc_id)
+            .collect();
+        for segment in self.segments.iter() {
+            doc_ids.extend(
+                segment
+                    .numeric_top(xpath, k, descending)
+                    .into_iter()
+                    .map(|(doc_id, _)| doc_id),
+            );
+        }
+        doc_ids.sort_unstable();
+        doc_ids.dedup();
+
+        let mut merged: Vec<(DocId, NumericValue)> = doc_ids
+            .into_iter()
+            .filter(|doc_id| !self.deleted.contains(*doc_id))
+            .filter_map(|doc_id| self.numeric_value(xpath, doc_id).map(|v| (doc_id, v)))
+            .collect();
+        merged.sort_by_key(|(_, v)| *v);
+        if descending {
+            merged.reverse();
+        }
+        merged.truncate(k);
+        merged
+    }
+
     fn numeric_bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
         let mut result = self.mem.numeric_bounds(xpath);
         for seg in self.segments.iter() {
@@ -237,13 +277,14 @@ impl SearchNumeric for IndexSnapshot {
 
 impl SearchStats for IndexSnapshot {
     fn doc_count(&self, xpath: XPathId) -> u64 {
-        let raw =
-            self.mem.doc_count(xpath) +
-            self.segments
+        let raw = self.mem.doc_count(xpath)
+            + self
+                .segments
                 .iter()
                 .map(|s| s.doc_count(xpath))
                 .sum::<u64>();
-        let deleted = self.deleted
+        let deleted = self
+            .deleted
             .iter()
             .filter(|&doc_id| self.doc_len(doc_id, xpath).is_some())
             .count() as u64;
@@ -255,7 +296,9 @@ impl SearchStats for IndexSnapshot {
             return Some(len);
         }
         for segment in self.segments.iter().rev() {
-            if let Some((lo, hi)) = segment.doc_range() && (doc_id < lo || doc_id > hi) {
+            if let Some((lo, hi)) = segment.doc_range()
+                && (doc_id < lo || doc_id > hi)
+            {
                 continue;
             }
             if let Some(len) = segment.doc_len(doc_id, xpath) {
@@ -266,13 +309,14 @@ impl SearchStats for IndexSnapshot {
     }
 
     fn total_doc_len(&self, xpath: XPathId) -> u64 {
-        let raw =
-            self.mem.total_doc_len(xpath) +
-            self.segments
+        let raw = self.mem.total_doc_len(xpath)
+            + self
+                .segments
                 .iter()
                 .map(|s| s.total_doc_len(xpath))
                 .sum::<u64>();
-        let deleted: u64 = self.deleted
+        let deleted: u64 = self
+            .deleted
             .iter()
             .filter_map(|doc_id| self.doc_len(doc_id, xpath))
             .map(u64::from)
@@ -300,7 +344,7 @@ impl IndexSnapshot {
     pub fn new(
         mem: Arc<MemIndex>,
         segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
-        deleted: Arc<DeleteSet>
+        deleted: Arc<DeleteSet>,
     ) -> Self {
         Self {
             mem,
@@ -324,7 +368,8 @@ impl IndexSnapshot {
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
 
-        let mut segment_lists: Vec<PostingList> = self.segments
+        let mut segment_lists: Vec<PostingList> = self
+            .segments
             .iter()
             .map(|segment| segment.lookup(term, xpath))
             .collect();
@@ -357,11 +402,10 @@ impl IndexSnapshot {
         &self,
         prefix: &str,
         xpath: XPathId,
-        keep: impl Fn(&str) -> bool
+        keep: impl Fn(&str) -> bool,
     ) -> Vec<String> {
         let mut freq: HashMap<String, u32> = HashMap::new();
-        let sources = std::iter
-            ::once(&*self.mem as &dyn SearchReader)
+        let sources = std::iter::once(&*self.mem as &dyn SearchReader)
             .chain(self.segments.iter().map(|s| &**s as &dyn SearchReader));
         for source in sources {
             for (term, df) in source.prefix_terms(prefix, xpath) {
@@ -373,10 +417,7 @@ impl IndexSnapshot {
         let mut terms: Vec<(String, u32)> = freq.into_iter().collect();
         terms.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         terms.truncate(crate::wildcard::MAX_PATTERN_TERMS);
-        terms
-            .into_iter()
-            .map(|(term, _)| term)
-            .collect()
+        terms.into_iter().map(|(term, _)| term).collect()
     }
 
     /// Union of the postings of `terms` from memory and every segment, deletes removed.
@@ -419,7 +460,7 @@ impl IndexSnapshot {
         xpath: XPathId,
         query: &[f32],
         k: usize,
-        allowed: Option<&RoaringTreemap>
+        allowed: Option<&RoaringTreemap>,
     ) -> std::io::Result<Vec<VectorHit>> {
         let filter = VectorFilter::new(&self.deleted, allowed);
         search_segments(&self.vectors, xpath, query, k, &filter)
@@ -450,7 +491,11 @@ impl IndexSnapshot {
             TermCursor::Union(Box::new(UnionCursor::new(children, &self.deleted)))
         };
 
-        Some(TermCursorInfo { cursor, doc_freq, max_weight })
+        Some(TermCursorInfo {
+            cursor,
+            doc_freq,
+            max_weight,
+        })
     }
 }
 

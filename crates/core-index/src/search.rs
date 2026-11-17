@@ -1,7 +1,14 @@
 use roaring::RoaringTreemap;
 
 use crate::{
-    fuzzy::{ DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_EXPANSIONS, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton }, numeric_values::{ NumericBound, NumericValue }, posting::{ PostingList, cursor::TermCursor }, types::{ ArrayRowId, DocId, XPathId }, wildcard::WildcardPattern,
+    fuzzy::{
+        DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_EXPANSIONS, FuzzyExpansion, FuzzyOptions,
+        LevenshteinAutomaton,
+    },
+    numeric_values::{NumericBound, NumericValue},
+    posting::{PostingList, cursor::TermCursor},
+    types::{ArrayRowId, DocId, XPathId},
+    wildcard::WildcardPattern,
 };
 
 #[derive(Debug, Clone)]
@@ -66,7 +73,7 @@ pub trait SearchIndex {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
         //one automaton for k = 0, 1 and 2, so all three use the same rules
         //(transpositions, unicode, prefix lock)
@@ -74,8 +81,7 @@ pub trait SearchIndex {
 
         let mut candidates: Vec<(String, u8, u32)> = Vec::new();
         candidates.sort_by(|a, b| {
-            a.1
-                .cmp(&b.1) // fewer edits first
+            a.1.cmp(&b.1) // fewer edits first
                 .then_with(|| b.2.cmp(&a.2)) // then higher doc_freq
         });
 
@@ -114,11 +120,16 @@ pub trait SearchIndex {
         PostingList::from_items(items)
     }
     fn doc_ids_into(&self, term: &str, xpath: XPathId, out: &mut RoaringTreemap) {
-    let ids = self.lookup(term, xpath).items().iter().map(|p| p.doc_id).collect::<Vec<_>>();
-    if let Ok(ids) = RoaringTreemap::from_sorted_iter(ids) {
-        *out |= ids;
+        let ids = self
+            .lookup(term, xpath)
+            .items()
+            .iter()
+            .map(|p| p.doc_id)
+            .collect::<Vec<_>>();
+        if let Ok(ids) = RoaringTreemap::from_sorted_iter(ids) {
+            *out |= ids;
+        }
     }
-}
 }
 
 // How are these documents going to be scored? Used for BM25, is needed for the math equation
@@ -144,7 +155,7 @@ pub trait SearchNumeric {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> RoaringTreemap;
 
     //quick docid+xpath->numeric_value
@@ -152,6 +163,10 @@ pub trait SearchNumeric {
 
     //for min max value for order-blended
     fn numeric_bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>);
+
+    //basically used only for "give latest year movies" when no "search" is used
+    fn numeric_top(&self, xpath: XPathId, k: usize, descending: bool)
+    -> Vec<(DocId, NumericValue)>;
 }
 
 pub trait SearchReader: SearchIndex + SearchStats + SearchNumeric {}

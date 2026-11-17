@@ -27,6 +27,21 @@ impl Bkd {
         Self { kind, points }
     }
 
+    //top-k doc ids + values, in the requested order (lowest-first when ascending)
+    pub fn top(&self, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
+        let mut out = Vec::with_capacity(k.min(self.points.len()));
+        if descending {
+            for (packed, doc_id) in self.points.iter().rev().take(k) {
+                out.push((*doc_id, unpack(*packed, self.kind)));
+            }
+        } else {
+            for (packed, doc_id) in self.points.iter().take(k) {
+                out.push((*doc_id, unpack(*packed, self.kind)));
+            }
+        }
+        out
+    }
+
     pub fn from_packed(kind: NumericKind, points: Vec<(u64, DocId)>) -> Result<Self, &'static str> {
         //safety
         if !points.is_sorted_by_key(|point| point.0) {

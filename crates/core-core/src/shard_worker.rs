@@ -17,7 +17,9 @@ use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
 use core_index::search::{SearchIndex, SearchNumeric};
 use core_index::vector::{VectorHit, merge_hits};
-use core_protocol::command_reponse_definitions::{Fuzziness, LookupResponse, MatchMode};
+use core_protocol::command_reponse_definitions::{
+    Fuzziness, LookupResponse, MatchMode, SortOrderRequest,
+};
 use core_query::planner::RankPlan;
 use core_query::resolver::{FieldQuery, QueryGroup};
 use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
@@ -33,6 +35,7 @@ use crate::DatabaseOptions;
 use crate::metrics::DbStats;
 use crate::reindex::CompletedShardReindex;
 use crate::shard_db::ShardDb;
+use crate::shard_manager_helpers::SortField;
 use crate::shared_state::SharedShardState;
 
 use core_index::document::IndexPolicy;
@@ -492,9 +495,10 @@ impl ShardHandle {
         corpus: &CorpusStats,
         query_groups: &[QueryGroup],
         plans: &[RankPlan],
-        sort_xpaths: &[XPathId],
+        sort_fields: &[SortField],
         window: usize,
         matchmode: MatchMode,
+        sort_only: bool,
     ) -> Result<ShardRankedResult, CorelamoError> {
         if window == 0 {
             return Ok(ShardRankedResult {
@@ -505,16 +509,45 @@ impl ShardHandle {
         }
 
         let snapshot = &prepared.snapshot;
-        let (total, candidates) = self.rank_candidates(
-            snapshot,
-            &prepared.prepared,
-            corpus,
-            query_groups,
-            plans,
-            prepared.filter.as_deref(),
-            window,
-            matchmode,
-        );
+        let sort_xpaths: Vec<XPathId> = sort_fields.iter().map(|f| f.xpath).collect();
+
+        let (total, candidates) = if sort_only {
+            //just get the top numeric values per-foeld
+            let mut doc_ids: Vec<DocId> = Vec::new();
+            for field in sort_fields {
+                let descending = matches!(field.order, SortOrderRequest::Desc);
+                doc_ids.extend(
+                    snapshot
+                        .numeric_top(field.xpath, window, descending)
+                        .into_iter()
+                        .map(|(doc_id, _)| doc_id),
+                );
+            }
+            doc_ids.sort_unstable();
+            doc_ids.dedup();
+            let total = doc_ids.len();
+            let hits: Vec<SearchHit> = doc_ids
+                .into_iter()
+                .map(|doc_id| SearchHit {
+                    doc_id,
+                    ..Default::default()
+                })
+                .collect();
+            (total, hits)
+        } else {
+            //the smart sort search+numerics
+            self.rank_candidates(
+                snapshot,
+                &prepared.prepared,
+                corpus,
+                query_groups,
+                plans,
+                prepared.filter.as_deref(),
+                window,
+                matchmode,
+            )
+        };
+
         if candidates.is_empty() {
             return Ok(ShardRankedResult {
                 total,
@@ -568,19 +601,24 @@ impl ShardHandle {
         ids: &[String],
     ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
         self.ensure_readable()?;
-        let mut out = Vec::with_capacity(ids.len());
-        //INFO: shared state is responsible for either giving from RAM or reading from disk thus
-        //making this funciton look quite primitive
-        for id in ids {
-            let doc = self
-                .shared
-                .get_document(id)
-                .await
-                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            out.push((id.clone(), doc));
+
+        let mut set = JoinSet::new();
+        for (i, id) in ids.iter().enumerate() {
+            let shared = Arc::clone(&self.shared);
+            let id = id.clone();
+            set.spawn(async move { (i, shared.get_document(&id).await) });
         }
 
-        Ok(out)
+        let mut slots: Vec<Option<(String, Option<StoredDocument>)>> = vec![None; ids.len()];
+        while let Some(outcome) = set.join_next().await {
+            let (i, res) = outcome.map_err(|je| {
+                CorelamoError::Internal(format!("get document task panicked: {je}"))
+            })?;
+            let doc = res.map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            slots[i] = Some((ids[i].clone(), doc));
+        }
+
+        Ok(slots.into_iter().flatten().collect())
     }
 
     pub fn get_logs_direct(
@@ -606,16 +644,24 @@ impl ShardHandle {
         policy: &IndexPolicy,
     ) -> Result<LookupResponse, CorelamoError> {
         self.ensure_readable()?;
+
+        let mut set = JoinSet::new();
+        for (i, id) in ids.iter().enumerate() {
+            let shared = Arc::clone(&self.shared);
+            let id = id.clone();
+            set.spawn(async move { (i, shared.get_document(&id).await) });
+        }
+
+        let mut docs: Vec<Option<StoredDocument>> = vec![None; ids.len()];
+        while let Some(outcome) = set.join_next().await {
+            let (i, res) = outcome
+                .map_err(|je| CorelamoError::Internal(format!("lookup task panicked: {je}")))?;
+            docs[i] = res.map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        }
+
         let mut found = Vec::new();
         let mut not_found = Vec::new();
-
-        for id in ids {
-            let doc = self
-                .shared
-                .get_document(id)
-                .await
-                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-
+        for (id, doc) in ids.iter().zip(docs) {
             match doc {
                 Some(doc) => found.push((
                     doc.external_id.clone(),

@@ -24,6 +24,7 @@ pub fn default_policy() -> PolicyStore {
             Permission::GetLogs,
             Permission::ClearLogs,
             Permission::AllFields,
+            Permission::AnalyzeDoc,
             //databases
             Permission::CreateDatabase,
             Permission::DeleteDatabase,

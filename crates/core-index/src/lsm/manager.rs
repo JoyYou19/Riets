@@ -10,11 +10,26 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    disk::{ reader::DiskSegment, writer::write_segment }, fuzzy::{ FuzzyExpansion, FuzzyOptions }, lsm::{
+    disk::{reader::DiskSegment, writer::write_segment},
+    fuzzy::{FuzzyExpansion, FuzzyOptions},
+    lsm::{
         IndexSnapshot,
         compaction::{CompactionConfig, CompactionJob, CompletedCompaction},
         manifest,
-    }, mem::MemIndex, numeric_values::{ NumericBound, NumericValue }, posting::{ DeleteSet, PostingList, cursor::{TermCursor, UnionCursor} }, search::{ SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo }, segment::{ ImmutableSegment, SegmentHandle }, types::{ ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId }, vector::{ HnswGraph, SegmentVectors, VectorFile, find_vector_files, hnsw_file_path, vector_file_path }, wildcard::WildcardPattern,
+    },
+    mem::MemIndex,
+    numeric_values::{NumericBound, NumericValue},
+    posting::{
+        DeleteSet, PostingList,
+        cursor::{TermCursor, UnionCursor},
+    },
+    search::{SearchIndex, SearchNumeric, SearchReader, SearchStats, TermCursorInfo},
+    segment::{ImmutableSegment, SegmentHandle},
+    types::{ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId},
+    vector::{
+        HnswGraph, SegmentVectors, VectorFile, find_vector_files, hnsw_file_path, vector_file_path,
+    },
+    wildcard::WildcardPattern,
 };
 
 pub struct LsmIndex {
@@ -208,9 +223,13 @@ impl SearchIndex for LsmIndex {
     ) -> Vec<FuzzyExpansion> {
         self.snapshot().fuzzy_expansions(term, xpath, opts)
     }
-        #[timed(search)]
+    #[timed(search)]
     fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
-        let pending = self.flush_queue.pending.iter().flat_map(|flush| flush.generations.iter());
+        let pending = self
+            .flush_queue
+            .pending
+            .iter()
+            .flat_map(|flush| flush.generations.iter());
 
         // the same sources as `build_snapshot`, borrowed from `self` instead of cloned
         let memory = std::iter::once(&self.mem)
@@ -221,9 +240,11 @@ impl SearchIndex for LsmIndex {
         let mut doc_freq = 0u32;
         let mut max_weight = 0u16;
 
-        let infos = memory
-            .filter_map(|mem| mem.term_cursor(term, xpath))
-            .chain(self.query_segments.iter().filter_map(|segment| segment.term_cursor(term, xpath)));
+        let infos = memory.filter_map(|mem| mem.term_cursor(term, xpath)).chain(
+            self.query_segments
+                .iter()
+                .filter_map(|segment| segment.term_cursor(term, xpath)),
+        );
 
         for info in infos {
             doc_freq = doc_freq.saturating_add(info.doc_freq);
@@ -239,7 +260,11 @@ impl SearchIndex for LsmIndex {
             TermCursor::Union(Box::new(UnionCursor::new(children, &self.deleted)))
         };
 
-        Some(TermCursorInfo { cursor, doc_freq, max_weight })
+        Some(TermCursorInfo {
+            cursor,
+            doc_freq,
+            max_weight,
+        })
     }
 }
 
@@ -249,7 +274,7 @@ impl SearchNumeric for LsmIndex {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
+        hi: Option<NumericBound>,
     ) -> RoaringTreemap {
         self.snapshot().numeric_range(xpath, lo, hi)
     }
@@ -257,6 +282,16 @@ impl SearchNumeric for LsmIndex {
     #[timed(search)]
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
         self.snapshot().numeric_value(xpath, doc_id)
+    }
+
+    #[timed(search)]
+    fn numeric_top(
+        &self,
+        xpath: XPathId,
+        k: usize,
+        descending: bool,
+    ) -> Vec<(DocId, NumericValue)> {
+        self.snapshot().numeric_top(xpath, k, descending)
     }
 
     #[timed(search)]
@@ -495,9 +530,8 @@ impl LsmIndex {
             );
         }
         segments.extend(self.query_segments.iter().cloned());
-        IndexSnapshot::new(mem, Arc::new(segments), Arc::clone(&self.deleted)).with_vectors(
-            Arc::clone(&self.vectors)
-        )
+        IndexSnapshot::new(mem, Arc::new(segments), Arc::clone(&self.deleted))
+            .with_vectors(Arc::clone(&self.vectors))
     }
 
     pub fn merge_into_memtable(&mut self, other: MemIndex) {
@@ -756,16 +790,14 @@ impl LsmIndex {
         let job_id = self.next_compaction_job_id;
         self.next_compaction_job_id += 1;
 
-        Ok(
-            Some(CompactionJob {
-                job_id,
-                selected,
-                deleted: Arc::clone(&self.deleted),
-                delete_generation: self.delete_generation,
-                output_path,
-                vectors,
-            })
-        )
+        Ok(Some(CompactionJob {
+            job_id,
+            selected,
+            deleted: Arc::clone(&self.deleted),
+            delete_generation: self.delete_generation,
+            output_path,
+            vectors,
+        }))
     }
 
     fn merge_all_due(sizes: &[Option<u64>], ratio: u64) -> bool {

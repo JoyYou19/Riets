@@ -23,7 +23,7 @@ POLICY = """\
   },
 
   "document": {
-    "id": "id_auto",
+    "id": {"$type":"id_auto", "$searchable": true},
 
     "title": {
       "$type": "text",
@@ -37,6 +37,13 @@ POLICY = """\
       "$searchable": true,
       "$weight": { "min": 90, "max": 100}
     },
+
+    "rating": {
+      "$type": "float",
+      "$searchable": true,
+      "$weight": { "min": 90, "max": 100}
+    },
+
 
     "cast": [
       {
@@ -65,7 +72,7 @@ POLICY = """\
 
     "extract": {
       "$type": "text",
-      "$weight": { "min": 1, "max": 70 },
+      "$weight": { "min": 50, "max": 70 },
       "$vector": true
     },
 

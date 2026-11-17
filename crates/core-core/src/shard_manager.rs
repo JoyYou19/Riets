@@ -11,9 +11,9 @@ use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
 use core_index::analyzer::analyzer::AnalyzerSet;
-use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
+use core_index::document::{FieldPolicy, IndexPolicy};
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, select_expansions};
 use core_index::lsm::index_worker::Phase;
 use core_index::types::{DocId, ShardId, XPathId, shard_of};
@@ -35,16 +35,17 @@ use core_query::planner::{RankPlan, TierKind};
 use core_query::resolver::{
     FieldQuery, QueryGroup, compile_query, field_analyzer, parse_fuzziness, resolve_suggest_xpaths,
 };
-use core_query::{CorpusStats, MatchedTerm, SearchHit, rank_order};
+use core_query::{CorpusStats, MatchedTerm, Query, SearchHit, rank_order};
 use core_storage::document_projections::id_path_to_strip;
 use core_storage::document_store::StoredDocument;
+use core_storage::json_parse::{leaf_text, validate_leaf};
 use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport, WordStats};
 use core_storage::search_database::{DocumentInput, SearchDocumentHit};
 use core_timing::timed;
 use crossbeam_channel::bounded;
 use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
-use simd_json::OwnedValue;
+use simd_json::{OwnedValue, StaticNode};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -388,22 +389,23 @@ impl ShardManager {
 
     //peak name ik
     #[timed(shard_manager_doc_modifying)]
-    fn update_all_fields_from_fields(&self, fields: &BTreeSet<&str>) -> Result<(), CorelamoError> {
+    fn update_all_fields_from_fields(
+        &self,
+        fields: &BTreeSet<String>,
+    ) -> Result<(), CorelamoError> {
         if fields.is_empty() {
             return Ok(());
         }
 
-        let wanted: Vec<(&str, FieldKind)> = {
+        let wanted: Vec<(String, FieldKind)> = {
             let policy = self.policy.read();
             fields
                 .iter()
-                .map(|&xpath| {
+                .map(|xpath| {
                     let kind = policy
-                        .fields
-                        .iter()
-                        .find(|f| f.name == xpath)
+                        .field_by_path(xpath)
                         .map_or(FieldKind::None, |f| f.kind);
-                    (xpath, kind)
+                    (xpath.clone(), kind)
                 })
                 .collect()
         };
@@ -411,19 +413,18 @@ impl ShardManager {
             let current = self.all_fields.read();
             if wanted
                 .iter()
-                .all(|(xpath, kind)| current.get_fields().get(*xpath) == Some(kind))
+                .all(|(xpath, kind)| current.get_fields().get(xpath) == Some(kind))
             {
                 return Ok(());
             }
         }
 
-        // one writer at a time: the check, the save and the swap see the same map
         let mut guard = self.all_fields.write();
         let mut updated = guard.clone();
         let mut changed = false;
         for (xpath, kind) in wanted {
-            if updated.get_fields().get(xpath) != Some(&kind) {
-                updated.get_fields_mut().insert(xpath.to_owned(), kind);
+            if updated.get_fields().get(&xpath) != Some(&kind) {
+                updated.get_fields_mut().insert(xpath, kind);
                 changed = true;
             }
         }
@@ -678,6 +679,18 @@ impl ShardManager {
         )
         .await
     }
+
+    //just analyzez a document and returns results
+    pub fn analyze_document(
+        &self,
+        doc: &OwnedValue,
+        full: bool,
+    ) -> Result<serde_json::Value, CorelamoError> {
+        let policy = self.policy.read().clone();
+        let analyzers = self.analyzer_set.read().clone();
+        analyze_json(doc, None, &policy, &analyzers, full)
+    }
+
     #[timed(inserting)]
     pub async fn insert(
         &self,
@@ -703,12 +716,13 @@ impl ShardManager {
     }
 
     fn update_all_fields_for(&self, inputs: &[DocumentInput]) -> Result<(), CorelamoError> {
-        let mut names: BTreeSet<&str> = BTreeSet::new();
+        let mut names: BTreeSet<String> = BTreeSet::new();
         for input in inputs {
-            input.parsed.collect_field_names(&mut names);
+            collect_raw_field_names(&input.source, &mut names)?;
         }
         self.update_all_fields_from_fields(&names)
     }
+
     #[timed(database_lifecycle)]
     pub async fn clear_all(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
@@ -1127,9 +1141,18 @@ impl ShardManager {
                 .push(id);
         }
 
-        let mut out = Vec::with_capacity(position.len());
+        //paralel 3000
+        let mut set = JoinSet::new();
         for (idx, batch) in by_shard {
-            out.extend(self.shards[idx].get_document_direct(&batch).await?);
+            let handle = self.shards[idx].clone();
+            set.spawn(async move { handle.get_document_direct(&batch).await });
+        }
+
+        let mut out = Vec::with_capacity(position.len());
+        while let Some(res) = set.join_next().await {
+            let docs = res
+                .map_err(|je| CorelamoError::Internal(format!("retrieve task panicked: {je}")))??;
+            out.extend(docs);
         }
         out.sort_by_key(|(id, _)| position.get(id).copied().unwrap_or(usize::MAX));
         Ok(out)
@@ -1277,6 +1300,12 @@ impl ShardManager {
         };
 
         let sorts = resolve_sorts(command, &policy)?;
+
+        let sort_only = sorts.is_some()
+            && groups
+                .iter()
+                .all(|g| matches!(g.query.as_ref(), Some(Query::MatchAll)));
+
         let strict_sort = sorts
             .as_ref()
             .is_some_and(|s| matches!(s.mode, SortMode::Strict));
@@ -1307,15 +1336,13 @@ impl ShardManager {
             let analyzers = self.analyzer_set.read();
             highlight_request(command, &policy, &analyzers, &searched)?
         };
-        let sort_xpaths = sorts
-            .as_ref()
-            .map(|s| Arc::new(s.fields.iter().map(|f| f.xpath).collect()));
+
         Ok(CompiledSearch {
             policy,
             groups,
             filters,
             sorts,
-            sort_xpaths,
+            sort_only,
             semantic,
             highlight,
             plans_full,
@@ -1454,18 +1481,20 @@ impl ShardManager {
             let corpus = Arc::clone(&stats.corpus);
             let groups = Arc::clone(&search.groups);
             let plans = Arc::clone(&stats.plans);
-            let sort_xpaths = search.sort_xpaths.clone();
+            let sort_fields = search.sorts.as_ref().map(|s| Arc::clone(&s.fields));
             let (window, word_fetch, match_mode) =
                 (search.window, search.word_fetch, search.match_mode);
-            set.spawn_blocking(move || match sort_xpaths.as_ref() {
-                Some(sort_xpaths) => handle.rank_sorted(
+            let sort_only = search.sort_only;
+            set.spawn_blocking(move || match sort_fields.as_ref() {
+                Some(sort_fields) => handle.rank_sorted(
                     &prepared,
                     &corpus,
                     &groups,
                     &plans,
-                    sort_xpaths,
+                    sort_fields,
                     window,
                     match_mode,
+                    sort_only,
                 ),
                 None => {
                     handle.rank_top_k(&prepared, &corpus, &groups, &plans, word_fetch, match_mode)
@@ -2654,7 +2683,6 @@ struct CompiledSearch {
     groups: Arc<Vec<QueryGroup>>,
     filters: Option<Arc<std::collections::HashMap<String, FieldQuery>>>,
     sorts: Option<ResolvedSort>,
-    sort_xpaths: Option<Arc<Vec<XPathId>>>,
     semantic: Option<(String, Vec<XPathId>)>,
     //the bools are anything related to arrays
     highlight: Option<HighlightSpec>,
@@ -2665,6 +2693,8 @@ struct CompiledSearch {
     word_fetch: usize,
     /// hits each shard ranks for a sorted search
     window: usize,
+    //when pnly asked for example just the lasets movies..
+    sort_only: bool,
 }
 
 impl CompiledSearch {
@@ -2868,4 +2898,127 @@ fn merge_and_sort(
         }
     }
     items
+}
+
+fn analyze_json(
+    value: &OwnedValue,
+    field: Option<&FieldPolicy>,
+    policy: &IndexPolicy,
+    analyzers: &AnalyzerSet,
+    full: bool,
+) -> Result<serde_json::Value, CorelamoError> {
+    match value {
+        OwnedValue::Object(obj) => {
+            let mut out = serde_json::Map::new();
+            for (name, v) in obj.iter() {
+                let sub = child_field(field, name, policy);
+                out.insert(name.clone(), analyze_json(v, sub, policy, analyzers, full)?);
+            }
+            Ok(serde_json::Value::Object(out))
+        }
+        OwnedValue::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                out.push(analyze_json(item, field, policy, analyzers, full)?);
+            }
+            Ok(serde_json::Value::Array(out))
+        }
+        leaf => {
+            let raw = leaf_text(leaf).unwrap_or_default();
+            match field {
+                Some(f) if f.kind == FieldKind::Text => {
+                    let analyzer = field_analyzer(f, analyzers);
+                    let (filtered, tokens) = analyzer.analyze_text(&raw);
+                    if full {
+                        let tokens_json: Vec<serde_json::Value> = tokens
+                            .iter()
+                            .map(|t| {
+                                serde_json::json!({
+                                    "text": t.text,
+                                    "position": t.position,
+                                    "position_length": t.position_length,
+                                    "start": t.start_byte,
+                                    "end": t.end_byte,
+                                })
+                            })
+                            .collect();
+                        Ok(serde_json::json!({
+                            "value": raw,
+                            "filtered": filtered,
+                            "tokens": tokens_json,
+                        }))
+                    } else {
+                        Ok(serde_json::Value::String(
+                            tokens
+                                .iter()
+                                .map(|t| t.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        ))
+                    }
+                }
+                Some(f) => {
+                    // same rule insert uses ("year": "eight" -> invalid_field)
+                    validate_leaf(f, leaf, &raw)
+                        .map_err(|e| CorelamoError::InvalidData(e.to_string()))?;
+                    Ok(owned_to_json(leaf))
+                }
+                None => Ok(owned_to_json(leaf)),
+            }
+        }
+    }
+}
+
+//analyze helpers
+fn child_field<'a>(
+    parent: Option<&'a FieldPolicy>,
+    name: &str,
+    policy: &'a IndexPolicy,
+) -> Option<&'a FieldPolicy> {
+    match parent {
+        Some(p) => p.subfields.iter().find(|s| s.name == name),
+        None => policy.field_by_path(name),
+    }
+}
+
+fn owned_to_json(value: &OwnedValue) -> serde_json::Value {
+    match value {
+        OwnedValue::String(s) => serde_json::Value::String(s.clone()),
+        OwnedValue::Static(StaticNode::Null) => serde_json::Value::Null,
+        OwnedValue::Static(StaticNode::Bool(b)) => serde_json::Value::Bool(*b),
+        OwnedValue::Static(StaticNode::I64(i)) => serde_json::Value::from(*i),
+        OwnedValue::Static(StaticNode::U64(u)) => serde_json::Value::from(*u),
+        OwnedValue::Static(StaticNode::F64(f)) => serde_json::Value::from(*f),
+        _ => serde_json::Value::Null,
+    }
+}
+
+//all-fields helpers
+fn collect_raw_field_names(source: &[u8], out: &mut BTreeSet<String>) -> Result<(), CorelamoError> {
+    let mut buf = source.to_vec();
+    let value: OwnedValue = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
+    walk_raw_fields(&value, "", out);
+    Ok(())
+}
+
+fn walk_raw_fields(value: &OwnedValue, prefix: &str, out: &mut BTreeSet<String>) {
+    match value {
+        OwnedValue::Object(obj) => {
+            for (name, v) in obj.iter() {
+                let path = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                out.insert(path.clone());
+                walk_raw_fields(v, &path, out);
+            }
+        }
+        OwnedValue::Array(items) => {
+            for item in items.iter() {
+                walk_raw_fields(item, prefix, out);
+            }
+        }
+        _ => {}
+    }
 }

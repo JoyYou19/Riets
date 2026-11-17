@@ -401,6 +401,23 @@ impl ResponseData for SearchResponse {
     }
 }
 
+#[derive(Deserialize)]
+pub struct AnalyzeRequest {
+    #[serde(default)]
+    pub options: AnalyzeOptions,
+    pub docs: serde_json::Value,
+}
+
+#[derive(Deserialize, Default)]
+pub struct AnalyzeOptions {
+    #[serde(default = "default_true")]
+    pub full: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(transparent)]
 pub struct RetrieveCommand {
