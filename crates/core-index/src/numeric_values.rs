@@ -2,7 +2,7 @@
 //TODO: coordinates, points.... would need K>1 BKD logic but for now i think this will do
 //
 //INFO: used by bkd/document_values
-use std::cmp::Ordering;
+use std::{cmp::Ordering, num::IntErrorKind};
 
 use std::collections::BTreeMap;
 
@@ -245,8 +245,43 @@ impl PartialOrd for NumericValue {
 
 impl Ord for NumericValue {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.as_f64().total_cmp(&other.as_f64())
+        match (self, other) {
+            (NumericValue::Int(a), NumericValue::Int(b)) => a.cmp(b),
+            (NumericValue::Float(a), NumericValue::Float(b)) => a.total_cmp(b),
+            (NumericValue::Int(i), NumericValue::Float(f)) => cmp_int_float(*i, *f),
+            (NumericValue::Float(f), NumericValue::Int(i)) => cmp_int_float(*i, *f).reverse(),
+        }
     }
+}
+
+//smart funciton to get the exact total order between an integer and a float.
+fn cmp_int_float(i: i64, f: f64) -> Ordering {
+    // NaN sorts last (matches f64::total_cmp's convention)
+    if f.is_nan() {
+        return Ordering::Less;
+    }
+    if f == f64::INFINITY {
+        return Ordering::Less; // i < +inf
+    }
+    if f == f64::NEG_INFINITY {
+        return Ordering::Greater; // i > -inf
+    }
+
+    // f is finite. A *fractional* f64 can only exist below 2^52, so an integer
+    // is either exactly representable there or far away — f64 comparison is exact.
+    if f.fract() != 0.0 {
+        return (i as f64).total_cmp(&f);
+    }
+
+    // f is a whole number: compare exactly as integers.
+    if f > i64::MAX as f64 {
+        return Ordering::Less;
+    }
+    if f < i64::MIN as f64 {
+        return Ordering::Greater;
+    }
+
+    i.cmp(&(f as i64))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,10 +292,12 @@ pub struct NumericBound {
 
 impl NumericBound {
     pub fn below_lo(self, value: NumericValue) -> bool {
-        value.as_f64().total_cmp(&self.value.as_f64()) == Ordering::Less
-            || (value.as_f64() == self.value.as_f64() && !self.inclusive)
+        match value.cmp(&self.value) {
+            Ordering::Less => true,
+            Ordering::Equal => !self.inclusive,
+            Ordering::Greater => false,
+        }
     }
-
     pub fn past_hi(self, value: NumericValue) -> bool {
         match value.cmp(&self.value) {
             Ordering::Greater => true,
@@ -276,8 +313,14 @@ pub struct NumericRange {
     pub hi: Option<NumericBound>,
 }
 
-pub fn parse_integer(raw: &str) -> Option<NumericValue> {
-    raw.trim().parse::<i64>().ok().map(NumericValue::Int)
+pub fn parse_integer(raw: &str) -> Result<NumericValue, &'static str> {
+    match raw.trim().parse::<i64>() {
+        Ok(v) => Ok(NumericValue::Int(v)),
+        Err(e) => match e.kind() {
+            IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => Err("out of i64 range"),
+            _ => Err("not an integer"),
+        },
+    }
 }
 
 // so that i64 sorts the same way that u64 does
@@ -325,16 +368,71 @@ pub fn unpack(packed: u64, kind: NumericKind) -> NumericValue {
 }
 
 //jobani ar +- 0.00
-pub fn parse_float(raw: &str) -> Option<NumericValue> {
-    let value: f64 = raw.trim().parse().ok()?;
+pub fn parse_float(raw: &str) -> Result<NumericValue, &'static str> {
+    let value: f64 = raw.trim().parse().map_err(|_| "not a number")?;
     if !value.is_finite() {
-        return None;
+        return Err("out of f64 range");
     }
-    //lai vienadi
     let value = if value == 0.0 { 0.0 } else { value };
-    Some(NumericValue::Float(value))
+    Ok(NumericValue::Float(value))
 }
 
 pub fn in_bounds(value: NumericValue, lo: Option<NumericBound>, hi: Option<NumericBound>) -> bool {
     lo.is_none_or(|lo| !lo.below_lo(value)) && hi.is_none_or(|hi| !hi.past_hi(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TWO_53: i64 = 1i64 << 53; // 9007199254740992
+
+    #[test]
+    fn int_cmp_is_exact_above_2_53() {
+        let a = NumericValue::Int(TWO_53);
+        let b = NumericValue::Int(TWO_53 + 1);
+        assert_eq!(a.cmp(&b), Ordering::Less);
+        assert_eq!(b.cmp(&a), Ordering::Greater);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mixed_int_float_still_compares_as_float() {
+        assert_eq!(
+            NumericValue::Int(2).cmp(&NumericValue::Float(1.5)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn range_matches_bkd_around_2_53() {
+        let xpath: XPathId = 0;
+        let points: Vec<(DocId, NumericValue)> = vec![
+            (1, NumericValue::Int(TWO_53)),
+            (2, NumericValue::Int(TWO_53 + 1)),
+            (3, NumericValue::Int(TWO_53 + 2)),
+        ];
+
+        // before flush: in-memory points (compare via cmp / in_bounds)
+        let mut mem = NumericPoints::default();
+        for &(doc_id, value) in &points {
+            mem.insert(xpath, value, doc_id);
+        }
+
+        // after flush: BKD (compares exact packed i64)
+        let fields = NumericFields::from_points(std::iter::once((xpath, points)).collect());
+
+        // exact filter: value == 2^53 + 1
+        let bound = NumericBound {
+            value: NumericValue::Int(TWO_53 + 1),
+            inclusive: true,
+        };
+        let mem_hits = mem.range(xpath, Some(bound), Some(bound));
+        let bkd_hits = fields.range(xpath, Some(bound), Some(bound));
+
+        assert_eq!(mem_hits, bkd_hits, "mem and BKD disagree around 2^53");
+        assert!(mem_hits.contains(2));
+        assert!(!mem_hits.contains(1));
+        assert!(!mem_hits.contains(3));
+    }
 }

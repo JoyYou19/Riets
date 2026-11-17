@@ -16,6 +16,7 @@ use core_index::document::policy::FieldKind;
 use core_index::document::{FieldPolicy, IndexPolicy};
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, select_expansions};
 use core_index::lsm::index_worker::Phase;
+use core_index::numeric_values::NumericValue;
 use core_index::types::{DocId, ShardId, XPathId, shard_of};
 use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{
@@ -1356,7 +1357,7 @@ impl ShardManager {
     /// Every shard reads the query and reports its statistics; merged, they make scores the
     /// same whichever shard a document is in. Fuzzy expansions are the costly part, so they are
     /// collected only when a typed word is in no document at all (a second round).
-        async fn collect_statistics(
+    async fn collect_statistics(
         &self,
         search: &CompiledSearch,
         typed: &OwnedValue,
@@ -1400,7 +1401,7 @@ impl ShardManager {
         })
     }
 
-        /// One round of `collect_statistics` on every shard. `previous`: the first round's shards,
+    /// One round of `collect_statistics` on every shard. `previous`: the first round's shards,
     /// which a second round extends instead of preparing again.
     async fn collect_statistics_once(
         &self,
@@ -2169,7 +2170,7 @@ impl ShardManager {
         //stupid but so that this works too insetead of passing filters
         let empty_groups = Arc::new(Vec::<QueryGroup>::new());
         let empty_plans = Arc::new(Vec::<RankPlan>::new());
-          let (_, prepared_shards) = self
+        let (_, prepared_shards) = self
             .collect_statistics_once(&empty_groups, &empty_plans, filters, None)
             .await?;
         let prepared_shards: Vec<Arc<PreparedShardSearch>> =
@@ -2276,7 +2277,7 @@ impl ShardManager {
             let plans = Arc::clone(&plans);
             set.spawn(async move {
                 let hit_count = bare_hits.len();
-               
+
                 let matching = match (want_matches, prepared, corpus) {
                     (true, Some(prep), Some(corp)) => {
                         let handle = handle.clone();
@@ -2594,11 +2595,11 @@ impl ShardManager {
 /// `add_vector_only`: also add documents only the vector side found (not for sorted searches,
 /// whose hits need sort keys). `items` must be sorted by `rank_order`.
 fn fuse_keeping_named(
-    mut items: Vec<(SearchHit, Vec<Option<f64>>)>,
+    mut items: Vec<(SearchHit, Vec<Option<NumericValue>>)>,
     vectors: &[VectorHit],
     named_limit: u8,
     add_vector_only: bool,
-) -> Vec<(SearchHit, Vec<Option<f64>>)> {
+) -> Vec<(SearchHit, Vec<Option<NumericValue>>)> {
     let named = items.partition_point(|(hit, _)| hit.tier < named_limit);
     let rest = items.split_off(named);
     let kept: HashSet<DocId> = items.iter().map(|(hit, _)| hit.doc_id).collect();
@@ -2626,12 +2627,12 @@ fn fuse_keeping_named(
 /// side found (they carry no sort keys, so sorted searches pass false). Fused scores are
 /// scaled so the best is 1.0, the scale blended sorting expects; all hits share tier 0.
 fn fuse_rrf(
-    words: Vec<(SearchHit, Vec<Option<f64>>)>,
+    words: Vec<(SearchHit, Vec<Option<NumericValue>>)>,
     vectors: &[VectorHit],
     add_vector_only: bool,
-) -> Vec<(SearchHit, Vec<Option<f64>>)> {
+) -> Vec<(SearchHit, Vec<Option<NumericValue>>)> {
     let contribution = |rank: usize| 1.0 / (RRF_K + (rank as f32) + 1.0);
-    let mut fused: HashMap<DocId, (SearchHit, Vec<Option<f64>>, f32)> =
+    let mut fused: HashMap<DocId, (SearchHit, Vec<Option<NumericValue>>, f32)> =
         HashMap::with_capacity(words.len() + vectors.len());
 
     for (rank, (hit, keys)) in words.into_iter().enumerate() {
@@ -2658,7 +2659,7 @@ fn fuse_rrf(
         .values()
         .map(|(_, _, score)| *score)
         .fold(0.0f32, f32::max);
-    let mut out: Vec<(SearchHit, Vec<Option<f64>>)> = fused
+    let mut out: Vec<(SearchHit, Vec<Option<NumericValue>>)> = fused
         .into_values()
         .map(|(mut hit, keys, score)| {
             hit.score = if best > 0.0 { score / best } else { 0.0 };
@@ -2748,8 +2749,8 @@ enum SpellingResult {
 
 /// Every shard's ranked hits, before they are merged into one order.
 struct ShardHits {
-    items: Vec<(SearchHit, Vec<Option<f64>>)>,
-    bounds: Vec<Vec<(Option<f64>, Option<f64>)>>,
+    items: Vec<(SearchHit, Vec<Option<NumericValue>>)>,
+    bounds: Vec<Vec<(Option<NumericValue>, Option<NumericValue>)>>,
     /// some shard had more matches than it returned
     some_full: bool,
 }
@@ -2891,7 +2892,7 @@ fn merge_and_sort(
     plans: &[RankPlan],
     shard_hits: ShardHits,
     vectors: Option<&[VectorHit]>,
-) -> Vec<(SearchHit, Vec<Option<f64>>)> {
+) -> Vec<(SearchHit, Vec<Option<NumericValue>>)> {
     let mut items = shard_hits.items;
     let named_limit = plans
         .iter()
