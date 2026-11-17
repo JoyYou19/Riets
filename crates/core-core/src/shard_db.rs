@@ -268,13 +268,25 @@ impl ShardDb {
         }
         let skip_bad = self.options.skip_unreplayable_wal_records;
 
-        let mut records: Vec<(u64, usize, Option<Vec<u8>>, WalRecord)> = Vec::new();
-        for (segment, n, payload) in self.wal
-            .replay_all()
-            .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))? {
+        let replay_err = |e: io::Error| {
+            CorelamoError::Internal(format!("failed to replay WAL: {e}"))
+        };
+
+        // Pass 1 decodes every record and keeps none of them, so memory stays at one record.
+        // An undecodable or damaged record still stops startup before anything is applied.
+        // `position` counts every record in WAL order; pass 2 walks the same order.
+        let mut last_clear: Option<usize> = None;
+        let mut to_replay = 0usize;
+        let mut position = 0usize;
+        for item in self.wal.records().map_err(replay_err)? {
+            let (segment, n, payload) = item.map_err(replay_err)?;
             match bincode::decode_from_slice::<WalRecord, _>(&payload, bincode::config::standard()) {
-                Ok((record, _)) => {
-                    records.push((segment, n, skip_bad.then_some(payload), record));
+                Ok((WalRecord::Clear, _)) => {
+                    last_clear = Some(position);
+                    to_replay = 0;
+                }
+                Ok(_) => {
+                    to_replay += 1;
                 }
                 Err(e) if skip_bad => {
                     let path = self
@@ -305,12 +317,9 @@ impl ShardDb {
                     );
                 }
             }
+            position += 1;
         }
-        if
-            let Some(last_clear) = records
-                .iter()
-                .rposition(|(_, _, _, r)| matches!(r, WalRecord::Clear))
-        {
+        if let Some(last_clear) = last_clear {
             info!(self.log, "WAL replay: finishing an interrupted clear";
             "shard_id" => self.shard_id, "records_dropped" => last_clear + 1);
             self
@@ -318,7 +327,6 @@ impl ShardDb {
                 .map_err(|e| {
                     CorelamoError::Internal(format!("finishing an interrupted clear failed: {e}"))
                 })?;
-            records.drain(..=last_clear);
         }
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents");
@@ -353,17 +361,31 @@ impl ShardDb {
 
         self.pending_checkpoints.clear();
 
-        let replayed_any = !records.is_empty();
+        let replayed_any = to_replay > 0;
 
         info!(self.log, "WAL recovery started";
         "shard_id" => self.shard_id,
         "wal_segment" => self.wal.current_segment(),
         "durable_offset" => self.wal.durable_offset(),
-        "records_to_replay" => records.len(),
+        "records_to_replay" => to_replay,
     );
 
         let batch_size = self.options.runtime.indexing_batch_size;
-        for (segment, n, payload, record) in records {
+        let mut position = 0usize;
+        for item in self.wal.records().map_err(replay_err)? {
+            let (segment, n, payload) = item.map_err(replay_err)?;
+            let at = position;
+            position += 1;
+            if last_clear.is_some_and(|clear| at <= clear) {
+                continue;
+            }
+            let Ok((record, _)) =
+                bincode::decode_from_slice::<WalRecord, _>(&payload, bincode::config::standard())
+            else {
+                continue; // quarantined in pass 1
+            };
+            // kept only to quarantine this record if applying it fails
+            let payload = skip_bad.then_some(payload);
             let kind = match &record {
                 WalRecord::Create(_) => "Create",
                 WalRecord::Upsert(_) => "Upsert",
@@ -1129,7 +1151,7 @@ impl ShardDb {
         }
 
         // 2. WAL (fsync) only what will be applied
-       let docs: Vec<WalDocumentRef<'_>> = inputs.iter().map(WalDocumentRef::from).collect();
+        let docs: Vec<WalDocumentRef<'_>> = inputs.iter().map(WalDocumentRef::from).collect();
         self.wal_append_record(&WalRecordRef::Replace(&docs))?;
         self.pending += inputs.len() as u32;
         let batch_size = self.options.runtime.indexing_batch_size;
@@ -1454,10 +1476,10 @@ impl ShardDb {
         shard_backup_path: &PathBuf,
         backup_id: &String
     ) -> Result<BackupManifest, CorelamoError> {
-        let record_count = self.wal
-            .replay_all()
-            .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?
-            .len();
+       let record_count = self.wal
+            .records()
+            .and_then(|mut records| records.try_fold(0usize, |count, record| record.map(|_| count + 1)))
+            .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
         let progress = self.stats.backup_progress().clone();
         self.backup
             .create_full_backup(
@@ -1721,8 +1743,8 @@ impl ShardDb {
         self.last_write = Instant::now();
         Ok(())
     }
-    fn stop_background_worker(&self, worker:BackgroundWorker){
-        if let Err(err) = worker.stop(){
+    fn stop_background_worker(&self, worker: BackgroundWorker) {
+        if let Err(err) = worker.stop() {
             warn!(self.log, "background worker stopped with an error"; "shard_id" => self.shard_id, "error" => &err);
         }
     }

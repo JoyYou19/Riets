@@ -21,7 +21,7 @@ use std::{
 
 use crate::document_store::{DocumentStore, StoredDocument};
 use ahash::{HashMap, HashMapExt, HashSet};
-use core_index::types::{DocId, LocalDocId};
+use core_index::types::DocId;
 use core_protocol::format::Format;
 use core_timing::timed;
 use dashmap::DashMap;

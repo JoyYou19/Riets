@@ -1,8 +1,7 @@
 use core_index::{
-    analyzer::{analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, word_delimiter}, fuzzy::{ DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingCursor, PostingList, cursor::TermCursor }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ ArrayRowId, DocId, XPathId, position_span, position_start },
+    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, fuzzy::{ DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingCursor, PostingList, cursor::TermCursor }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ ArrayRowId, DocId, XPathId, position_span, position_start },
 };
 use roaring::RoaringTreemap;
-use unicode_segmentation::USentenceBoundIndices;
 use std::{ borrow::Cow, collections::{ BinaryHeap, HashMap, hash_map::Entry } };
 
 use ahash::{ HashSet, HashSetExt };
