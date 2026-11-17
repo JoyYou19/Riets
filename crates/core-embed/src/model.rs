@@ -7,9 +7,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fastembed::{ EmbeddingModel, TextInitOptions, TextEmbedding };
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use hf_hub::api::sync::ApiBuilder;
-
 
 use crate::config::ModelConfig;
 use crate::device::Device;
@@ -184,7 +183,7 @@ fn bge_small_en() -> EmbeddingModel {
 
 pub static MODELS: &[ModelSpec] = &[
     ModelSpec {
-        id: "bge-small-en-v1.5",
+        id: "bge-small-en-v1.5-quantized",
         dims: 384,
         backend: Backend::FastEmbed(bge_small_en),
         query_prefix: "Represent this sentence for searching relevant passages: ",
@@ -212,7 +211,7 @@ pub static MODELS: &[ModelSpec] = &[
         document_prefix: "",
     },
     ModelSpec {
-        id: "multilingual_e5_large",
+        id: "multilingual-e5-large",
         dims: 1024,
         backend: Backend::Pooled(multilingual_e5_large, Pooling::Mean),
         query_prefix: "query: ",
