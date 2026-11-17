@@ -28,7 +28,8 @@ pub trait DocumentStore {
     fn get(&self, external_id: &str) -> io::Result<Option<StoredDocument>>;
     fn delete(&mut self, external_id: &str) -> io::Result<()>;
     fn max_internal_id(&self) -> DocId;
-
+    //forgets the internal ids of versions that a rewrite has replaced 
+    fn retire_internal_ids(&mut self, _old_ids: &[DocId]) {}
     fn document_count(&self) -> usize;
     fn contains(&self, external_id: &str) -> io::Result<bool>;
     fn sync(&self) -> io::Result<()>;

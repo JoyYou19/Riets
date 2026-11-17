@@ -1487,7 +1487,7 @@ impl ShardDb {
         if self.db.is_some() {
             self.start_background();
         } else if let Some(worker) = self.background_worker.take() {
-            worker.stop_async();
+            self.stop_background_worker(worker);
         }
     }
 
@@ -1721,12 +1721,14 @@ impl ShardDb {
         self.last_write = Instant::now();
         Ok(())
     }
-    /// Starts compaction and embedding for the live index, replacing any running worker.
-    /// Starts compaction, embedding and store compaction for the live index, replacing any
-    /// running worker.
+    fn stop_background_worker(&self, worker:BackgroundWorker){
+        if let Err(err) = worker.stop(){
+            warn!(self.log, "background worker stopped with an error"; "shard_id" => self.shard_id, "error" => &err);
+        }
+    }
     fn start_background(&mut self) {
         if let Some(worker) = self.background_worker.take() {
-            worker.stop_async();
+            self.stop_background_worker(worker);
         }
         self.stats.set_activity(BackgroundActivity::Idle);
         self.stats.set_embedding_waiting(false);
