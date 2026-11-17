@@ -506,6 +506,10 @@ impl ShardManager {
         self.shards.iter().all(ShardHandle::is_running)
     }
 
+    pub fn any_running(&self) -> bool {
+        self.shards.iter().any(ShardHandle::is_running)
+    }
+
     #[timed(database_lifecycle)]
     pub async fn stop(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
