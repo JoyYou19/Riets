@@ -113,10 +113,7 @@ impl BackgroundWorker {
     }
 
    
-    pub fn stop_async(mut self) {
-        self.signal_stop();
-        self.handle.take();
-    }
+   
 }
 
 impl Drop for BackgroundWorker {
@@ -210,7 +207,7 @@ impl BackgroundLoop {
         }
     }
 
-    fn compact_once(&mut self, _stop: &AtomicBool) -> io::Result<bool> {
+    fn compact_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
         let Some(config) = self.config.compaction else {
             return Ok(false);
         };
@@ -218,12 +215,12 @@ impl BackgroundLoop {
             .stats
             .set_activity(BackgroundActivity::Compacting);
         let started = Instant::now();
-        let result = run_compaction_cycle(&self.config.index, config, &self.config.log);
+        let result = run_compaction_cycle(&self.config.index, config,stop, &self.config.log);
         self.config.stats.set_activity(BackgroundActivity::Idle);
         match &result {
             Ok(true) => self.config.stats.record_compaction(true, started.elapsed()),
             Ok(false) => {}
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
+            Err(e) if matches!(e.kind(), io::ErrorKind::BrokenPipe| io::ErrorKind::Interrupted) =>{}
             Err(e) => {
                 self.config
                     .stats

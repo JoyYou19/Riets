@@ -27,7 +27,6 @@ use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
 
-//                  hihi haha part 2
 const MAGIC: &[u8; 8] = b"BANANA_F";
 /// The header of a segment written by store compaction. Until the maps file lists it, such a
 /// segment is an unfinished install: its documents are copies, and the old segments still hold them.
@@ -847,11 +846,18 @@ impl DocumentStore for BinaryDocumentStore {
         self.highest_id.fetch_max(internal_id, Ordering::Relaxed);
         Ok(())
     }
-
+    
     fn max_internal_id(&self) -> DocId {
         self.highest_id.load(Ordering::Relaxed)
     }
-
+    fn retire_internal_ids(&mut self, old_ids: &[DocId]) {
+        for &old_id in old_ids {
+            //Remove only while the externa ids curent version is a different one so still live id is never removed 
+            self.internal_to_external.remove_if(&old_id, |_,external_id|{
+                self.locations.get(external_id).is_none_or(|loc| loc.internal_id !=old_id)
+            });
+        }
+    }
     fn document_count(&self) -> usize {
         self.locations.len()
     }

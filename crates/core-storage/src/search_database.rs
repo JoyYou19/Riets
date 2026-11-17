@@ -415,7 +415,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
 
         // earlier insert batches must reach the worker first
         self.wait_index_in_flight()?;
-
+        self.store.put_batch(stored)?;
+        let retired =old_ids.clone();
         if indexed.is_empty() {
             // StoreOnly: nothing to add, so the delete publishes on its own
             self.index_worker.delete_documents_wait(old_ids, true)?;
@@ -439,8 +440,8 @@ impl<S: DocumentStore> SearchDatabase<S> {
             deleted.wait()?;
             added.wait()?;
         }
-
-        self.store.put_batch(stored)
+        self.store.retire_internal_ids(&retired);
+       Ok(()) 
     }
 
     #[timed(modifying_documents)]

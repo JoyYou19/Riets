@@ -1,9 +1,5 @@
 use core_index::{
-    analyzer::analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
-    fuzzy::{FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions},
-    posting::{Posting, PostingCursor, PostingList, cursor::TermCursor},
-    search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{ArrayRowId, DocId, XPathId, position_span, position_start},
+    analyzer::analyzer::{ Analyzer, NAME_KEY, QUALIFIED_NAME_KEY }, fuzzy::{ DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec, select_expansions }, posting::{ Posting, PostingCursor, PostingList, cursor::TermCursor }, search::{ SearchIndex, SearchNumeric, SearchStats }, types::{ ArrayRowId, DocId, XPathId, position_span, position_start },
 };
 use roaring::RoaringTreemap;
 use std::{
@@ -32,11 +28,13 @@ use crate::{
         wand_top_k_multi_field,
     },
 };
-
+//fuzzy const 
 // A fuzzy query with more words than this matches nothing (one bit per word is tracked).
 const MAX_FUZZY_WORDS: usize = 64;
-// Closeness of words found in another order than typed (or not next to each other), see
-// `apply_density`.
+const TYPO_MAX_DOC_FREQ:u32 =500;
+//when a correction within the fuzzy edits is in at least this many times as many documents.
+const TYPO_RATIO:u32= 20;
+//phrase const 
 const OUT_OF_ORDER: f32 = 0.8;
 
 #[derive(Debug, Clone)]
@@ -2284,9 +2282,9 @@ where
                         }
                         ranked(score_with, fetch, Some(&allowed))
                     }
-                    Tier::Fuzzy(Query::Fuzzy(raw, ..))
-                        if self.all_words_known(raw, &plain_xpaths) =>
-                    {
+                    Tier::Fuzzy(Query::Fuzzy(raw, _,spec)) if
+                        self.all_words_known(raw, &plain_xpaths,*spec)
+                    => {
                         continue;
                     }
                     // a larger pool, so pages with more words survive until they are scored
@@ -2380,12 +2378,22 @@ where
         if plan.words.is_empty() {
             return shares;
         }
-        let stats = self.stats();
+       let stats = self.stats();
+        let spec = plan_fuzzy_spec(plan);
+        let plain_xpaths: Vec<XPathId> = ctxs
+            .iter()
+            .filter(|ctx| !ctx.row_keyed)
+            .map(|ctx| ctx.xpath)
+            .collect();
         let weight_of = |word: &str| -> f32 {
+            // a likely typo weighs as its correction would: a village named like the typo
+            // ("Holand") must not hold most of the query's weight because the typo is rare
+            let correction = self.likely_typo(word, &plain_xpaths, spec);
             ctxs.iter()
                 .filter(|ctx| !ctx.row_keyed)
                 .filter_map(|ctx| {
-                    let doc_freq = self.term_doc_freq(word, ctx.xpath);
+                    let doc_freq =
+                        correction.unwrap_or_else(|| self.term_doc_freq(word, ctx.xpath));
                     let docs = stats.doc_count(ctx.xpath);
                     (doc_freq > 0 && docs > 0).then(|| bm25_idf(doc_freq, docs))
                 })
@@ -2749,13 +2757,39 @@ where
         }
     }
 
-    fn all_words_known(&self, raw: &str, xpaths: &[XPathId]) -> bool {
-        self.fuzzy_words(raw).iter().all(|word| {
-            xpaths
-                .iter()
-                .any(|&xpath| self.term_doc_freq(word, xpath) > 0)
-        })
+     fn all_words_known(&self, raw: &str, xpaths: &[XPathId], spec: FuzzySpec) -> bool {
+        self.fuzzy_words(raw)
+            .iter()
+            .all(|word| {
+                xpaths.iter().any(|&xpath| self.term_doc_freq(word, xpath) > 0) &&
+                    self.likely_typo(word, xpaths, spec).is_none()
+            })
     }
+    /// The document count of the likely correction when `word` looks like a typo: the word is
+    /// rare, and a candidate within the fuzzy edits is far more common ("holand", a few villages,
+    /// next to "holland"). `None` for an unknown word (fuzzy's case already) and a common one.
+    fn likely_typo(&self, word: &str, xpaths: &[XPathId], spec: FuzzySpec) -> Option<u32> {
+        let own = xpaths
+            .iter()
+            .map(|&xpath| self.term_doc_freq(word, xpath))
+            .max()
+            .unwrap_or(0);
+        if own == 0 || own > TYPO_MAX_DOC_FREQ {
+            return None;
+        }
+        let opts = fuzzy_options(word, Fuzziness::Auto, spec);
+        if opts.max_edits == 0 {
+            return None;
+        }
+        let correction = xpaths
+            .iter()
+            .flat_map(|&xpath| self.fuzzy_candidates(word, xpath, opts))
+            .filter(|candidate| candidate.edits > 0 && candidate.term != word)
+            .map(|candidate| candidate.doc_freq)
+            .max()?;
+        (correction >= own.saturating_mul(TYPO_RATIO)).then_some(correction)
+    }
+
 
     //helpers for highlights
     /// `term`'s posting for one document, read through a cursor: only the block holding the
@@ -3062,6 +3096,13 @@ fn merge_scored(a: &[ScoredPosting], b: &[ScoredPosting], out: &mut Vec<ScoredPo
 
     out.extend_from_slice(&a[i..]);
     out.extend_from_slice(&b[j..]);
+}
+fn plan_fuzzy_spec(plan:&RankPlan) ->FuzzySpec{
+    plan.tiers.iter().find_map(|tier| match tier {
+        Tier::Fuzzy(Query::Fuzzy(_,_,spec)) => Some(*spec),
+        _=> None
+    })
+    .unwrap_or(FuzzySpec { prefix_length: DEFAULT_PREFIX_LENGTH, max_expansions: DEFAULT_MAX_EXPANSIONS })
 }
 //derives how much a word can be fuzzed basically
 pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {

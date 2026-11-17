@@ -28,7 +28,7 @@ pub struct ModelConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            model_id: "bge-small-en-v1.5".to_string(),
+            model_id: "bge-m3".to_string(),
             instances: 1,
             batch_size: 128,
             max_tokens: 256,

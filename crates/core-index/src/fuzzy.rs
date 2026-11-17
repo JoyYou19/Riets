@@ -3,13 +3,10 @@ use fst::{Automaton, IntoStreamer, Streamer};
 
 pub const DEFAULT_PREFIX_LENGTH: usize = 0;
 //now max terms that the query expand to
-pub const DEFAULT_MAX_EXPANSIONS: usize = 3;
+pub const DEFAULT_MAX_EXPANSIONS: usize = 50;
 /// Safety cap on distinct candidate terms gathered before ranking. Only
 /// pathological queries (very short terms with high `max_edits`) reach it.
 pub const DEFAULT_MAX_CANDIDATES: usize = 1000;
-/// Score multiplier for a term that is not the user's exact input, so documents
-/// containing the literal query term rank slightly above corrected matches.
-pub const CORRECTED_TERM_BOOST: f32 = 0.8;
 
 /// Hard ceiling on `max_edits`. Row cells are `u8` saturating at `max_edits + 1`.
 pub const MAX_SUPPORTED_EDITS: u8 = 3;
@@ -59,14 +56,8 @@ impl FuzzyExpansion {
             doc_freq,
         }
     }
-    /// Multiplier the executor applies to this term's BM25 contribution.
-    pub fn boost(&self) -> f32 {
-        if self.edits == 0 {
-            1.0
-        } else {
-            CORRECTED_TERM_BOOST
-        }
-    }
+
+    
 }
 
 pub fn default_max_edits(term: &str) -> u8 {
