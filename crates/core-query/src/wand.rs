@@ -709,7 +709,6 @@ fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
 /// Up to this many allowed documents are visited one by one (see `wand_top_k_grouped`).
 const DIRECT_RESTRICT_MAX: usize = 4096;
 
-#[timed(search)]
 pub fn wand_top_k_grouped<'a, S: SearchStats>(
     stats: &S,
     fields: Vec<FieldClauses<'a>>,
@@ -717,8 +716,23 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
     coverage: Option<f32>,
     restrict: Option<&RoaringTreemap>
 ) -> Vec<WandHit> {
-    if k == 0 {
-        return Vec::new();
+    wand_top_k_grouped_with_any(stats, fields, k, coverage, restrict, 0).0
+}
+
+/// `wand_top_k_grouped`, and in the same walk the top `any_k` documents holding any clause,
+/// ranked by their plain BM25 sum (the "any word" source). The walk skips only what neither
+/// list could take. `any_k == 0`: just the first list.
+#[timed(search)]
+pub fn wand_top_k_grouped_with_any<'a, S: SearchStats>(
+    stats: &S,
+    fields: Vec<FieldClauses<'a>>,
+    k: usize,
+    coverage: Option<f32>,
+    restrict: Option<&RoaringTreemap>,
+    any_k: usize
+) -> (Vec<WandHit>, Vec<WandHit>) {
+    if k == 0 && any_k == 0 {
+        return (Vec::new(), Vec::new());
     }
 
     let mut clauses: Vec<ClauseCursor<'a>> = fields
@@ -729,6 +743,7 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
         .collect();
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
+    let mut any_heap = BinaryHeap::<HeapHit>::with_capacity(any_k + 1);
 
     // the whole query's weight (the words the index has), and the part a document has to cover
     let total_weight: f32 = clauses
@@ -740,7 +755,12 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
     let covers = |weight: f32| weight + 1e-4 >= needed;
     // a document's score from the clauses on it, scaled by how much of the query it covers;
     // `None` when it covers too little (or nothing)
-    let evaluate = |clauses: &mut [ClauseCursor<'_>], doc: DocId| -> Option<(u64, u64, usize)> {
+    // `None` when no clause is on the doc; otherwise (scaled score, plain sum, clauses matched,
+    // whether it covers enough for the first list)
+    let evaluate = |
+        clauses: &mut [ClauseCursor<'_>],
+        doc: DocId
+    | -> Option<(u64, u64, usize, bool)> {
         let mut score = 0u64;
         let mut matched_terms = 0usize;
         let mut matched_weight = 0.0f32;
@@ -751,15 +771,30 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
                 matched_weight += clause.weight;
             }
         }
-        if matched_terms == 0 || !covers(matched_weight) {
+        if matched_terms == 0 {
             return None;
         }
+        let covered = covers(matched_weight);
         let raw = score;
-        if coverage.is_some() && total_weight > 0.0 {
+        if covered && coverage.is_some() && total_weight > 0.0 {
             let covered = f64::from((matched_weight / total_weight).min(1.0));
             score = ((score as f64) * covered.powf(f64::from(COVERAGE_POWER))) as u64;
         }
-        Some((score, raw, matched_terms))
+        Some((score, raw, matched_terms, covered))
+    };
+    // a scored doc into the lists that take it
+    let collect = |
+        heap: &mut BinaryHeap<HeapHit>,
+        any_heap: &mut BinaryHeap<HeapHit>,
+        doc: DocId,
+        (score, raw, matched_terms, covered): (u64, u64, usize, bool)
+    | {
+        if covered && k > 0 {
+            push_top_k(heap, doc, score, raw, matched_terms, k);
+        }
+        if any_k > 0 {
+            push_top_k(any_heap, doc, raw, raw, matched_terms, any_k);
+        }
     };
 
     // a few allowed documents: go to each of them (the cursors gallop) instead of walking every
@@ -771,11 +806,11 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
             for clause in &mut clauses {
                 clause.advance_to(doc);
             }
-            if let Some((score, raw, matched_terms)) = evaluate(&mut clauses, doc) {
-                push_top_k(&mut heap, doc, score, raw, matched_terms, k);
+            if let Some(found) = evaluate(&mut clauses, doc) {
+                collect(&mut heap, &mut any_heap, doc, found);
             }
         }
-        return finish_heap(heap);
+        return (finish_heap(heap), finish_heap(any_heap));
     }
 
     loop {
@@ -785,7 +820,18 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
         }
         clauses.sort_unstable_by_key(|clause| clause.doc_id().unwrap());
 
-        let threshold = if heap.len() < k { 0 } else { heap.peek().map_or(0, |hit| hit.score) };
+        let pool_threshold = if k == 0 {
+            u64::MAX
+        } else if heap.len() < k {
+            0
+        } else {
+            heap.peek().map_or(0, |hit| hit.score)
+        };
+        let any_threshold = (any_k > 0).then(|| {
+            if any_heap.len() < any_k { 0 } else { any_heap.peek().map_or(0, |hit| hit.score) }
+        });
+        // what a doc must be able to beat to be worth scoring: the lower of the two
+        let threshold = any_threshold.map_or(pool_threshold, |any| any.min(pool_threshold));
 
         // the first clause where the clauses up to it can both beat the threshold and cover
         // enough of the query: a document before its document is on fewer of them than that.
@@ -796,11 +842,10 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
         for (index, clause) in clauses.iter().enumerate() {
             accumulated_upper_bound = accumulated_upper_bound.saturating_add(clause.upper_bound);
             accumulated_weight += clause.weight;
-            if
-                accumulated_upper_bound >= threshold &&
-                accumulated_upper_bound > 0 &&
-                covers(accumulated_weight)
-            {
+            // the first list needs coverage too; the any list only a score that can beat its own
+            let for_pool = accumulated_upper_bound >= pool_threshold && covers(accumulated_weight);
+            let for_any = any_threshold.is_some_and(|any| accumulated_upper_bound >= any);
+            if accumulated_upper_bound > 0 && (for_pool || for_any) {
                 pivot_index = Some(index);
                 break;
             }
@@ -828,6 +873,8 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
 
             // block-max: if the blocks the pivot's clauses are in cannot beat the threshold
             // together, no doc up to the end of the shortest of those blocks can: jump past it
+            // (the lower threshold of the two lists; a covered score is never above the plain
+            // sum, so the plain block bound is safe for both)
             if threshold > 0 {
                 let mut block_bound = 0u64;
                 let mut skip_to = clauses.get(on_pivot).and_then(|clause| clause.doc_id());
@@ -887,9 +934,9 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
 
             if
                 restrict.is_none_or(|docs| docs.contains(pivot_doc)) &&
-                let Some((score, raw, matched_terms)) = evaluate(&mut clauses, pivot_doc)
+                let Some(found) = evaluate(&mut clauses, pivot_doc)
             {
-                push_top_k(&mut heap, pivot_doc, score, raw, matched_terms, k);
+                collect(&mut heap, &mut any_heap, pivot_doc, found);
             }
 
             for clause in &mut clauses {
@@ -904,7 +951,7 @@ pub fn wand_top_k_grouped<'a, S: SearchStats>(
         }
     }
 
-    finish_heap(heap)
+    (finish_heap(heap), finish_heap(any_heap))
 }
 
 /// `conjunctive_top_k_multi_field` for clauses that may be synonym groups: every clause has to

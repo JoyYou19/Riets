@@ -21,9 +21,9 @@ use crate::{
 pub const COVERAGE_POWER: f32 = 2.0;
 /// Share of the query's weight a document needs to enter the ranked pool, when the plan allows
 /// partial matches.
-pub const MIN_COVERAGE: f32 = 0.5;
+pub const MIN_COVERAGE: f32 = 0.7;
 /// Candidates the ranked pool keeps before the final scoring.
-pub const POOL_SIZE: usize = 200;
+pub const POOL_SIZE: usize = 500;
 /// Candidates the "any word" source keeps, so pages holding more words survive to be scored.
 pub const ANY_POOL_SIZE: usize = 300;
 /// Clauses tracked in `SearchHit::mask`, one bit each; longer queries are scored without

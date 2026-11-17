@@ -357,8 +357,13 @@ impl ShardHandle {
         groups: &[QueryGroup],
         plans: &[RankPlan],
         filters: Option<&HashMap<String, FieldQuery>>,
+        previous: Option<PreparedShardSearch>,
     ) -> PreparedShardSearch {
-        let snapshot = self.shared.snapshot.get();
+        // a second round extends the first: same snapshot, same filter, its lists kept
+        let (snapshot, mut earlier, earlier_filter) = match previous {
+            Some(p) => (p.snapshot, p.prepared.into_iter(), Some(p.filter)),
+            None => (self.shared.snapshot.get(), Vec::new().into_iter(), None),
+        };
         let mut prepared = Vec::with_capacity(groups.len());
         for (group, plan) in groups.iter().zip(plans) {
             let Some(query) = group.query.as_ref() else {
@@ -368,7 +373,9 @@ impl ShardHandle {
                 plan.queries()
                     .filter(|tier| Some(*tier) != group.query.as_ref()),
             );
-            let p = QueryExecutor::new(&*snapshot, &group.analyzer).prepare(queries, &group.ctxs);
+            // groups with a query are prepared in the same order every round
+            let base = earlier.next().unwrap_or_default();
+            let p = QueryExecutor::new(&*snapshot, &group.analyzer).prepare(queries, &group.ctxs, base);
             prepared.push(p);
         }
 
@@ -377,9 +384,12 @@ impl ShardHandle {
             stats.merge(p.stats());
         }
 
-        let filter = filters
-            .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f))
-            .map(Arc::new);
+        let filter = match earlier_filter {
+            Some(filter) => filter,
+            None => filters
+                .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f))
+                .map(Arc::new),
+        };
 
         PreparedShardSearch {
             snapshot,
@@ -731,7 +741,7 @@ impl ShardHandle {
 
     //reusing the cached snapshots so no index reads for the final document highlights
     #[timed(highlight)]
-    pub fn matched_terms_for(
+        pub fn matched_terms_for(
         &self,
         hits: &[SearchHit],
         groups: &[QueryGroup],
@@ -740,6 +750,7 @@ impl ShardHandle {
         corpus: &CorpusStats,
     ) -> Vec<Vec<MatchedTerm>> {
         let mut out: Vec<Vec<MatchedTerm>> = vec![Vec::new(); hits.len()];
+        let docs: Vec<DocId> = hits.iter().map(|hit| hit.doc_id).collect();
 
         let mut prepared_iter = prepared.prepared.iter();
         for (group, plan) in groups.iter().zip(plans) {
@@ -759,14 +770,14 @@ impl ShardHandle {
                 .filter(|quer| Some(*quer) != group.query.as_ref())
                 .collect();
 
-            for (i, hit) in hits.iter().enumerate() {
-                //all tiers
-                let mut matches = executor.matched_terms(query, hit.doc_id, &group.ctxs);
-                //matches from typos or missing shit
-                for tier_query in &tier_queries {
-                    matches.extend(executor.matched_terms(tier_query, hit.doc_id, &group.ctxs));
-                }
-                if !matches.is_empty() {
+            // the main query first, then every tier: the order each hit's matches had before
+            let main = executor.matched_terms(query, &docs, &group.ctxs);
+            for (i, matches) in main.into_iter().enumerate() {
+                out[i].extend(matches);
+            }
+            for tier_query in &tier_queries {
+                let tier = executor.matched_terms(tier_query, &docs, &group.ctxs);
+                for (i, matches) in tier.into_iter().enumerate() {
                     out[i].extend(matches);
                 }
             }

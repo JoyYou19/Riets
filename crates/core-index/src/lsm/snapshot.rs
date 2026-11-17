@@ -185,6 +185,14 @@ impl SearchIndex for IndexSnapshot {
         self.deleted.remove_from(&mut ids);
         *out |= ids;
     }
+    fn live_doc_ids(&self) -> Option<RoaringTreemap> {
+        let mut out = RoaringTreemap::new();
+        if let Some((min, max)) = self.doc_range() {
+            out.insert_range(min..=max);
+            self.deleted.remove_from(&mut out);
+        }
+        Some(out)
+    }
 }
 
 impl SearchNumeric for IndexSnapshot {

@@ -91,6 +91,31 @@ pub(crate) fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
         b.len(),
         "dot product of vectors with different dims"
     );
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vnni")
+        {
+            // SAFETY: every feature the kernel enables was just detected.
+            return unsafe { x86::dot_i8_avx512_vnni(a, b) };
+        }
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 was just detected.
+            return unsafe { x86::dot_i8_avx2(a, b) };
+        }
+    }
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    {
+        return unsafe { neon::dot_i8(a, b) };
+    }
+    #[allow(unreachable_code)]
+    dot_i8_portable(a, b)
+}
+
+/// Portable int8 dot product: independent accumulators the compiler can vectorise.
+/// The SIMD kernels also use it for the bytes left over after their last full block.
+fn dot_i8_portable(a: &[u8], b: &[u8]) -> i32 {
     let mut lanes = [0i32; DOT_LANES];
     let a_chunks = a.chunks_exact(DOT_LANES);
     let b_chunks = b.chunks_exact(DOT_LANES);
@@ -115,6 +140,11 @@ pub(crate) fn approx_cosine(dot: i32, row_scale: f32, query_scale: f32) -> f32 {
 }
 
 /// Exact dot product of two f32 vectors (cosine when both are L2-normalized).
+///
+/// Dispatches like [`dot_i8`]: AVX2 with FMA on x86-64, NEON on aarch64, the portable loop
+/// everywhere else. The SIMD kernels add in a different order and use fused multiply-add, so
+/// the last bits of a score can differ between CPUs. A process always uses the same kernel,
+/// so its own scores are repeatable.
 #[inline]
 pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(
@@ -122,6 +152,24 @@ pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
         b.len(),
         "dot product of vectors with different dims"
     );
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: AVX2 and FMA were just detected.
+            return unsafe { x86::dot_f32_avx2(a, b) };
+        }
+    }
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    {
+        return unsafe { neon::dot_f32(a, b) };
+    }
+    #[allow(unreachable_code)]
+    dot_f32_portable(a, b)
+}
+
+/// Portable f32 dot product: independent accumulators the compiler can vectorise.
+/// The SIMD kernels also use it for the values left over after their last full block.
+fn dot_f32_portable(a: &[f32], b: &[f32]) -> f32 {
     let mut lanes = [0f32; DOT_LANES];
     let a_chunks = a.chunks_exact(DOT_LANES);
     let b_chunks = b.chunks_exact(DOT_LANES);
@@ -138,78 +186,218 @@ pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     }
     lanes.iter().sum::<f32>() + tail
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    fn naive_i8(a: &[i8], b: &[i8]) -> i32 {
-        a.iter()
-            .zip(b)
-            .map(|(&x, &y)| i32::from(x) * i32::from(y))
-            .sum()
-    }
+/// x86-64 kernels. Each needs CPU features the baseline build doesn't assume, so each is
+/// `unsafe` to call, and the dispatchers call it only after detecting those features.
+#[cfg(target_arch = "x86_64")]
+mod x86 {
+    use super::{dot_f32_portable, dot_i8_portable};
+    use std::arch::x86_64::{
+        __m256, __m256i, __m512i, __mmask64, _mm_add_epi32, _mm_add_ps, _mm_add_ss,
+        _mm_cvtsi128_si32, _mm_cvtss_f32, _mm_movehl_ps, _mm_shuffle_epi32, _mm_shuffle_ps,
+        _mm256_add_epi32, _mm256_add_ps, _mm256_castps256_ps128, _mm256_castsi256_si128,
+        _mm256_extractf128_ps, _mm256_extracti128_si256, _mm256_fmadd_ps, _mm256_loadu_ps,
+        _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_set1_epi16,
+        _mm256_setzero_ps, _mm256_setzero_si256, _mm256_sign_epi8, _mm512_abs_epi8,
+        _mm512_add_epi32, _mm512_dpbusd_epi32, _mm512_loadu_si512, _mm512_mask_sub_epi8,
+        _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_reduce_add_epi32,
+        _mm512_setzero_si512,
+    };
 
-    #[test]
-    fn dot_i8_matches_naive_across_lane_boundaries() {
-        for len in [1, 15, 16, 17, 33, 4096] {
-            let a: Vec<i8> = (0..len).map(|i| ((i * 37) % 255) as i8).collect();
-            let b: Vec<i8> = (0..len).map(|i| ((i * 91 + 7) % 255) as i8).collect();
-            let bytes = |v: &[i8]| v.iter().map(|&x| x as u8).collect::<Vec<u8>>();
-            assert_eq!(
-                dot_i8(&bytes(&a), &bytes(&b)),
-                naive_i8(&a, &b),
-                "len {len}"
-            );
+    /// int8 dot product, 32 bytes per step.
+    ///
+    /// `maddubs` multiplies unsigned bytes by signed bytes, so the sign of each `a` byte is first
+    /// moved onto the matching `b` byte: `|a| × (b × sign(a)) = a × b`. The 16-bit pair sums
+    /// stay in range, so `maddubs` never saturates, and `madd` with ones widens them to 32 bits.
+    ///
+    /// # Safety
+    /// The CPU must support AVX2.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn dot_i8_avx2(a: &[u8], b: &[u8]) -> i32 {
+        let a_chunks = a.chunks_exact(32);
+        let b_chunks = b.chunks_exact(32);
+        let tail = dot_i8_portable(a_chunks.remainder(), b_chunks.remainder());
+        let ones = _mm256_set1_epi16(1);
+        let mut acc = _mm256_setzero_si256();
+        for (x, y) in a_chunks.zip(b_chunks) {
+            // SAFETY: each chunk is exactly 32 bytes, and `loadu` accepts unaligned pointers.
+            let (xv, yv) = unsafe {
+                (
+                    _mm256_loadu_si256(x.as_ptr().cast()),
+                    _mm256_loadu_si256(y.as_ptr().cast()),
+                )
+            };
+            let pairs = _mm256_maddubs_epi16(_mm256_sign_epi8(xv, xv), _mm256_sign_epi8(yv, xv));
+            acc = _mm256_add_epi32(acc, _mm256_madd_epi16(pairs, ones));
         }
+        hsum_epi32(acc) + tail
     }
 
-    #[test]
-    fn dot_f32_matches_naive() {
-        let a: Vec<f32> = (0..37).map(|i| i as f32 * 0.25).collect();
-        let b: Vec<f32> = (0..37).map(|i| 1.0 - i as f32 * 0.5).collect();
-        let naive: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
-        assert!((dot_f32(&a, &b) - naive).abs() < 1e-3);
+    /// int8 dot product, 64 bytes per step, using AVX-512 VNNI (`vpdpbusd`).
+    ///
+    /// Like [`dot_i8_avx2`], it multiplies unsigned by signed bytes, so the signs of `a` move
+    /// onto `b`. The last partial block uses a masked load, so there is no scalar tail.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512F, AVX-512BW and AVX-512 VNNI.
+    #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+    pub(super) unsafe fn dot_i8_avx512_vnni(a: &[u8], b: &[u8]) -> i32 {
+        let a_chunks = a.chunks_exact(64);
+        let b_chunks = b.chunks_exact(64);
+        let a_rest = a_chunks.remainder();
+        let b_rest = b_chunks.remainder();
+        let mut acc = _mm512_setzero_si512();
+        for (x, y) in a_chunks.zip(b_chunks) {
+            // SAFETY: each chunk is exactly 64 bytes, and `loadu` accepts unaligned pointers.
+            let (xv, yv) = unsafe {
+                (
+                    _mm512_loadu_si512(x.as_ptr().cast()),
+                    _mm512_loadu_si512(y.as_ptr().cast()),
+                )
+            };
+            acc = _mm512_add_epi32(acc, vnni_products(xv, yv));
+        }
+        let rest = a_rest.len().min(b_rest.len());
+        if rest > 0 {
+            // `rest < 64`, so the shift cannot overflow. Masked-off bytes load as zero.
+            let mask: __mmask64 = (1u64 << rest) - 1;
+            // SAFETY: the mask selects only the first `rest` bytes, which both slices hold, and a
+            // masked load never touches the bytes it leaves out.
+            let (xv, yv) = unsafe {
+                (
+                    _mm512_maskz_loadu_epi8(mask, a_rest.as_ptr().cast()),
+                    _mm512_maskz_loadu_epi8(mask, b_rest.as_ptr().cast()),
+                )
+            };
+            acc = _mm512_add_epi32(acc, vnni_products(xv, yv));
+        }
+        _mm512_reduce_add_epi32(acc)
     }
 
-    #[test]
-    fn learned_range_ignores_outliers_and_nan() {
-        let mut sample: Vec<f32> = (0..1000).map(|i| (i % 100) as f32 / 1000.0).collect();
-        sample.push(50.0);
-        sample.push(f32::NAN);
-        let range = QuantRange::learn(&mut sample);
-        assert!(
-            range.absmax() < 0.1,
-            "outlier set the range: {}",
-            range.absmax()
-        );
+    /// Per 32-bit lane, the sum of four `a × b` byte products, with the signs of `a` moved
+    /// onto `b`. It starts from zero instead of the running total, so the slow `vpdpbusd`
+    /// stays off the loop's dependency chain.
+    #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+    fn vnni_products(xv: __m512i, yv: __m512i) -> __m512i {
+        let x_negative = _mm512_movepi8_mask(xv);
+        let y_signed = _mm512_mask_sub_epi8(yv, x_negative, _mm512_setzero_si512(), yv);
+        _mm512_dpbusd_epi32(_mm512_setzero_si512(), _mm512_abs_epi8(xv), y_signed)
     }
 
-    #[test]
-    fn empty_or_zero_sample_gets_unit_range() {
-        assert_eq!(QuantRange::learn(&mut Vec::new()).absmax(), 1.0);
-        assert_eq!(QuantRange::learn(&mut vec![0.0; 10]).absmax(), 1.0);
+    /// f32 dot product, 32 floats per step across four fused multiply-add accumulators, so
+    /// one step doesn't wait for the previous one.
+    ///
+    /// # Safety
+    /// The CPU must support AVX2 and FMA.
+    #[target_feature(enable = "avx2,fma")]
+    pub(super) unsafe fn dot_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
+        let a_blocks = a.chunks_exact(32);
+        let b_blocks = b.chunks_exact(32);
+        let a_rest = a_blocks.remainder();
+        let b_rest = b_blocks.remainder();
+        let mut acc = [_mm256_setzero_ps(); 4];
+        for (x, y) in a_blocks.zip(b_blocks) {
+            for (part, slot) in acc.iter_mut().enumerate() {
+                // SAFETY: each block holds 32 floats and `part * 8 + 8 <= 32`.
+                let (xv, yv) = unsafe {
+                    (
+                        _mm256_loadu_ps(x.as_ptr().add(part * 8)),
+                        _mm256_loadu_ps(y.as_ptr().add(part * 8)),
+                    )
+                };
+                *slot = _mm256_fmadd_ps(xv, yv, *slot);
+            }
+        }
+        let a_vecs = a_rest.chunks_exact(8);
+        let b_vecs = b_rest.chunks_exact(8);
+        let tail = dot_f32_portable(a_vecs.remainder(), b_vecs.remainder());
+        for (x, y) in a_vecs.zip(b_vecs) {
+            // SAFETY: each chunk holds exactly 8 floats.
+            let (xv, yv) = unsafe { (_mm256_loadu_ps(x.as_ptr()), _mm256_loadu_ps(y.as_ptr())) };
+            acc[0] = _mm256_fmadd_ps(xv, yv, acc[0]);
+        }
+        let sum = _mm256_add_ps(_mm256_add_ps(acc[0], acc[1]), _mm256_add_ps(acc[2], acc[3]));
+        hsum_ps(sum) + tail
     }
 
-    #[test]
-    fn small_components_use_the_full_code_range() {
-        // 4096-dim-sized components: a fixed 127 scale would map these to about ±2.
-        let mut sample = vec![0.016f32, -0.016, 0.008, -0.004];
-        let range = QuantRange::learn(&mut sample);
-        let mut codes = Vec::new();
-        range.encode(&[0.016, -0.016], &mut codes);
-        let signed: Vec<i8> = codes.iter().map(|&c| c as i8).collect();
-        assert_eq!(signed, vec![127, -127]);
+    /// Sum of the eight i32 lanes.
+    #[target_feature(enable = "avx2")]
+    fn hsum_epi32(v: __m256i) -> i32 {
+        let quad = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        let pair = _mm_add_epi32(quad, _mm_shuffle_epi32::<0b0100_1110>(quad));
+        let one = _mm_add_epi32(pair, _mm_shuffle_epi32::<0b1011_0001>(pair));
+        _mm_cvtsi128_si32(one)
     }
 
-    #[test]
-    fn approx_cosine_is_close_to_exact() {
-        let row = [0.6f32, 0.8, 0.0];
-        let query = [0.8f32, 0.6, 0.0];
-        let range = QuantRange::from_absmax(0.8).expect("valid range");
-        let mut row_codes = Vec::new();
-        range.encode(&row, &mut row_codes);
-        let q = quantize_query(&query);
-        let approx = approx_cosine(dot_i8(&row_codes, &q.codes), range.scale(), q.scale);
-        assert!((approx - dot_f32(&row, &query)).abs() < 0.01);
+    /// Sum of the eight f32 lanes.
+    #[target_feature(enable = "avx2")]
+    fn hsum_ps(v: __m256) -> f32 {
+        let quad = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps::<1>(v));
+        let pair = _mm_add_ps(quad, _mm_movehl_ps(quad, quad));
+        let one = _mm_add_ss(pair, _mm_shuffle_ps::<0b01>(pair, pair));
+        _mm_cvtss_f32(one)
+    }
+}
+
+/// NEON kernels. NEON is on for every aarch64 target this server builds for, so these are
+/// ordinary safe functions.
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+mod neon {
+    use super::{dot_f32_portable, dot_i8_portable};
+    use std::arch::aarch64::{
+        vaddq_f32, vaddq_s32, vaddvq_f32, vaddvq_s32, vdupq_n_f32, vdupq_n_s32, vfmaq_f32,
+        vget_low_s8, vld1q_f32, vld1q_s8, vmull_high_s8, vmull_s8, vpadalq_s16,
+    };
+
+    /// int8 dot product, 16 bytes per step: widening multiply to i16, then pairwise add into
+    /// i32. Exact for every input. The low and high halves use separate accumulators so the
+    /// additions don't wait on each other.
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
+        let a_chunks = a.chunks_exact(16);
+        let b_chunks = b.chunks_exact(16);
+        let tail = dot_i8_portable(a_chunks.remainder(), b_chunks.remainder());
+        let mut acc_low = vdupq_n_s32(0);
+        let mut acc_high = vdupq_n_s32(0);
+        for (x, y) in a_chunks.zip(b_chunks) {
+            // SAFETY: each chunk is exactly 16 bytes.
+            let (xv, yv) = unsafe { (vld1q_s8(x.as_ptr().cast()), vld1q_s8(y.as_ptr().cast())) };
+            acc_low = vpadalq_s16(acc_low, vmull_s8(vget_low_s8(xv), vget_low_s8(yv)));
+            acc_high = vpadalq_s16(acc_high, vmull_high_s8(xv, yv));
+        }
+        vaddvq_s32(vaddq_s32(acc_low, acc_high)) + tail
+    }
+
+    /// f32 dot product, 16 floats per step across four fused multiply-add accumulators
+    /// /// The CPU must support NEON, which every aarch64 CPU does.
+    #[target_feature(enable = "neon")]
+    pub(super) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
+        let a_blocks = a.chunks_exact(16);
+        let b_blocks = b.chunks_exact(16);
+        let a_rest = a_blocks.remainder();
+        let b_rest = b_blocks.remainder();
+        let mut acc = [vdupq_n_f32(0.0); 4];
+        for (x, y) in a_blocks.zip(b_blocks) {
+            for (part, slot) in acc.iter_mut().enumerate() {
+                // SAFETY: each block holds 16 floats and `part * 4 + 4 <= 16`.
+                let (xv, yv) = unsafe {
+                    (
+                        vld1q_f32(x.as_ptr().add(part * 4)),
+                        vld1q_f32(y.as_ptr().add(part * 4)),
+                    )
+                };
+                *slot = vfmaq_f32(*slot, xv, yv);
+            }
+        }
+        let a_vecs = a_rest.chunks_exact(4);
+        let b_vecs = b_rest.chunks_exact(4);
+        let tail = dot_f32_portable(a_vecs.remainder(), b_vecs.remainder());
+        for (x, y) in a_vecs.zip(b_vecs) {
+            // SAFETY: each chunk holds exactly 4 floats.
+            let (xv, yv) = unsafe { (vld1q_f32(x.as_ptr()), vld1q_f32(y.as_ptr())) };
+            acc[0] = vfmaq_f32(acc[0], xv, yv);
+        }
+        let sum = vaddq_f32(vaddq_f32(acc[0], acc[1]), vaddq_f32(acc[2], acc[3]));
+        vaddvq_f32(sum) + tail
     }
 }
