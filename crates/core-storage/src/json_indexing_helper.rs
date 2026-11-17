@@ -194,7 +194,7 @@ fn index_leaves(
                 }
             }
             FieldKind::Integer => {
-                if let Some(value) = parse_integer(raw) {
+                if let Ok(value) = parse_integer(raw) {
                     numeric.push(NumericPoint {
                         xpath: field.xpath(policy),
                         value,
@@ -214,7 +214,7 @@ fn index_leaves(
                 }
             }
             FieldKind::Float => {
-                if let Some(value) = parse_float(raw) {
+                if let Ok(value) = parse_float(raw) {
                     numeric.push(NumericPoint {
                         xpath: field.xpath(policy),
                         value,

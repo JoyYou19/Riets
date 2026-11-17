@@ -1,5 +1,6 @@
 use core_index::analyzer::analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
+use core_index::numeric_values::NumericValue;
 use core_index::types::XPathId;
 use core_protocol::command_reponse_definitions::{
     SearchCommand, SortMode, SortModifier, SortOrderRequest,
@@ -31,6 +32,7 @@ pub(crate) trait WriteReport: Send + 'static {
     fn merge(&mut self, other: Self);
     fn failures_mut(&mut self) -> &mut Vec<DocFailure>;
 }
+
 impl WriteReport for InsertReport {
     fn empty() -> Self {
         Self {
@@ -112,18 +114,18 @@ pub(crate) fn mark_all_failed(
         )
     }));
 }
-fn cmp_desc(a: Option<f64>, b: Option<f64>) -> Ordering {
+fn cmp_desc(a: Option<NumericValue>, b: Option<NumericValue>) -> Ordering {
     match (a, b) {
-        (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(Ordering::Equal),
+        (Some(x), Some(y)) => y.cmp(&x),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
 }
 
-fn cmp_asc(a: Option<f64>, b: Option<f64>) -> Ordering {
+fn cmp_asc(a: Option<NumericValue>, b: Option<NumericValue>) -> Ordering {
     match (a, b) {
-        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        (Some(x), Some(y)) => x.cmp(&y),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
@@ -138,14 +140,14 @@ fn apply_modifier(v: f64, m: SortModifier) -> f64 {
     }
 }
 
-fn fold_min(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+fn fold_min(a: Option<NumericValue>, b: Option<NumericValue>) -> Option<NumericValue> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x.min(y)),
         _ => a.or(b),
     }
 }
 
-fn fold_max(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+fn fold_max(a: Option<NumericValue>, b: Option<NumericValue>) -> Option<NumericValue> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x.max(y)),
         _ => a.or(b),
@@ -154,13 +156,13 @@ fn fold_max(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 
 pub fn fold_sort_bounds(
     fields: &[SortField],
-    per_shard: impl IntoIterator<Item = Vec<(Option<f64>, Option<f64>)>>,
-) -> Vec<(Option<f64>, Option<f64>)> {
-    let mut bounds: Vec<(Option<f64>, Option<f64>)> = fields
+    per_shard: impl IntoIterator<Item = Vec<(Option<NumericValue>, Option<NumericValue>)>>,
+) -> Vec<(Option<NumericValue>, Option<NumericValue>)> {
+    let mut bounds: Vec<(Option<NumericValue>, Option<NumericValue>)> = fields
         .iter()
         .map(|f| {
             if f.is_bool {
-                (Some(0.0), Some(1.0))
+                (Some(NumericValue::Int(0)), Some(NumericValue::Int(1)))
             } else {
                 (None, None)
             }
@@ -181,9 +183,9 @@ pub fn fold_sort_bounds(
 }
 
 pub fn order_blended(
-    items: &mut Vec<(SearchHit, Vec<Option<f64>>)>,
+    items: &mut Vec<(SearchHit, Vec<Option<NumericValue>>)>,
     specs: &[SortField],
-    bounds: &[(Option<f64>, Option<f64>)],
+    bounds: &[(Option<NumericValue>, Option<NumericValue>)],
 ) {
     if items.is_empty() {
         return;
@@ -232,9 +234,9 @@ pub fn order_blended(
                     None => 0.0,
                     Some(v) => match bounds[index] {
                         (Some(min), Some(max)) => {
-                            let min = apply_modifier(min, spec.modifier);
-                            let max = apply_modifier(max, spec.modifier);
-                            let v = apply_modifier(v, spec.modifier);
+                            let min = apply_modifier(min.as_f64(), spec.modifier);
+                            let max = apply_modifier(max.as_f64(), spec.modifier);
+                            let v = apply_modifier(v.as_f64(), spec.modifier);
                             if max > min {
                                 let norm = ((v - min) / (max - min)) as f32;
                                 match spec.order {
@@ -250,7 +252,6 @@ pub fn order_blended(
                 };
                 field += f32::from(spec.ratio) * component;
             }
-
             relevance + field
         })
         .collect();
@@ -262,7 +263,7 @@ pub fn order_blended(
             .then_with(|| items[a].0.doc_id.cmp(&items[b].0.doc_id))
     });
 
-    let reordered: Vec<(SearchHit, Vec<Option<f64>>)> = order
+    let reordered: Vec<(SearchHit, Vec<Option<NumericValue>>)> = order
         .into_iter()
         .map(|index| {
             let (mut hit, keys) = items[index].clone();
@@ -354,10 +355,10 @@ pub fn resolve_sorts(
         fields: Arc::new(fields),
     }))
 }
-/// strict: apply fields in declaration order, relevance is the final tiebreak.
-pub fn order_strict(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[SortField]) {
+
+//strict: apply fields in declaration order, relevance is the final tiebreak.
+pub fn order_strict(items: &mut Vec<(SearchHit, Vec<Option<NumericValue>>)>, specs: &[SortField]) {
     items.sort_unstable_by(|(a, a_keys), (b, b_keys)| {
-        // the ranking cascade comes first: a better tier always ranks above a worse one
         if a.tier != b.tier {
             return a.tier.cmp(&b.tier);
         }
@@ -372,7 +373,6 @@ pub fn order_strict(items: &mut Vec<(SearchHit, Vec<Option<f64>>)>, specs: &[Sor
                 return cmp;
             }
         }
-        // relevance tiebreak
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(Ordering::Equal)

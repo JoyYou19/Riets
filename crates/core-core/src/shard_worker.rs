@@ -1,4 +1,5 @@
 use ahash::{HashMap as AHashMap, HashSet, HashSetExt};
+use core_index::numeric_values::NumericValue;
 use core_query::ranking::{POOL_SIZE, finalize};
 use roaring::RoaringTreemap;
 use simd_json::OwnedValue;
@@ -54,8 +55,8 @@ const IDLE_FLUSH_POLL: Duration = Duration::from_secs(1);
 //info: i genuenly made this so that the fucking function response isnt this:
 pub struct ShardRankedResult {
     pub total: usize,
-    pub items: Vec<(SearchHit, Vec<Option<f64>>)>,
-    pub bounds: Vec<(Option<f64>, Option<f64>)>,
+    pub items: Vec<(SearchHit, Vec<Option<NumericValue>>)>,
+    pub bounds: Vec<(Option<NumericValue>, Option<NumericValue>)>,
 }
 
 /// A shard's side of one search: the snapshot every step of the search reads, so the statistics
@@ -375,7 +376,8 @@ impl ShardHandle {
             );
             // groups with a query are prepared in the same order every round
             let base = earlier.next().unwrap_or_default();
-            let p = QueryExecutor::new(&*snapshot, &group.analyzer).prepare(queries, &group.ctxs, base);
+            let p =
+                QueryExecutor::new(&*snapshot, &group.analyzer).prepare(queries, &group.ctxs, base);
             prepared.push(p);
         }
 
@@ -567,31 +569,26 @@ impl ShardHandle {
         }
 
         // bounds from the SAME snapshot as the keys
-        let bounds: Vec<(Option<f64>, Option<f64>)> = sort_xpaths
+        let bounds: Vec<(Option<NumericValue>, Option<NumericValue>)> = sort_xpaths
             .iter()
-            .map(|&x| {
-                let (min, max) = snapshot.numeric_bounds(x);
-                (
-                    min.map(core_index::numeric_values::NumericValue::as_f64),
-                    max.map(core_index::numeric_values::NumericValue::as_f64),
-                )
-            })
+            .map(|&x| snapshot.numeric_bounds(x))
             .collect();
 
-        let items: Vec<(SearchHit, Vec<Option<f64>>)> = candidates
+        let items: Vec<(SearchHit, Vec<Option<NumericValue>>)> = candidates
             .into_iter()
             .map(|hit| {
                 let keys = sort_xpaths
                     .iter()
                     .map(|&xpath| {
-                        snapshot
-                            .numeric_value(xpath, hit.doc_id)
-                            .map(core_index::numeric_values::NumericValue::as_f64)
-                            .or_else(|| {
-                                snapshot
-                                    .bool_value(xpath, hit.doc_id)
-                                    .map(|b| if b { 1.0 } else { 0.0 })
+                        snapshot.numeric_value(xpath, hit.doc_id).or_else(|| {
+                            snapshot.bool_value(xpath, hit.doc_id).map(|b| {
+                                if b {
+                                    NumericValue::Int(1)
+                                } else {
+                                    NumericValue::Int(0)
+                                }
                             })
+                        })
                     })
                     .collect();
                 (hit, keys)
@@ -741,7 +738,7 @@ impl ShardHandle {
 
     //reusing the cached snapshots so no index reads for the final document highlights
     #[timed(highlight)]
-        pub fn matched_terms_for(
+    pub fn matched_terms_for(
         &self,
         hits: &[SearchHit],
         groups: &[QueryGroup],

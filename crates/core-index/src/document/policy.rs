@@ -720,8 +720,8 @@ impl FieldKind {
 
     pub fn validate_value(self, raw: &str) -> Result<(), String> {
         let valid = match self {
-            FieldKind::Integer => parse_integer(raw).is_some(),
-            FieldKind::Float => parse_float(raw).is_some(),
+            FieldKind::Integer => parse_integer(raw).is_ok(),
+            FieldKind::Float => parse_float(raw).is_ok(),
             FieldKind::Bool => matches!(raw.trim(), "true" | "false"),
             _ => true,
         };
