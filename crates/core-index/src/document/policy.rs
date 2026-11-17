@@ -5,7 +5,11 @@ use std::{
 };
 
 use crate::{
-    analyzer::{Analyzer, analyzer::AnalyzerSet, analyzer_config::AnalyzerConfig},
+    analyzer::{
+        Analyzer,
+        analyzer::AnalyzerSet,
+        analyzer_config::{AnalyzerConfig, CharFilter},
+    },
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
     write_atomically,
@@ -435,6 +439,30 @@ impl IndexPolicy {
             }
         }
 
+        for (name, cfg) in &self.analyzers {
+            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length)
+                && min > max
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("analyzer '{name}': min_length {min} > max_length {max}"),
+                ));
+            }
+
+            for filter in &cfg.char_filters {
+                if let CharFilter::PatternReplace { pattern_replace } = filter {
+                    regex::Regex::new(&pattern_replace.pattern).map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "analyzer '{name}': invalid pattern_replace pattern '{}': {e}",
+                                pattern_replace.pattern
+                            ),
+                        )
+                    })?;
+                }
+            }
+        }
         Ok(())
     }
 
