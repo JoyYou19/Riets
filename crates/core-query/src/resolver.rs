@@ -329,7 +329,7 @@ fn resolve_numeric_filter(
     field: &FieldPolicy,
     v: &OwnedValue,
 ) -> Result<Option<Query>, CorelamoError> {
-    let parse: fn(&str) -> Option<NumericValue> = match field.kind {
+    let parse: fn(&str) -> Result<NumericValue, &'static str> = match field.kind {
         FieldKind::Integer => parse_integer,
         FieldKind::Float => parse_float,
         _ => {
@@ -493,7 +493,7 @@ pub fn resolve_suggest_xpaths(
 //vibemaxxing funciton: parsing the query for the foken numbres
 pub fn parse_numeric_range(
     raw: &str,
-    parse: fn(&str) -> Option<NumericValue>,
+    parse: fn(&str) -> Result<NumericValue, &'static str>,
 ) -> Result<NumericRange, String> {
     let s = raw.trim();
     if s.is_empty() {
@@ -514,11 +514,11 @@ pub fn parse_numeric_range(
             ));
         }
         let lo = NumericBound {
-            value: parse(left).ok_or_else(|| format!("invalid lower bound '{left}'"))?,
+            value: parse(left).map_err(|e| format!("invalid lower bound '{left}': {e}"))?,
             inclusive: true,
         };
         let hi = NumericBound {
-            value: parse(right).ok_or_else(|| format!("invalid upper bound '{right}'"))?,
+            value: parse(right).map_err(|e| format!("invalid upper bound '{right}': {e}"))?,
             inclusive: true,
         };
         if lo.value > hi.value {
@@ -552,7 +552,7 @@ pub fn parse_numeric_range(
     if rest.is_empty() {
         return Err(format!("missing number after '{op}'"));
     }
-    let value = parse(rest).ok_or_else(|| format!("invalid number '{rest}'"))?;
+    let value = parse(rest).map_err(|e| format!("invalid number '{rest}': {e}"))?;
 
     let range = match op {
         "=" | "==" | "" => {
