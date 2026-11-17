@@ -589,7 +589,7 @@ impl IndexPolicy {
     fn write_full(&self, root: impl AsRef<Path>) -> io::Result<()> {
         let full = serde_json::to_string_pretty(&Full(self))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        fs::write(Self::full_path(root.as_ref()), full)
+        write_atomically(&Self::full_path(root.as_ref()), full.as_bytes())
     }
 
     #[timed(database_lifecycle)]
