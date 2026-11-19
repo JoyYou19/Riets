@@ -524,7 +524,7 @@ impl ShardHandle {
         let sort_xpaths: Vec<XPathId> = sort_fields.iter().map(|f| f.xpath).collect();
 
         let (total, candidates) = if sort_only {
-            //just get the top numeric values per-foeld
+            //just get the top numeric values per-ffield
             let mut doc_ids: Vec<DocId> = Vec::new();
             for field in sort_fields {
                 let descending = matches!(field.order, SortOrderRequest::Desc);
