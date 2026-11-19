@@ -38,8 +38,11 @@ const MAPS_MAGIC: &[u8; 8] = b"CLMAPS02";
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
 
-//TODO: make configurable per-database
-pub const DEFAULT_DOC_CACHE_CAPACITY: u64 = 10000;
+pub fn doc_cache_weigher(key: &String, value: &StoredDocument) -> u32 {
+    let bytes = key.len() + value.external_id.len() + value.source.len();
+    bytes.min(u32::MAX as usize) as u32
+}
+
 pub const DEFAULT_SEGMENT_SIZE: u64 = 128 * 1024 * 1024;
 
 //JAUNS COMPACTIONS KONCEPTS
@@ -250,7 +253,7 @@ pub struct DocLocation {
 
 impl BinaryDocumentStore {
     #[timed(database_lifecycle)]
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, doc_cache_budget_bytes: u64) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&path)?;
         let mut segment_ids = Self::list_segment_ids(&path)?;
@@ -269,7 +272,8 @@ impl BinaryDocumentStore {
             path,
             current_segment: AtomicU32::new(current_segment),
             docs: Cache::builder()
-                .max_capacity(DEFAULT_DOC_CACHE_CAPACITY)
+                .weigher(doc_cache_weigher)
+                .max_capacity(doc_cache_budget_bytes)
                 .build(),
             internal_to_external: Arc::new(DashMap::new()),
             locations: Arc::new(DashMap::new()),
@@ -773,7 +777,7 @@ impl DocumentStore for BinaryDocumentStore {
         self.internal_to_external
             .insert(doc.internal_id, doc.external_id.clone());
         self.locations.insert(doc.external_id.clone(), location);
-        self.docs.insert(doc.external_id.clone(), doc);
+        //self.docs.insert(doc.external_id.clone(), doc);
         Ok(())
     }
 
@@ -806,7 +810,7 @@ impl DocumentStore for BinaryDocumentStore {
                     len,
                 },
             );
-            self.docs.insert(doc.external_id.clone(), doc);
+            //self.docs.insert(doc.external_id.clone(), doc);
         }
 
         writer.flush()?;
@@ -847,16 +851,19 @@ impl DocumentStore for BinaryDocumentStore {
         self.highest_id.fetch_max(internal_id, Ordering::Relaxed);
         Ok(())
     }
-    
+
     fn max_internal_id(&self) -> DocId {
         self.highest_id.load(Ordering::Relaxed)
     }
     fn retire_internal_ids(&mut self, old_ids: &[DocId]) {
         for &old_id in old_ids {
-            //Remove only while the externa ids curent version is a different one so still live id is never removed 
-            self.internal_to_external.remove_if(&old_id, |_,external_id|{
-                self.locations.get(external_id).is_none_or(|loc| loc.internal_id !=old_id)
-            });
+            //Remove only while the externa ids curent version is a different one so still live id is never removed
+            self.internal_to_external
+                .remove_if(&old_id, |_, external_id| {
+                    self.locations
+                        .get(external_id)
+                        .is_none_or(|loc| loc.internal_id != old_id)
+                });
         }
     }
     fn document_count(&self) -> usize {

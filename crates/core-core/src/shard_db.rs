@@ -1,20 +1,23 @@
-use ahash::{ HashSet, HashSetExt };
-use core_backup::{ backup::{ BackupManager, BackupManifest }, progress::BackupStats };
+use ahash::{HashSet, HashSetExt};
+use core_backup::{
+    backup::{BackupManager, BackupManifest},
+    progress::BackupStats,
+};
 use core_index::{
     analyzer::Analyzer,
     disk::reader::DiskSegment,
     document::IndexPolicy,
     lsm::{
         LsmIndex,
-        index_worker::{ IndexCommand, IndexingStats, ReindexProgress, ReindexingStats },
+        index_worker::{IndexCommand, IndexingStats, ReindexProgress, ReindexingStats},
     },
     search::SearchIndex,
-    types::{ ARRAY_ROW_FLAG, DocId, ShardId },
+    types::{ARRAY_ROW_FLAG, DocId, ShardId},
 };
 use core_protocol::{
-    command_reponse_definitions::{ LookupCommand, LookupResponse },
+    command_reponse_definitions::{LookupCommand, LookupResponse},
     command_response_helpers::apply_merge_patch,
-    errors::{ CorelamoError, DocFailure, FailReason },
+    errors::{CorelamoError, DocFailure, FailReason},
     format::Format,
 };
 use core_timing::timed;
@@ -22,18 +25,18 @@ use indexmap::IndexMap;
 use simd_json::OwnedValue;
 use std::{
     collections::VecDeque,
-    fs::{ self, File },
-    io::{ self, Write },
-    path::{ Path, PathBuf },
-    sync::{ Arc, mpsc },
-    time::{ Duration, Instant, SystemTime },
+    fs::{self, File},
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::{Arc, mpsc},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::{
-    background_worker::{ BackgroundConfig, BackgroundWorker },
-    metrics::{ BackgroundActivity, BackgroundStats, DatabaseMetrics, DbStats, ShardStatsHandle },
+    background_worker::{BackgroundConfig, BackgroundWorker},
+    metrics::{BackgroundActivity, BackgroundStats, DatabaseMetrics, DbStats, ShardStatsHandle},
     options::DatabaseOptions,
-    reindex::{ CompletedShardReindex, REINDEX_COMPLETE, ReindexParams, ReindexTask },
+    reindex::{CompletedShardReindex, REINDEX_COMPLETE, ReindexParams, ReindexTask},
     shard_worker::ShardCmd,
     shared_state::SharedShardState,
 };
@@ -41,29 +44,20 @@ use core_embed::ModelRegistry;
 use core_logs::logger;
 use core_storage::{
     binary_store::{
-        BinaryDocumentStore,
-        CompletedSegmentCompaction,
-        DEFAULT_SEGMENT_SIZE,
-        SegmentCompactionJob,
-        StoreSnapshot,
-        save_maps,
+        BinaryDocumentStore, CompletedSegmentCompaction, DEFAULT_SEGMENT_SIZE,
+        SegmentCompactionJob, StoreSnapshot, save_maps,
     },
-    document_store::{ DocumentStore, StoredDocument },
-    json_parse::{ parse_into_node, parse_source_into_node },
+    document_store::{DocumentStore, StoredDocument},
+    json_parse::{parse_into_node, parse_source_into_node},
     search_database::{
-        DeleteReport,
-        DocumentInput,
-        FlushTicket,
-        IndexMode,
-        InsertReport,
-        ReplaceReport,
+        DeleteReport, DocumentInput, FlushTicket, IndexMode, InsertReport, ReplaceReport,
         SearchDatabase,
     },
-    wal::{ SyncMode, Wal, WalDocument, WalDocumentRef, WalRecord, WalRecordRef },
+    wal::{SyncMode, Wal, WalDocument, WalDocumentRef, WalRecord, WalRecordRef},
 };
 
 use crate::embed::EmbeddingJob;
-use slog::{ Logger, error, info, warn };
+use slog::{Logger, error, info, warn};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatabaseStats {
@@ -127,33 +121,35 @@ impl ShardDb {
         options: DatabaseOptions,
         policy: IndexPolicy,
         stats: ShardStatsHandle,
-        models: Arc<ModelRegistry>
+        models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = format!("shard-{shard_id}");
 
         if root.exists() {
-            return Err(
-                CorelamoError::AlreadyExists(format!("shard at {} already exists", root.display()))
-            );
+            return Err(CorelamoError::AlreadyExists(format!(
+                "shard at {} already exists",
+                root.display()
+            )));
         }
 
         fs::create_dir_all(&root)?;
 
         let log = logger::shard_logger(&root, &name);
-        let wal = open_wal(&root, options.sync_mode).map_err(|e|
-            CorelamoError::Internal(format!("failed to open WAL: {e}"))
-        )?;
+        let wal = open_wal(&root, options.sync_mode)
+            .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let store_path = root.join("documents");
-        BinaryDocumentStore::open(&store_path)?;
+        BinaryDocumentStore::open(&store_path, options.doc_cache_budget_bytes(shard_count))?;
         let backup_dir = db_root.as_ref().join("backups");
 
         fs::create_dir_all(&backup_dir)?;
         let backup = BackupManager::new(backup_dir, name.clone(), 0, 0, log.clone());
+
+        let doc_cache_budget = options.doc_cache_budget_bytes(shard_count);
         Ok(Self {
             shard_id,
             shard_count,
-            shared: Arc::new(SharedShardState::new(root.clone())),
+            shared: Arc::new(SharedShardState::new(root.clone(), doc_cache_budget)),
             policy,
             options,
             db: None,
@@ -182,7 +178,7 @@ impl ShardDb {
         policy: &IndexPolicy,
         options: &DatabaseOptions,
         stats: ShardStatsHandle,
-        models: Arc<ModelRegistry>
+        models: Arc<ModelRegistry>,
     ) -> Result<Self, CorelamoError> {
         let root = root.as_ref().to_path_buf();
         let name = root
@@ -192,7 +188,10 @@ impl ShardDb {
             .to_string();
 
         if !root.exists() {
-            return Err(CorelamoError::NotFound(format!("shard not found at {}", root.display())));
+            return Err(CorelamoError::NotFound(format!(
+                "shard not found at {}",
+                root.display()
+            )));
         }
 
         let shard_id = name
@@ -207,35 +206,34 @@ impl ShardDb {
             Ok(true) => warn!(log, "finished a restore interrupted by a crash"; "shard" => &name),
             Ok(false) => {}
             Err(e) => {
-                return Err(
-                    CorelamoError::Internal(
-                        format!("finishing an interrupted restore in {}: {e}", root.display())
-                    )
-                );
+                return Err(CorelamoError::Internal(format!(
+                    "finishing an interrupted restore in {}: {e}",
+                    root.display()
+                )));
             }
         }
         match recover_interrupted_reindex(&root) {
             Ok(Some(what)) => warn!(log, "{what}"; "shard" => &name),
             Ok(None) => {}
             Err(e) => {
-                return Err(
-                    CorelamoError::Internal(
-                        format!("recovering an interrupted reindex in {}: {e}", root.display())
-                    )
-                );
+                return Err(CorelamoError::Internal(format!(
+                    "recovering an interrupted reindex in {}: {e}",
+                    root.display()
+                )));
             }
         }
         // load
-        let wal = open_wal(&root, options.sync_mode).map_err(|e|
-            CorelamoError::Internal(format!("failed to open WAL: {e}"))
-        )?;
+        let wal = open_wal(&root, options.sync_mode)
+            .map_err(|e| CorelamoError::Internal(format!("failed to open WAL: {e}")))?;
         let backup_dir = db_root.as_ref().join("backups");
         fs::create_dir_all(&backup_dir)?;
         let backup = BackupManager::new(backup_dir, name.clone(), 0, 0, log.clone());
+
+        let doc_cache_budget = options.doc_cache_budget_bytes(shard_count);
         Ok(Self {
             shard_id: ShardId::from(shard_id),
             shard_count,
-            shared: Arc::new(SharedShardState::new(root.clone())),
+            shared: Arc::new(SharedShardState::new(root.clone(), doc_cache_budget)),
             root,
             policy: policy.clone(),
             options: options.clone(),
@@ -262,15 +260,13 @@ impl ShardDb {
             return Ok(());
         }
         if self.failed {
-            self.wal = open_wal(&self.root, self.options.sync_mode).map_err(|e|
-                CorelamoError::Internal(format!("failed to reopen WAL: {e}"))
-            )?;
+            self.wal = open_wal(&self.root, self.options.sync_mode)
+                .map_err(|e| CorelamoError::Internal(format!("failed to reopen WAL: {e}")))?;
         }
         let skip_bad = self.options.skip_unreplayable_wal_records;
 
-        let replay_err = |e: io::Error| {
-            CorelamoError::Internal(format!("failed to replay WAL: {e}"))
-        };
+        let replay_err =
+            |e: io::Error| CorelamoError::Internal(format!("failed to replay WAL: {e}"));
 
         // Pass 1 decodes every record and keeps none of them, so memory stays at one record.
         // An undecodable or damaged record still stops startup before anything is applied.
@@ -280,7 +276,8 @@ impl ShardDb {
         let mut position = 0usize;
         for item in self.wal.records().map_err(replay_err)? {
             let (segment, n, payload) = item.map_err(replay_err)?;
-            match bincode::decode_from_slice::<WalRecord, _>(&payload, bincode::config::standard()) {
+            match bincode::decode_from_slice::<WalRecord, _>(&payload, bincode::config::standard())
+            {
                 Ok((WalRecord::Clear, _)) => {
                     last_clear = Some(position);
                     to_replay = 0;
@@ -292,29 +289,23 @@ impl ShardDb {
                     let path = self
                         .quarantine_wal_record(segment, n, &payload)
                         .map_err(|qe| {
-                            CorelamoError::Internal(
-                                format!(
-                                    "quarantining WAL record {n} in segment {segment} failed: {qe}"
-                                )
-                            )
+                            CorelamoError::Internal(format!(
+                                "quarantining WAL record {n} in segment {segment} failed: {qe}"
+                            ))
                         })?;
                     warn!(self.log, "WAL replay: undecodable record quarantined";
-                    "shard_id" => self.shard_id,
-                    "segment" => segment,
-                    "record" => n,
-                    "error" => %e,
-                    "path" => %path.display(),
-                );
+                        "shard_id" => self.shard_id,
+                        "segment" => segment,
+                        "record" => n,
+                        "error" => %e,
+                        "path" => %path.display(),
+                    );
                 }
                 Err(e) => {
-                    return Err(
-                        CorelamoError::Internal(
-                            format!(
-                                "failed to decode WAL record {n} in segment {segment}: {e}; \
+                    return Err(CorelamoError::Internal(format!(
+                        "failed to decode WAL record {n} in segment {segment}: {e}; \
                      set skip_unreplayable_wal_records to quarantine it and start"
-                            )
-                        )
-                    );
+                    )));
                 }
             }
             position += 1;
@@ -322,11 +313,9 @@ impl ShardDb {
         if let Some(last_clear) = last_clear {
             info!(self.log, "WAL replay: finishing an interrupted clear";
             "shard_id" => self.shard_id, "records_dropped" => last_clear + 1);
-            self
-                .remove_data_files()
-                .map_err(|e| {
-                    CorelamoError::Internal(format!("finishing an interrupted clear failed: {e}"))
-                })?;
+            self.remove_data_files().map_err(|e| {
+                CorelamoError::Internal(format!("finishing an interrupted clear failed: {e}"))
+            })?;
         }
         let index_root = self.root.join("index");
         let store_path = self.root.join("documents");
@@ -347,7 +336,7 @@ impl ShardDb {
             &store_path,
             self.shared.docs.clone(),
             self.shared.internal_to_external.clone(),
-            self.shared.locations.clone()
+            self.shared.locations.clone(),
         )?;
 
         let mut db = SearchDatabase::with_shard_policy_and_snapshot(
@@ -356,7 +345,7 @@ impl ShardDb {
             analyzer,
             self.policy.clone(),
             self.shard_id,
-            self.shared.snapshot.clone()
+            self.shared.snapshot.clone(),
         )?;
 
         self.pending_checkpoints.clear();
@@ -364,11 +353,11 @@ impl ShardDb {
         let replayed_any = to_replay > 0;
 
         info!(self.log, "WAL recovery started";
-        "shard_id" => self.shard_id,
-        "wal_segment" => self.wal.current_segment(),
-        "durable_offset" => self.wal.durable_offset(),
-        "records_to_replay" => to_replay,
-    );
+            "shard_id" => self.shard_id,
+            "wal_segment" => self.wal.current_segment(),
+            "durable_offset" => self.wal.durable_offset(),
+            "records_to_replay" => to_replay,
+        );
 
         let batch_size = self.options.runtime.indexing_batch_size;
         let mut position = 0usize;
@@ -402,11 +391,9 @@ impl ShardDb {
                         let mut needs_indexing = Vec::new();
                         let mut kept_existing = 0usize;
                         for input in inputs {
-                            let stored = db
-                                .get_document(&input.external_id)
-                                .map_err(|e| {
-                                    CorelamoError::Internal(format!("recovery create failed: {e}"))
-                                })?;
+                            let stored = db.get_document(&input.external_id).map_err(|e| {
+                                CorelamoError::Internal(format!("recovery create failed: {e}"))
+                            })?;
                             match stored {
                                 None => fresh.push(input),
                                 Some(doc) if *doc.source == *input.source => {
@@ -417,44 +404,39 @@ impl ShardDb {
                                 }
                             }
                         }
-                        db
-                            .upsert_documents(
-                                keep_last_per_id(needs_indexing),
-                                IndexMode::StoreAndIndex
-                            )
-                            .map_err(|e|
-                                CorelamoError::Internal(format!("recovery create failed: {e}"))
-                            )?;
-                        let report = db
-                            .put_documents_parallel(fresh, batch_size)
-                            .map_err(|e| {
-                                CorelamoError::Internal(format!("recovery create failed: {e}"))
-                            })?;
+                        db.upsert_documents(
+                            keep_last_per_id(needs_indexing),
+                            IndexMode::StoreAndIndex,
+                        )
+                        .map_err(|e| {
+                            CorelamoError::Internal(format!("recovery create failed: {e}"))
+                        })?;
+                        let report = db.put_documents_parallel(fresh, batch_size).map_err(|e| {
+                            CorelamoError::Internal(format!("recovery create failed: {e}"))
+                        })?;
                         if kept_existing > 0 || !report.failures.is_empty() {
                             info!(self.log, "WAL replay: Create skipped documents";
-                            "shard_id" => self.shard_id,
-                            "kept_existing" => kept_existing,
-                            "rejected" => report.failures.len(),
-                        );
+                                "shard_id" => self.shard_id,
+                                "kept_existing" => kept_existing,
+                                "rejected" => report.failures.len(),
+                            );
                         }
                     }
                     WalRecord::Upsert(docs) => {
                         let inputs = documents_from_wal(docs, &self.policy, &self.log);
                         info!(self.log, "WAL replay: Upsert"; "shard_id" => self.shard_id, "documents" => inputs.len());
-                        db
-                            .upsert_documents(keep_last_per_id(inputs), IndexMode::StoreAndIndex)
-                            .map_err(|e|
+                        db.upsert_documents(keep_last_per_id(inputs), IndexMode::StoreAndIndex)
+                            .map_err(|e| {
                                 CorelamoError::Internal(format!("recovery apply failed: {e}"))
-                            )?;
+                            })?;
                     }
                     WalRecord::Replace(docs) => {
                         let inputs = documents_from_wal(docs, &self.policy, &self.log);
                         info!(self.log, "WAL replay: Replace"; "shard_id" => self.shard_id, "documents" => inputs.len());
-                        db
-                            .upsert_documents(keep_last_per_id(inputs), IndexMode::StoreAndIndex)
-                            .map_err(|e|
+                        db.upsert_documents(keep_last_per_id(inputs), IndexMode::StoreAndIndex)
+                            .map_err(|e| {
                                 CorelamoError::Internal(format!("recovery replace failed: {e}"))
-                            )?;
+                            })?;
                     }
                     WalRecord::Delete(ids) => {
                         info!(self.log, "WAL replay: Delete"; "shard_id" => self.shard_id, "documents" => ids.len());
@@ -473,33 +455,31 @@ impl ShardDb {
             })();
             if let Err(e) = applied {
                 let Some(payload) = payload.filter(|_| skip_bad) else {
-                    return Err(
-                        CorelamoError::Internal(
-                            format!(
-                                "WAL record {n} ({kind}) in segment {segment} failed to replay: {e}; \
+                    return Err(CorelamoError::Internal(format!(
+                        "WAL record {n} ({kind}) in segment {segment} failed to replay: {e}; \
                      set skip_unreplayable_wal_records to quarantine it and start"
-                            )
-                        )
-                    );
+                    )));
                 };
                 let path = self
                     .quarantine_wal_record(segment, n, &payload)
                     .map_err(|qe| {
-                        CorelamoError::Internal(
-                            format!("quarantining WAL record {n} in segment {segment} failed: {qe}")
-                        )
+                        CorelamoError::Internal(format!(
+                            "quarantining WAL record {n} in segment {segment} failed: {qe}"
+                        ))
                     })?;
                 warn!(self.log, "WAL replay: record quarantined";
-                "shard_id" => self.shard_id,
-                "segment" => segment,
-                "record" => n,
-                "kind" => kind,
-                "error" => %e,
-                "path" => %path.display(),
-            );
+                    "shard_id" => self.shard_id,
+                    "segment" => segment,
+                    "record" => n,
+                    "kind" => kind,
+                    "error" => %e,
+                    "path" => %path.display(),
+                );
             }
         }
-        let live: HashSet<DocId> = self.shared.locations
+        let live: HashSet<DocId> = self
+            .shared
+            .locations
             .iter()
             .map(|entry| entry.value().internal_id)
             .collect();
@@ -515,9 +495,8 @@ impl ShardDb {
         let snapshot = self.shared.snapshot.get();
         let mut stale: HashSet<DocId> = HashSet::new();
         for path in segments {
-            let segment = DiskSegment::open(&path).map_err(|e|
-                CorelamoError::Internal(format!("reading segment failed: {e}"))
-            )?;
+            let segment = DiskSegment::open(&path)
+                .map_err(|e| CorelamoError::Internal(format!("reading segment failed: {e}")))?;
             for ((doc_id, _), _) in segment.doc_lengths().iter() {
                 if (doc_id & ARRAY_ROW_FLAG) != 0 {
                     continue; // array row id, not a document id
@@ -535,15 +514,15 @@ impl ShardDb {
                     publish: true,
                     ack: Some(ack),
                 })
-                .map_err(|_|
+                .map_err(|_| {
                     CorelamoError::Internal("index worker stopped during recovery".into())
-                )?;
+                })?;
             acked
                 .recv()
                 .map_err(|_| CorelamoError::Internal("index worker dropped a delete".into()))?
-                .map_err(|e|
+                .map_err(|e| {
                     CorelamoError::Internal(format!("removing stale entries failed: {e}"))
-                )?;
+                })?;
         }
 
         if replayed_any || !stale.is_empty() {
@@ -606,7 +585,10 @@ impl ShardDb {
         }
 
         // read before the database is dropped: the maps file must keep the highest id ever used
-        let highest_id = self.db.as_ref().map_or(0, |db| db.store().max_internal_id());
+        let highest_id = self
+            .db
+            .as_ref()
+            .map_or(0, |db| db.store().max_internal_id());
 
         if let Some(db) = self.db.take() {
             db.shutdown()?;
@@ -614,9 +596,8 @@ impl ShardDb {
         }
 
         let store_path = self.root.join("documents");
-        save_maps(&store_path, &self.shared.locations, highest_id).map_err(|e|
-            CorelamoError::Internal(format!("failed to save doc maps: {e}"))
-        )?;
+        save_maps(&store_path, &self.shared.locations, highest_id)
+            .map_err(|e| CorelamoError::Internal(format!("failed to save doc maps: {e}")))?;
 
         if !self.failed {
             self.wal
@@ -632,7 +613,8 @@ impl ShardDb {
 
     #[timed(database_lifecycle)]
     pub fn shutdown(&mut self) -> io::Result<()> {
-        self.stop().map_err(|e| io::Error::other(format!("shutdown failed: {e}")))
+        self.stop()
+            .map_err(|e| io::Error::other(format!("shutdown failed: {e}")))
     }
 
     #[timed(database_lifecycle)]
@@ -660,18 +642,24 @@ impl ShardDb {
     }
 
     fn db_ref(&self) -> io::Result<&SearchDatabase<BinaryDocumentStore>> {
-        self.db.as_ref().ok_or_else(|| io::Error::other("shard is not running"))
+        self.db
+            .as_ref()
+            .ok_or_else(|| io::Error::other("shard is not running"))
     }
 
     fn db_mut(&mut self) -> io::Result<&mut SearchDatabase<BinaryDocumentStore>> {
-        self.db.as_mut().ok_or_else(|| io::Error::other("shard is not running"))
+        self.db
+            .as_mut()
+            .ok_or_else(|| io::Error::other("shard is not running"))
     }
 
     #[timed(database_lifecycle)]
     pub fn set_policy(&mut self, policy: IndexPolicy, user: String) -> Result<(), CorelamoError> {
         policy.validate()?;
         if self.wal_reindex.is_some() {
-            return Err(CorelamoError::Busy("a reindex is running on this shard".into()));
+            return Err(CorelamoError::Busy(
+                "a reindex is running on this shard".into(),
+            ));
         }
         if let Some(db) = &mut self.db {
             db.set_policy(policy.clone())?;
@@ -688,10 +676,12 @@ impl ShardDb {
     pub fn set_options(
         &mut self,
         options: DatabaseOptions,
-        user: String
+        user: String,
     ) -> Result<(), CorelamoError> {
         if self.wal_reindex.is_some() {
-            return Err(CorelamoError::Busy("a reindex is running on this shard".into()));
+            return Err(CorelamoError::Busy(
+                "a reindex is running on this shard".into(),
+            ));
         }
         // the WAL decides on every append whether to fsync, so a new mode applies at onc
         self.options = options;
@@ -720,12 +710,16 @@ impl ShardDb {
     #[timed(retrieve_opps)]
     pub fn get_document(
         &self,
-        ids: &[String]
+        ids: &[String],
     ) -> Result<Vec<(String, Option<StoredDocument>)>, CorelamoError> {
-        let db = self.db_ref().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        let db = self
+            .db_ref()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
-            let doc = db.get_document(id).map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let doc = db
+                .get_document(id)
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             out.push((id.clone(), doc));
         }
         Ok(out)
@@ -733,25 +727,24 @@ impl ShardDb {
 
     #[timed(retrieve_opps)]
     pub fn lookup(&self, command: &LookupCommand) -> Result<LookupResponse, CorelamoError> {
-        let db = self.db_ref().map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        db.lookup_documents(&command.ids, command.return_fields.as_ref()).map_err(
-            CorelamoError::from
-        )
+        let db = self
+            .db_ref()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        db.lookup_documents(&command.ids, command.return_fields.as_ref())
+            .map_err(CorelamoError::from)
     }
 
     // =========write operations =========
     #[timed(wal)]
     fn wal_append_record(&mut self, record: &WalRecordRef<'_>) -> Result<u64, CorelamoError> {
-        let encoded = bincode
-            ::encode_to_vec(record, bincode::config::standard())
+        let encoded = bincode::encode_to_vec(record, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))?;
         self.wal
             .append(&encoded)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))
     }
     fn wal_encode_record(record: &WalRecordRef<'_>) -> Result<Vec<u8>, CorelamoError> {
-        bincode
-            ::encode_to_vec(record, bincode::config::standard())
+        bincode::encode_to_vec(record, bincode::config::standard())
             .map_err(|e| CorelamoError::Internal(format!("wal encode failed: {e}")))
     }
     fn wal_append_encoded(&mut self, encoded: &[u8]) -> Result<u64, CorelamoError> {
@@ -761,19 +754,16 @@ impl ShardDb {
     }
     fn ensure_running(&self) -> Result<(), CorelamoError> {
         if self.db.is_none() {
-            return Err(
-                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
-            );
+            return Err(CorelamoError::DatabaseNotRunning(format!(
+                "shard {} is not running",
+                self.shard_id
+            )));
         }
         if self.failed {
-            return Err(
-                CorelamoError::Internal(
-                    format!(
-                        "shard {} failed a durability step; restart it to replay the WAL",
-                        self.shard_id
-                    )
-                )
-            );
+            return Err(CorelamoError::Internal(format!(
+                "shard {} failed a durability step; restart it to replay the WAL",
+                self.shard_id
+            )));
         }
         Ok(())
     }
@@ -782,31 +772,28 @@ impl ShardDb {
     pub fn insert(
         &mut self,
         inputs: Vec<DocumentInput>,
-        user: String
+        user: String,
     ) -> Result<InsertReport, CorelamoError> {
         self.ensure_running()?;
         let started = Instant::now();
         let count = inputs.len();
-        let total_bytes: u64 = inputs
-            .iter()
-            .map(|d| d.source.len() as u64)
-            .sum();
+        let total_bytes: u64 = inputs.iter().map(|d| d.source.len() as u64).sum();
         core_timing::add_bytes("inserting", "insert", file!(), total_bytes);
         let batch_size = self.options.runtime.indexing_batch_size;
         let mut wal_touched = false;
         let result = (|| -> Result<InsertReport, CorelamoError> {
             let encoded = {
-                let docs: Vec<WalDocumentRef<'_>> = inputs
-                    .iter()
-                    .map(WalDocumentRef::from)
-                    .collect();
+                let docs: Vec<WalDocumentRef<'_>> =
+                    inputs.iter().map(WalDocumentRef::from).collect();
                 Self::wal_encode_record(&WalRecordRef::Create(&docs))?
             };
             wal_touched = true;
             self.wal_append_encoded(&encoded)?;
             self.pending += count as u32;
             let should_checkpoint = self.pending >= (batch_size as u32);
-            let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             let report = db.put_documents_parallel(inputs, batch_size)?; // moved, never cloned
 
             if should_checkpoint {
@@ -859,11 +846,10 @@ impl ShardDb {
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|e| e == "log") {
                 if let Some(ref date_str) = date {
-                    if
-                        path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|name| name.contains(date_str))
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|name| name.contains(date_str))
                     {
                         files.push(path);
                     }
@@ -909,15 +895,14 @@ impl ShardDb {
     pub fn delete(
         &mut self,
         ids: Vec<String>,
-        user: String
+        user: String,
     ) -> Result<DeleteReport, CorelamoError> {
         self.ensure_running()?;
         let started = Instant::now();
         let count = ids.len();
         let mut failures: Vec<DocFailure> = Vec::new();
 
-        self
-            .wal_append_record(&WalRecordRef::Delete(&ids))
+        self.wal_append_record(&WalRecordRef::Delete(&ids))
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
         self.pending += count as u32;
@@ -925,7 +910,9 @@ impl ShardDb {
         let should_checkpoint = self.pending >= (batch_size as u32);
 
         let applied = {
-            let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
 
             // 1. check: which ids exist; a repeated id is gone after its first copy
             let mut to_delete: Vec<String> = Vec::with_capacity(count);
@@ -937,12 +924,14 @@ impl ShardDb {
                 }
                 match db.get_document(&id) {
                     Ok(Some(_)) => to_delete.push(id),
-                    Ok(None) =>
-                        failures.push(DocFailure::new(None, Some(id), FailReason::NotFound)),
-                    Err(e) =>
-                        failures.push(
-                            DocFailure::new(None, Some(id), FailReason::Internal(e.to_string()))
-                        ),
+                    Ok(None) => {
+                        failures.push(DocFailure::new(None, Some(id), FailReason::NotFound))
+                    }
+                    Err(e) => failures.push(DocFailure::new(
+                        None,
+                        Some(id),
+                        FailReason::Internal(e.to_string()),
+                    )),
                 }
             }
 
@@ -972,13 +961,13 @@ impl ShardDb {
         self.publish_stats();
         self.last_write = Instant::now();
         info!(self.log, "delete batch";
-        "user" => user,
-        "shard_id" => %self.shard_id,
-        "requested" => count,
-        "deleted" => deleted,
-        "failed" => failures.len(),
-        "elapsed_ms" => started.elapsed().as_millis(),
-    );
+            "user" => user,
+            "shard_id" => %self.shard_id,
+            "requested" => count,
+            "deleted" => deleted,
+            "failed" => failures.len(),
+            "elapsed_ms" => started.elapsed().as_millis(),
+        );
         Ok(DeleteReport { deleted, failures })
     }
 
@@ -986,27 +975,28 @@ impl ShardDb {
     pub fn prepare_reindex(
         &mut self,
         progress: Arc<ReindexProgress>,
-        stats: Arc<DbStats>
+        stats: Arc<DbStats>,
     ) -> Result<(), CorelamoError> {
         if !self.is_running() {
-            return Err(
-                CorelamoError::DatabaseNotRunning(format!("shard {} is not running", self.shard_id))
-            );
+            return Err(CorelamoError::DatabaseNotRunning(format!(
+                "shard {} is not running",
+                self.shard_id
+            )));
         }
         if self.background_worker.is_none() {
-            return Err(
-                CorelamoError::Internal(format!("shard {} has no background worker", self.shard_id))
-            );
+            return Err(CorelamoError::Internal(format!(
+                "shard {} has no background worker",
+                self.shard_id
+            )));
         }
         self.flush()?;
         let store = StoreSnapshot::capture(
             self.root.join("documents"),
             &self.shared.locations,
-            self
-                .db_ref()
+            self.db_ref()
                 .map_err(|e| CorelamoError::Internal(e.to_string()))?
                 .store()
-                .max_internal_id()
+                .max_internal_id(),
         );
         self.generation += 1;
         self.wal_reindex = Some(self.generation);
@@ -1020,19 +1010,16 @@ impl ShardDb {
             generation: self.generation,
         };
         let submitted = match self.background_worker.as_ref() {
-            Some(worker) =>
-                worker.submit_reindex(ReindexTask {
-                    store,
-                    params,
-                    progress,
-                    stats,
-                }),
-            None =>
-                Err(
-                    CorelamoError::Internal(
-                        format!("shard {} has no background worker", self.shard_id)
-                    )
-                ),
+            Some(worker) => worker.submit_reindex(ReindexTask {
+                store,
+                params,
+                progress,
+                stats,
+            }),
+            None => Err(CorelamoError::Internal(format!(
+                "shard {} has no background worker",
+                self.shard_id
+            ))),
         };
         if submitted.is_err() {
             self.wal_reindex = None;
@@ -1044,16 +1031,16 @@ impl ShardDb {
     pub fn commit_reindex(&mut self, done: CompletedShardReindex) -> Result<(), CorelamoError> {
         if done.generation != self.generation {
             let _ = fs::remove_dir_all(&done.staging_root);
-            return Err(CorelamoError::Conflict("reindex result is from a superseded run".into()));
+            return Err(CorelamoError::Conflict(
+                "reindex result is from a superseded run".into(),
+            ));
         }
         if !done.staging_root.join(REINDEX_COMPLETE).exists() {
             let _ = fs::remove_dir_all(&done.staging_root);
             self.wal_reindex = None;
-            return Err(
-                CorelamoError::Internal(
-                    "reindex output is incomplete; the current index is kept".into()
-                )
-            );
+            return Err(CorelamoError::Internal(
+                "reindex output is incomplete; the current index is kept".into(),
+            ));
         }
 
         let index_root = self.root.join("index");
@@ -1061,7 +1048,8 @@ impl ShardDb {
 
         // close the live index before touching its directory
         if let Some(db) = self.db.take() {
-            db.shutdown().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            db.shutdown()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         }
 
         remove_dir_if_exists(&old_root)?;
@@ -1082,11 +1070,9 @@ impl ShardDb {
             sync_dir(&self.root)?;
             self.wal_reindex = None;
             self.start()?;
-            return Err(
-                CorelamoError::Internal(
-                    format!("reindex rolled back, the new index could not start: {e}")
-                )
-            );
+            return Err(CorelamoError::Internal(format!(
+                "reindex rolled back, the new index could not start: {e}"
+            )));
         }
         self.wal_reindex = None;
         self.flush()?;
@@ -1114,7 +1100,7 @@ impl ShardDb {
     pub fn replace(
         &mut self,
         inputs: Vec<DocumentInput>,
-        user: String
+        user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
         self.ensure_running()?;
         let started = Instant::now();
@@ -1123,31 +1109,34 @@ impl ShardDb {
 
         // 1. check only, no changes
         let inputs: Vec<DocumentInput> = {
-            let db = self.db_mut().map_err(|e| CorelamoError::Internal(e.to_string()))?;
+            let db = self
+                .db_mut()
+                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
             let mut existing = Vec::with_capacity(count);
 
             for input in keep_last_per_id(inputs) {
                 match db.get_document(&input.external_id) {
                     Ok(Some(_)) => existing.push(input),
-                    Ok(None) =>
-                        failures.push(
-                            DocFailure::new(None, Some(input.external_id), FailReason::NotFound)
-                        ),
-                    Err(e) =>
-                        failures.push(
-                            DocFailure::new(
-                                None,
-                                Some(input.external_id),
-                                FailReason::Internal(e.to_string())
-                            )
-                        ),
+                    Ok(None) => failures.push(DocFailure::new(
+                        None,
+                        Some(input.external_id),
+                        FailReason::NotFound,
+                    )),
+                    Err(e) => failures.push(DocFailure::new(
+                        None,
+                        Some(input.external_id),
+                        FailReason::Internal(e.to_string()),
+                    )),
                 }
             }
             existing
         };
 
         if inputs.is_empty() {
-            return Ok(ReplaceReport { replaced: 0, failures });
+            return Ok(ReplaceReport {
+                replaced: 0,
+                failures,
+            });
         }
 
         // 2. WAL (fsync) only what will be applied
@@ -1157,10 +1146,7 @@ impl ShardDb {
         let batch_size = self.options.runtime.indexing_batch_size;
         let should_checkpoint = self.pending >= (batch_size as u32);
 
-        let ids: Vec<String> = inputs
-            .iter()
-            .map(|i| i.external_id.clone())
-            .collect();
+        let ids: Vec<String> = inputs.iter().map(|i| i.external_id.clone()).collect();
         let applied = self
             .db_mut()
             .map_err(|e| CorelamoError::Internal(e.to_string()))?
@@ -1193,7 +1179,7 @@ impl ShardDb {
     pub fn partial_replace(
         &mut self,
         items: Vec<(String, OwnedValue)>,
-        user: String
+        user: String,
     ) -> Result<ReplaceReport, CorelamoError> {
         self.ensure_running()?;
         let mut failures = Vec::new();
@@ -1216,13 +1202,11 @@ impl ShardDb {
             let mut value: OwnedValue = match simd_json::to_owned_value(&mut buf) {
                 Ok(v) => v,
                 Err(e) => {
-                    failures.push(
-                        DocFailure::new(
-                            None,
-                            Some(id),
-                            FailReason::Internal(format!("stored document is not valid JSON: {e}"))
-                        )
-                    );
+                    failures.push(DocFailure::new(
+                        None,
+                        Some(id),
+                        FailReason::Internal(format!("stored document is not valid JSON: {e}")),
+                    ));
                     continue;
                 }
             };
@@ -1241,9 +1225,11 @@ impl ShardDb {
             let source = match simd_json::to_vec(&value) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    failures.push(
-                        DocFailure::new(None, Some(id), FailReason::Internal(e.to_string()))
-                    );
+                    failures.push(DocFailure::new(
+                        None,
+                        Some(id),
+                        FailReason::Internal(e.to_string()),
+                    ));
                     continue;
                 }
             };
@@ -1255,7 +1241,10 @@ impl ShardDb {
             });
         }
         let mut report = if inputs.is_empty() {
-            ReplaceReport { replaced: 0, failures: Vec::new() }
+            ReplaceReport {
+                replaced: 0,
+                failures: Vec::new(),
+            }
         } else {
             self.replace(inputs, user)?
         };
@@ -1267,7 +1256,7 @@ impl ShardDb {
     pub fn upsert(
         &mut self,
         inputs: Vec<DocumentInput>,
-        user: String
+        user: String,
     ) -> Result<InsertReport, CorelamoError> {
         self.ensure_running()?;
         let started = Instant::now();
@@ -1276,7 +1265,10 @@ impl ShardDb {
 
         let inputs = keep_last_per_id(inputs);
         if inputs.is_empty() {
-            return Ok(InsertReport { inserted: 0, failures });
+            return Ok(InsertReport {
+                inserted: 0,
+                failures,
+            });
         }
 
         let docs: Vec<WalDocumentRef<'_>> = inputs.iter().map(WalDocumentRef::from).collect();
@@ -1285,10 +1277,7 @@ impl ShardDb {
         let batch_size = self.options.runtime.indexing_batch_size;
         let should_checkpoint = self.pending >= (batch_size as u32);
 
-        let ids: Vec<String> = inputs
-            .iter()
-            .map(|i| i.external_id.clone())
-            .collect();
+        let ids: Vec<String> = inputs.iter().map(|i| i.external_id.clone()).collect();
         let applied = self
             .db_mut()
             .map_err(|e| CorelamoError::Internal(e.to_string()))?
@@ -1311,13 +1300,13 @@ impl ShardDb {
         self.publish_stats();
         self.last_write = Instant::now();
         info!(self.log, "upsert batch";
-        "user" => user,
-        "shard_id" => %self.shard_id,
-        "requested" => count,
-        "upserted" => inserted,
-        "failed" => failures.len(),
-        "elapsed_ms" => started.elapsed().as_millis(),
-    );
+            "user" => user,
+            "shard_id" => %self.shard_id,
+            "requested" => count,
+            "upserted" => inserted,
+            "failed" => failures.len(),
+            "elapsed_ms" => started.elapsed().as_millis(),
+        );
         Ok(InsertReport { inserted, failures })
     }
 
@@ -1351,17 +1340,18 @@ impl ShardDb {
     }
     pub fn plan_segment_compaction(
         &self,
-        dead_ratio_threshold: f64
+        dead_ratio_threshold: f64,
     ) -> io::Result<Option<SegmentCompactionJob>> {
         let db = self.db_ref().map_err(io::Error::other)?;
         self.publish_stats();
 
-        db.store().plan_compaction(dead_ratio_threshold, DEFAULT_SEGMENT_SIZE)
+        db.store()
+            .plan_compaction(dead_ratio_threshold, DEFAULT_SEGMENT_SIZE)
     }
 
     pub fn install_segment_compaction_cmd(
         &mut self,
-        completed: CompletedSegmentCompaction
+        completed: CompletedSegmentCompaction,
     ) -> io::Result<bool> {
         let db = self.db_mut().map_err(io::Error::other)?;
         let installed = db.mut_store().install_segment_compaction(completed)?;
@@ -1380,8 +1370,7 @@ impl ShardDb {
     pub fn clear(&mut self) -> Result<(), CorelamoError> {
         let was_running = self.db.is_some();
         // Written first so a crash mid-clear is completed on replay.
-        self
-            .wal_append_record(&WalRecordRef::Clear)
+        self.wal_append_record(&WalRecordRef::Clear)
             .map_err(|e| CorelamoError::Internal(format!("wal append failed: {e}")))?;
 
         if let Some(worker) = self.background_worker.take() {
@@ -1389,25 +1378,26 @@ impl ShardDb {
                 Ok(()) => {
                     info!(self.log, "background worker stopped for clear"; "shard_id" => self.shard_id);
                 }
-                Err(e) =>
-                    warn!(self.log, "background worker exited with error before clear";
+                Err(e) => warn!(self.log, "background worker exited with error before clear";
                     "shard_id" => self.shard_id, "error" => %e),
             }
         }
         self.pending_checkpoints.clear();
         self.wal_reindex = None;
-        if let Some(db) = self.db.take() && let Err(e) = db.shutdown() {
+        if let Some(db) = self.db.take()
+            && let Err(e) = db.shutdown()
+        {
             warn!(self.log, "clear: shutdown of old database failed";
                 "shard_id" => self.shard_id, "error" => %e);
         }
 
         // If this fails, the Clear record stays in the WAL and the next start finishes the clear.
-        self
-            .remove_data_files()
-            .map_err(|e| {
-                CorelamoError::Internal(format!("clear: removing data files failed: {e}"))
-            })?;
-        self.wal.reset().map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
+        self.remove_data_files().map_err(|e| {
+            CorelamoError::Internal(format!("clear: removing data files failed: {e}"))
+        })?;
+        self.wal
+            .reset()
+            .map_err(|e| CorelamoError::Internal(format!("wal reset failed: {e}")))?;
 
         if !was_running {
             self.shared.release();
@@ -1423,7 +1413,7 @@ impl ShardDb {
             &store_path,
             self.shared.docs.clone(),
             self.shared.internal_to_external.clone(),
-            self.shared.locations.clone()
+            self.shared.locations.clone(),
         )?;
         let db = SearchDatabase::with_shard_policy_and_snapshot(
             store,
@@ -1431,7 +1421,7 @@ impl ShardDb {
             analyzer,
             self.policy.clone(),
             self.shard_id,
-            self.shared.snapshot.clone()
+            self.shared.snapshot.clone(),
         )?;
 
         self.db = Some(db);
@@ -1447,25 +1437,27 @@ impl ShardDb {
         &mut self,
         user: String,
         shard_backup_path: PathBuf,
-        backup_id: String
+        backup_id: String,
     ) -> Result<BackupManifest, CorelamoError> {
         if self.wal_reindex.is_some() {
-            return Err(CorelamoError::Busy("a reindex is running; full backup skipped".into()));
+            return Err(CorelamoError::Busy(
+                "a reindex is running; full backup skipped".into(),
+            ));
         }
         self.flush()?;
 
-        if let Some(worker) = self.background_worker.take() && let Err(err) = worker.stop() {
+        if let Some(worker) = self.background_worker.take()
+            && let Err(err) = worker.stop()
+        {
             warn!(self.log, "background worker exited with error before backup"; "error" => %err);
         }
         let result = self.run_full_backup(&shard_backup_path, &backup_id);
         self.restart_background();
 
         match &result {
-            Ok(_) =>
-                info!(self.log, "Full backup made";
+            Ok(_) => info!(self.log, "Full backup made";
             "backup_id" => %backup_id, "user" => %user),
-            Err(err) =>
-                error!(self.log, "Full backup failed";
+            Err(err) => error!(self.log, "Full backup failed";
             "backup_id" => %backup_id, "user" => %user, "error" => ?err),
         }
 
@@ -1474,11 +1466,14 @@ impl ShardDb {
     fn run_full_backup(
         &mut self,
         shard_backup_path: &PathBuf,
-        backup_id: &String
+        backup_id: &String,
     ) -> Result<BackupManifest, CorelamoError> {
-       let record_count = self.wal
+        let record_count = self
+            .wal
             .records()
-            .and_then(|mut records| records.try_fold(0usize, |count, record| record.map(|_| count + 1)))
+            .and_then(|mut records| {
+                records.try_fold(0usize, |count, record| record.map(|_| count + 1))
+            })
             .map_err(|e| CorelamoError::Internal(format!("failed to replay WAL: {e}")))?;
         let progress = self.stats.backup_progress().clone();
         self.backup
@@ -1488,7 +1483,7 @@ impl ShardDb {
                 backup_id,
                 &progress,
                 self.document_count(),
-                record_count
+                record_count,
             )
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
@@ -1519,7 +1514,7 @@ impl ShardDb {
         shard_backup_path: PathBuf,
         backup_id: String,
         user: String,
-        segment_dir: PathBuf
+        segment_dir: PathBuf,
     ) -> Result<Option<BackupManifest>, CorelamoError> {
         info!(self.log, "Incremental backup made"; "user"=> user, "backup_id"=> backup_id.clone());
         let progress = self.stats.backup_progress().clone();
@@ -1529,7 +1524,7 @@ impl ShardDb {
                 &backup_id,
                 &segment_dir,
                 self.document_count(),
-                &progress
+                &progress,
             )
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
@@ -1539,9 +1534,8 @@ impl ShardDb {
         info!(self.log, "Restore: preparing"; "backup id" => backup_id, "user" => user);
         self.stop()?;
         let staging = self.root.join(RESTORE_STAGING);
-        remove_dir_if_exists(&staging).map_err(|e|
-            CorelamoError::Internal(format!("restore: {e}"))
-        )?;
+        remove_dir_if_exists(&staging)
+            .map_err(|e| CorelamoError::Internal(format!("restore: {e}")))?;
         if let Err(e) = self.backup.restore_chain(backup_id, &staging) {
             let _ = fs::remove_dir_all(&staging);
             return Err(CorelamoError::Internal(e.to_string()));
@@ -1566,9 +1560,8 @@ impl ShardDb {
 
     /// Any prepare failed: drops the prepared data, the shard keeps its old data.
     pub fn abort_restore(&mut self) -> Result<(), CorelamoError> {
-        remove_dir_if_exists(&self.root.join(RESTORE_STAGING)).map_err(|e|
-            CorelamoError::Internal(format!("restore abort: {e}"))
-        )
+        remove_dir_if_exists(&self.root.join(RESTORE_STAGING))
+            .map_err(|e| CorelamoError::Internal(format!("restore abort: {e}")))
     }
 
     /// The WAL may still hold records if a checkpoint failed in `stop()`; replayed on top of
@@ -1585,23 +1578,30 @@ impl ShardDb {
         let Ok(db) = self.db_ref() else {
             return;
         };
-        self.stats.publish(db.document_count(), &db.index_stats_cached());
+        self.stats
+            .publish(db.document_count(), &db.index_stats_cached());
     }
 
     #[timed(backup)]
     pub fn list_backups(&self) -> Result<Vec<BackupManifest>, CorelamoError> {
-        self.backup.list_backups().map_err(|e| CorelamoError::Internal(e.to_string()))
+        self.backup
+            .list_backups()
+            .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
     #[timed(backup)]
     pub fn delete_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
-        self.backup.delete_backup(backup_id).map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        self.backup
+            .delete_backup(backup_id)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         info!(self.log, "backup deleted"; "Backup id "=> backup_id, "User" =>user);
         Ok(())
     }
     #[timed(backup)]
     pub fn delete_backups_old(&self, cutoff: SystemTime) -> Result<(), CorelamoError> {
-        self.backup.delete_backups_old(cutoff).map_err(|e| CorelamoError::Internal(e.to_string()))?;
+        self.backup
+            .delete_backups_old(cutoff)
+            .map_err(|e| CorelamoError::Internal(e.to_string()))?;
         Ok(())
     }
     /// Deletes the index, the document store and the maps file, and any reindex leftovers.
@@ -1640,7 +1640,8 @@ impl ShardDb {
             self.finish_checkpoint(oldest.through_segment, result)?;
         }
         let result = (|| {
-            let through_segment = self.wal
+            let through_segment = self
+                .wal
                 .rotate()
                 .map_err(|e| CorelamoError::Internal(format!("wal rotate failed: {e}")))?;
             let ticket = self
@@ -1693,7 +1694,7 @@ impl ShardDb {
     fn finish_checkpoint(
         &mut self,
         through_segment: u64,
-        result: io::Result<()>
+        result: io::Result<()>,
     ) -> Result<(), CorelamoError> {
         let outcome = result
             .map_err(|e| CorelamoError::Internal(format!("checkpoint flush failed: {e}")))
@@ -1732,10 +1733,9 @@ impl ShardDb {
     }
     pub fn maybe_idle_flush(&mut self) -> Result<(), CorelamoError> {
         self.reap_checkpoints()?;
-        if
-            self.pending == 0 ||
-            !self.pending_checkpoints.is_empty() ||
-            self.last_write.elapsed() < IDLE_FLUSH_AFTER
+        if self.pending == 0
+            || !self.pending_checkpoints.is_empty()
+            || self.last_write.elapsed() < IDLE_FLUSH_AFTER
         {
             return Ok(());
         }
@@ -1771,7 +1771,7 @@ impl ShardDb {
             self.shared_state(),
             self.policy.clone(),
             self.options.embed,
-            self.log.new(slog::o!("component" => "embedding"))
+            self.log.new(slog::o!("component" => "embedding")),
         );
         self.stats.set_embedding_enabled(embedding.is_some());
         if embedding.is_none() {
@@ -1780,20 +1780,18 @@ impl ShardDb {
         }
         self.stats.set_compaction_enabled(compacting);
 
-        self.background_worker = Some(
-            BackgroundWorker::start(BackgroundConfig {
-                index: db.index_sender(),
-                shard_tx,
-                compaction,
-                store_compaction: compacting.then_some(self.options.dead_file_treshold),
-                interval: self.options.compaction_interval,
+        self.background_worker = Some(BackgroundWorker::start(BackgroundConfig {
+            index: db.index_sender(),
+            shard_tx,
+            compaction,
+            store_compaction: compacting.then_some(self.options.dead_file_treshold),
+            interval: self.options.compaction_interval,
 
-                embedding,
-                models: Arc::clone(&self.models),
-                stats: self.stats.clone(),
-                log: self.log.new(slog::o!("component" => "background")),
-            })
-        );
+            embedding,
+            models: Arc::clone(&self.models),
+            stats: self.stats.clone(),
+            log: self.log.new(slog::o!("component" => "background")),
+        }));
     }
 }
 //helper functions
@@ -1814,20 +1812,18 @@ fn keep_last_per_id(inputs: Vec<DocumentInput>) -> Vec<DocumentInput> {
 fn documents_from_wal(
     docs: Vec<WalDocument>,
     policy: &IndexPolicy,
-    log: &Logger
+    log: &Logger,
 ) -> Vec<DocumentInput> {
     let mut inputs = Vec::with_capacity(docs.len());
     for doc in docs {
         match parse_source_into_node(&doc.source, policy) {
-            Ok(parsed) =>
-                inputs.push(DocumentInput {
-                    external_id: doc.external_id,
-                    parsed,
-                    source: doc.source,
-                    format: doc.format,
-                }),
-            Err(reason) =>
-                warn!(log, "WAL replay: document no longer matches the policy, skipped";
+            Ok(parsed) => inputs.push(DocumentInput {
+                external_id: doc.external_id,
+                parsed,
+                source: doc.source,
+                format: doc.format,
+            }),
+            Err(reason) => warn!(log, "WAL replay: document no longer matches the policy, skipped";
                 "external_id" => %doc.external_id, "reason" => ?reason),
         }
     }
@@ -1835,7 +1831,11 @@ fn documents_from_wal(
 }
 fn fail_batch(failiures: &mut Vec<DocFailure>, ids: Vec<String>, error: &io::Error) {
     for id in ids {
-        failiures.push(DocFailure::new(None, Some(id), FailReason::Internal(error.to_string())));
+        failiures.push(DocFailure::new(
+            None,
+            Some(id),
+            FailReason::Internal(error.to_string()),
+        ));
     }
 }
 fn remove_dir_if_exists(path: &Path) -> io::Result<()> {
