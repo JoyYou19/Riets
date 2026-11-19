@@ -17,40 +17,42 @@ impl FilepathTokenizer {
         }
     }
 
-    fn emit(
-        &self,
-        chunk: &str,
-        from: usize,
-        to: usize,
-        position: &mut usize,
-        tokens: &mut Vec<Token>,
-    ) {
-        // split on anything non-alphanumeric (/, \, ., :, -) except literal symbols like "_"
+    fn emit(&self, chunk: &str, from: usize, position: &mut usize, tokens: &mut Vec<Token>) {
         let is_delim = |c: char| !c.is_alphanumeric() && !self.literal_symbols.contains(&c);
-        let parts: Vec<String> = chunk
-            .split(is_delim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
+
+        let mut parts: Vec<(String, usize, usize)> = Vec::new();
+        let mut part_start = 0usize;
+        for (idx, c) in chunk.char_indices() {
+            if is_delim(c) {
+                if part_start < idx {
+                    parts.push((chunk[part_start..idx].to_string(), part_start, idx));
+                }
+                part_start = idx + c.len_utf8();
+            }
+        }
+        if part_start < chunk.len() {
+            parts.push((chunk[part_start..].to_string(), part_start, chunk.len()));
+        }
 
         let span = parts.len().max(1);
         let start = *position;
 
-        let mut push = |text: &str, position: usize, position_length: usize| {
-            tokens.push(Token {
-                offset_from: from,
-                offset_to: to,
-                position,
-                text: text.to_string(),
-                position_length,
-            });
-        };
+        let mut push =
+            |text: &str, start_off: usize, end_off: usize, pos: usize, pos_len: usize| {
+                tokens.push(Token {
+                    offset_from: from + start_off,
+                    offset_to: from + end_off,
+                    position: pos,
+                    text: text.to_string(),
+                    position_length: pos_len,
+                });
+            };
 
         if self.preserve_original {
-            push(chunk, start, span); // whole path
+            push(chunk, 0, chunk.len(), start, span); // whole path
         }
-        for (index, part) in parts.iter().enumerate() {
-            push(part, start + index, 1); // each segment
+        for (index, (part, p_start, p_end)) in parts.iter().enumerate() {
+            push(part, *p_start, *p_end, start + index, 1);
         }
 
         *position = start + span;
@@ -68,14 +70,14 @@ impl Tokenizer for FilepathTokenizer {
         for (idx, ch) in text.char_indices() {
             if ch.is_whitespace() {
                 if let Some(s) = chunk_start.take() {
-                    self.emit(&text[s..idx], s, idx, &mut position, &mut tokens);
+                    self.emit(&text[s..idx], s, &mut position, &mut tokens);
                 }
             } else if chunk_start.is_none() {
                 chunk_start = Some(idx);
             }
         }
         if let Some(s) = chunk_start {
-            self.emit(&text[s..], s, text.len(), &mut position, &mut tokens);
+            self.emit(&text[s..], s, &mut position, &mut tokens);
         }
 
         BoxTokenStream::new(VecTokenStream { tokens, idx: 0 })
@@ -135,5 +137,20 @@ mod tests {
             tokens(&mut t, "C:\\Users\\foo\\main.rs"),
             vec!["C:\\Users\\foo\\main.rs", "C", "Users", "foo", "main", "rs"]
         );
+    }
+
+    #[test]
+    fn tokens_carry_their_own_offsets() {
+        let mut t = FilepathTokenizer::new(['_'], true);
+        let s = "src/core/shard_db.rs";
+        let mut stream = t.token_stream(s);
+        let mut got = Vec::new();
+        while let Some(tok) = stream.next() {
+            got.push((tok.text.clone(), tok.offset_from, tok.offset_to));
+        }
+        let core_start = s.find("core").unwrap();
+        assert!(got.iter().any(|(text, from, to)| text == "core"
+            && *from == core_start
+            && *to == core_start + 4));
     }
 }
