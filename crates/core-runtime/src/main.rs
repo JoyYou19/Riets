@@ -326,7 +326,8 @@ async fn run() -> io::Result<()> {
     let users_dir = root_path.join("users");
     std::fs::create_dir_all(&users_dir).expect("failed to create users data dir");
     let store_root = users_dir.join("documents");
-    let store = BinaryDocumentStore::open(&store_root).expect("failed to open users store");
+    //INFO:                                      10MB cache for users
+    let store = BinaryDocumentStore::open(&store_root, 10).expect("failed to open users store");
     let index_cfg = IndexRuntimeConfig::default();
     let index = LsmIndex::new(index_cfg.flush_threshold); // match the movies construction exactly
     let analyzer = Analyzer::default(); // or however movies builds it

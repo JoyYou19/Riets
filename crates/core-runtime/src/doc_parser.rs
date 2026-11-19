@@ -66,20 +66,24 @@ fn generate_routing_id() -> String {
 impl DocumentConversion for Json {
     #[timed(json_parsing)]
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError> {
-        // the body's own bytes are parsed in place: no copy, one parse
         let mut buf = self.body.into_bytes();
+
+        // raw sources first: simd_json's parse below unescapes strings in place
+        let sources = split_raw_documents(&buf)?;
+
         let value: Value = simd_json::to_owned_value(&mut buf).map_err(CorelamoError::from)?;
-        drop(buf); // the value tree owns everything it needs
+        drop(buf);
 
         if let Value::Array(items) = value {
-            return Ok(parse_raw_items(&items, policy));
+            return Ok(parse_raw_items(&items, sources, policy));
         }
         let mut outcome = ParseOutcome {
             docs: Vec::new(),
             indices: Vec::new(),
             failures: Vec::new(),
         };
-        match parse_one(0, &value, policy) {
+        let source = sources.into_iter().next().unwrap_or_default();
+        match parse_one(0, &value, source, policy) {
             Ok(doc) => {
                 outcome.docs.push(doc);
                 outcome.indices.push(0);
@@ -90,24 +94,24 @@ impl DocumentConversion for Json {
     }
 }
 
-#[timed(json_parsing)]
-fn parse_raw_items(items: &[Value], policy: &IndexPolicy) -> ParseOutcome {
+fn parse_raw_items(items: &[Value], sources: Vec<Vec<u8>>, policy: &IndexPolicy) -> ParseOutcome {
     if items.len() > PARALLEL_PARSE_THRESHOLD {
-        //DATABASE LOG
-        parse_raw_items_parallel(items, policy)
+        parse_raw_items_parallel(items, sources, policy)
     } else {
-        //println!("sequential: ");
-        parse_raw_items_sequential(items, policy)
+        parse_raw_items_sequential(items, sources, policy)
     }
 }
 
-#[timed(json_parsing)]
-fn parse_raw_items_sequential(raw_items: &[Value], policy: &IndexPolicy) -> ParseOutcome {
-    let mut docs = Vec::with_capacity(raw_items.len());
-    let mut indices = Vec::with_capacity(raw_items.len());
+fn parse_raw_items_sequential(
+    items: &[Value],
+    sources: Vec<Vec<u8>>,
+    policy: &IndexPolicy,
+) -> ParseOutcome {
+    let mut docs = Vec::with_capacity(items.len());
+    let mut indices = Vec::with_capacity(items.len());
     let mut failures = Vec::new();
-    for (index, raw) in raw_items.iter().enumerate() {
-        match parse_one(index, raw, policy) {
+    for (index, (raw, source)) in items.iter().zip(sources).enumerate() {
+        match parse_one(index, raw, source, policy) {
             Ok(doc) => {
                 docs.push(doc);
                 indices.push(index);
@@ -122,16 +126,20 @@ fn parse_raw_items_sequential(raw_items: &[Value], policy: &IndexPolicy) -> Pars
     }
 }
 
-#[timed(json_parsing)]
-fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy) -> ParseOutcome {
-    let results: Vec<Result<DocumentInput, DocFailure>> = raw_items
+fn parse_raw_items_parallel(
+    items: &[Value],
+    sources: Vec<Vec<u8>>,
+    policy: &IndexPolicy,
+) -> ParseOutcome {
+    let results: Vec<Result<DocumentInput, DocFailure>> = items
         .par_iter()
+        .zip(sources.into_par_iter())
         .enumerate()
         .map_init(
             || String::with_capacity(64),
-            |path_buf, (index, raw)| {
+            |path_buf, (index, (raw, source))| {
                 path_buf.clear();
-                parse_one(index, raw, policy)
+                parse_one(index, raw, source, policy)
             },
         )
         .collect();
@@ -161,10 +169,9 @@ fn parse_raw_items_parallel(raw_items: &[Value], policy: &IndexPolicy) -> ParseO
 fn parse_one(
     index: usize,
     value: &Value,
+    source: Vec<u8>,
     policy: &IndexPolicy,
 ) -> Result<DocumentInput, DocFailure> {
-    let source = simd_json::to_vec(value)
-        .map_err(|e| DocFailure::at(index, FailReason::InvalidJson(e.to_string())))?;
     let node = parse_into_node(value, policy).map_err(|r| DocFailure::at(index, r))?;
     let external_id = extract_external_id(&node, policy).map_err(|r| DocFailure::at(index, r))?;
     Ok(DocumentInput {
@@ -173,6 +180,17 @@ fn parse_one(
         source,
         format: Format::JSON,
     })
+}
+
+fn split_raw_documents(buf: &[u8]) -> Result<Vec<Vec<u8>>, CorelamoError> {
+    use serde_json::value::RawValue;
+    let mut out = Vec::new();
+    let mut stream = serde_json::Deserializer::from_slice(buf).into_iter::<Box<RawValue>>();
+    while let Some(raw) = stream.next() {
+        let raw = raw.map_err(CorelamoError::from)?;
+        out.push(raw.get().as_bytes().to_vec());
+    }
+    Ok(out)
 }
 
 //retrieve byte-for-byte response + skipped for format

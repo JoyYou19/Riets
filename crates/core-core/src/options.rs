@@ -27,7 +27,11 @@ pub struct DatabaseOptions {
     #[serde(default)]
     pub search: SearchOptions,
     #[serde(default)]
-    pub skip_unreplayable_wal_records:bool
+    pub skip_unreplayable_wal_records: bool,
+
+    //how many mb of docs do wee keep in the cache
+    #[serde(default)]
+    pub doc_cache_mb: u64,
 }
 impl DatabaseOptions {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
@@ -54,6 +58,11 @@ impl DatabaseOptions {
             )
         })
     }
+
+    pub fn doc_cache_budget_bytes(&self, shard_count: u16) -> u64 {
+        let shards = shard_count.max(1) as u64;
+        self.doc_cache_mb.max(1).saturating_mul(1024 * 1024) / shards
+    }
 }
 
 impl Default for DatabaseOptions {
@@ -70,8 +79,9 @@ impl Default for DatabaseOptions {
             sync_mode: core_storage::wal::SyncMode::Manual,
             embed: EmbeddingConfig::default(),
             search: SearchOptions::default(),
-            skip_unreplayable_wal_records: false     
-           }
+            skip_unreplayable_wal_records: false,
+            doc_cache_mb: 512,
+        }
     }
 }
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
