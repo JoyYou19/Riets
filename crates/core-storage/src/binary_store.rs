@@ -27,7 +27,7 @@ use core_timing::timed;
 use dashmap::DashMap;
 use moka::sync::Cache;
 
-//                  hihi haha part 2
+//                 hihi haha part 2
 const MAGIC: &[u8; 8] = b"BANANA_F";
 /// The header of a segment written by store compaction. Until the maps file lists it, such a
 /// segment is an unfinished install: its documents are copies, and the old segments still hold them.
