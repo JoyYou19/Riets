@@ -68,7 +68,7 @@ impl FlushJob {
     pub fn write(self) -> io::Result<DiskSegment> {
         let with_path =
             |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", self.path.display()));
-        let segment = MemIndex::freeze_shared(&self.generations);
+        let segment = MemIndex::freeze_shared(&self.generations)?;
         write_segment(&self.path, &segment).map_err(with_path)?;
         DiskSegment::open(&self.path).map_err(with_path)
     }
@@ -485,7 +485,9 @@ impl LsmIndex {
                 break;
             };
             let mut merged = Arc::try_unwrap(newest).unwrap_or_else(|shared| (*shared).clone());
-            merged.merge_from(sealed);
+            merged
+                .merge_from(sealed)
+                .expect("array rows must be continues in-memory");
             sealed = merged;
         }
         self.generations.push(Arc::new(sealed));
@@ -536,7 +538,9 @@ impl LsmIndex {
 
     pub fn merge_into_memtable(&mut self, other: MemIndex) {
         self.last_ingest = Some(Instant::now());
-        self.mem.merge_from(other);
+        self.mem
+            .merge_from(other)
+            .expect("array rows must be continuous before merging");
     }
 
     pub fn memtable_size(&self) -> usize {
@@ -584,7 +588,7 @@ impl LsmIndex {
             self.next_segment_id += 1;
             self.flush_queue.push(path, generations);
         } else {
-            let segment = Arc::new(MemIndex::freeze_shared(&generations));
+            let segment = Arc::new(MemIndex::freeze_shared(&generations)?);
             self.segment_handles
                 .push(SegmentHandle::Memory(Arc::clone(&segment)));
             Arc::make_mut(&mut self.query_segments)
@@ -622,7 +626,7 @@ impl LsmIndex {
         };
         let outcome = written.and_then(|disk| self.install_flushed(&pending, disk));
         if let Err(e) = &outcome {
-            self.keep_in_memory(&pending);
+            self.keep_in_memory(&pending)?;
             self.flush_queue.fail(e);
         }
         drop_flushed_generations(pending.generations);
@@ -652,13 +656,15 @@ impl LsmIndex {
 
     /// A flush that could not be written stays searchable from memory, where it would have
     /// been installed.
-    fn keep_in_memory(&mut self, pending: &PendingFlush) {
-        let segment = Arc::new(MemIndex::freeze_shared(&pending.generations));
+    fn keep_in_memory(&mut self, pending: &PendingFlush) -> io::Result<()> {
+        let segment = Arc::new(MemIndex::freeze_shared(&pending.generations)?);
         let position = self.flush_position(pending);
         self.segment_handles
             .insert(position, SegmentHandle::Memory(Arc::clone(&segment)));
         Arc::make_mut(&mut self.query_segments)
             .insert(position, segment as Arc<dyn SearchReader + Send + Sync>);
+
+        Ok(())
     }
 
     /// Every flush numbered below this has to finish before data queued so far is on disk.

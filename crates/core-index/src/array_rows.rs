@@ -1,3 +1,5 @@
+use std::io;
+
 use crate::types::{ARRAY_ROW_FLAG, ArrayRowId, DocId};
 pub const NO_PARENT_ROW: ArrayRowId = ArrayRowId(u64::MAX);
 
@@ -99,17 +101,27 @@ impl ArrayRowIndex {
         }
     }
 
-    pub fn merge_from(&mut self, other: &ArrayRowIndex) {
+    pub fn merge_from(&mut self, other: &ArrayRowIndex) -> io::Result<()> {
         if other.is_empty() {
-            return;
+            return Ok(());
         }
         if self.is_empty() {
             self.base = other.base;
+        } else if other.base.raw() != self.base.raw() + self.len() as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "array row index gap: cannot merge base {} (len {}) with base {} — reindex required",
+                    self.base.raw(),
+                    self.len(),
+                    other.base.raw()
+                ),
+            ));
         }
-        debug_assert_eq!(other.base.raw(), self.base.raw() + self.len() as u64);
         self.row_to_doc.extend_from_slice(&other.row_to_doc);
         self.element_index.extend_from_slice(&other.element_index);
         self.parent_row.extend_from_slice(&other.parent_row);
+        Ok(())
     }
 
     pub fn element_indices(&self) -> &[u32] {
@@ -139,5 +151,33 @@ impl ArrayRowIndex {
 impl Default for ArrayRowIndex {
     fn default() -> Self {
         Self::new(ArrayRowId(0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_from_rejects_gap() {
+        let mut a = ArrayRowIndex::default();
+        a.push_row(ArrayRowId(0), 0, None, 0);
+        a.push_row(ArrayRowId(1), 1, None, 0);
+
+        let mut b = ArrayRowIndex::default();
+        b.push_row(ArrayRowId(10), 2, None, 0); // gap after 1
+
+        assert!(a.merge_from(&b).is_err());
+    }
+
+    #[test]
+    fn merge_from_accepts_contiguous() {
+        let mut a = ArrayRowIndex::default();
+        a.push_row(ArrayRowId(0), 0, None, 0);
+        let mut b = ArrayRowIndex::default();
+        b.push_row(ArrayRowId(1), 1, None, 0);
+
+        assert!(a.merge_from(&b).is_ok());
+        assert_eq!(a.doc_of(ArrayRowId(1)), Some(1));
     }
 }
