@@ -690,8 +690,8 @@ impl ShardHandle {
     pub async fn resolve_hits_direct(
         &self,
         hits: Vec<SearchHit>,
-        return_fields: Option<&IndexMap<String, bool>>,
-        policy: &IndexPolicy,
+        return_fields: Option<IndexMap<String, bool>>,
+        policy: Arc<IndexPolicy>,
     ) -> Result<Vec<Option<SearchDocumentHit>>, CorelamoError> {
         self.ensure_readable()?;
 
@@ -705,6 +705,7 @@ impl ShardHandle {
             })
             .collect();
 
+        //fetch every document concurrently
         let mut set = JoinSet::new();
         for (i, external_id) in external_ids.into_iter().enumerate() {
             let Some(external_id) = external_id else {
@@ -714,26 +715,37 @@ impl ShardHandle {
             set.spawn(async move { (i, shared.get_document(&external_id).await) });
         }
 
-        let mut results: Vec<Option<SearchDocumentHit>> = vec![None; hits.len()];
+        let mut docs: Vec<Option<StoredDocument>> = vec![None; hits.len()];
         while let Some(outcome) = set.join_next().await {
             let (i, res) = outcome
                 .map_err(|e| CorelamoError::Internal(format!("resolve task panicked: {e}")))?;
-            let Some(doc) = res.map_err(|e| CorelamoError::Internal(e.to_string()))? else {
-                continue;
-            };
-            let (doc_out, full_doc) = project_document(&doc, policy, return_fields)
-                .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-            results[i] = Some(SearchDocumentHit {
-                external_id: doc.external_id.clone(),
-                internal_id: doc.internal_id,
-                score: hits[i].score,
-                doc: doc_out,
-                full_doc,
-                highlights: IndexMap::new(),
-            });
+            docs[i] = res.map_err(|e| CorelamoError::Internal(e.to_string()))?;
         }
 
-        Ok(results)
+        //projection on a blocking pool
+        let scores: Vec<f32> = hits.iter().map(|h| h.score).collect();
+        tokio::task::spawn_blocking(move || {
+            let mut results: Vec<Option<SearchDocumentHit>> = Vec::with_capacity(docs.len());
+            for (i, doc) in docs.into_iter().enumerate() {
+                let Some(doc) = doc else {
+                    results.push(None);
+                    continue;
+                };
+                let (doc_out, full_doc) = project_document(&doc, &policy, return_fields.as_ref())
+                    .map_err(|e| CorelamoError::Internal(e.to_string()))?;
+                results.push(Some(SearchDocumentHit {
+                    external_id: doc.external_id,
+                    internal_id: doc.internal_id,
+                    score: scores[i],
+                    doc: doc_out,
+                    full_doc,
+                    highlights: IndexMap::new(),
+                }));
+            }
+            Ok(results)
+        })
+        .await
+        .map_err(|je| CorelamoError::Internal(format!("projection panicked: {je}")))?
     }
 
     //reusing the cached snapshots so no index reads for the final document highlights

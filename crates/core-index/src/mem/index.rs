@@ -15,6 +15,7 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
+use std::io;
 use std::sync::Arc;
 
 // Memory inverted index, the core of the index
@@ -259,7 +260,9 @@ impl MemIndex {
     /// place: a published snapshot may still hold them, so nothing is unwrapped or cloned
     /// whole. Each posting list is copied once, into the segment.
     #[timed(indexing_documents)]
-    pub(crate) fn freeze_shared(generations: &[Arc<MemIndex>]) -> crate::segment::ImmutableSegment {
+    pub(crate) fn freeze_shared(
+        generations: &[Arc<MemIndex>],
+    ) -> io::Result<crate::segment::ImmutableSegment> {
         let mut terms: BTreeMap<TermKey, PostingList> = BTreeMap::new();
         let mut doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
         let mut field_stats: BTreeMap<XPathId, FieldStats> = BTreeMap::new();
@@ -288,17 +291,17 @@ impl MemIndex {
                 slot.true_ids |= &field.true_ids;
                 slot.false_ids |= &field.false_ids;
             }
-            array_row_index.merge_from(&generation.array_row_index);
+            array_row_index.merge_from(&generation.array_row_index)?;
         }
 
-        crate::segment::ImmutableSegment::new(
+        Ok(crate::segment::ImmutableSegment::new(
             terms,
             doc_lengths,
             field_stats,
             numeric_points.build(),
             bool_fields,
             array_row_index,
-        )
+        ))
     }
     //tracks min and max doc id in this segment
     fn track_doc_id(&mut self, doc_id: DocId) {
@@ -449,7 +452,7 @@ impl MemIndex {
     //TEST
 
     #[timed(indexing_documents)]
-    pub fn merge_from(&mut self, newer: MemIndex) {
+    pub fn merge_from(&mut self, newer: MemIndex) -> io::Result<()> {
         // Capture this before we start moving fields out of `newer`.
         let newer_doc_range = newer.doc_id_range();
 
@@ -485,12 +488,14 @@ impl MemIndex {
                 }
             }
         }
-        self.array_row_index.merge_from(&newer.array_row_index);
+        self.array_row_index.merge_from(&newer.array_row_index)?;
         self.estimated_bytes += newer.estimated_bytes.saturating_sub(duplicate_key_bytes);
 
         if let Some((min, max)) = newer_doc_range {
             self.track_doc_id(min);
             self.track_doc_id(max);
         }
+
+        Ok(())
     }
 }

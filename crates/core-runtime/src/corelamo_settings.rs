@@ -56,11 +56,11 @@ OPTIONS:
 
     --max_payload_size <MB>      
                           Maximum payload size for a single requests  
-                          [default: 512MB]
+                          [default: 1024MB]
 
     --max_request_timeout <s>      
                           Maximum time to wait before responding back to the user 
-                          [default: 30s]
+                          [default: 240s]
 
     --overwrite_config <true|false>
                           If true, CLI args override config file values.

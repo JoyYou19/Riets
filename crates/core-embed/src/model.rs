@@ -7,9 +7,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fastembed::{ EmbeddingModel, TextInitOptions, TextEmbedding };
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use hf_hub::api::sync::ApiBuilder;
-
 
 use crate::config::ModelConfig;
 use crate::device::Device;
@@ -220,7 +219,7 @@ pub static MODELS: &[ModelSpec] = &[
     },
     // Kept with its current id, so vectors already made with it stay valid. 512 tokens.
     ModelSpec {
-        id: "multilingual_e5_large",
+        id: "multilingual-e5-large",
         dims: 1024,
         backend: Backend::Pooled(multilingual_e5_large, Pooling::Mean),
         query_prefix: "query: ",

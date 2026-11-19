@@ -1,5 +1,17 @@
 use crate::{
-    array_rows::ArrayRowIndex, background::background_pool, disk::{reader::DiskSegment, writer::{MergeSource, write_merged_segment}}, document::document::BoolField, lsm::index_worker::IndexCommand, numeric_values::{NumericFields, NumericPoints, unpack}, posting::DeleteSet, segment::{ImmutableSegment, SegmentHandle}, types::{DocId, TermKey, XPathId}, vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
+    array_rows::ArrayRowIndex,
+    background::background_pool,
+    disk::{
+        reader::DiskSegment,
+        writer::{MergeSource, write_merged_segment},
+    },
+    document::document::BoolField,
+    lsm::index_worker::IndexCommand,
+    numeric_values::{NumericFields, NumericPoints, unpack},
+    posting::DeleteSet,
+    segment::{ImmutableSegment, SegmentHandle},
+    types::{DocId, TermKey, XPathId},
+    vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
 };
 use core_timing::timed;
 use serde::{Deserialize, Serialize};
@@ -51,9 +63,11 @@ impl OpenSegment {
     fn iter_terms(&self) -> TermIter<'_> {
         match self {
             OpenSegment::Disk(d) => Box::new(d.iter_terms()),
-             OpenSegment::Memory(m) => {
-                Box::new(m.terms().iter().map(|(k, v)| (k.clone(), MergeSource::Memory(v))))
-            }
+            OpenSegment::Memory(m) => Box::new(
+                m.terms()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), MergeSource::Memory(v))),
+            ),
         }
     }
 
@@ -84,7 +98,11 @@ impl<'a> MergedTerms<'a> {
                 None => heads.push(None),
             }
         }
-        Self { sources, heads, heap }
+        Self {
+            sources,
+            heads,
+            heap,
+        }
     }
 
     /// Takes the current source of `index` and loads its next term.
@@ -203,9 +221,7 @@ pub fn compact_segments_streaming(
     let mut merged_bool_fields: BTreeMap<XPathId, BoolField> = BTreeMap::new();
     for segment in &opened {
         for (xpath, field) in segment.bool_fields() {
-            let slot = merged_bool_fields
-                .entry(*xpath)
-                .or_default();
+            let slot = merged_bool_fields.entry(*xpath).or_default();
             for id in &field.true_ids {
                 if !deleted.contains(id) {
                     slot.true_ids.insert(id);
@@ -221,7 +237,7 @@ pub fn compact_segments_streaming(
 
     let mut merged_array_rows = ArrayRowIndex::default();
     for segment in &opened {
-        merged_array_rows.merge_from(segment.array_row_index());
+        merged_array_rows.merge_from(segment.array_row_index())?;
     }
 
     let sources: Vec<TermIter<'_>> = opened.iter().map(|s| s.iter_terms()).collect();
@@ -300,11 +316,12 @@ pub fn run_compaction_cycle(
         Ok(completed) => completed,
         Err(err) => {
             if let Err(remove_err) = fs::remove_file(&output_path)
-                && remove_err.kind() != io::ErrorKind::NotFound {
-                    slog::warn!(log, "failed to remove partial compaction output";
+                && remove_err.kind() != io::ErrorKind::NotFound
+            {
+                slog::warn!(log, "failed to remove partial compaction output";
                         "path" => %output_path.display(),
                         "error" => %remove_err);
-                }
+            }
             return Err(io::Error::new(
                 err.kind(),
                 format!("{}: {}", output_path.display(), err),

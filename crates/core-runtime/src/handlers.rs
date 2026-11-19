@@ -2416,7 +2416,7 @@ pub(crate) async fn rename_database_handler(
         }
     };
 
-    if manager.all_running() {
+    if manager.any_running() {
         return HttpError::from_corelamo(
             CorelamoError::Conflict(format!(
                 "database '{db_name}' must be stopped before renaming; call stop-database first"

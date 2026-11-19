@@ -506,6 +506,10 @@ impl ShardManager {
         self.shards.iter().all(ShardHandle::is_running)
     }
 
+    pub fn any_running(&self) -> bool {
+        self.shards.iter().any(ShardHandle::is_running)
+    }
+
     #[timed(database_lifecycle)]
     pub async fn stop(&self) -> Result<(), CorelamoError> {
         let mut set = JoinSet::new();
@@ -1266,7 +1270,7 @@ impl ShardManager {
                 page.limit,
                 more,
                 command,
-                &policy,
+                policy,
                 highlight,
                 groups,
                 &stats.shards,
@@ -2207,7 +2211,7 @@ impl ShardManager {
                 limit,
                 more,
                 command,
-                &policy,
+                policy,
                 None,
                 Arc::new(Vec::new()),
                 &[],
@@ -2226,7 +2230,7 @@ impl ShardManager {
         limit: usize,
         more: bool,
         command: &SearchCommand,
-        policy: &IndexPolicy,
+        policy: Arc<IndexPolicy>,
         highlight: Option<HighlightSpec>,
         groups: Arc<Vec<QueryGroup>>,
         prepared: &[Arc<PreparedShardSearch>],
@@ -2289,7 +2293,7 @@ impl ShardManager {
                     _ => None,
                 };
                 let resolved = handle
-                    .resolve_hits_direct(bare_hits, return_fields.as_ref(), &policy)
+                    .resolve_hits_direct(bare_hits, return_fields, Arc::clone(&policy))
                     .await;
                 let matched = match matching {
                     Some(task) => task.await.map_err(|je| {
