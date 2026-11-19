@@ -606,6 +606,7 @@ dependencies = [
  "bitpacking",
  "core-timing",
  "fst",
+ "indexmap",
  "levenshtein_automata",
  "lz4_flex",
  "memmap2",

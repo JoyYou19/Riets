@@ -12,9 +12,10 @@ use crate::analyzer::strip_markdown::strip_markdown;
 use crate::analyzer::url_tokenizer::UrlTokenizer;
 use crate::analyzer::{token::Token, word_delimiter::WordDelimiterTokenizer};
 use core_timing::timed;
+use indexmap::IndexMap;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -431,12 +432,12 @@ pub struct AnalyzerSet {
 
 impl Default for AnalyzerSet {
     fn default() -> Self {
-        Self::from_policy(&BTreeMap::new())
+        Self::from_policy(&IndexMap::new())
     }
 }
 
 impl AnalyzerSet {
-    pub fn from_policy(configs: &BTreeMap<String, AnalyzerConfig>) -> Self {
+    pub fn from_policy(configs: &IndexMap<String, AnalyzerConfig>) -> Self {
         let mut analyzers = HashMap::new();
         for (name, config) in configs {
             analyzers.insert(name.clone(), Analyzer::from_config(config));

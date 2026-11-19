@@ -16,6 +16,7 @@ use crate::{
 };
 use ahash::{HashMap, HashMapExt, HashSet};
 use core_timing::timed;
+use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -149,8 +150,14 @@ impl FieldPolicy {
         }
     }
 
-    fn from_json(name: &str, v: &Value) -> Result<Self, String> {
-        match v {
+    fn from_json(name: &str, value: &Value) -> Result<Self, String> {
+        if name.is_empty() {
+            return Err("field name must not be empty".to_string());
+        }
+        if name.contains('/') {
+            return Err(format!("field name '{name}' must not contain '/'"));
+        }
+        match value {
             Value::String(s) => {
                 let kind = kind_from_str(s)
                     .ok_or_else(|| format!("field '{name}': unknown type '{s}'"))?;
@@ -164,10 +171,13 @@ impl FieldPolicy {
             },
 
             Value::Array(items) => {
-                let elem = items
-                    .first()
-                    .ok_or_else(|| format!("repeated field '{name}' needs exactly one element"))?;
-                let mut f = Self::from_json(name, elem)?;
+                if items.len() != 1 {
+                    return Err(format!(
+                        "repeated field '{name}' needs exactly one element, got {}",
+                        items.len()
+                    ));
+                }
+                let mut f = Self::from_json(name, &items[0])?;
                 f.repeated = true;
                 Ok(f)
             }
@@ -184,6 +194,21 @@ impl FieldPolicy {
         type_str: &str,
         obj: &serde_json::Map<String, Value>,
     ) -> Result<Self, String> {
+        //for something like $is_big: true reject
+        reject_unknown_setting(
+            obj,
+            &[
+                "$type",
+                "$exact",
+                "$searchable",
+                "$list",
+                "$analyzer",
+                "$weight",
+                "$vector",
+            ],
+            name,
+        )?;
+
         let kind = kind_from_str(type_str)
             .ok_or_else(|| format!("field '{name}': unknown type '{type_str}'"))?;
         let mut f = Self::leaf(name, kind);
@@ -223,6 +248,8 @@ impl FieldPolicy {
     }
 
     fn struct_from_obj(name: &str, obj: &serde_json::Map<String, Value>) -> Result<Self, String> {
+        reject_unknown_setting(obj, &["$type", "$weight", "$searchable", "$list"], name)?;
+
         let mut subfields = Vec::new();
         for (k, val) in obj {
             if k.starts_with('$') {
@@ -284,7 +311,7 @@ impl FieldPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexPolicy {
-    pub analyzers: BTreeMap<String, AnalyzerConfig>,
+    pub analyzers: IndexMap<String, AnalyzerConfig>,
     pub fields: Vec<FieldPolicy>,
     registry: FieldRegistry,
 }
@@ -296,7 +323,7 @@ impl Serialize for IndexPolicy {
         if !self.analyzers.is_empty() {
             m.serialize_entry("analyzers", &self.analyzers)?;
         }
-        let document: BTreeMap<&str, &FieldPolicy> =
+        let document: IndexMap<&str, &FieldPolicy> =
             self.fields.iter().map(|f| (f.name.as_str(), f)).collect();
         m.serialize_entry("document", &document)?;
         m.end()
@@ -310,9 +337,9 @@ impl<'de> Deserialize<'de> for IndexPolicy {
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("policy must be a JSON object"))?;
 
-        let analyzers: BTreeMap<String, AnalyzerConfig> = match obj.get("analyzers") {
+        let analyzers: IndexMap<String, AnalyzerConfig> = match obj.get("analyzers") {
             Some(v) => serde_json::from_value(v.clone()).map_err(serde::de::Error::custom)?,
-            None => BTreeMap::new(),
+            None => IndexMap::new(),
         };
 
         let doc_obj = obj
@@ -349,7 +376,7 @@ impl IndexPolicy {
         root.join(Self::REGISTRY_FILE_NAME)
     }
 
-    pub fn new(analyzers: BTreeMap<String, AnalyzerConfig>, fields: Vec<FieldPolicy>) -> Self {
+    pub fn new(analyzers: IndexMap<String, AnalyzerConfig>, fields: Vec<FieldPolicy>) -> Self {
         Self {
             fields,
             analyzers,
@@ -386,14 +413,6 @@ impl IndexPolicy {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("duplicate field name '{}'", field.name),
-                ));
-            }
-
-            // TODO: id shouldnt need a weight right?
-            if field.weight.min > field.weight.max {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("invalid weight range for '{}'", field.name),
                 ));
             }
         }
@@ -481,7 +500,7 @@ impl IndexPolicy {
     }
 
     pub fn default_document() -> Self {
-        let mut analyzers = BTreeMap::new();
+        let mut analyzers = IndexMap::new();
         analyzers.insert("$default".to_string(), AnalyzerConfig::builtin_default());
 
         Self::new(
@@ -802,6 +821,12 @@ const MAX_ARRAY_DEPTH: u32 = 3;
 
 // arrays should have one subfield + max 3 + numbers cant be exact=false
 fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
+    if field.weight.min > field.weight.max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid weight range for '{}'", field.full_path),
+        ));
+    }
     if field.kind == FieldKind::Struct {
         let depth = if field.repeated {
             array_depth + 1
@@ -1019,4 +1044,20 @@ impl Serialize for FullField<'_> {
         }
         m.end()
     }
+}
+
+fn reject_unknown_setting(
+    obj: &serde_json::Map<String, Value>,
+    allowed: &[&str],
+    field: &str,
+) -> Result<(), String> {
+    for key in obj.keys() {
+        if key.starts_with('$') && !allowed.contains(&key.as_str()) {
+            return Err(format!(
+                "field '{field}': unknown option '{key}' (valid: {})",
+                allowed.join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
