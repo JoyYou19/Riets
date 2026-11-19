@@ -162,54 +162,62 @@ fn run_model(
     }
     Ok(vectors)
 }
-fn multilingual_e5_small() -> EmbeddingModel {
-    EmbeddingModel::MultilingualE5Small
+fn bge_m3() -> EmbeddingModel {
+    EmbeddingModel::BGEM3
 }
 
-fn snowflake_arctic_embed_s() -> EmbeddingModel {
-    EmbeddingModel::SnowflakeArcticEmbedS
+fn embedding_gemma_300m() -> EmbeddingModel {
+    EmbeddingModel::EmbeddingGemma300M
 }
 
-fn snowflake_arctic_embed_m() -> EmbeddingModel {
-    EmbeddingModel::SnowflakeArcticEmbedM
+fn gte_large_en() -> EmbeddingModel {
+    EmbeddingModel::GTELargeENV15
 }
+
+fn mxbai_embed_large() -> EmbeddingModel {
+    EmbeddingModel::MxbaiEmbedLargeV1
+}
+
 fn multilingual_e5_large() -> EmbeddingModel {
     EmbeddingModel::MultilingualE5Large
 }
 
-fn bge_small_en() -> EmbeddingModel {
-    EmbeddingModel::BGESmallENV15Q // EmbeddingModel::BGESmallENV15
-}
-
 pub static MODELS: &[ModelSpec] = &[
+    // Best for multilingual text: 100+ languages, up to 8192 tokens.
     ModelSpec {
-        id: "bge-small-en-v1.5-quantized",
-        dims: 384,
-        backend: Backend::FastEmbed(bge_small_en),
-        query_prefix: "Represent this sentence for searching relevant passages: ",
+        id: "bge-m3",
+        dims: 1024,
+        backend: Backend::Pooled(bge_m3, Pooling::Cls),
+        query_prefix: "",
         document_prefix: "",
     },
+    // Small, runs on the CPU, best results for its size; multilingual, up to 2048 tokens.
+    // FastEmbed backend on purpose: the model's dense layers after pooling are only in
+    // fastembed's `sentence_embedding` output, which the pooled backend would skip.
     ModelSpec {
-        id: "multilingual-e5-small",
-        dims: 384,
-        backend: Backend::Pooled(multilingual_e5_small, Pooling::Mean),
-        query_prefix: "query: ",
-        document_prefix: "passage: ",
-    },
-    ModelSpec {
-        id: "snowflake-arctic-embed-s",
-        dims: 384,
-        backend: Backend::Pooled(snowflake_arctic_embed_s, Pooling::Cls),
-        query_prefix: "Represent this sentence for searching relevant passages: ",
-        document_prefix: "",
-    },
-    ModelSpec {
-        id: "snowflake-arctic-embed-m",
+        id: "embeddinggemma-300m",
         dims: 768,
-        backend: Backend::Pooled(snowflake_arctic_embed_m, Pooling::Cls),
+        backend: Backend::FastEmbed(embedding_gemma_300m),
+        query_prefix: "task: search result | query: ",
+        document_prefix: "title: none | text: ",
+    },
+    // Most accurate for English retrieval, up to 8192 tokens.
+    ModelSpec {
+        id: "gte-large-en-v1.5",
+        dims: 1024,
+        backend: Backend::Pooled(gte_large_en, Pooling::Cls),
+        query_prefix: "",
+        document_prefix: "",
+    },
+    // Strong English model, 512 tokens.
+    ModelSpec {
+        id: "mxbai-embed-large-v1",
+        dims: 1024,
+        backend: Backend::Pooled(mxbai_embed_large, Pooling::Cls),
         query_prefix: "Represent this sentence for searching relevant passages: ",
         document_prefix: "",
     },
+    // Kept with its current id, so vectors already made with it stay valid. 512 tokens.
     ModelSpec {
         id: "multilingual-e5-large",
         dims: 1024,

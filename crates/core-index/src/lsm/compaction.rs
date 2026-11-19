@@ -183,6 +183,7 @@ pub fn compact_segments_streaming(
     handles: &[SegmentHandle],
     deleted: &DeleteSet,
     output_path: &Path,
+    stop:&AtomicBool
 ) -> io::Result<()> {
     let mut opened = Vec::with_capacity(handles.len());
     for handle in handles {
@@ -240,7 +241,7 @@ pub fn compact_segments_streaming(
     }
 
     let sources: Vec<TermIter<'_>> = opened.iter().map(|s| s.iter_terms()).collect();
-    let merged_terms = MergedTerms::new(sources);
+    let merged_terms = MergedTerms::new(sources).take_while(|_| !stop.load(Ordering::Relaxed));
 
     write_merged_segment(
         output_path,
@@ -250,7 +251,11 @@ pub fn compact_segments_streaming(
         &merged_points.build(),
         &merged_array_rows,
         &merged_bool_fields,
-    )
+    )?;
+    if stop.load(Ordering::Relaxed){
+        return Err(interrupted())
+    }
+    Ok(())
 }
 /// Merges the selected segments' vectors into one file per field next to `output_path`,
 /// dropping deleted documents. Returns the fields that got a file. A failure only loses
@@ -288,6 +293,7 @@ pub fn compact_vectors(
 pub fn run_compaction_cycle(
     sender: &Sender<IndexCommand>,
     config: CompactionConfig,
+    stop:&AtomicBool,
     log: &slog::Logger,
 ) -> io::Result<bool> {
     let (reply, plan_rx) = std::sync::mpsc::channel();
@@ -301,9 +307,12 @@ pub fn run_compaction_cycle(
     else {
         return Ok(false);
     };
+    if stop.load(Ordering::Relaxed){
+        return Err(interrupted());
+    }
     // slet shard_log=slog::Logger;
     let output_path = job.output_path.clone();
-    let completed = match background_pool().install(|| run_compaction_job(job)) {
+    let completed = match background_pool().install(|| run_compaction_job(job,stop)) {
         Ok(completed) => completed,
         Err(err) => {
             if let Err(remove_err) = fs::remove_file(&output_path)
@@ -348,10 +357,13 @@ pub fn sleep_unless_stopped(stop: &AtomicBool, total: Duration) {
 fn broken_pipe(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, message)
 }
+fn interrupted() -> io::Error{
+    io::Error::new(io::ErrorKind::Interrupted, "compaction stopped")
+}
 
 #[timed(compaction)]
-fn run_compaction_job(job: CompactionJob) -> io::Result<CompletedCompaction> {
-    compact_segments_streaming(&job.selected, &job.deleted, &job.output_path)?;
+fn run_compaction_job(job: CompactionJob, stop: &AtomicBool) -> io::Result<CompletedCompaction> {
+    compact_segments_streaming(&job.selected, &job.deleted, &job.output_path,stop)?;
     let vector_xpaths = compact_vectors(&job.vectors, &job.deleted, &job.output_path);
     Ok(CompletedCompaction {
         job_id: job.job_id,

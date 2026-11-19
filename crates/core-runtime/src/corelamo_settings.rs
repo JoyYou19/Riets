@@ -21,7 +21,7 @@ pub(crate) const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("auth", "true"),
     ("max_payload_size", "1024"),
     ("max_request_timeout", "240"),
-    ("embedding-model", "snowflake-arctic-embed-m"),
+    ("embedding-model", "bge-m3"),
     ("embedding-device", "auto"),
     ("embedding-runtime", ""),
     ("embedding-instances", "1"),
@@ -68,10 +68,9 @@ OPTIONS:
                           [default: false]
                           [CLI only - not persisted to config file]
     --embedding-model <id>
-                          Embedding model for vector fields, shared by all databases and config
-                          (bge-small-en-v1.5, multilingual-e5-small,
-                          snowflake-arctic-embed-s, snowflake-arctic-embed-m)
-                          [default: snowflake-arctic-embed-m]
+                          (bge-m3, embeddinggemma-300m, gte-large-en-v1.5,
+                          mxbai-embed-large-v1, multilingual_e5_large)
+                          [default: bge-m3]
 
     NOTE: config file takes priority over CLI args if it exists (unless --overwrite_config true)
 

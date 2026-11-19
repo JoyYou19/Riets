@@ -76,7 +76,108 @@ struct Inner {
     written_offset: u64,
     poisoned: bool,
 }
+/// Iterator returned by `Wal::records`.
+pub struct WalRecords {
+    dir: PathBuf,
+    segments: std::vec::IntoIter<u64>,
+    active: u64,
+    active_end: u64,
+    current: Option<SegmentRecords>,
+    done: bool,
+}
 
+struct SegmentRecords {
+    id: u64,
+    reader: io::BufReader<File>,
+    pos: u64,
+    end: u64,
+    n: usize,
+}
+
+impl WalRecords {
+    fn next_record(&mut self) -> io::Result<Option<(u64, usize, Vec<u8>)>> {
+        loop {
+            if self.current.is_none() {
+                let Some(id) = self.segments.next() else {
+                    return Ok(None);
+                };
+                let file = File::open(segment_path(&self.dir, id))?;
+                let end = if id == self.active {
+                    self.active_end
+                } else {
+                    file.metadata()?.len()
+                };
+                self.current = Some(SegmentRecords {
+                    id,
+                    reader: io::BufReader::with_capacity(1 << 20, file),
+                    pos: 0,
+                    end,
+                    n: 0,
+                });
+            }
+            let segment = self.current.as_mut().expect("set above");
+            if segment.pos >= segment.end {
+                self.current = None;
+                continue;
+            }
+            let id = segment.id;
+            return segment
+                .read_record()
+                .map(|payload| Some((id, payload.0, payload.1)))
+                .map_err(|e| io::Error::new(e.kind(), format!("WAL segment {id}: {e}")));
+        }
+    }
+}
+
+impl SegmentRecords {
+    /// The record at `pos`. Every byte up to `end` must belong to a valid record.
+    fn read_record(&mut self) -> io::Result<(usize, Vec<u8>)> {
+        let truncated = || io::Error::new(io::ErrorKind::InvalidData, "truncated replay");
+        if self.pos + HEADER_SIZE > self.end {
+            return Err(truncated());
+        }
+        let mut header = [0u8; HEADER_SIZE as usize];
+        self.reader.read_exact(&mut header)?;
+        let len = u32::from_le_bytes(header[0..4].try_into().expect("4 bytes"));
+        let crc = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes"));
+        let stop = self.pos + HEADER_SIZE + u64::from(len);
+        if len == 0 || len > MAX_ENTRY_SIZE || stop > self.end {
+            return Err(truncated());
+        }
+        let mut payload = vec![0u8; len as usize];
+        self.reader.read_exact(&mut payload)?;
+        // the CRC covers the record's offset in its segment
+        if record_crc(self.pos, len, &payload) != crc {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "crc mismatch in replay"));
+        }
+        let n = self.n;
+        self.n += 1;
+        self.pos = stop;
+        Ok((n, payload))
+    }
+}
+
+impl Iterator for WalRecords {
+    type Item = io::Result<(u64, usize, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        match self.next_record() {
+            Ok(Some(record)) => Some(Ok(record)),
+            Ok(None) => {
+                self.done = true;
+                None
+            }
+            Err(e) => {
+                // a reader in the middle of a damaged record can't resync
+                self.done = true;
+                Some(Err(e))
+            }
+        }
+    }
+}
 pub struct Wal {
     inner: Mutex<Inner>,
     mode: SyncMode,
@@ -204,27 +305,20 @@ impl Wal {
         Ok(())
     }
 
-    /// Every record payload written so far, oldest segment first.
     #[timed(wal)]
-    pub fn replay_all(&self) ->io::Result<Vec<(u64, usize, Vec<u8>)>> {
-        let mut inner = self.lock();
-        let mut payloads = Vec::new();
-        for id in list_segments(&self.dir)? {
-            let raw = if id == inner.segment {
-                let end = usize::try_from(inner.written_offset)
-                    .map_err(|_| io::Error::other("WAL segment too large"))?;
-                let mut raw = vec![0_u8; end];
-                inner.file.seek(SeekFrom::Start(0))?;
-                inner.file.read_exact(&mut raw)?;
-                raw
-            } else {
-                fs::read(segment_path(&self.dir, id))?
-            };
-             let records = parse_records(&raw)
-                .map_err(|e| io::Error::new(e.kind(), format!("WAL segment {id}: {e}")))?;
-            payloads.extend(records.into_iter().enumerate().map(|(n, p)| (id, n, p)));
-                }
-        Ok(payloads)
+    pub fn replay_all(&self) -> io::Result<Vec<(u64, usize, Vec<u8>)>> {
+        self.records()?.collect()
+    }
+     pub fn records(&self) -> io::Result<WalRecords> {
+        let inner = self.lock();
+        Ok(WalRecords {
+            dir: self.dir.clone(),
+            segments: list_segments(&self.dir)?.into_iter(),
+            active: inner.segment,
+            active_end: inner.written_offset,
+            current: None,
+            done: false,
+        })
     }
 
     /// Deletes every older segment and empties the newest one.
@@ -284,40 +378,6 @@ fn encode_record(offset: u64, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Payloads of the records in one segment's bytes. Every byte must belong to a valid record.
-fn parse_records(raw: &[u8]) -> io::Result<Vec<Vec<u8>>> {
-    let header = HEADER_SIZE as usize;
-    let mut out = Vec::new();
-    let mut pos = 0usize;
-    while pos < raw.len() {
-        if pos + header > raw.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "truncated replay",
-            ));
-        }
-        let len = u32::from_le_bytes(raw[pos..pos + 4].try_into().expect("4 bytes"));
-        let crc = u32::from_le_bytes(raw[pos + 4..pos + 8].try_into().expect("4 bytes"));
-        let start = pos + header;
-        let stop = start + (len as usize);
-        if len == 0 || len > MAX_ENTRY_SIZE || stop > raw.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "truncated replay",
-            ));
-        }
-        let payload = &raw[start..stop];
-        if record_crc(pos as u64, len, payload) != crc {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "crc mismatch in replay",
-            ));
-        }
-        out.push(payload.to_vec());
-        pos = stop;
-    }
-    Ok(out)
-}
 
 /// Cuts a torn final record off the file and returns the new end.
 fn scan_and_truncate(file: &mut File) -> io::Result<u64> {
