@@ -22,6 +22,7 @@ pub struct SortField {
     pub modifier: SortModifier,
 }
 
+#[derive(Clone)]
 pub struct ResolvedSort {
     pub mode: SortMode,
     pub fields: Arc<Vec<SortField>>,

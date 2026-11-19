@@ -19,7 +19,7 @@ use core_index::lsm::IndexSnapshot;
 use core_index::search::{SearchIndex, SearchNumeric};
 use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{
-    Fuzziness, LookupResponse, MatchMode, SortOrderRequest,
+    Fuzziness, LookupResponse, MatchMode, SortModifier, SortOrderRequest,
 };
 use core_query::planner::RankPlan;
 use core_query::resolver::{FieldQuery, QueryGroup};
@@ -573,6 +573,29 @@ impl ShardHandle {
             .iter()
             .map(|&x| snapshot.numeric_bounds(x))
             .collect();
+
+        //some sorts with modifiers like sqrt cant compute sqrt(-3) so error
+        for (field, bounds_for_field) in sort_fields.iter().zip(&bounds) {
+            if field.is_bool || field.modifier == SortModifier::None {
+                continue;
+            }
+            let (min, _max) = *bounds_for_field;
+            let Some(min) = min else {
+                continue;
+            };
+            let min = min.as_f64();
+            let ok = match field.modifier {
+                SortModifier::Sqrt => min >= 0.0,
+                SortModifier::Log1p => min > -1.0,
+                SortModifier::None => true,
+            };
+            if !ok {
+                return Err(CorelamoError::InvalidData(format!(
+                    "sort modifier {modifier:?} cannot be applied: minimum value is {min}",
+                    modifier = field.modifier
+                )));
+            }
+        }
 
         let items: Vec<(SearchHit, Vec<Option<NumericValue>>)> = candidates
             .into_iter()

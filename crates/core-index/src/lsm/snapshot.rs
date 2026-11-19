@@ -39,6 +39,7 @@ impl SearchIndex for IndexSnapshot {
     fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
         IndexSnapshot::term_cursor(self, term, xpath)
     }
+
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         IndexSnapshot::lookup_prefix(self, prefix, xpath)
     }
@@ -51,6 +52,7 @@ impl SearchIndex for IndexSnapshot {
         }
         out.into_iter().collect()
     }
+
     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
         let mut freq: HashMap<String, u32> = HashMap::new();
         for (term, df) in self.mem.prefix_terms(prefix, xpath).into_iter().chain(
