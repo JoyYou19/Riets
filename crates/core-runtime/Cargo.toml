@@ -32,7 +32,7 @@ core-timing={path ="../core-timing"}
 core-backup ={path="../core-backup"}
 core-embed = { path = "../core-embed" }
 uuid = { version = "1.29.0", features = ["v4"] }
-serde = { workspace = true,}
+serde = { workspace = true, features = ["raw_value"]}
 tokio = { workspace = true }
 slog ="2"
 slog-async="2"
