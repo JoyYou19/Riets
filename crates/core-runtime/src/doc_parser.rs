@@ -1,3 +1,4 @@
+///curl bytes -> parsed json docs
 use core_index::document::{IndexPolicy, policy::FieldKind};
 use core_protocol::{
     errors::{CorelamoError, DocFailure, FailReason},
@@ -5,7 +6,7 @@ use core_protocol::{
 };
 use core_storage::{
     document_store::{ExternalDocId, StoredDocument},
-    json_parse::{ParsedNode, parse_into_node},
+    json_parse::{LeafData, ParsedNode, parse_into_node},
     search_database::DocumentInput,
 };
 use core_timing::timed;
@@ -43,16 +44,22 @@ pub(crate) fn parse_documents(
     }
 }
 
-//INFO: a little porno to tell if we found the id and if not then if its auto
+//INFO: a little* porno to tell if we found the id and if not then if its auto
 #[timed(json_parsing)]
 fn extract_external_id(node: &ParsedNode, policy: &IndexPolicy) -> Result<String, FailReason> {
     let Some(id_field) = policy.id_field() else {
         return Err(FailReason::NoIdField);
     };
     match node.leaves.iter().find(|l| l.path == id_field.full_path) {
-        Some(l) if !l.value.is_empty() => Ok(l.value.clone()),
-        _ if id_field.kind == FieldKind::IdAuto => Ok(generate_routing_id()),
-        _ => Err(FailReason::MissingId {
+        Some(l) => match &l.data {
+            LeafData::Text(s) if !s.is_empty() => Ok(s.clone()),
+            _ if id_field.kind == FieldKind::IdAuto => Ok(generate_routing_id()),
+            _ => Err(FailReason::MissingId {
+                field: id_field.name.clone(),
+            }),
+        },
+        None if id_field.kind == FieldKind::IdAuto => Ok(generate_routing_id()),
+        None => Err(FailReason::MissingId {
             field: id_field.name.clone(),
         }),
     }
@@ -182,17 +189,6 @@ fn parse_one(
     })
 }
 
-fn split_raw_documents(buf: &[u8]) -> Result<Vec<Vec<u8>>, CorelamoError> {
-    use serde_json::value::RawValue;
-    let mut out = Vec::new();
-    let mut stream = serde_json::Deserializer::from_slice(buf).into_iter::<Box<RawValue>>();
-    while let Some(raw) = stream.next() {
-        let raw = raw.map_err(CorelamoError::from)?;
-        out.push(raw.get().as_bytes().to_vec());
-    }
-    Ok(out)
-}
-
 //retrieve byte-for-byte response + skipped for format
 #[timed(retrieve_opps)]
 pub(crate) fn convert_from_storage(
@@ -218,4 +214,124 @@ pub(crate) fn serialize_policy(policy: &IndexPolicy) -> Result<String, CorelamoE
 
 pub(crate) fn parse_policy(body: &str) -> Result<IndexPolicy, CorelamoError> {
     serde_json::from_str(body).map_err(CorelamoError::from)
+}
+
+//karoc, lai kods saprastu kas nahuj ir atsutits seit mums ir krutaa simd magija kas sadala visu
+//input vairakos dokumentu baitos
+fn split_raw_documents(buf: &[u8]) -> Result<Vec<Vec<u8>>, CorelamoError> {
+    let mut i = skip_ws(buf, 0);
+    if buf.get(i) != Some(&b'[') {
+        // single top-level value: whole body minus trailing whitespace
+        let end = buf.len()
+            - buf
+                .iter()
+                .rev()
+                .take_while(|&&c| c.is_ascii_whitespace())
+                .count();
+        return Ok(vec![buf[i..end].to_vec()]);
+    }
+
+    i += 1; // consume '['
+    let mut out = Vec::new();
+    loop {
+        i = skip_ws(buf, i);
+        match buf.get(i) {
+            Some(b']') => return Ok(out),
+            Some(_) => {
+                let start = i;
+                i = skip_value(buf, i)?;
+                out.push(buf[start..i].to_vec());
+                i = skip_ws(buf, i);
+                match buf.get(i) {
+                    Some(b',') => i += 1,
+                    Some(b']') => return Ok(out),
+                    _ => {
+                        return Err(CorelamoError::InvalidData(
+                            "expected ',' or ']' in array".into(),
+                        ));
+                    }
+                }
+            }
+            None => return Err(CorelamoError::InvalidData("unterminated array".into())),
+        }
+    }
+}
+
+fn skip_ws(buf: &[u8], mut i: usize) -> usize {
+    while i < buf.len() && buf[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Skips one JSON value starting at `i`, returning the index just past it.
+fn skip_value(buf: &[u8], i: usize) -> Result<usize, CorelamoError> {
+    match buf[i] {
+        b'{' => skip_balanced(buf, i, b'{', b'}'),
+        b'[' => skip_balanced(buf, i, b'[', b']'),
+        b'"' => skip_string(buf, i),
+        _ => skip_scalar(buf, i),
+    }
+}
+
+fn skip_balanced(buf: &[u8], i: usize, open: u8, close: u8) -> Result<usize, CorelamoError> {
+    let mut depth = 1usize;
+    let mut j = i + 1;
+    let mut in_string = false;
+    let mut escaped = false;
+    while j < buf.len() {
+        let c = buf[j];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+        } else {
+            match c {
+                b'"' => in_string = true,
+                x if x == open => depth += 1,
+                x if x == close => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(j + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        j += 1;
+    }
+    Err(CorelamoError::InvalidData("unterminated value".into()))
+}
+
+fn skip_string(buf: &[u8], i: usize) -> Result<usize, CorelamoError> {
+    let mut j = i + 1;
+    let mut escaped = false;
+    while j < buf.len() {
+        let c = buf[j];
+        if escaped {
+            escaped = false;
+        } else if c == b'\\' {
+            escaped = true;
+        } else if c == b'"' {
+            return Ok(j + 1);
+        }
+        j += 1;
+    }
+    Err(CorelamoError::InvalidData("unterminated string".into()))
+}
+
+fn skip_scalar(buf: &[u8], i: usize) -> Result<usize, CorelamoError> {
+    let mut j = i;
+    while j < buf.len() && !is_json_delimiter(buf[j]) {
+        j += 1;
+    }
+    Ok(j)
+}
+
+fn is_json_delimiter(c: u8) -> bool {
+    matches!(c, b',' | b']' | b'}' | b' ' | b'\t' | b'\n' | b'\r')
 }

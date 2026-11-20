@@ -1,12 +1,13 @@
+///parsed json tree -> indexed terms
 use core_index::array_rows::ArrayRowAllocator;
 use core_index::document::FieldPolicy;
 use core_index::document::document::{ArrayRow, BoolPoint, NumericPoint};
 use core_index::document::policy::ARRAY_GAP;
 use core_index::document::{DocumentPart, IndexPolicy, IndexedDocument, policy::FieldKind};
-use core_index::numeric_values::{parse_float, parse_integer};
+use core_index::numeric_values::{NumericValue, parse_float, parse_integer};
 use core_index::types::{ArrayRowId, DocId};
 
-use crate::json_parse::{ArrayField, LeafValue, ParsedNode};
+use crate::json_parse::{ArrayField, LeafData, LeafValue, ParsedNode};
 
 fn parse_bool(raw: &str) -> Option<bool> {
     //allows true false "true" "false"
@@ -105,8 +106,13 @@ fn flatten_scalar_array(
     let segments: Vec<String> = array_field
         .elements
         .iter()
-        .flat_map(|e| e.leaves.iter().map(|l| l.value.clone()))
+        .flat_map(|e| {
+            e.leaves
+                .iter()
+                .filter_map(|l| l.data.as_str().map(str::to_string))
+        })
         .collect();
+
     if segments.is_empty() {
         return;
     }
@@ -139,12 +145,16 @@ fn index_leaves(
         let Some(field) = policy.leaf_by_path(&leaf.path) else {
             continue;
         };
-        let raw = &leaf.value;
+
         match field.kind {
             FieldKind::Text => {
+                // text leaves always carry LeafData::Text
+                let Some(text) = leaf.data.as_str() else {
+                    continue;
+                };
                 parts.push(DocumentPart {
                     xpath: field.xpath(policy),
-                    text: raw.clone(),
+                    text: text.to_string(),
                     weight: field.weight,
                     exact: false,
                     names: false,
@@ -155,7 +165,7 @@ fn index_leaves(
                 if let Some(exact_xpath) = field.exact_xpath(policy) {
                     parts.push(DocumentPart {
                         xpath: exact_xpath,
-                        text: raw.clone(),
+                        text: text.to_string(),
                         weight: field.weight,
                         analyzer: field.analyzer.clone(),
                         exact: true,
@@ -166,11 +176,13 @@ fn index_leaves(
                 }
             }
             FieldKind::Id | FieldKind::IdAuto => {
+                let Some(text) = leaf.data.as_str() else {
+                    continue;
+                };
                 if field.searchable() {
-                    // stemmed copy
                     parts.push(DocumentPart {
                         xpath: field.xpath(policy),
-                        text: raw.clone(),
+                        text: text.to_string(),
                         analyzer: field.analyzer.clone(),
                         weight: field.weight,
                         exact: false,
@@ -178,11 +190,10 @@ fn index_leaves(
                         gap: 0,
                         segments: Vec::new(),
                     });
-                    // exact copy
                     if let Some(exact_xpath) = field.exact_xpath(policy) {
                         parts.push(DocumentPart {
                             xpath: exact_xpath,
-                            text: raw.clone(),
+                            text: text.to_string(),
                             analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,
@@ -194,7 +205,12 @@ fn index_leaves(
                 }
             }
             FieldKind::Integer => {
-                if let Ok(value) = parse_integer(raw) {
+                let value = match &leaf.data {
+                    LeafData::Integer(v) => Some(NumericValue::Int(*v)),
+                    LeafData::Text(s) => parse_integer(s).ok(), // "2000" arrived as a string
+                    _ => None,
+                };
+                if let Some(value) = value {
                     numeric.push(NumericPoint {
                         xpath: field.xpath(policy),
                         value,
@@ -202,7 +218,7 @@ fn index_leaves(
                     if field.searchable() {
                         parts.push(DocumentPart {
                             xpath: field.xpath(policy),
-                            text: raw.clone(),
+                            text: leaf.data.to_text(),
                             analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,
@@ -214,7 +230,12 @@ fn index_leaves(
                 }
             }
             FieldKind::Float => {
-                if let Ok(value) = parse_float(raw) {
+                let value = match &leaf.data {
+                    LeafData::Float(v) => Some(NumericValue::Float(*v)),
+                    LeafData::Text(s) => parse_float(s).ok(), // "1.5" arrived as a string
+                    _ => None,
+                };
+                if let Some(value) = value {
                     numeric.push(NumericPoint {
                         xpath: field.xpath(policy),
                         value,
@@ -222,7 +243,7 @@ fn index_leaves(
                     if field.searchable() {
                         parts.push(DocumentPart {
                             xpath: field.xpath(policy),
-                            text: raw.clone(),
+                            text: leaf.data.to_text(),
                             analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,
@@ -234,7 +255,12 @@ fn index_leaves(
                 }
             }
             FieldKind::Bool => {
-                if let Some(b) = parse_bool(raw) {
+                let value = match &leaf.data {
+                    LeafData::Bool(b) => Some(*b),
+                    LeafData::Text(s) => parse_bool(s), // "true"/"false" as a string
+                    _ => None,
+                };
+                if let Some(b) = value {
                     bool_points.push(BoolPoint {
                         xpath: field.xpath(policy),
                         value: b,

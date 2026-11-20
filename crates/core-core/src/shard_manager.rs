@@ -2985,7 +2985,7 @@ fn analyze_json(
                 }
                 Some(f) => {
                     // same rule insert uses ("year": "eight" -> invalid_field)
-                    validate_leaf(f, leaf, &raw)
+                    validate_leaf(f, leaf)
                         .map_err(|e| CorelamoError::InvalidData(e.to_string()))?;
                     Ok(owned_to_json(leaf))
                 }
