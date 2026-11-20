@@ -1,3 +1,4 @@
+///storeddocument -> json for response + return_fields
 use std::io;
 use std::sync::Arc;
 
@@ -87,9 +88,10 @@ fn include_path(
     policy: &IndexPolicy,
 ) -> bool {
     if let Some(rf) = return_fields
-        && let Some(&include) = lookup_up(rf, path) {
-            return include;
-        }
+        && let Some(&include) = lookup_up(rf, path)
+    {
+        return include;
+    }
     if let Some(list) = policy_list(policy, path) {
         return list;
     }

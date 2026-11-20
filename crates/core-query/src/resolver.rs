@@ -315,6 +315,24 @@ fn build_node(
         return Ok(Some(Query::Bool(*b)));
     }
 
+    if field.kind == FieldKind::Bool {
+        return match v {
+            OwnedValue::String(s) => match s.trim() {
+                "true" => Ok(Some(Query::Bool(true))),
+                "false" => Ok(Some(Query::Bool(false))),
+                _ => Err(CorelamoError::InvalidData(format!(
+                    "field '{}' is bool — expected true/false (got \"{s}\")",
+                    field.name
+                ))),
+            },
+            other => Err(CorelamoError::InvalidData(format!(
+                "field '{}' is bool — expected true/false (got {})",
+                field.name,
+                other.value_type()
+            ))),
+        };
+    }
+
     // a numeric field takes a bare number or numeric string as a range:
     // {"year": 2000}, {"year": "2000"}, {"year": ">=1990"} — no {"range": ...} wrapper
     if field.kind.is_numeric() {

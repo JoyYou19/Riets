@@ -1,3 +1,5 @@
+//extracts the needed fields from a json based on the policy
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use core_index::document::{
@@ -9,9 +11,35 @@ use serde::{Deserialize, Serialize};
 use simd_json::OwnedValue;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LeafData {
+    Text(String),
+    Integer(i64),
+    Float(f64),
+    Bool(bool),
+}
+
+impl LeafData {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            LeafData::Text(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn to_text(&self) -> String {
+        match self {
+            LeafData::Text(s) => s.clone(),
+            LeafData::Integer(i) => i.to_string(),
+            LeafData::Float(f) => f.to_string(),
+            LeafData::Bool(b) => b.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LeafValue {
     pub path: String,
-    pub value: String,
+    pub data: LeafData,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -31,7 +59,7 @@ impl ParsedNode {
     pub fn collect_leaf_values(&self, out: &mut BTreeMap<String, String>) {
         for leaf in &self.leaves {
             out.entry(leaf.path.clone())
-                .or_insert_with(|| leaf.value.clone());
+                .or_insert_with(|| leaf.data.to_text());
         }
         for array_field in &self.arrays {
             for element in &array_field.elements {
@@ -114,7 +142,7 @@ fn walk_fields(
                 walk_fields(value, &field.subfields, node)?;
             }
 
-        //this is an array with string/num/bool
+            //this is an array with string/num/bool
         } else if field.repeated {
             let OwnedValue::Array(elements) = value else {
                 continue;
@@ -123,37 +151,34 @@ fn walk_fields(
                 path: field.full_path.clone(),
                 elements: Vec::new(),
             };
-            //poulate this array
             for element in elements.iter() {
-                //validate the string/numver based on the poliy
-                let Some(raw) = leaf_text(element) else {
+                let Some(data) = leaf_data(element) else {
                     continue;
                 };
-                validate_leaf(field, element, &raw)?;
+                validate_leaf(field, element)?;
                 let mut child = ParsedNode::default();
                 child.leaves.push(LeafValue {
                     path: field.full_path.clone(),
-                    value: raw,
+                    data,
                 });
                 array_field.elements.push(child);
             }
             node.arrays.push(array_field);
-        //this is a leaf value
         } else {
-            let Some(raw) = leaf_text(value) else {
+            let Some(data) = leaf_data(value) else {
                 continue;
             };
-            validate_leaf(field, value, &raw)?;
+            validate_leaf(field, value)?;
             node.leaves.push(LeafValue {
                 path: field.full_path.clone(),
-                value: raw,
+                data,
             });
         }
     }
     Ok(())
 }
 
-pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue, raw: &str) -> Result<(), FailReason> {
+pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), FailReason> {
     use simd_json::StaticNode::{Bool as JsonBool, F64, I64, U64};
 
     let already_valid = match (field.kind, value) {
@@ -162,18 +187,25 @@ pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue, raw: &str) -> Resu
         (FieldKind::Bool, OwnedValue::Static(JsonBool(_))) => true,
         _ => false,
     };
-    if already_valid || raw.trim().is_empty() {
+    if already_valid {
+        return Ok(());
+    }
+    let Some(raw) = leaf_text(value) else {
+        return Ok(()); // null
+    };
+    if raw.trim().is_empty() {
         return Ok(());
     }
     field
         .kind
-        .validate_value(raw)
+        .validate_value(&raw)
         .map_err(|_| FailReason::InvalidField {
             field: field.name.clone(),
             expected: field.kind.label().to_string(),
-            got: raw.to_string(),
+            got: raw,
         })
 }
+
 fn get_by_path<'a>(mut value: &'a OwnedValue, path: &str) -> Option<&'a OwnedValue> {
     for segment in path.split('/') {
         let OwnedValue::Object(map) = value else {
@@ -207,5 +239,23 @@ fn value_type_name(value: &OwnedValue) -> &'static str {
         OwnedValue::Object(_) => "object",
         #[allow(unreachable_patterns)]
         _ => "unknown",
+    }
+}
+
+fn leaf_data(value: &OwnedValue) -> Option<LeafData> {
+    use simd_json::StaticNode;
+    match value {
+        OwnedValue::String(s) => Some(LeafData::Text(s.clone())),
+        OwnedValue::Static(StaticNode::Null) => None,
+        OwnedValue::Static(StaticNode::Bool(b)) => Some(LeafData::Bool(*b)),
+        OwnedValue::Static(StaticNode::I64(i)) => Some(LeafData::Integer(*i)),
+        //u64 beyond i64::MAX stays text so the numeric values drops it, stays searchable if
+        //$searchable:true
+        OwnedValue::Static(StaticNode::U64(u)) => i64::try_from(*u)
+            .map(LeafData::Integer)
+            .ok()
+            .or_else(|| Some(LeafData::Text(u.to_string()))),
+        OwnedValue::Static(StaticNode::F64(f)) => Some(LeafData::Float(*f)),
+        OwnedValue::Object(_) | OwnedValue::Array(_) => Some(LeafData::Text(value.to_string())),
     }
 }
