@@ -463,6 +463,9 @@ impl IndexSnapshot {
     pub fn vectors(&self) -> &[SegmentVectors] {
         &self.vectors
     }
+    pub fn deleted(&self) -> &DeleteSet{
+        &self.deleted
+    }
 
     /// Exact vector search over the published segments. `query` must be L2-normalized.
     pub fn vector_search(

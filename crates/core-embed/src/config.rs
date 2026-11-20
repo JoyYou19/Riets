@@ -1,11 +1,10 @@
 //! Embedding settings, as read from `CorelamoSettings.toml` by the server.
 
 use std::io;
-use std::path::PathBuf;
 
 use crate::device::DevicePreference;
 use crate::model::{find_model, known_model_ids};
-use crate::runtime::RUNTIME_LIBRARY_NAME;
+
 
 /// Settings shared by every loaded model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,22 +18,19 @@ pub struct ModelConfig {
     pub max_tokens: usize,
     /// Characters kept before tokenizing, so the tokenizer never processes whole articles.
     pub max_chars: usize,
-    pub runtime_library: PathBuf,
-    pub install_runtime: bool,
-    /// Where models with in-graph pooling run. fastembed models always run on the CPU.
+
+    
     pub device: DevicePreference,
 }
 
 impl Default for ModelConfig {
-    fn default() -> Self {
+        fn default() -> Self {
         Self {
-            model_id: "bge-m3".to_string(),
+            model_id: "multilingual-e5-base".to_string(),
             instances: 1,
             batch_size: 128,
             max_tokens: 256,
             max_chars: 2000,
-            runtime_library: PathBuf::from(RUNTIME_LIBRARY_NAME),
-            install_runtime: true,
             device: DevicePreference::Auto,
         }
     }
