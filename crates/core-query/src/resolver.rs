@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use core_index::datetimes::parse_date;
 use core_index::{
     analyzer::{Analyzer, analyzer::AnalyzerSet},
     document::{
@@ -300,6 +301,9 @@ fn build_node(
     if let OwnedValue::Object(obj) = v
         && let Some(inner) = obj.get("range")
     {
+        if field.kind == FieldKind::DateTime {
+            return resolve_date_filter(field, inner);
+        }
         return resolve_numeric_filter(field, inner);
     }
 
@@ -339,8 +343,47 @@ fn build_node(
         return resolve_numeric_filter(field, v);
     }
 
+    if field.kind == FieldKind::DateTime {
+        return resolve_date_filter(field, v);
+    }
+
     let node = parse_json_query(v, Query::And, wildcards_enabled)?;
     Ok(analyze_query(node, field_analyzer(field, analyzers)))
+}
+
+fn resolve_date_filter(
+    field: &FieldPolicy,
+    v: &OwnedValue,
+) -> Result<Option<Query>, CorelamoError> {
+    let format = field
+        .date_format
+        .as_deref()
+        .unwrap_or("YYYY-MM-DD")
+        .to_string();
+
+    // a bare date string, an epoch-millis number, or a range string
+    let text: String = match v {
+        OwnedValue::String(s) => s.clone(),
+        OwnedValue::Static(StaticNode::I64(n)) => n.to_string(),
+        OwnedValue::Static(StaticNode::U64(n)) => n.to_string(),
+        other => {
+            return Err(CorelamoError::InvalidData(format!(
+                "field '{}' is date — filter with a date string or a range like '2024-01-01..2024-12-31' (got {})",
+                field.name,
+                other.value_type()
+            )));
+        }
+    };
+
+    let parse = |s: &str| -> Result<NumericValue, &'static str> {
+        parse_date(s, &format)
+            .map(NumericValue::Int)
+            .map_err(|_| "invalid date")
+    };
+    let r = parse_numeric_range(&text, parse).map_err(|e| {
+        CorelamoError::InvalidData(format!("invalid filter on '{}': {e}", field.name))
+    })?;
+    Ok(Some(Query::Range(r)))
 }
 
 fn resolve_numeric_filter(
@@ -511,7 +554,7 @@ pub fn resolve_suggest_xpaths(
 //vibemaxxing funciton: parsing the query for the foken numbres
 pub fn parse_numeric_range(
     raw: &str,
-    parse: fn(&str) -> Result<NumericValue, &'static str>,
+    parse: impl Fn(&str) -> Result<NumericValue, &'static str>,
 ) -> Result<NumericRange, String> {
     let s = raw.trim();
     if s.is_empty() {
@@ -570,7 +613,7 @@ pub fn parse_numeric_range(
     if rest.is_empty() {
         return Err(format!("missing number after '{op}'"));
     }
-    let value = parse(rest).map_err(|e| format!("invalid number '{rest}': {e}"))?;
+    let value = parse(rest).map_err(|e| format!("invalid value '{rest}': {e}"))?;
 
     let range = match op {
         "=" | "==" | "" => {

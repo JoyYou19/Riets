@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import json
 import os
 import shutil
@@ -8,6 +9,18 @@ import random
 INPUT_FILE = "movies.json"
 OUTPUT_DIR = "./movie_chunks"
 CHUNK_SIZE = 10000  # 10000 movies per file
+
+
+RELEASE_DATE_START = datetime(1950, 1, 1)
+RELEASE_DATE_END = datetime(2026, 11, 20)
+
+
+def random_release_date():
+    """Random datetime between start and end, formatted as YYYY-MM-DD-HH-mm-ss."""
+    span_seconds = int((RELEASE_DATE_END - RELEASE_DATE_START).total_seconds())
+    dt = RELEASE_DATE_START + \
+        timedelta(seconds=random.randint(0, span_seconds))
+    return dt.strftime("%Y-%m-%d-%H-%M-%S")
 
 
 def flatten_value(value):
@@ -93,6 +106,8 @@ def main():
         doc["id"] = i
 
         doc["rating"] = round(random.uniform(0.0, 9.9), 1)
+
+        doc["release_date"] = random_release_date()
 
         # Add an array of two structs, each with num1 and num2, at the bottom of the document
         doc["random_nums"] = [

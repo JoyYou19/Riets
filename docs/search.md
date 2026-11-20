@@ -137,6 +137,22 @@ Range string syntax: `a..b` (inclusive), `>=a`, `>a`, `<=a`, `<a`, `=a`, `a` (ex
 
 A numeric string that isn't a valid number/range (`"year": "hello"`) is a `400`.
 
+### Date filters
+
+`date` fields behave like numeric fields: a bare date string, or a range string
+with the same operators. Values parse with the field's `$format` (and its default
+timezone, if any); an explicit timezone on the value overrides it.
+
+```json
+{ "filters": { "release_date": "2024-01-15" } }
+{ "filters": { "release_date": "2024-01-01..2024-12-31" } }
+{ "filters": { "release_date": ">=2024-01-15" } }
+{ "filters": { "event_time": ">=2024-07-04 14:30:00+03:00" } }  // explicit tz overrides default
+{ "filters": { "created_at": ">=1705276800000" } }               // epoch-millis
+```
+
+An invalid date is a `400`, same as a bad numeric filter.
+
 ### Bool
 
 A bare `true` / `false` matches docs where the field equals that value.
@@ -200,7 +216,7 @@ Per field:
 - **Strict** ignores `ratio`; fields are applied in declaration order, then relevance, then `doc_id` as tiebreakers.
 - **Blend** normalizes each field to `[0,1]` using the corpus min/max, weights by `ratio`, and fills the rest with relevance.
 
-A `sort` alone (blank query, no filters) is valid — it returns the top `docs` ordered by the sort key. Supported field kinds: numeric (`Integer`/`Float`) and `Bool`.
+A `sort` alone (blank query, no filters) is valid — it returns the top `docs` ordered by the sort key. Supported field kinds: numeric (`Integer`/`Float`), `date`, and `Bool`.
 
 Bool sort: `true` = 1.0, `false` = 0.0, missing sorts last (strict mode; in blend mode this currently holds only for `desc`).
 

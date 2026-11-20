@@ -1,0 +1,23 @@
+[
+    {
+        "id": "1",
+        "title": "alpha",
+        "release_date": "2024-01-15",
+        "event_time": "2024-06-01 10:00:00",
+        "created_at": 1705276800000
+    },
+    {
+        "id": "2",
+        "title": "beta",
+        "release_date": "2024-06-30",
+        "event_time": "2024-07-04 14:30:00+03:00",
+        "created_at": 1719705600000
+    },
+    {
+        "id": "3",
+        "title": "gamma",
+        "release_date": "2023-12-31",
+        "event_time": "2023-11-20 09:15:00Z",
+        "created_at": 1703980800000
+    }
+]

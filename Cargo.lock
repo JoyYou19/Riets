@@ -604,6 +604,7 @@ dependencies = [
  "ahash",
  "arc-swap",
  "bitpacking",
+ "chrono",
  "core-timing",
  "fst",
  "indexmap",

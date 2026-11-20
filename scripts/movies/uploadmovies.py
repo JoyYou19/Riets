@@ -44,6 +44,11 @@ POLICY = """\
       "$weight": { "min": 90, "max": 100}
     },
 
+    "release_date": {
+      "$type": "date",
+      "$format": "YYYY-MM-DD-HH-mm-ss"
+    },
+
 
     "cast": [
       {

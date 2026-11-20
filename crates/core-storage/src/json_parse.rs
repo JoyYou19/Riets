@@ -2,9 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use core_index::document::{
-    IndexPolicy,
-    policy::{FieldKind, FieldPolicy},
+use core_index::{
+    datetimes::parse_date,
+    document::{
+        IndexPolicy,
+        policy::{FieldKind, FieldPolicy},
+    },
 };
 use core_protocol::errors::FailReason;
 use serde::{Deserialize, Serialize};
@@ -187,9 +190,15 @@ pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), Fail
         (FieldKind::Bool, OwnedValue::Static(JsonBool(_))) => true,
         _ => false,
     };
+
     if already_valid {
         return Ok(());
     }
+
+    if field.kind == FieldKind::DateTime {
+        return validate_date_leaf(field, value);
+    }
+
     let Some(raw) = leaf_text(value) else {
         return Ok(()); // null
     };
@@ -204,6 +213,28 @@ pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), Fail
             expected: field.kind.label().to_string(),
             got: raw,
         })
+}
+
+fn validate_date_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), FailReason> {
+    let format = field.date_format.as_deref().unwrap_or("YYYY-MM-DD");
+    let ok = match (format, value) {
+        ("epoch-millis", OwnedValue::Static(simd_json::StaticNode::I64(_))) => true,
+        ("epoch-millis", OwnedValue::Static(simd_json::StaticNode::U64(u))) => {
+            i64::try_from(*u).is_ok()
+        }
+        ("epoch-millis", OwnedValue::String(s)) => parse_date(s, format).is_ok(),
+        (_, OwnedValue::String(s)) => parse_date(s, format).is_ok(),
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(FailReason::InvalidField {
+            field: field.name.clone(),
+            expected: format!("date in format '{format}'").to_string(),
+            got: leaf_text(value).unwrap_or_default(),
+        })
+    }
 }
 
 fn get_by_path<'a>(mut value: &'a OwnedValue, path: &str) -> Option<&'a OwnedValue> {
