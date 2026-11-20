@@ -613,7 +613,7 @@ pub fn parse_numeric_range(
     if rest.is_empty() {
         return Err(format!("missing number after '{op}'"));
     }
-    let value = parse(rest).map_err(|e| format!("invalid number '{rest}': {e}"))?;
+    let value = parse(rest).map_err(|e| format!("invalid value '{rest}': {e}"))?;
 
     let range = match op {
         "=" | "==" | "" => {

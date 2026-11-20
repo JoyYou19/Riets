@@ -3,7 +3,7 @@
 The **policy** is the document schema: which fields exist, their type, how each
 is indexed, and which analyzer analyzes it. It lives in each database's
 `policy.json` (loaded by `IndexPolicy`). Edit via
-`POST /api/databases/{db}/set-policy` (TOML body).
+`POST /api/databases/{db}/set-policy` (JSON body).
 
 ---
 
@@ -83,6 +83,7 @@ needed, but `"$type": "struct"` is also accepted):
 | `$exact` | bool | per-type (§2) | also index the whole value as one term |
 | `$vector` | bool | `false` | vector field for semantic search |
 | `$weight` | object | per-type | scoring interval, `{ "min": 1, "max": 75 }` |
+| `$format` | string | `"YYYY-MM-DD"` | date format (date fields only), see "Date fields" below |
 
 - `$weight` is a scoring interval `{ "min": N, "max": M }`. Text fields default
   to `{ "min": 1, "max": 75 }`; other fields to `{ "min": 0, "max": 100 }`.
@@ -90,6 +91,8 @@ needed, but `"$type": "struct"` is also accepted):
   (case-insensitive exact match), independent of the field's analyzer.
 - `$analyzer` only applies to `text`; it names an entry from the `analyzers`
   block (resolution order: `$analyzer` → `analyzers.$default` → built-in default).
+
+
 
 > There is **no `$repeated` key** — a repeated field is expressed with the array
 > form in §3, never by a flag.
@@ -164,6 +167,42 @@ needed, but `"$type": "struct"` is also accepted):
 // J. Not indexed at all.
 { "document": { "debug": "none" } }
 ```
+
+---
+
+## Date fields
+
+A `date` field stores a point in time, indexed as **epoch milliseconds (UTC)**,
+so it sorts and filters like an integer. The stored document keeps the original
+string; only the index term is the millis.
+
+- `$format` controls parsing. Default is `"YYYY-MM-DD"`.
+- Tokens: `YYYY` `MM` `DD` `HH` `mm` `ss` `SSS` (milliseconds), with literal
+  separators `- / . : T space`.
+- Special format `"epoch-millis"`: the value is already milliseconds (a JSON
+  number, or a numeric string).
+
+```json
+{ "document": {
+    "release_date": "date",
+    "event_time":   { "$type": "date", "$format": "YYYY-MM-DD HH:mm:ss" },
+    "created_at":   { "$type": "date", "$format": "epoch-millis" }
+} }
+```
+
+### Timezones
+
+- A format may end with a **default timezone**: `Z`, `+HH:MM`, `-HH:MM`, `+HHMM`,
+  `-HHMM`, or `+HH`.
+- A value with no timezone uses the format's default (or UTC when there is none).
+- A value with its own timezone overrides the default.
+
+```json
+// default +02:00 → "2024-06-01 10:00:00" is 08:00 UTC
+{ "event_time": { "$type": "date", "$format": "YYYY-MM-DD HH:mm:ss+02:00" } }
+```
+
+Invalid dates (`2024-02-30`, month 13, wrong separator) are rejected at insert.
 
 ---
 

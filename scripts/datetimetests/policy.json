@@ -1,0 +1,18 @@
+{
+    "analyzers": {
+        "$default": {}
+    },
+    "document": {
+        "id": "id",
+        "title": "text",
+        "release_date": "date",
+        "event_time": {
+            "$type": "date",
+            "$format": "YYYY-MM-DD HH:mm:ss+02:00"
+        },
+        "created_at": {
+            "$type": "date",
+            "$format": "epoch-millis"
+        }
+    }
+}
