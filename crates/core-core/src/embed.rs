@@ -101,6 +101,13 @@ struct Task {
     dims: usize,
 }
 type SegmentDocs = Vec<(XPathId, Vec<DocId>)>;
+/// How far embedding got in one segment's field: every doc id up to `done_through` was handled
+/// for this model (it has a vector, was skipped, or was deleted).
+struct Cursor {
+    vector_id:String,
+    dims:usize,
+    done_through:DocId
+}
 pub struct EmbeddingJob {
     sender: Sender<IndexCommand>,
     shared: Arc<SharedShardState>,
@@ -110,7 +117,7 @@ pub struct EmbeddingJob {
     log: Logger,
     segment_docs:HashMap<PathBuf,Arc<SegmentDocs>>,
     skipped: HashSet<DocId>,
-
+    cursors: HashMap<(PathBuf, XPathId), Cursor>,
     graph_failed: HashSet<u64>,
 }
 
@@ -150,6 +157,7 @@ impl EmbeddingJob {
             log,
             segment_docs:HashMap::new(),
             skipped: HashSet::new(),
+            cursors:HashMap::new(),
             graph_failed: HashSet::new(),
 
         })
@@ -175,29 +183,43 @@ impl EmbeddingJob {
         self.embed_task(lease, task, stop).map(Some)
     }
 
-    /// (documents that need a vector, documents that have one) across the live segments,
+        /// (documents that need a vector, documents that have one) across the live segments,
     /// ignoring deleted documents. Skipped documents count as done: they cannot be embedded.
+    /// Costs a binary search per deleted or skipped document, not a pass over every document.
     pub fn measure(&mut self, vector_id: &str, dims: usize) -> io::Result<(u64, u64)> {
         let snapshot = self.shared.snapshot.get();
         let segments = disk_segments(&self.sender)?;
         self.forget_removed_segments(&segments);
+        let deleted: Vec<DocId> = snapshot.deleted().iter().collect();
+        let skipped: Vec<DocId> = self.skipped.iter().copied().collect();
 
         let (mut total, mut done) = (0u64, 0u64);
         for segment in &segments {
-            let docs = self.segment_docs(segment)?;
+            let docs = match self.segment_docs(segment) {
+                Ok(docs) => docs,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
             for (xpath, ids) in docs.iter() {
-                let existing = existing_file(&snapshot, segment, *xpath, vector_id, dims);
-                for &doc_id in ids {
-                    if snapshot.is_deleted(doc_id) {
-                        continue;
-                    }
-                    total += 1;
-                    if self.skipped.contains(&doc_id)
-                        || existing.as_ref().is_some_and(|file| file.contains(doc_id))
-                    {
-                        done += 1;
+                let start = self.cursor_index(&snapshot, segment, *xpath, vector_id, dims, ids);
+                let (mut gone, mut gone_before_start) = (0u64, 0u64);
+                for doc_id in &deleted {
+                    if let Ok(index) = ids.binary_search(doc_id) {
+                        gone += 1;
+                        if index < start {
+                            gone_before_start += 1;
+                        }
                     }
                 }
+                // documents past the cursor that are done only because they were skipped
+                let skipped_after_start = skipped
+                    .iter()
+                    .filter(|doc_id| {
+                        !snapshot.is_deleted(**doc_id) && ids[start..].binary_search(doc_id).is_ok()
+                    })
+                    .count() as u64;
+                total += ids.len() as u64 - gone;
+                done += start as u64 - gone_before_start + skipped_after_start;
             }
         }
         Ok((total, done))
@@ -227,15 +249,13 @@ impl EmbeddingJob {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e),
             };
-            let complete = docs
-                .iter()
-                .filter(|(xpath, _)| *xpath == entry.xpath)
-                .flat_map(|(_, ids)| ids.iter().copied())
-                .all(|doc_id| {
-                    snapshot.is_deleted(doc_id)
-                        || self.skipped.contains(&doc_id)
-                        || entry.file.contains(doc_id)
-                });
+             let complete = match docs.iter().find(|(xpath, _)| *xpath == entry.xpath) {
+                Some((_, ids)) => {
+                    self.cursor_index(&snapshot, &entry.segment, entry.xpath, vector_id, dims, ids)
+                        == ids.len()
+                }
+                None => true,
+            };
             if complete {
                 return Ok(Some(GraphTask {
                     segment: entry.segment.clone(),
@@ -262,13 +282,19 @@ impl EmbeddingJob {
         });
 
         for segment in segments {
-            let docs = self.segment_docs(&segment)?;
+             let docs = match self.segment_docs(&segment) {
+                Ok(docs) => docs,
+                // merged away since `disk_segments` answered
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
             for (xpath, ids) in docs.iter() {
-                let Some(field) = self.fields.iter().find(|f| f.xpath == *xpath) else {
+                 let Some(field) = self.fields.iter().find(|f| f.xpath == *xpath).cloned() else {
                     continue;
                 };
                 let existing = existing_file(&snapshot, &segment, *xpath, vector_id, dims);
-                let mut missing: Vec<DocId> = ids
+                let start = self.cursor_index(&snapshot, &segment, *xpath, vector_id, dims, ids);
+                let missing: Vec<DocId> = ids[start..]
                     .iter()
                     .copied()
                     .filter(|doc_id| {
@@ -279,10 +305,13 @@ impl EmbeddingJob {
                     .take(self.config.max_docs_per_round)
                     .collect();
                 if missing.is_empty() {
+                    // nothing left after the cursor: this field of the segment is complete
+                    if let Some(&last) = ids.last() {
+                        self.advance(&segment, *xpath, vector_id, dims, last);
+                    }
                     continue;
                 }
-                missing.sort_unstable();
-                missing.dedup();
+
                 return Ok(Some(Task {
                     segment,
                     field: field.clone(),
@@ -306,7 +335,7 @@ impl EmbeddingJob {
         let mut new_rows: Vec<(DocId, Vec<f32>)> = Vec::with_capacity(task.missing.len());
         // the error that ended the round early; the vectors made before it are still installed
         let mut stopped_by: Option<io::Error> = None;
-
+        let mut handled_through: Option<DocId> =None;
         for batch in task.missing.chunks(self.config.embed_batch) {
             if stop.load(Ordering::Relaxed) || started.elapsed() >= self.config.round_time_budget {
                 break;
@@ -325,6 +354,7 @@ impl EmbeddingJob {
                 }
             }
             if texts.is_empty() {
+                handled_through=batch.last().copied();
                 continue;
             }
             let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
@@ -341,7 +371,9 @@ impl EmbeddingJob {
                 self.skipped.insert(doc_id);
             }
             match embedded {
-                Ok(rows) => new_rows.extend(rows),
+                Ok(rows) =>{ new_rows.extend(rows);
+                    handled_through=batch.last().copied();
+                }
                 Err(error) => {
                     stopped_by = Some(error);
                     break;
@@ -364,6 +396,9 @@ impl EmbeddingJob {
                     "segment" => %task.segment.display());
                 return Ok(0);
             }
+        }
+         if let Some(last) = handled_through {
+            self.advance(&task.segment, task.field.xpath, &task.vector_id, task.dims, last);
         }
         match stopped_by {
             Some(error) if added == 0 => Err(error),
@@ -411,11 +446,65 @@ impl EmbeddingJob {
             .insert(segment.to_path_buf(), Arc::clone(&docs));
         Ok(docs)
     }
-
+        /// Index in `ids` where the next round for this segment's field starts.
+    fn resume_at(&self, segment: &Path, xpath: XPathId, vector_id: &str, dims: usize, ids: &[DocId]) -> usize {
+        match self.cursors.get(&(segment.to_path_buf(), xpath)) {
+            Some(cursor) if cursor.vector_id == vector_id && cursor.dims == dims => {
+                ids.partition_point(|&doc_id| doc_id <= cursor.done_through)
+            }
+            _ => 0,
+        }
+    }
+        /// Index in `ids` where work resumes. The first time a segment's field is seen (after a
+    /// restart or a model change) it scans once from the start to rebuild the cursor.
+    fn cursor_index(
+        &mut self,
+        snapshot: &IndexSnapshot,
+        segment: &Path,
+        xpath: XPathId,
+        vector_id: &str,
+        dims: usize,
+        ids: &[DocId],
+    ) -> usize {
+        let known = self
+            .cursors
+            .get(&(segment.to_path_buf(), xpath))
+            .is_some_and(|cursor| cursor.vector_id == vector_id && cursor.dims == dims);
+        if known {
+            return self.resume_at(segment, xpath, vector_id, dims, ids);
+        }
+        let existing = existing_file(snapshot, segment, xpath, vector_id, dims);
+        let handled = ids
+            .iter()
+            .take_while(|&&doc_id| {
+                snapshot.is_deleted(doc_id)
+                    || self.skipped.contains(&doc_id)
+                    || existing.as_ref().is_some_and(|file| file.contains(doc_id))
+            })
+            .count();
+        if handled > 0 {
+            self.advance(segment, xpath, vector_id, dims, ids[handled - 1]);
+        }
+        handled
+    }
+    /// Records that every doc id up to `done_through` is handled.
+    fn advance(&mut self, segment: &Path, xpath: XPathId, vector_id: &str, dims: usize, done_through: DocId) {
+        let cursor = self
+            .cursors
+            .entry((segment.to_path_buf(), xpath))
+            .or_insert_with(|| Cursor { vector_id: vector_id.to_string(), dims, done_through });
+        if cursor.vector_id == vector_id && cursor.dims == dims {
+            cursor.done_through = cursor.done_through.max(done_through);
+        } else {
+            *cursor = Cursor { vector_id: vector_id.to_string(), dims, done_through };
+        }
+    }
     /// Drops cached segments that compaction removed.
     fn forget_removed_segments(&mut self, live: &[PathBuf]) {
         self.segment_docs.retain(|path, _| live.contains(path));
+        self.cursors.retain(|(path,_), _|live.contains(path));
     }
+    
 }
 
 /// A text every working model embeds: a part that fails alone while this works is the part's

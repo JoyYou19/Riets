@@ -1,82 +1,34 @@
-//! The supported embedding models, and how each one is downloaded, loaded and run.
+//! The supported embedding models, and how each one is downloaded and loaded.
 //!
-//! Two backends: fastembed (CPU only; the model runs and fastembed pools its per-token output
-//! on the CPU), and the pooled backend in `pooled.rs` (the same stock model with pooling added
-//! inside ONNX Runtime, so it runs entirely on CUDA when available, otherwise on the CPU).
+//! Every model runs on the candle backend in `encoder.rs`, so only models whose architecture
+//! candle implements are listed. Files come from each model's Hugging Face repository at a
+//! pinned commit, so a new upload never changes the vectors without notice.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use hf_hub::api::sync::ApiBuilder;
+use hf_hub::{Repo, RepoType};
 
 use crate::config::ModelConfig;
-use crate::device::Device;
+use crate::encoder::{Architecture, ModelFiles, Pooling};
 use crate::model_error;
-use crate::pooled::{ModelFiles, PooledModel, Pooling};
-use crate::runtime::ensure_runtime;
 
-/// How a model is loaded and run.
-#[derive(Clone, Copy)]
-enum Backend {
-    /// fastembed downloads the model; per-token output is pooled on the CPU. CPU only.
-    FastEmbed(fn() -> EmbeddingModel),
-    /// The same stock model file fastembed would download, extended at load time with
-    /// pooling and normalization inside ONNX Runtime. Runs on CUDA when available, otherwise
-    /// on the CPU, with the same vectors either way.
-    Pooled(fn() -> EmbeddingModel, Pooling),
-}
+pub(crate) use crate::encoder::LoadedModel;
 
 /// A supported embedding model. `id` is what settings and vector file headers store.
 pub struct ModelSpec {
     pub id: &'static str,
     pub dims: usize,
-    backend: Backend,
+    /// Hugging Face repository the files come from, and the commit they are pinned to.
+    repo: &'static str,
+    revision: &'static str,
+    /// The weights file: `.safetensors`, or `pytorch_model.bin` where there is none.
+    weights: &'static str,
+    architecture: Architecture,
+    pooling: Pooling,
     pub(crate) query_prefix: &'static str,
     pub(crate) document_prefix: &'static str,
-}
-
-/// One loaded model copy.
-pub(crate) enum LoadedModel {
-    FastEmbed(TextEmbedding),
-    Pooled(PooledModel),
-}
-
-impl LoadedModel {
-    pub(crate) fn embed(
-        &mut self,
-        texts: Vec<String>,
-        batch_size: usize,
-    ) -> io::Result<Vec<Vec<f32>>> {
-        match self {
-            LoadedModel::FastEmbed(model) => run_model(model, texts, batch_size),
-            LoadedModel::Pooled(model) => {
-                let count = texts.len();
-                let vectors = model.embed(&texts, batch_size)?;
-                if vectors.len() != count {
-                    return Err(io::Error::other(format!(
-                        "model returned {} vectors for {count} texts",
-                        vectors.len()
-                    )));
-                }
-                Ok(vectors)
-            }
-        }
-    }
-
-    pub(crate) fn device(&self) -> Device {
-        match self {
-            LoadedModel::FastEmbed(_) => Device::Cpu,
-            LoadedModel::Pooled(model) => model.device(),
-        }
-    }
-
-    pub(crate) fn cpu_fallback(&self) -> Option<&str> {
-        match self {
-            LoadedModel::FastEmbed(_) => None,
-            LoadedModel::Pooled(model) => model.cpu_fallback(),
-        }
-    }
 }
 
 /// Loads one copy of `spec`'s model, downloading its files on first use.
@@ -85,34 +37,20 @@ pub(crate) fn load_model(
     cache_dir: PathBuf,
     config: &ModelConfig,
 ) -> io::Result<LoadedModel> {
-    ensure_runtime(&config.runtime_library, config.install_runtime)?;
-    match spec.backend {
-        Backend::FastEmbed(model) => {
-            let options = TextInitOptions::new(model())
-                .with_max_length(config.max_tokens)
-                .with_cache_dir(cache_dir)
-                .with_show_download_progress(false);
-            TextEmbedding::try_new(options)
-                .map(LoadedModel::FastEmbed)
-                .map_err(model_error)
-        }
-        Backend::Pooled(model, pooling) => PooledModel::load(
-            &fetch_model_files(&model(), &cache_dir)?,
-            spec.dims,
-            pooling,
-            config.max_tokens,
-            config.device,
-            cpu_threads_per_instance(config.instances),
-        )
-        .map(LoadedModel::Pooled),
-    }
+    let files = fetch_model_files(spec, &cache_dir)?;
+    LoadedModel::load(
+        &files,
+        spec.architecture,
+        spec.pooling,
+        spec.dims,
+        config.max_tokens,
+        config.device,
+    )
 }
 
-/// Downloads (or finds in the cache) the files fastembed would use for `model`. Uses the
-/// same cache folder and environment overrides as fastembed, so either one reuses the
-/// other's downloads.
-fn fetch_model_files(model: &EmbeddingModel, cache_dir: &Path) -> io::Result<ModelFiles> {
-    let info = TextEmbedding::get_model_info(model).map_err(model_error)?;
+/// Downloads (or finds in the cache) the model's files. `HF_HOME` and `HF_ENDPOINT` override
+/// the cache folder and the server, as in other Hugging Face tools.
+fn fetch_model_files(spec: &ModelSpec, cache_dir: &Path) -> io::Result<ModelFiles> {
     let cache_dir =
         std::env::var_os("HF_HOME").map_or_else(|| cache_dir.to_path_buf(), PathBuf::from);
     let endpoint =
@@ -123,89 +61,34 @@ fn fetch_model_files(model: &EmbeddingModel, cache_dir: &Path) -> io::Result<Mod
         .with_progress(false)
         .build()
         .map_err(model_error)?
-        .model(info.model_code.clone());
+        .repo(Repo::with_revision(
+            spec.repo.to_string(),
+            RepoType::Model,
+            spec.revision.to_string(),
+        ));
     let get = |file: &str| {
         repo.get(file)
-            .map_err(|e| model_error(format!("{}/{file}: {e}", info.model_code)))
+            .map_err(|e| model_error(format!("{}/{file}: {e}", spec.repo)))
     };
-    // large models keep their weights outside the graph (model.onnx_data); ONNX Runtime
-    // loads them from the model file's folder, where hf-hub puts every file of the repo
-    for file in &info.additional_files {
-        get(file)?;
-    }
     Ok(ModelFiles {
-        model: get(&info.model_file)?,
+        weights: get(spec.weights)?,
         tokenizer: get("tokenizer.json")?,
         config: get("config.json")?,
         tokenizer_config: get("tokenizer_config.json")?,
     })
 }
 
-/// CPU threads for one model copy when it runs on the CPU: the cores split between copies.
-fn cpu_threads_per_instance(instances: usize) -> usize {
-    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    (cores / instances.max(1)).max(1)
-}
-
-fn run_model(
-    model: &mut TextEmbedding,
-    texts: Vec<String>,
-    batch_size: usize,
-) -> io::Result<Vec<Vec<f32>>> {
-    let count = texts.len();
-    let vectors = model.embed(texts, Some(batch_size)).map_err(model_error)?;
-    if vectors.len() != count {
-        return Err(io::Error::other(format!(
-            "model returned {} vectors for {count} texts",
-            vectors.len()
-        )));
-    }
-    Ok(vectors)
-}
-fn bge_m3() -> EmbeddingModel {
-    EmbeddingModel::BGEM3
-}
-
-fn embedding_gemma_300m() -> EmbeddingModel {
-    EmbeddingModel::EmbeddingGemma300M
-}
-
-fn gte_large_en() -> EmbeddingModel {
-    EmbeddingModel::GTELargeENV15
-}
-
-fn mxbai_embed_large() -> EmbeddingModel {
-    EmbeddingModel::MxbaiEmbedLargeV1
-}
-
-fn multilingual_e5_large() -> EmbeddingModel {
-    EmbeddingModel::MultilingualE5Large
-}
-
 pub static MODELS: &[ModelSpec] = &[
-    // Best for multilingual text: 100+ languages, up to 8192 tokens.
+    // Best for multilingual text: 100+ languages, up to 8192 tokens. The repository has no
+    // safetensors file, so its PyTorch weights are read.
     ModelSpec {
         id: "bge-m3",
         dims: 1024,
-        backend: Backend::Pooled(bge_m3, Pooling::Cls),
-        query_prefix: "",
-        document_prefix: "",
-    },
-    // Small, runs on the CPU, best results for its size; multilingual, up to 2048 tokens.
-    // FastEmbed backend on purpose: the model's dense layers after pooling are only in
-    // fastembed's `sentence_embedding` output, which the pooled backend would skip.
-    ModelSpec {
-        id: "embeddinggemma-300m",
-        dims: 768,
-        backend: Backend::FastEmbed(embedding_gemma_300m),
-        query_prefix: "task: search result | query: ",
-        document_prefix: "title: none | text: ",
-    },
-    // Most accurate for English retrieval, up to 8192 tokens.
-    ModelSpec {
-        id: "gte-large-en-v1.5",
-        dims: 1024,
-        backend: Backend::Pooled(gte_large_en, Pooling::Cls),
+        repo: "BAAI/bge-m3",
+        revision: "5617a9f61b028005a4858fdac845db406aefb181",
+        weights: "pytorch_model.bin",
+        architecture: Architecture::XlmRoberta,
+        pooling: Pooling::Cls,
         query_prefix: "",
         document_prefix: "",
     },
@@ -213,15 +96,34 @@ pub static MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "mxbai-embed-large-v1",
         dims: 1024,
-        backend: Backend::Pooled(mxbai_embed_large, Pooling::Cls),
+        repo: "mixedbread-ai/mxbai-embed-large-v1",
+        revision: "b33106f585b9ce46904ad7443a3b52b7a63e231c",
+        weights: "model.safetensors",
+        architecture: Architecture::Bert,
+        pooling: Pooling::Cls,
         query_prefix: "Represent this sentence for searching relevant passages: ",
         document_prefix: "",
     },
-    // Kept with its current id, so vectors already made with it stay valid. 512 tokens.
+    // Multilingual, 512 tokens.
     ModelSpec {
         id: "multilingual-e5-large",
         dims: 1024,
-        backend: Backend::Pooled(multilingual_e5_large, Pooling::Mean),
+        repo: "intfloat/multilingual-e5-large",
+        revision: "3d7cfbdacd47fdda877c5cd8a79fbcc4f2a574f3",
+        weights: "model.safetensors",
+        architecture: Architecture::XlmRoberta,
+        pooling: Pooling::Mean,
+        query_prefix: "query: ",
+        document_prefix: "passage: ",
+    },
+    ModelSpec {
+        id: "multilingual-e5-base",
+        dims: 768,
+        repo: "intfloat/multilingual-e5-base",
+        revision: "d128750597153bb5987e10b1c3493a34e5a4502a",
+        weights: "model.safetensors",
+        architecture: Architecture::XlmRoberta,
+        pooling: Pooling::Mean,
         query_prefix: "query: ",
         document_prefix: "passage: ",
     },

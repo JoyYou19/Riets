@@ -19,7 +19,7 @@ timing = [
   "core-query/timing",
   "core-protocol/timing",
 ]
-
+cuda = ["core-embed/cuda"]
 [dependencies]
 core-index = { path = "../core-index" }
 core-query = { path = "../core-query" }

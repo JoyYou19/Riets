@@ -23,7 +23,6 @@ pub(crate) const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("max_request_timeout", "240"),
     ("embedding-model", "bge-m3"),
     ("embedding-device", "auto"),
-    ("embedding-runtime", ""),
     ("embedding-instances", "1"),
     ("embedding-batch-size", "64"),
     ("embedding-max-tokens", "512"),
@@ -68,8 +67,7 @@ OPTIONS:
                           [default: false]
                           [CLI only - not persisted to config file]
     --embedding-model <id>
-                          (bge-m3, embeddinggemma-300m, gte-large-en-v1.5,
-                          mxbai-embed-large-v1, multilingual_e5_large)
+                          (bge-m3, mxbai-embed-large-v1, multilingual-e5-large)
                           [default: bge-m3]
 
     NOTE: config file takes priority over CLI args if it exists (unless --overwrite_config true)
@@ -301,13 +299,8 @@ static MODEL_REGISTRY: OnceLock<Arc<ModelRegistry>> = OnceLock::new();
 /// first use, so a server whose databases have no vector fields never loads one.
 pub(crate) fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
     let root_path = PathBuf::from(get(settings, "root-path"));
-    let runtime_setting = get(settings, "embedding-runtime");
-    let install_runtime = runtime_setting.trim().is_empty();
-    let runtime_library = if install_runtime {
-        core_embed::default_runtime_library(&root_path.join("runtime"))
-    } else {
-        PathBuf::from(runtime_setting.trim())
-    };
+    
+   
     let device = core_embed::DevicePreference::parse(&get(settings, "embedding-device"))
         .map_err(|e| format!("invalid embedding settings: {e}"))?;
     let config = ModelConfig {
@@ -317,17 +310,13 @@ pub(crate) fn init_models(settings: &HashMap<String, String>) -> Result<(), Stri
         max_tokens: get_usize(settings, "embedding-max-tokens"),
         max_chars: get_usize(settings, "embedding-max-chars"),
         device,
-        runtime_library,
-        install_runtime,
     };
     let registry = ModelRegistry::new(root_path.join("models"), config.clone())
         .map_err(|e| format!("invalid embedding settings: {e}"))?;
     let log = slog_scope::logger();
-    info!(log, "embedding models configured";
+       info!(log, "embedding models configured";
         "config" => ?config,
-        "cache_dir" => %registry.cache_dir().display(),
-        "runtime_library" => %config.runtime_library.display(),
-        "runtime_found" => config.runtime_library.is_file());
+        "cache_dir" => %registry.cache_dir().display());
     MODEL_REGISTRY
         .set(Arc::new(registry))
         .map_err(|_| "model registry initialised twice".to_string())

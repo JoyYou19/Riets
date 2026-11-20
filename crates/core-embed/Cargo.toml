@@ -5,13 +5,25 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[dependencies]
-fastembed = { version = "6", default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
+[features]
+# NVIDIA GPUs. Building needs the CUDA toolkit (nvcc); the binary needs the NVIDIA driver to start.
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "cuda", "api-22"] }
-# The versions fastembed uses, so each compiles once; their features come from fastembed.
-tokenizers = { version = "0.23", default-features = false }
-hf-hub = { version = "0.5", default-features = false }
+[dependencies]
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+# fancy-regex: the pure-Rust regex engine instead of the C library (onig)
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+hf-hub = { version = "0.5", default-features = false, features = ["ureq", "native-tls"] }
 serde_json = "1"
+fmt = "0.1.0"
+
+# Apple GPUs: every macOS build uses Metal
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }
+candle-transformers = { version = "0.11", features = ["metal"] }
+
 [lints]
 workspace = true
