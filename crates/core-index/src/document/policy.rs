@@ -10,6 +10,7 @@ use crate::{
         analyzer::AnalyzerSet,
         analyzer_config::{AnalyzerConfig, CharFilter},
     },
+    datetimes::validate_date_format,
     numeric_values::{parse_float, parse_integer},
     types::XPathId,
     write_atomically,
@@ -55,6 +56,8 @@ pub struct FieldPolicy {
     pub row_keyed: bool,
     pub depth: u32,
     pub vector: bool,
+
+    pub date_format: Option<String>,
 }
 
 impl Serialize for FieldPolicy {
@@ -98,6 +101,11 @@ impl Serialize for FieldPolicy {
             if self.vector {
                 m.serialize_entry("$vector", &self.vector)?;
             }
+
+            if let Some(fmt) = &self.date_format {
+                m.serialize_entry("$format", fmt)?;
+            }
+
             for sub in &self.subfields {
                 m.serialize_entry(&sub.name, sub)?;
             }
@@ -128,6 +136,7 @@ impl FieldPolicy {
             row_keyed: false,
             depth: 0,
             vector: false,
+            date_format: defaults.date_format.map(str::to_string),
         }
     }
 
@@ -147,6 +156,7 @@ impl FieldPolicy {
             row_keyed: false,
             depth: 0,
             vector: false,
+            date_format: None,
         }
     }
 
@@ -205,6 +215,7 @@ impl FieldPolicy {
                 "$analyzer",
                 "$weight",
                 "$vector",
+                "$format",
             ],
             name,
         )?;
@@ -244,6 +255,25 @@ impl FieldPolicy {
                 .as_bool()
                 .ok_or_else(|| format!("field '{name}': $vector must be a bool"))?;
         }
+
+        if let Some(fmt) = obj.get("$format") {
+            let fmt = fmt
+                .as_str()
+                .ok_or_else(|| format!("field '{name}': $format must be a string"))?
+                .to_string();
+            if kind != FieldKind::DateTime {
+                return Err(format!(
+                    "field '{name}': $format is only valid on a date field (got {})",
+                    kind.label()
+                ));
+            }
+            validate_date_format(&fmt)
+                .map_err(|e| format!("field '{name}': invalid $format: {e}"))?;
+            f.date_format = Some(fmt);
+        } else if kind == FieldKind::DateTime {
+            f.date_format = Some("YYYY-MM-DD".into())
+        }
+
         Ok(f)
     }
 
@@ -665,7 +695,7 @@ pub enum FieldKind {
     Text,
     Integer,
     Float,
-    Date,
+    DateTime,
     Id,
     IdAuto,
     Struct, // list of objects
@@ -692,6 +722,7 @@ struct FieldDefaults {
     list: bool,
     weight: WeightInterval,
     exact: bool,
+    date_format: Option<&'static str>,
 }
 
 // reasonable default for each type of field based on my intuition
@@ -703,42 +734,56 @@ impl FieldKind {
                 list: true,
                 weight: WeightInterval::TEXT,
                 exact: false,
+                date_format: None,
             },
             FieldKind::Id => FieldDefaults {
                 searchable: true,
                 list: true,
                 weight: WeightInterval::DEFAULT,
                 exact: true,
+                date_format: None,
             },
             FieldKind::IdAuto => FieldDefaults {
                 searchable: false,
                 list: true,
                 weight: WeightInterval::DEFAULT,
                 exact: true,
+                date_format: None,
             },
-            FieldKind::Integer | FieldKind::Float | FieldKind::Date => FieldDefaults {
+            FieldKind::Integer | FieldKind::Float => FieldDefaults {
                 searchable: false,
                 list: true,
                 weight: WeightInterval::DEFAULT,
                 exact: true,
+                date_format: None,
+            },
+            FieldKind::DateTime => FieldDefaults {
+                searchable: false,
+                list: true,
+                weight: WeightInterval::DEFAULT,
+                exact: true,
+                date_format: Some("YYYY-MM-DD"),
             },
             FieldKind::Struct => FieldDefaults {
                 searchable: false,
                 list: true,
                 weight: WeightInterval::DEFAULT,
                 exact: false,
+                date_format: None,
             },
             FieldKind::Bool => FieldDefaults {
                 searchable: false,
                 list: true,
                 weight: WeightInterval::DEFAULT,
                 exact: true,
+                date_format: None,
             },
             FieldKind::None => FieldDefaults {
                 searchable: false,
                 list: true,
                 weight: WeightInterval::DEFAULT,
                 exact: false,
+                date_format: None,
             },
         }
     }
@@ -751,13 +796,17 @@ impl FieldKind {
         matches!(self, FieldKind::Bool)
     }
 
+    pub fn is_date(self) -> bool {
+        matches!(self, FieldKind::DateTime)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             FieldKind::None => "none",
             FieldKind::Text => "text",
             FieldKind::Integer => "int",
             FieldKind::Float => "float",
-            FieldKind::Date => "date",
+            FieldKind::DateTime => "date",
             FieldKind::Id => "id",
             FieldKind::IdAuto => "id_auto",
             FieldKind::Struct => "struct",
@@ -786,7 +835,7 @@ fn kind_from_str(s: &str) -> Option<FieldKind> {
         "text" => Some(FieldKind::Text),
         "int" | "integer" => Some(FieldKind::Integer),
         "float" => Some(FieldKind::Float),
-        "date" => Some(FieldKind::Date),
+        "date" => Some(FieldKind::DateTime),
         "id" => Some(FieldKind::Id),
         "id_auto" => Some(FieldKind::IdAuto),
         "struct" => Some(FieldKind::Struct),
@@ -866,6 +915,13 @@ fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
                 "numeric field '{}' must have exact = true (or omit it)",
                 field.name
             ),
+        ));
+    }
+
+    if field.kind == FieldKind::DateTime && field.date_format.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("date field '{}' requires a $format", field.full_path),
         ));
     }
 
@@ -1042,6 +1098,7 @@ impl Serialize for FullField<'_> {
         for sub in &f.subfields {
             m.serialize_entry(&sub.name, &FullField(sub))?;
         }
+
         m.end()
     }
 }

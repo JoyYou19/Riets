@@ -312,9 +312,9 @@ pub fn resolve_sorts(
             .field_by_path(name)
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
 
-        if !field_pol.kind.is_numeric() && !field_pol.kind.is_bool() {
+        if !field_pol.kind.is_numeric() && !field_pol.kind.is_bool() && !field_pol.kind.is_date() {
             return Err(CorelamoError::InvalidData(format!(
-                "sorting by '{name}' is not supported yet (only numeric or bool fields)"
+                "sorting by '{name}' is not supported yet (only numeric, bool or date fields)"
             )));
         }
 

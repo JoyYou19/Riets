@@ -8,6 +8,7 @@ pub mod analyzer;
 pub mod array_rows;
 pub mod background;
 pub mod bkd;
+pub mod datetimes;
 pub mod disk;
 pub mod document;
 pub mod document_values;

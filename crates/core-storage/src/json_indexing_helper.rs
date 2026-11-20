@@ -1,5 +1,6 @@
 ///parsed json tree -> indexed terms
 use core_index::array_rows::ArrayRowAllocator;
+use core_index::datetimes::parse_date;
 use core_index::document::FieldPolicy;
 use core_index::document::document::{ArrayRow, BoolPoint, NumericPoint};
 use core_index::document::policy::ARRAY_GAP;
@@ -267,7 +268,35 @@ fn index_leaves(
                     });
                 }
             }
-            _ => {}
+
+            FieldKind::DateTime => {
+                let format = field.date_format.as_deref().unwrap_or("YYYY-MM-DD");
+                let value = match (&leaf.data, format) {
+                    (LeafData::Integer(v), "epoch-millis") => Some(NumericValue::Int(*v)),
+                    (LeafData::Text(s), _) => parse_date(s, format).ok().map(NumericValue::Int),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    numeric.push(NumericPoint {
+                        xpath: field.xpath(policy),
+                        value,
+                    });
+                    if field.searchable() {
+                        parts.push(DocumentPart {
+                            xpath: field.xpath(policy),
+                            text: leaf.data.to_text(),
+                            analyzer: field.analyzer.clone(),
+                            weight: field.weight,
+                            exact: true,
+                            names: false,
+                            gap: 0,
+                            segments: Vec::new(),
+                        });
+                    }
+                }
+            }
+
+            FieldKind::None | FieldKind::Struct => {}
         }
     }
 }
