@@ -10,8 +10,7 @@ mod graph_builder;
 mod layout;
 mod walk;
 
-pub use graph_builder::{GraphBuildParams, MIN_ROWS_FOR_GRAPH, build_graph_file};
-use layout::{GraphHeader, GraphLayout, NO_UPPER_SLOTS, read_u32};
+pub use graph_builder::{GraphBuildParams, MIN_ROWS_FOR_GRAPH, build_graph_file, extend_graph_file};use layout::{GraphHeader, GraphLayout, NO_UPPER_SLOTS, read_u32};
 use walk::{GraphWalk, NeighbourLists, SimilarityToTarget, with_visited_set};
 
 use std::fs::File;

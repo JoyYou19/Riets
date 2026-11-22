@@ -16,6 +16,7 @@ use super::layout::{
 use super::walk::{GraphWalk, NeighbourLists, ScoredNode, SimilarityToTarget, with_visited_set};
 use crate::hash::fmix64;
 use crate::tmp_path_for;
+use super::HnswGraph;
 use crate::vector::file::{VectorFile, write_zero_padding};
 use crate::vector::kernel::dot_f32;
 
@@ -89,7 +90,25 @@ pub(crate) fn build_and_write(
     }
     result
 }
-
+/// Extends `old` with the rows of `vectors` after its last node and writes the result
+/// atomically to `path`. The first `old.node_count()` rows of `vectors` must be the rows `old`
+/// was built over, in the same order (a fold keeps them so). Existing links are kept and only
+/// the new rows are inserted, so this costs about what a graph over the new rows alone would.
+/// On failure no file is left at `path`'s temporary name.
+pub fn extend_graph_file(
+    old: &HnswGraph,
+    vectors: &VectorFile,
+    path: impl AsRef<Path>,
+    params: &GraphBuildParams,
+) -> io::Result<()> {
+    let path = path.as_ref();
+    let result = GraphUnderConstruction::extend(old, vectors, params)
+        .and_then(|graph| graph.write(path, vectors.file_id(), vectors.dims()));
+    if result.is_err() {
+        let _ = fs::remove_file(tmp_path_for(path));
+    }
+    result
+}
 /// Similarity of any node to the node being inserted, on the f32 originals.
 struct InsertedNodeTarget<'a> {
     vectors: &'a VectorFile,
@@ -182,7 +201,81 @@ impl GraphUnderConstruction {
         graph.connect_unreachable(vectors);
         Ok(graph)
     }
+        /// `old`'s nodes and links, then the rows of `vectors` after them inserted one by one.
+    fn extend(old: &HnswGraph, vectors: &VectorFile, params: &GraphBuildParams) -> io::Result<Self> {
+        params.validate()?;
+        let old_count = old.node_count();
+        let node_count = vectors.len();
+        if node_count < old_count || vectors.dims() != old.vectors().dims() {
+            return Err(invalid_input(format!(
+                "cannot extend a graph of {old_count} nodes over {node_count} rows of {} dims",
+                vectors.dims()
+            )));
+        }
+        if u32::try_from(node_count).is_err() {
+            return Err(invalid_input(format!(
+                "{node_count} rows exceed the u32 node ids of a graph"
+            )));
+        }
 
+        // the old graph's link limits, so old and new nodes follow the same rules
+        let max_links_upper = usize::from(old.header.max_links_upper);
+        let max_links_level0 = usize::from(old.header.max_links_level0);
+        let level_multiplier = 1.0 / (max_links_upper as f64).ln();
+
+        let mut node_levels = Vec::with_capacity(node_count);
+        let mut neighbour_lists = Vec::with_capacity(node_count);
+        let mut links = Vec::with_capacity(max_links_level0);
+        for node in 0..node_count {
+            let top = if node < old_count {
+                old.node_level(node) as u8
+            } else {
+                random_level(params.level_seed, node, level_multiplier)
+            };
+            let lists = (0..=usize::from(top))
+                .map(|level| {
+                    let capacity = if level == 0 {
+                        max_links_level0
+                    } else {
+                        max_links_upper
+                    };
+                    let mut list = Vec::with_capacity(capacity + 1);
+                    if node < old_count {
+                        old.neighbours_into(node as u32, level, &mut links);
+                        list.extend_from_slice(&links);
+                    }
+                    Mutex::new(list)
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            node_levels.push(top);
+            neighbour_lists.push(lists);
+        }
+
+        let mut graph = Self {
+            max_links_upper,
+            max_links_level0,
+            entry_node: old.header.entry_node,
+            node_levels,
+            neighbour_lists,
+        };
+        (old_count as u32..node_count as u32)
+            .into_par_iter()
+            .for_each(|node| graph.insert(vectors, node, params.build_beam_width));
+
+        // a new node above the old top level becomes the entry, as it would in a build
+        let top = graph.node_levels[graph.entry_node as usize];
+        if let Some((offset, _)) = graph.node_levels[old_count..]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &level)| level > top)
+            .max_by_key(|&(offset, &level)| (level, std::cmp::Reverse(offset)))
+        {
+            graph.entry_node = (old_count + offset) as u32;
+        }
+        graph.connect_unreachable(vectors);
+        Ok(graph)
+    }
     fn max_links_at(&self, level: usize) -> usize {
         if level == 0 {
             self.max_links_level0

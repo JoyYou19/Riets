@@ -17,7 +17,7 @@ use super::file::VectorFile;
 use super::hnsw::{HnswGraph, RESCORE_OVERSAMPLING};
 use super::kernel::{approx_cosine, dot_f32, dot_i8, quantize_query};
 use super::vector_hit::{TopK, VectorFilter, VectorHit, hit_order};
-use crate::types::XPathId;
+use crate::types::{DocId, XPathId};
 
 /// The vectors of one vector field for one live segment, and its graph if one is built.
 #[derive(Debug, Clone)]
@@ -25,6 +25,9 @@ pub struct SegmentVectors {
     pub segment: PathBuf,
     pub xpath: XPathId,
     pub file: Arc<VectorFile>,
+    
+    /// rows embedded since the last fold; always scanned exactly, never covered by `graph`
+    pub tail:Option<Arc<VectorFile>>,
     /// HNSW graph over exactly `file`. Must be cleared whenever `file` is replaced.
     pub graph: Option<Arc<HnswGraph>>,
 }
@@ -36,13 +39,13 @@ impl SegmentVectors {
             segment,
             xpath,
             file,
+            tail:None,
             graph: None,
         }
     }
 
-    /// Best `k` hits of this segment and field that `filter` accepts, best first.
-    /// The one place that decides how a segment is searched. `query` must be L2-normalized.
-    pub fn search(&self, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Vec<VectorHit> {
+    
+    fn search_main(&self, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Vec<VectorHit> {
         if k == 0 || self.file.is_empty() || query.len() != self.file.dims() {
             return Vec::new();
         }
@@ -58,6 +61,27 @@ impl SegmentVectors {
             }
         }
         exact_scan(&self.file, query, k, filter)
+    }
+   /// Best `k` hits of the main file and the tail that `filter` accepts, best first.
+    /// `query` must be L2-normalized.
+    pub fn search(&self, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Vec<VectorHit> {
+        let main = self.search_main(query, k, filter);
+        match &self.tail {
+            Some(tail) if !tail.is_empty() => {
+                merge_hits(vec![main, exact_scan(tail, query, k, filter)], k)
+            }
+            _ => main,
+        }
+    }
+
+    /// Rows in the main file and the tail together.
+    pub fn len(&self) -> usize {
+        self.file.len() + self.tail.as_ref().map_or(0, |tail| tail.len())
+    }
+
+    /// True when the main file or the tail holds a vector for `doc_id`.
+    pub fn contains(&self, doc_id: DocId) -> bool {
+        self.file.contains(doc_id) || self.tail.as_ref().is_some_and(|tail| tail.contains(doc_id))
     }
 }
 

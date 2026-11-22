@@ -272,10 +272,10 @@ pub fn compact_vectors(
 
     let mut produced = Vec::with_capacity(xpaths.len());
     for xpath in xpaths {
-        let inputs: Vec<&VectorFile> = vectors
+           let inputs: Vec<&VectorFile> = vectors
             .iter()
             .filter(|entry| entry.xpath == xpath)
-            .map(|entry| entry.file.as_ref())
+            .flat_map(|entry| std::iter::once(entry.file.as_ref()).chain(entry.tail.as_deref()))
             .collect();
         let target = vector_file_path(output_path, xpath);
         match merge_vector_files(&inputs, deleted, &target) {

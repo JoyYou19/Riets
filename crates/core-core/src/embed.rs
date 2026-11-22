@@ -20,12 +20,7 @@ use std::{
 use ahash::{HashMap, HashMapExt};
 use core_embed::EmbedLease;
 use core_index::{
-    disk::reader::DiskSegment,
-    document::IndexPolicy,
-    lsm::{index_worker::IndexCommand, snapshot::IndexSnapshot},
-    search::SearchIndex,
-    types::{DocId, XPathId},
-    vector::{MIN_ROWS_FOR_GRAPH, VectorFile, VectorFileWriter, vector_file_path},
+    disk::reader::DiskSegment, document::IndexPolicy, lsm::{index_worker::IndexCommand, snapshot::IndexSnapshot}, search::SearchIndex, types::{DocId, XPathId}, vector::{GraphBuildParams, MIN_ROWS_FOR_GRAPH, SegmentVectors, VectorFile, VectorFileWriter, build_graph_file, hnsw_file_path, tail_file_path, vector_file_path,extend_graph_file},
 };
 use core_storage::json_parse::parse_source_into_node;
 use serde::{Deserialize, Serialize};
@@ -33,7 +28,16 @@ use slog::{Logger, warn};
 
 use crate::shared_state::SharedShardState;
 
-/// Per-database embedding work settings, stored in the database's config.toml.
+/// A tail is folded into its main file once it holds a quarter of the main file's rows,
+/// within these bounds. Below the cap each fold grows the main file by a quarter, so it is
+/// rewritten a logarithmic number of times; the cap keeps an exact scan of the tail at a few
+/// milliseconds.
+const MIN_TAIL_FOLD: usize = 20_000;
+const MAX_TAIL_FOLD: usize = 500_000;
+
+fn fold_threshold(main_rows: usize) -> usize {
+    (main_rows / 4).clamp(MIN_TAIL_FOLD, MAX_TAIL_FOLD)
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EmbeddingConfig {
@@ -93,7 +97,7 @@ struct Task {
     segment: PathBuf,
     field: VectorField,
     /// Current vector file of this segment and field, if it was made by the loaded model.
-    existing: Option<Arc<VectorFile>>,
+    existing: Option<SegmentVectors> ,
     /// Documents with text in the field but no vector, ascending.
     missing: Vec<DocId>,
     /// Identifies the model and settings the new vectors are made with.
@@ -119,6 +123,7 @@ pub struct EmbeddingJob {
     skipped: HashSet<DocId>,
     cursors: HashMap<(PathBuf, XPathId), Cursor>,
     graph_failed: HashSet<u64>,
+    fold_failed:HashSet<u64>
 }
 
 /// A vector file that is ready for an HNSW graph.
@@ -126,6 +131,12 @@ pub struct GraphTask {
     pub segment: PathBuf,
     pub xpath: XPathId,
     pub file: Arc<VectorFile>,
+}
+/// A segment's field whose tail is big enough to fold into its main file.
+pub struct FoldTask {
+    pub segment: PathBuf,
+    pub xpath: XPathId,
+    pub vectors: SegmentVectors,
 }
 
 impl EmbeddingJob {
@@ -159,6 +170,7 @@ impl EmbeddingJob {
             skipped: HashSet::new(),
             cursors:HashMap::new(),
             graph_failed: HashSet::new(),
+            fold_failed:HashSet::new()
 
         })
     }
@@ -229,7 +241,7 @@ impl EmbeddingJob {
     /// (`MIN_ROWS_FOR_GRAPH`)
     pub fn next_graph(&mut self, vector_id: &str, dims: usize) -> io::Result<Option<GraphTask>> {
         let snapshot = self.shared.snapshot.get();
-        let mut candidates: Vec<_> = snapshot
+        Ok(snapshot
             .vectors()
             .iter()
             .filter(|entry| {
@@ -239,39 +251,42 @@ impl EmbeddingJob {
                     && !self.graph_failed.contains(&entry.file.file_id())
                     && self.fields.iter().any(|field| field.xpath == entry.xpath)
             })
-            .collect();
-        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.file.len()));
-
-        for entry in candidates {
-            let docs = match self.segment_docs(&entry.segment) {
-                Ok(docs) => docs,
-                // merged away since the snapshot was taken
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e),
-            };
-             let complete = match docs.iter().find(|(xpath, _)| *xpath == entry.xpath) {
-                Some((_, ids)) => {
-                    self.cursor_index(&snapshot, &entry.segment, entry.xpath, vector_id, dims, ids)
-                        == ids.len()
-                }
-                None => true,
-            };
-            if complete {
-                return Ok(Some(GraphTask {
-                    segment: entry.segment.clone(),
-                    xpath: entry.xpath,
-                    file: Arc::clone(&entry.file),
-                }));
-            }
-        }
-        Ok(None)
+            .max_by_key(|entry| entry.file.len())
+            .map(|entry| GraphTask {
+                segment: entry.segment.clone(),
+                xpath: entry.xpath,
+                file: Arc::clone(&entry.file),
+            }))
     }
 
     /// Stops `next_graph` from offering this vector file again (its build failed).
     pub fn graph_failed(&mut self, file_id: u64) {
         self.graph_failed.insert(file_id);
     }
+    pub fn next_fold(&self, vector_id: &str, dims: usize) -> Option<FoldTask> {
+        let snapshot = self.shared.snapshot.get();
+        snapshot
+            .vectors()
+            .iter()
+            .filter(|entry| {
+                entry.file.matches(vector_id, dims)
+                    && entry.tail.as_ref().is_some_and(|tail| {
+                        tail.len() >= fold_threshold(entry.file.len())
+                            && !self.fold_failed.contains(&tail.file_id())
+                    })
+            })
+            .max_by_key(|entry| entry.tail.as_ref().map_or(0, |tail| tail.len()))
+            .map(|entry| FoldTask {
+                segment: entry.segment.clone(),
+                xpath: entry.xpath,
+                vectors: entry.clone(),
+            })
+    }
 
+    /// Stops `next_fold` from offering this tail again (its fold failed).
+    pub fn fold_failed(&mut self, tail_file_id: u64) {
+        self.fold_failed.insert(tail_file_id);
+    }
   
      fn next_task(&mut self, vector_id: &str, dims: usize) -> io::Result<Option<Task>> {
         let snapshot = self.shared.snapshot.get();
@@ -383,15 +398,33 @@ impl EmbeddingJob {
 
         let added = new_rows.len();
         if added > 0 {
-            write_vectors(
-                &task.segment,
-                task.field.xpath,
-                task.existing.as_deref(),
-                &task.vector_id,
-                task.dims,
-                new_rows,
-            )?;
-            if !install_vectors(&self.sender, task.segment.clone(), task.field.xpath)? {
+            let xpath = task.field.xpath;
+            let installed = match &task.existing {
+                // first round for this segment and field, or a new model: start the main file
+                None => {
+                    write_vectors(
+                        &vector_file_path(&task.segment, xpath),
+                        &task.vector_id,
+                        task.dims,
+                        &[],
+                        new_rows,
+                    )?;
+                    install_vectors(&self.sender, task.segment.clone(), xpath)?
+                }
+                // later rounds rewrite only the tail; the main file and its graph stay as they are
+                Some(entry) => {
+                    let old_tail: Vec<&VectorFile> = entry.tail.as_deref().into_iter().collect();
+                    write_vectors(
+                        &tail_file_path(&task.segment, xpath),
+                        &task.vector_id,
+                        task.dims,
+                        &old_tail,
+                        new_rows,
+                    )?;
+                    install_tail(&self.sender, task.segment.clone(), xpath)?
+                }
+            };
+            if !installed {
                 warn!(self.log, "segment disappeared before its vectors were installed";
                     "segment" => %task.segment.display());
                 return Ok(0);
@@ -562,51 +595,79 @@ fn existing_file(
     xpath: XPathId,
     vector_id: &str,
     dims: usize,
-) -> Option<Arc<VectorFile>> {
+) -> Option<SegmentVectors> {
     snapshot
         .vectors()
         .iter()
         .find(|entry| entry.segment == segment && entry.xpath == xpath)
-        .map(|entry| Arc::clone(&entry.file))
-        .filter(|file| file.matches(vector_id, dims))
+        .filter(|entry| entry.file.matches(vector_id, dims))
+        .cloned()
 }
 
 /// Writes `<segment>.<xpath>.vec` holding the existing rows plus `new_rows`, replacing the old
 /// file atomically. A row in `new_rows` replaces an existing row for the same document.
 fn write_vectors(
-    segment: &Path,
-    xpath: XPathId,
-    existing: Option<&VectorFile>,
+    path: &Path,
     vector_id: &str,
     dims: usize,
-    mut new_rows: Vec<(DocId, Vec<f32>)>,
+    sources: &[&VectorFile],
+    new_rows: Vec<(DocId, Vec<f32>)>,
 ) -> io::Result<()> {
-    new_rows.sort_unstable_by_key(|(doc_id, _)| *doc_id);
-    let mut writer = VectorFileWriter::create(vector_file_path(segment, xpath), vector_id, dims)?;
-    let mut fresh = new_rows.into_iter().peekable();
-
-    if let Some(existing) = existing {
-        for (index, &doc_id) in existing.doc_ids().iter().enumerate() {
-            while let Some((next, _)) = fresh.peek() {
-                if *next >= doc_id {
-                    break;
-                }
-                let (next, row) = fresh.next().expect("peeked");
-                writer.push(next, &row)?;
-            }
-            if fresh.peek().is_some_and(|(next, _)| *next == doc_id) {
-                continue;
-            }
-            writer.push(doc_id, existing.original(index))?;
+    let mut writer = VectorFileWriter::create(path, vector_id, dims)?;
+    for source in sources {
+        for (row, &doc_id) in source.doc_ids().iter().enumerate() {
+            writer.push(doc_id, source.original(row))?;
         }
     }
-    for (doc_id, row) in fresh {
+    for (doc_id, row) in new_rows {
         writer.push(doc_id, &row)?;
     }
     writer.finish()?;
     Ok(())
 }
+/// Writes `task`'s fold: a new main file holding its main rows, then its tail rows, and the
+/// graph over it, extended from the old graph or built once the file is big enough. A graph
+/// that fails is only logged: the new main file is installed without it, and `next_graph`
+/// builds one later.
+pub fn write_fold(task: &FoldTask, log: &Logger) -> io::Result<()> {
+    let main = task.vectors.file.as_ref();
+    let Some(tail) = task.vectors.tail.as_deref() else {
+        return Ok(());
+    };
+    let main_path = vector_file_path(&task.segment, task.xpath);
+    write_vectors(&main_path, main.model_id(), main.dims(), &[main, tail], Vec::new())?;
+    let folded = VectorFile::open(&main_path)?;
 
+    let graph_path = hnsw_file_path(&task.segment, task.xpath);
+    let params = GraphBuildParams::default();
+    let graph = match &task.vectors.graph {
+        Some(old) => extend_graph_file(old, &folded, &graph_path, &params),
+        None => build_graph_file(&folded, &graph_path, &params).map(|_| ()),
+    };
+    if let Err(e) = graph {
+        warn!(log, "graph for folded vectors failed; searching by scan until rebuilt";
+            "segment" => %task.segment.display(), "xpath" => task.xpath, "error" => %e);
+    }
+    Ok(())
+}
+
+/// Installs a fold written by `write_fold`; false when the segment was merged away meanwhile.
+pub fn install_fold(
+    sender: &Sender<IndexCommand>,
+    segment: PathBuf,
+    xpath: XPathId,
+) -> io::Result<bool> {
+    let (reply, rx) = mpsc::channel();
+    sender
+        .send(IndexCommand::InstallFold {
+            segment,
+            xpath,
+            reply,
+        })
+        .map_err(|_| broken_pipe("index worker stopped"))?;
+    rx.recv()
+        .map_err(|_| broken_pipe("index worker dropped install fold reply"))?
+}
 fn disk_segments(sender: &Sender<IndexCommand>) -> io::Result<Vec<PathBuf>> {
     let (reply, rx) = mpsc::channel();
     sender
@@ -631,6 +692,22 @@ fn install_vectors(
         .map_err(|_| broken_pipe("index worker stopped"))?;
     rx.recv()
         .map_err(|_| broken_pipe("index worker dropped install vectors reply"))?
+}
+fn install_tail(
+    sender: &Sender<IndexCommand>,
+    segment: PathBuf,
+    xpath: XPathId,
+) -> io::Result<bool> {
+    let (reply, rx) = mpsc::channel();
+    sender
+        .send(IndexCommand::InstallTail {
+            segment,
+            xpath,
+            reply,
+        })
+        .map_err(|_| broken_pipe("index worker stopped"))?;
+    rx.recv()
+        .map_err(|_| broken_pipe("index worker dropped install tail reply"))?
 }
 
 /// Attaches a built graph; false when the segment or its vector file changed meanwhile.

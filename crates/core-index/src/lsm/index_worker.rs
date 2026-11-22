@@ -42,7 +42,7 @@ pub enum IndexCommand {
         documents: Receiver<Vec<AnalyzedDocument>>,
         ack: Option<Acknowledgement>,
     },
-    DeleteDocuments{
+    DeleteDocuments {
         doc_ids: Vec<DocId>,
         publish: bool,
         ack: Option<Acknowledgement>,
@@ -82,8 +82,20 @@ pub enum IndexCommand {
         xpath: XPathId,
         reply: InstallVectorsReply,
     },
+    /// Attaches a segment's rewritten tail vector file; its main file and graph are kept.
+    InstallTail {
+        segment: PathBuf,
+        xpath: XPathId,
+        reply: InstallVectorsReply,
+    },
     /// Attaches a built HNSW graph to the segment's current vector file.
     InstallGraph {
+        segment: PathBuf,
+        xpath: XPathId,
+        reply: InstallVectorsReply,
+    },
+     /// Installs a folded main vector file and its graph, and drops the folded tail.
+    InstallFold {
         segment: PathBuf,
         xpath: XPathId,
         reply: InstallVectorsReply,
@@ -199,17 +211,20 @@ impl IndexWorker {
         })?;
         Ok(PendingAck(Mutex::new(rx)))
     }
-    pub fn delete_documents_deferred(&self, doc_ids: Vec<DocId>, publish: bool) -> io::Result<PendingAck> {
-    let (ack, rx) = mpsc::channel();
-    self.send(IndexCommand::DeleteDocuments { doc_ids, publish, ack: Some(ack) })?;
-    Ok(PendingAck(Mutex::new(rx)))
-}
+    pub fn delete_documents_deferred(
+        &self,
+        doc_ids: Vec<DocId>,
+        publish: bool
+    ) -> io::Result<PendingAck> {
+        let (ack, rx) = mpsc::channel();
+        self.send(IndexCommand::DeleteDocuments { doc_ids, publish, ack: Some(ack) })?;
+        Ok(PendingAck(Mutex::new(rx)))
+    }
     pub fn delete_documents_wait(&self, doc_ids: Vec<DocId>, publish: bool) -> io::Result<()> {
-    let (ack, rx) = mpsc::channel();
-    self.send(IndexCommand::DeleteDocuments { doc_ids, publish, ack: Some(ack) })?;
-    wait_for_acknowledgement(rx)
-}
- 
+        let (ack, rx) = mpsc::channel();
+        self.send(IndexCommand::DeleteDocuments { doc_ids, publish, ack: Some(ack) })?;
+        wait_for_acknowledgement(rx)
+    }
 
     pub fn flush(&self) -> io::Result<()> {
         self.send(IndexCommand::Flush { ack: None })
@@ -258,7 +273,6 @@ impl IndexWorker {
         self.send(IndexCommand::Flush { ack: Some(ack) })?;
         Ok(PendingAck(Mutex::new(rx)))
     }
-   
 
     #[timed(indexing_documents)]
     pub fn add_segment_wait(
@@ -524,8 +538,28 @@ fn run_index_worker(
                     last_publish = Instant::now();
                 }
             }
+            IndexCommand::InstallTail { segment, xpath, reply } => {
+                let outcome = index.install_tail(&segment, xpath);
+                let installed = matches!(&outcome, Ok(true));
+                let _ = reply.send(outcome);
+                if installed {
+                    shared.publish(index.publish_snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
+            }
             IndexCommand::InstallGraph { segment, xpath, reply } => {
                 let outcome = index.install_graph(&segment, xpath);
+                let installed = matches!(&outcome, Ok(true));
+                let _ = reply.send(outcome);
+                if installed {
+                    shared.publish(index.publish_snapshot());
+                    docs_since_publish = 0;
+                    last_publish = Instant::now();
+                }
+            }
+            IndexCommand::InstallFold { segment, xpath, reply } => {
+                let outcome = index.install_fold(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
                 let _ = reply.send(outcome);
                 if installed {
