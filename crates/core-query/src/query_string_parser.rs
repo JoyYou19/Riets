@@ -219,9 +219,10 @@ pub fn parse_json_query(
                         .into(),
                 ));
             }
+
             let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
             Err(CorelamoError::InvalidData(format!(
-                "unknown query operator(s): {} — expected one of term/exact/fuzzy/phrase/range/same_element/AND/OR/WAND",
+                "unknown query operator(s): {} — expected one of term/exact/fuzzy/phrase/range/same_element/AND/OR/WAND/NOT",
                 keys.join(", ")
             )))
         }

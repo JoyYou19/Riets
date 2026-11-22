@@ -1803,6 +1803,17 @@ where
         }
     }
 
+    fn live_docs(&self) -> RoaringTreemap {
+        self.index
+            .live_doc_ids()
+            .unwrap_or_else(|| match self.index.doc_range() {
+                Some((min, max)) => (min..=max)
+                    .filter(|id| !self.index.is_deleted(*id))
+                    .collect(),
+                None => RoaringTreemap::new(),
+            })
+    }
+
     #[timed(search)]
     pub fn filter_doc_ids(&self, filters: &HashMap<String, FieldQuery>) -> Option<RoaringTreemap> {
         if filters.is_empty() {
@@ -1819,6 +1830,19 @@ where
                         .expect("same_element binding missing");
                     let rows = self.same_element_rows(children, binding);
                     self.index.resolve_array_rows(&rows)
+                }
+                //edgecase with same_element wrapped in a NOT
+                Query::Not(inner) if matches!(inner.as_ref(), Query::SameElement(_)) => {
+                    let Query::SameElement(children) = inner.as_ref() else {
+                        unreachable!()
+                    };
+                    let binding = fq
+                        .same_element
+                        .as_ref()
+                        .expect("same_element binding missing");
+                    let rows = self.same_element_rows(children, binding);
+                    let matched = self.index.resolve_array_rows(&rows);
+                    self.live_docs() - matched
                 }
                 _ => {
                     let EvalOutcome::Docs(raw) =
