@@ -250,9 +250,9 @@ async fn run() -> io::Result<()> {
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));
     let (log, _guard) = logger::program_logger(&root_path);
     let _slog_guard = slog_scope::set_global_logger(log.clone());
-    info!(log, "Program started");
+    info!(log, "Riets activated");
 
-    // held until the process exits; must be taken before any database file is touched
+    //held until the process exits; must be taken before any database file is touched
     let _root_lock = match lock_root(&root_path) {
         Ok(file) => file,
         Err(e) => {

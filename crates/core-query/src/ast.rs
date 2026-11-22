@@ -18,7 +18,8 @@ pub enum Query {
     // the user typed; a document is scored by the best weighted form it contains.
     Synonym(Vec<SynonymAlternative>),
 
-    // Not(Box<Query>),
+    Not(Box<Query>),
+
     //
     Range(NumericRange),
     SameElement(Vec<Query>),

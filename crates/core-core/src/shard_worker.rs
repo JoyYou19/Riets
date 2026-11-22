@@ -1,5 +1,6 @@
 use ahash::{HashMap as AHashMap, HashSet, HashSetExt};
 use core_index::numeric_values::NumericValue;
+use core_query::executor::{EvalMode, EvalOutcome};
 use core_query::ranking::{POOL_SIZE, finalize};
 use roaring::RoaringTreemap;
 use simd_json::OwnedValue;
@@ -388,9 +389,27 @@ impl ShardHandle {
 
         let filter = match earlier_filter {
             Some(filter) => filter,
-            None => filters
-                .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f))
-                .map(Arc::new),
+            None => {
+                let mut restrict = filters
+                    .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f));
+                for group in groups {
+                    for negative in &group.negatives {
+                        let executor = QueryExecutor::new(&*snapshot, &group.analyzer);
+                        if let EvalOutcome::Docs(docs) =
+                            executor.evaluate(negative, &group.ctxs, EvalMode::Filter)
+                        {
+                            restrict = Some(match restrict {
+                                Some(cur) => cur & docs,
+                                None => docs,
+                            });
+                            if restrict.as_ref().is_some_and(RoaringTreemap::is_empty) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                restrict.map(Arc::new)
+            }
         };
 
         PreparedShardSearch {

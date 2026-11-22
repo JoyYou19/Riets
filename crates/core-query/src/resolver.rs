@@ -28,6 +28,7 @@ pub struct QueryGroup {
     pub analyzer: Analyzer,
     pub query: Option<Query>,
     pub ctxs: Vec<FieldCtx>,
+    pub negatives: Vec<Query>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +107,7 @@ pub fn compile_query(
             analyzer: analyzers.default_analyzer().clone(),
             query: Some(Query::MatchAll),
             ctxs,
+            negatives: Vec::new(),
         }]));
     }
 
@@ -120,8 +122,11 @@ pub fn compile_query(
     };
 
     // group fields by analyzer name; analyze once per analyzer, then reuse
-    let mut by_name: BTreeMap<Option<String>, (Analyzer, Option<Query>, Vec<FieldCtx>)> =
-        BTreeMap::new();
+    let mut by_name: BTreeMap<
+        Option<String>,
+        //analyzer  query         netgatives      filters
+        (Analyzer, Option<Query>, Vec<Query>, Vec<FieldCtx>),
+    > = BTreeMap::new();
     for field in fields {
         let key = field.analyzer.clone();
         let entry = by_name.entry(key).or_insert_with(|| {
@@ -130,18 +135,25 @@ pub fn compile_query(
                 Some(dictionary) => expand_synonyms(raw_query.clone(), dictionary, &analyzer),
                 None => raw_query.clone(),
             };
-            let query = analyze_query(expanded, &analyzer);
-            (analyzer, query, Vec::new())
+            let (query, negatives) = match analyze_query(expanded, &analyzer) {
+                Some(q) => {
+                    let (positive, negatives) = split_not(q);
+                    (Some(positive), negatives)
+                }
+                None => (None, Vec::new()),
+            };
+            (analyzer, query, negatives, Vec::new())
         });
-        entry.2.push(field_ctx(field, policy));
+        entry.3.push(field_ctx(field, policy));
     }
 
     Ok(Arc::new(
         by_name
             .into_iter()
-            .map(|(_, (analyzer, query, ctxs))| QueryGroup {
+            .map(|(_, (analyzer, query, negatives, ctxs))| QueryGroup {
                 analyzer,
                 query,
+                negatives,
                 ctxs,
             })
             .collect(),
@@ -216,11 +228,50 @@ fn reject_filter_only_operators(v: &OwnedValue) -> Result<(), CorelamoError> {
     Ok(())
 }
 
+//ok so NOTs are un-rankable shits so we split the whole query into the query + all the NOT: {....}
+//so that we can consider them as pure filters
+fn split_not(query: Query) -> (Query, Vec<Query>) {
+    let mut negatives = Vec::new();
+    let positive = strip_not_in_query(query, &mut negatives);
+    (positive, negatives)
+}
+
+fn strip_not_in_query(query: Query, negatives: &mut Vec<Query>) -> Query {
+    match query {
+        Query::Not(inner) => {
+            negatives.push(Query::Not(inner));
+            Query::MatchAll
+        }
+        Query::And(parts) => collapse_not(parts, Query::And, negatives),
+        Query::Or(parts) => collapse_not(parts, Query::Or, negatives),
+        Query::Wand(parts) => collapse_not(parts, Query::Wand, negatives),
+        leaf => leaf,
+    }
+}
+
+fn collapse_not(
+    parts: Vec<Query>,
+    make: fn(Vec<Query>) -> Query,
+    negatives: &mut Vec<Query>,
+) -> Query {
+    let kept: Vec<Query> = parts
+        .into_iter()
+        .map(|p| strip_not_in_query(p, negatives))
+        .filter(|q| !matches!(q, Query::MatchAll))
+        .collect();
+    match kept.len() {
+        0 => Query::MatchAll,
+        1 => kept.into_iter().next().unwrap(),
+        _ => make(kept),
+    }
+}
+
 fn tree_has_exact(q: &Query) -> bool {
     match q {
         Query::Exact(_) => true,
         Query::And(ps) | Query::Or(ps) | Query::Wand(ps) => ps.iter().any(tree_has_exact),
         Query::SameElement(ps) => ps.iter().any(tree_has_exact),
+        Query::Not(inner) => tree_has_exact(inner),
         //the dictionary's exact forms are optional: only what was typed counts
         Query::Synonym(forms) => forms
             .first()
@@ -243,16 +294,24 @@ pub fn resolve_filters(
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
 
         //same_element is a container spec — handle it before the blank check
+        let (negate, inner_raw) = match raw {
+            OwnedValue::Object(o) => match o.get("NOT") {
+                Some(inner) => (true, inner),
+                None => (false, raw),
+            },
+            _ => (false, raw),
+        };
         let is_same_element =
-            matches!(raw, OwnedValue::Object(o) if o.contains_key("same_element"));
+            matches!(inner_raw, OwnedValue::Object(o) if o.contains_key("same_element"));
 
         let (query, same_element) = if is_same_element {
-            let OwnedValue::Object(obj) = raw else {
+            let OwnedValue::Object(obj) = inner_raw else {
                 unreachable!()
             };
             let inner = obj.get("same_element").unwrap();
             let (q, b) = resolve_same_element(field, inner, analyzers, policy, wildcards_enabled)?
                 .ok_or_else(|| CorelamoError::InvalidData(format!("blank filter '{name}'")))?;
+            let q = if negate { Query::Not(Box::new(q)) } else { q };
             (q, Some(b))
         } else {
             match build_node(raw, field, analyzers, wildcards_enabled)? {
@@ -298,6 +357,22 @@ fn build_node(
     analyzers: &AnalyzerSet,
     wildcards_enabled: bool,
 ) -> Result<Option<Query>, CorelamoError> {
+    //{"field": {"NOT": inner}} — negate the inner clause
+    if let OwnedValue::Object(obj) = v
+        && let Some(inner) = obj.get("NOT")
+        && !matches!(
+            field.kind,
+            FieldKind::Text | FieldKind::Id | FieldKind::IdAuto
+        )
+    {
+        let inner_query = build_node(inner, field, analyzers, wildcards_enabled)?
+            .ok_or_else(|| CorelamoError::InvalidData("blank 'NOT' clause".into()))?;
+        return Ok(Some(match inner_query {
+            Query::Not(x) => *x, // NOT NOT x == x
+            q => Query::Not(Box::new(q)),
+        }));
+    }
+
     if let OwnedValue::Object(obj) = v
         && let Some(inner) = obj.get("range")
     {
