@@ -252,7 +252,7 @@ async fn run() -> io::Result<()> {
     let _slog_guard = slog_scope::set_global_logger(log.clone());
     info!(log, "Riets activated");
 
-    // held until the process exits; must be taken before any database file is touched
+    //held until the process exits; must be taken before any database file is touched
     let _root_lock = match lock_root(&root_path) {
         Ok(file) => file,
         Err(e) => {
