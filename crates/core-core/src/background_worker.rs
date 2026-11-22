@@ -30,10 +30,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, bounded, u
 use slog::{Logger, error, info, warn};
 
 use crate::{
-    embed::{EmbeddingJob, install_graph},
-    metrics::{BackgroundActivity, ShardStatsHandle},
-    reindex::{ReindexTask, build_staging_index},
-    shard_worker::ShardCmd,
+    embed::{EmbeddingJob, install_fold, install_graph, write_fold}, metrics::{BackgroundActivity, ShardStatsHandle}, reindex::{ReindexTask, build_staging_index}, shard_worker::ShardCmd,
 };
 
 const MEASURE_EVERY: Duration = Duration::from_secs(60);
@@ -165,28 +162,28 @@ impl BackgroundLoop {
                 }
             }
             // 3. embedding, one round, then re-check 1 and 2
-            match self.embed_once(stop) {
-                Ok(true) => {
-                    continue;
-                }
+            // 3. fold one full tail into its main file, then re-check 1 and 2
+            match self.fold_once(stop) {
+                Ok(true) => continue,
                 Ok(false) => {}
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    return Ok(());
-                }
-                Err(e) => warn!(self.config.log, "embedding round failed"; "error" => %e),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+                Err(e) => warn!(self.config.log, "vector fold step failed"; "error" => %e),
             }
-            // 4. one HNSW graph for a fully embedded vector file, then re-check 1 to 3
+            // 4. one HNSW graph for a main file without one (merged segments, failed builds)
             match self.graph_once(stop) {
-                Ok(true) => {
-                    continue;
-                }
+                Ok(true) => continue,
                 Ok(false) => {}
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    return Ok(());
-                }
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
                 Err(e) => warn!(self.config.log, "vector graph step failed"; "error" => %e),
             }
-            // 5. idle: document-store compaction, rarely
+            // 5. embedding, one round, then re-check 1 to 4
+            match self.embed_once(stop) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+                Err(e) => warn!(self.config.log, "embedding round failed"; "error" => %e),
+            }
+            // 6. idle: document-store compaction, rarely
             if self.store_compaction_due() {
                 self.store_compaction_once(stop);
                 continue;
@@ -479,6 +476,54 @@ impl BackgroundLoop {
                 Ok(true)
             }
         }
+    }
+        /// Folds one tail that reached its threshold into its main file (`EmbeddingJob::next_fold`).
+    /// Runs before embedding, so tails stay small while documents keep arriving. Returns true
+    /// when it folded or tried to.
+    fn fold_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
+        if self.config.embedding.is_none() || stop.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        // a bulk load is about to be merged: its segments, and their vectors, would go away
+        if self.waiting_for_load()? {
+            return Ok(false);
+        }
+        let vector_id = self.config.models.default_vector_id();
+        let dims = self.config.models.default_model().dims;
+        let Some(task) = self
+            .config
+            .embedding
+            .as_ref()
+            .expect("checked above")
+            .next_fold(&vector_id, dims)
+        else {
+            return Ok(false);
+        };
+
+        let started = Instant::now();
+        self.config.stats.set_activity(BackgroundActivity::Embedding);
+        let log = self.config.log.clone();
+        let written = background_pool().install(|| write_fold(&task, &log));
+        self.config.stats.set_activity(BackgroundActivity::Idle);
+
+        if let Err(e) = written {
+            warn!(self.config.log, "folding vector tail failed; the tail is kept and scanned";
+                "segment" => %task.segment.display(), "xpath" => task.xpath, "error" => %e);
+            if let (Some(job), Some(tail)) =
+                (self.config.embedding.as_mut(), task.vectors.tail.as_ref())
+            {
+                job.fold_failed(tail.file_id());
+            }
+            return Ok(true);
+        }
+        if install_fold(&self.config.index, task.segment.clone(), task.xpath)? {
+            info!(self.config.log, "folded vector tail";
+                "segment" => %task.segment.display(),
+                "xpath" => task.xpath,
+                "rows" => task.vectors.len(),
+                "elapsed_ms" => started.elapsed().as_millis());
+        }
+        Ok(true)
     }
 
     fn mark_graph_failed(&mut self, file_id: u64) {

@@ -74,10 +74,13 @@ const SEMANTIC_MIN_WORDS: usize = 3;
 /// Automatic fusion needs at least this share of documents embedded (percent).
 const SEMANTIC_MIN_PROGRESS: u8 = 95;
 /// Largest result count a vector-only query returns (matches the total-hits cap).
-const MAX_VECTOR_RESULTS: usize = 1000;
+const MAX_VECTOR_RESULTS: usize = 10000;
+
+const MAX_RESULTS_SIZE: usize = 1000;
 /// Most documents a search can page through (offset + docs). The total hit count is not
 /// limited by it.
-const MAX_RESULTS_SIZE: usize = 1000;
+const MAX_WINDOW_SIZE:usize =10000;
+const _: () = assert!(MAX_RESULTS_SIZE <= MAX_WINDOW_SIZE);
 /// A query that is only `{"vector": "text"}` or `{"vector": {"text": "...", "field": "..."}}`.
 /// How many times as common a correction must be than every equally close or closer word to
 /// replace the query on its own ("batmna" -> "batman"); below that it is only suggested.
@@ -2769,7 +2772,14 @@ fn requested_page(command: &SearchCommand) -> Result<Option<PageRequest>, Corela
     }
 
     let offset = command.offset.unwrap_or(0);
-    let fetch = offset.saturating_add(limit);
+    let fetch = offset
+        .checked_add(limit)
+        .filter(|&fetch| fetch <= MAX_WINDOW_SIZE)
+        .ok_or_else(|| {
+            CorelamoError::InvalidData(format!(
+                "offset + docs may be at most {MAX_WINDOW_SIZE}, got {offset} + {limit}"
+            ))
+        })?;
     Ok((fetch > 0).then_some(PageRequest {
         limit,
         offset,

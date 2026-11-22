@@ -27,7 +27,7 @@ use crate::{
     segment::{ImmutableSegment, SegmentHandle},
     types::{ARRAY_ROW_FLAG, ArrayRowId, DocId, XPathId},
     vector::{
-        HnswGraph, SegmentVectors, VectorFile, find_vector_files, hnsw_file_path, vector_file_path,
+        HnswGraph, SegmentVectors, VectorFile, find_vector_files, hnsw_file_path, vector_file_path,tail_file_path
     },
     wildcard::WildcardPattern,
 };
@@ -150,10 +150,7 @@ impl FlushQueue {
     }
 }
 
-// #[timed(flushing)]
-// fn unwrap_mem(generation: Arc<MemIndex>) -> MemIndex {
-//     Arc::try_unwrap(generation).unwrap_or_else(|shared| (*shared).clone())
-// }
+
 
 pub trait FlushCheckpoint: Send + Sync {
     fn checkpoint(&self) -> io::Result<()>;
@@ -399,21 +396,25 @@ impl LsmIndex {
             {
                 next_segment_id = next_segment_id.max(id + 1);
             }
-            for (xpath, vector_path) in find_vector_files(&path)? {
+             for (xpath, vector_path) in find_vector_files(&path)? {
                 match VectorFile::open(&vector_path) {
                     Ok(file) => {
                         let file = Arc::new(file);
                         let graph = open_graph(&path, xpath, &file);
+                        let tail = open_tail(&path, xpath, &file);
                         vectors.push(SegmentVectors {
                             segment: path.clone(),
                             xpath,
                             file,
+                            tail,
                             graph,
                         });
                     }
                     // Derived data: drop it and let the embedding worker rebuild it.
                     Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                         let _ = std::fs::remove_file(&vector_path);
+                        // a tail without its main file is embedded again with the rest
+                        let _ = std::fs::remove_file(tail_file_path(&path, xpath));
                     }
                     Err(e) => {
                         return Err(e);
@@ -1020,6 +1021,30 @@ impl LsmIndex {
         self.attach_vectors(segment, xpath)?;
         Ok(true)
     }
+     /// Attaches `<segment>.<xpath>.tail.vec` to that segment's main vector file, replacing any
+    /// earlier tail. The graph is kept: it covers only the main file. Returns false, removing
+    /// the tail file, when the segment is no longer live or has no main file.
+    pub fn install_tail(&mut self, segment: &Path, xpath: XPathId) -> io::Result<bool> {
+        let path = tail_file_path(segment, xpath);
+        let live = self
+            .segment_handles
+            .iter()
+            .any(|handle| matches!(handle, SegmentHandle::Disk(p) if p == segment));
+        if !live {
+            let _ = std::fs::remove_file(&path);
+            return Ok(false);
+        }
+        let vectors = Arc::make_mut(&mut self.vectors);
+        let Some(entry) = vectors
+            .iter_mut()
+            .find(|entry| entry.segment == segment && entry.xpath == xpath)
+        else {
+            let _ = std::fs::remove_file(&path);
+            return Ok(false);
+        };
+        entry.tail = Some(Arc::new(VectorFile::open(&path)?));
+        Ok(true)
+    }
 
     /// Attaches `<segment>.<xpath>.hnsw` to that segment's current vector file.
     /// Returns false, removing the graph file, when the segment is no longer live or the
@@ -1047,6 +1072,36 @@ impl LsmIndex {
             Err(e) => Err(e),
         }
     }
+     /// Installs a fold: the segment's new main vector file (old main rows, then the tail's) and
+    /// the graph written for it, if one binds to the new file. The tail is removed, since its
+    /// rows are now in the main file. Returns false, removing the new files, when the segment
+    /// is no longer live.
+    pub fn install_fold(&mut self, segment: &Path, xpath: XPathId) -> io::Result<bool> {
+        let live = self
+            .segment_handles
+            .iter()
+            .any(|handle| matches!(handle, SegmentHandle::Disk(p) if p == segment));
+        if !live {
+            let _ = std::fs::remove_file(vector_file_path(segment, xpath));
+            let _ = std::fs::remove_file(hnsw_file_path(segment, xpath));
+            return Ok(false);
+        }
+        let file = Arc::new(VectorFile::open(vector_file_path(segment, xpath))?);
+        let graph = open_graph(segment, xpath, &file);
+        let vectors = Arc::make_mut(&mut self.vectors);
+        let Some(entry) = vectors
+            .iter_mut()
+            .find(|entry| entry.segment == segment && entry.xpath == xpath)
+        else {
+            return Ok(false);
+        };
+        entry.file = file;
+        entry.graph = graph;
+        if let Some(tail) = entry.tail.take() {
+            let _ = std::fs::remove_file(tail.path());
+        }
+        Ok(true)
+    }
 
     fn attach_vectors(&mut self, segment: &Path, xpath: XPathId) -> io::Result<()> {
         let file = Arc::new(VectorFile::open(vector_file_path(segment, xpath))?);
@@ -1063,12 +1118,18 @@ impl LsmIndex {
                 if existing.graph.take().is_some() {
                     let _ = std::fs::remove_file(hnsw_file_path(segment, xpath));
                 }
+                // a new main file either holds the tail's rows (a fold) or replaces them (a new
+                // model), so the tail is never kept beside it
+                if let Some(tail) = existing.tail.take() {
+                    let _ = std::fs::remove_file(tail.path());
+                }
             }
             None => vectors.push(SegmentVectors {
                 segment: segment.to_path_buf(),
                 xpath,
                 file,
                 graph: None,
+                tail:None
             }),
         }
         Ok(())
@@ -1079,6 +1140,9 @@ impl LsmIndex {
         vectors.retain(|entry| {
             if entry.segment == segment {
                 let _ = std::fs::remove_file(entry.file.path());
+                if let Some(tail) = &entry.tail {
+                    let _ = std::fs::remove_file(tail.path());
+                }
                 let _ = std::fs::remove_file(hnsw_file_path(segment, entry.xpath));
                 false
             } else {
@@ -1093,6 +1157,30 @@ fn open_graph(segment: &Path, xpath: XPathId, file: &Arc<VectorFile>) -> Option<
     let path = hnsw_file_path(segment, xpath);
     match HnswGraph::open(&path, Arc::clone(file)) {
         Ok(graph) => Some(Arc::new(graph)),
+        Err(e) => {
+            if e.kind() == io::ErrorKind::InvalidData {
+                let _ = std::fs::remove_file(&path);
+            }
+            None
+        }
+    }
+}
+fn open_tail(segment: &Path, xpath: XPathId, main: &VectorFile) -> Option<Arc<VectorFile>> {
+    let path = tail_file_path(segment, xpath);
+    match VectorFile::open(&path) {
+        Ok(tail) if tail.matches(main.model_id(), main.dims()) => {
+            // a fold that stopped before removing the tail left rows already in the main file
+            if tail.doc_ids().first().is_some_and(|&doc_id| main.contains(doc_id)) {
+                let _ = std::fs::remove_file(&path);
+                None
+            } else {
+                Some(Arc::new(tail))
+            }
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&path);
+            None
+        }
         Err(e) => {
             if e.kind() == io::ErrorKind::InvalidData {
                 let _ = std::fs::remove_file(&path);
