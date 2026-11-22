@@ -75,6 +75,27 @@ Detection runs per word, so a bare multi-word string classifies each word: `"g* 
 
 Words inside an array or string are split on whitespace (`"into *verse"` → `into` + prefix `verse`).
 
+### Negation (`NOT`)
+
+`{"NOT": <clause>}` excludes documents that match the clause. A bare string inside
+`NOT` is an **`OR`** of its words: `{"NOT": "jaguar car"}` excludes docs containing
+*either* word, same as `{"NOT": {"OR": "jaguar car"}}`.
+
+```json
+{ "query": { "NOT": "documentary" } }                       // everything except documentary
+{ "query": { "AND": ["spiderman", { "NOT": "animation" }] } }
+{ "query": { "NOT": { "OR": "war western" } } }             // neither war nor western
+{ "query": { "NOT": { "AND": "comedy romance" } } }         // not both (one alone is fine)
+{ "query": { "NOT": { "phrase": "new york" } } }            // exclude the phrase
+{ "query": { "NOT": { "exact": "drama" } } }                // exclude the exact value
+```
+
+- `NOT` is a **hard exclusion** — it never adds to the score, it only removes documents.
+- A pure-negative query (only `NOT`, nothing positive) matches everything else.
+- `NOT NOT x` normalizes to `x`.
+- `NOT` can wrap any clause: term, exact, phrase, fuzzy, `AND`/`OR`/`WAND` — and, in
+  filters, ranges, bools and `same_element`.
+
 ### Match-all (empty query)
 
 `query` is optional. Any of these means "match all documents":
@@ -96,7 +117,7 @@ There is no `"match_all"` keyword — `"match_all"` is just an ordinary word to 
 
 ## 2. filters
 
-Filter values use the same leaf operators as query, plus `range`, `same_element`, and `bool`.
+Filter values use the same leaf operators as query, plus `range`, `same_element`, `bool`, and `NOT`.
 Unlike the main query, a **bare multi-word filter string is an `AND`** (every word must match).
 
 ```json
@@ -121,6 +142,21 @@ Unlike the main query, a **bare multi-word filter string is an `AND`** (every wo
 { "filters": { "cast": { "same_element": { "name": { "exact": "Gary" }, "surname": { "exact": "Cooper" } } } } }
 { "filters": { "random_nums": { "same_element": { "num1": { "range": "30..70" }, "num2": ">=50" } } } }
 ```
+
+### Negation (`NOT`)
+
+`{"field": {"NOT": <clause>}}` excludes docs that match the clause, for every field
+kind — text, bool, numeric, date, and `same_element`.
+
+```json
+{ "filters": { "genres": { "NOT": { "exact": "Drama" } } } }
+{ "filters": { "year": { "NOT": ">2000" } } }
+{ "filters": { "is_cool": { "NOT": true } } }
+{ "filters": { "release_date": { "NOT": ">=2024-01-01" } } }
+{ "filters": { "cast": { "NOT": { "same_element": { "name": { "exact": "Tobey" }, "surname": { "exact": "Maguire" } } } } } }
+```
+
+`NOT` filters are AND-ed with the other filters — a doc must clear all of them.
 
 ### Numeric filters
 
