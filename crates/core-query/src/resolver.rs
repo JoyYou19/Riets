@@ -221,6 +221,7 @@ fn tree_has_exact(q: &Query) -> bool {
         Query::Exact(_) => true,
         Query::And(ps) | Query::Or(ps) | Query::Wand(ps) => ps.iter().any(tree_has_exact),
         Query::SameElement(ps) => ps.iter().any(tree_has_exact),
+        Query::Not(inner) => tree_has_exact(inner),
         //the dictionary's exact forms are optional: only what was typed counts
         Query::Synonym(forms) => forms
             .first()
@@ -298,6 +299,22 @@ fn build_node(
     analyzers: &AnalyzerSet,
     wildcards_enabled: bool,
 ) -> Result<Option<Query>, CorelamoError> {
+    //{"field": {"NOT": inner}} — negate the inner clause
+    if let OwnedValue::Object(obj) = v
+        && let Some(inner) = obj.get("NOT")
+        && !matches!(
+            field.kind,
+            FieldKind::Text | FieldKind::Id | FieldKind::IdAuto
+        )
+    {
+        let inner_query = build_node(inner, field, analyzers, wildcards_enabled)?
+            .ok_or_else(|| CorelamoError::InvalidData("blank 'NOT' clause".into()))?;
+        return Ok(Some(match inner_query {
+            Query::Not(x) => *x, // NOT NOT x == x
+            q => Query::Not(Box::new(q)),
+        }));
+    }
+
     if let OwnedValue::Object(obj) = v
         && let Some(inner) = obj.get("range")
     {

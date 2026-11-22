@@ -64,6 +64,13 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
 
         Query::Exact(term) => Some(Query::Exact(term.to_lowercase())),
         Query::Fuzzy(term, fuzziness, spec) => Some(Query::Fuzzy(term, fuzziness, spec)),
+
+        Query::Not(inner) => {
+            //if nothing is inside a NOT it means match all right?
+            let analyzed = analyze_query(*inner, analyzer).unwrap_or(Query::MatchAll);
+            Some(Query::Not(Box::new(analyzed)))
+        }
+
         Query::Synonym(forms) => analyze_synonym(forms, analyzer),
 
         Query::Range(range) => Some(Query::Range(range)),
@@ -200,6 +207,11 @@ pub fn parse_json_query(
             if let Some(inner) = obj.get("fuzzy") {
                 return fuzzy(inner);
             }
+
+            if let Some(inner) = obj.get("NOT") {
+                return not(inner, wildcard_enabled);
+            }
+
             if obj.contains_key("vector") {
                 return Err(CorelamoError::InvalidData(
                     "\"vector\" must be the whole query, e.g. {\"query\": {\"vector\": \"some text\"}}; \
@@ -259,6 +271,15 @@ fn combinator(
             "AND/OR/WAND must be an array or a string".into(),
         )),
     }
+}
+
+//{"NOT": "a b"} excludes docs with either word: the bare string is OR, not AND/WAND.
+fn not(inner: &OwnedValue, wildcard_enabled: bool) -> Result<Query, CorelamoError> {
+    let inner = parse_json_query(inner, Query::Or, wildcard_enabled)?;
+    Ok(match inner {
+        Query::Not(x) => *x, // NOT NOT x == x
+        q => Query::Not(Box::new(q)),
+    })
 }
 
 fn leaf(
