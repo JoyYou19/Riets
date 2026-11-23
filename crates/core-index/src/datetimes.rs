@@ -195,31 +195,31 @@ fn match_date_tokens(
             DateToken::Month => {
                 let (v, n) = parse_digits(&b[pos..], 1, 2)
                     .ok_or_else(|| format!("expected month in '{raw}'"))?;
-                month = Some(v as u32);
+                month = Some(v);
                 pos += n;
             }
             DateToken::Day => {
                 let (v, n) = parse_digits(&b[pos..], 1, 2)
                     .ok_or_else(|| format!("expected day in '{raw}'"))?;
-                day = Some(v as u32);
+                day = Some(v);
                 pos += n;
             }
             DateToken::Hour => {
                 let (v, n) = parse_digits(&b[pos..], 1, 2)
                     .ok_or_else(|| format!("expected hour in '{raw}'"))?;
-                hour = Some(v as u32);
+                hour = Some(v);
                 pos += n;
             }
             DateToken::Minute => {
                 let (v, n) = parse_digits(&b[pos..], 1, 2)
                     .ok_or_else(|| format!("expected minute in '{raw}'"))?;
-                minute = Some(v as u32);
+                minute = Some(v);
                 pos += n;
             }
             DateToken::Second => {
                 let (v, n) = parse_digits(&b[pos..], 1, 2)
                     .ok_or_else(|| format!("expected second in '{raw}'"))?;
-                second = Some(v as u32);
+                second = Some(v);
                 pos += n;
             }
             DateToken::Millis => {
@@ -230,7 +230,7 @@ fn match_date_tokens(
                     2 => v * 10,
                     _ => v,
                 };
-                millis = Some(ms as u32);
+                millis = Some(ms);
                 pos += n;
             }
         }

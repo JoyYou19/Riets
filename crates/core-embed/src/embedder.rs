@@ -161,7 +161,7 @@ impl Embedder {
             return Ok(slot);
         }
         let model = load_model(self.spec, self.cache_dir.clone(), &self.config)?;
-        let _ = self.queries.set(Mutex::new(model));
+        drop(self.queries.set(Mutex::new(model)));
         Ok(self.queries.get().expect("set above"))
     }
 

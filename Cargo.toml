@@ -42,7 +42,10 @@ criterion = "0.7.0"
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }    # newer lints; occasionally wrong, but useful
 cargo = { level = "warn", priority = -1 }      # Cargo.toml checks: metadata, duplicate versions
-
+# nursery lints that conflict with the rest of the setup or misfire here
+redundant_pub_crate = "allow"                 # wants `pub` where rust's unreachable_pub wants pub(crate): they contradict
+literal_string_with_formatting_args = "allow" # axum route paths ("/{db_name}/search") are not format strings
+option_if_let_else = "allow"                  # rewrites let-else into map_or_else(|_| exit(1), |x| x), which is worse
 # keep only what is truly noise in this codebase
 module_name_repetitions = "allow"
 cargo_common_metadata = "allow"   # publish = false: no crates.io description/license needed

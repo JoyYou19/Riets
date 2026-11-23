@@ -1030,13 +1030,13 @@ impl ShardDb {
     #[timed(reindex)]
     pub fn commit_reindex(&mut self, done: CompletedShardReindex) -> Result<(), CorelamoError> {
         if done.generation != self.generation {
-            let _ = fs::remove_dir_all(&done.staging_root);
+            drop( fs::remove_dir_all(&done.staging_root));
             return Err(CorelamoError::Conflict(
                 "reindex result is from a superseded run".into(),
             ));
         }
         if !done.staging_root.join(REINDEX_COMPLETE).exists() {
-            let _ = fs::remove_dir_all(&done.staging_root);
+            drop(fs::remove_dir_all(&done.staging_root));
             self.wal_reindex = None;
             return Err(CorelamoError::Internal(
                 "reindex output is incomplete; the current index is kept".into(),
@@ -1091,7 +1091,7 @@ impl ShardDb {
             return;
         }
         self.wal_reindex = None;
-        let _ = fs::remove_dir_all(self.root.join("index.new"));
+        drop(fs::remove_dir_all(self.root.join("index.new")));
         info!(self.log, "reindex abandoned"; "shard_id" => self.shard_id, "generation" => generation);
         // the worker that built it may be parked waiting for a commit that failed
     }
@@ -1537,7 +1537,7 @@ impl ShardDb {
         remove_dir_if_exists(&staging)
             .map_err(|e| CorelamoError::Internal(format!("restore: {e}")))?;
         if let Err(e) = self.backup.restore_chain(backup_id, &staging) {
-            let _ = fs::remove_dir_all(&staging);
+            drop(fs::remove_dir_all(&staging));
             return Err(CorelamoError::Internal(e.to_string()));
         }
         Ok(())

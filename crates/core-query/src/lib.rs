@@ -18,7 +18,7 @@ mod scorer;
 mod search_hit;
 pub mod synonyms;
 pub mod wand;
-pub use ast::{Query, SynonymAlternative};
+pub use ast::{PhraseTerm, Query, SynonymAlternative};
 pub use corpus_stats::CorpusStats;
 pub use prepared::PreparedQuery;
 pub use scored_posting::ScoredPosting;

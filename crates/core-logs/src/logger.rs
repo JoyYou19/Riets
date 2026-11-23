@@ -73,7 +73,7 @@ impl Write for DailyLog {
                 };
                 match opened {
                     Ok((part, written, file)) => {
-                        let _ = self.file.flush();
+                        drop(self.file.flush());
                         self.file = file;
                         self.part = part;
                         self.written = written;
@@ -165,7 +165,7 @@ fn prune_old_logs(dir: &Path, name: &str, today: NaiveDate) {
         }
         let day = rest.get(..10).and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
         if day.is_some_and(|d| d < cutoff) {
-            let _ = fs::remove_file(entry.path());
+            drop(fs::remove_file(entry.path()));
         }
     }
 }

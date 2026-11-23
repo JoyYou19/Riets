@@ -427,7 +427,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 if let Ok(docs) =
                     panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &indexed)))
                 {
-                    let _ = analyzed.send(docs);
+                    drop(analyzed.send(docs));
                 }
             });
             // delete without publishing; the add right after it publishes both together
@@ -679,7 +679,7 @@ impl<S: DocumentStore> IndexPipeline<'_, S> {
             if let Ok(docs) =
                 panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &indexed)))
             {
-                let _ = analyzed.send(docs);
+                drop(analyzed.send(docs));
             }
         });
         let pending = self
@@ -719,7 +719,7 @@ fn send_reindex_batch(
     rayon::spawn(move || {
         if let Ok(docs) = panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &batch)))
         {
-            let _ = analyzed.send(docs);
+            drop(analyzed.send(docs));
         }
     });
     in_flight.push_back(worker.add_indexed_documents_deferred(documents)?);

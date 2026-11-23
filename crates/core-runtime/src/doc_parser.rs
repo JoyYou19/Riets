@@ -257,7 +257,7 @@ fn split_raw_documents(buf: &[u8]) -> Result<Vec<Vec<u8>>, CorelamoError> {
     }
 }
 
-fn skip_ws(buf: &[u8], mut i: usize) -> usize {
+const fn skip_ws(buf: &[u8], mut i: usize) -> usize {
     while i < buf.len() && buf[i].is_ascii_whitespace() {
         i += 1;
     }
@@ -332,6 +332,6 @@ fn skip_scalar(buf: &[u8], i: usize) -> Result<usize, CorelamoError> {
     Ok(j)
 }
 
-fn is_json_delimiter(c: u8) -> bool {
+const fn is_json_delimiter(c: u8) -> bool {
     matches!(c, b',' | b']' | b'}' | b' ' | b'\t' | b'\n' | b'\r')
 }

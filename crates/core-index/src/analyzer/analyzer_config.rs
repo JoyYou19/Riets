@@ -239,7 +239,7 @@ pub struct LengthFilterStream<S> {
     max: Option<usize>,
 }
 
-impl<'a, S: TokenStream> TokenStream for LengthFilterStream<S> {
+impl<S: TokenStream> TokenStream for LengthFilterStream<S> {
     fn advance(&mut self) -> bool {
         while self.tail.advance() {
             let text = &self.tail.token().text;

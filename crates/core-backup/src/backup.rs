@@ -276,7 +276,7 @@ impl BackupManager {
                 Ok(manifest)
             }
             Err(e) => {
-                let _ = fs::remove_dir_all(backup_path);
+                drop(fs::remove_dir_all(backup_path));
                 Err(e)
             }
         }
@@ -378,7 +378,7 @@ impl BackupManager {
                 Ok(Some(manifest))
             }
             Err(e) => {
-                let _ = fs::remove_dir_all(backup_path);
+                drop(fs::remove_dir_all(backup_path));
                 Err(e)
             }
         }
@@ -463,7 +463,7 @@ impl BackupManager {
 
                 let maps_path = target_dir.join("documents.maps.bin");
                 if maps_path.exists() {
-                    let _ = fs::remove_file(&maps_path);
+                    drop(fs::remove_file(&maps_path));
                 }
 
                 info!(self.log, "restore: unpacked full backup"; "target" => %target_dir.display());
@@ -510,7 +510,7 @@ impl BackupManager {
 
                 let maps_path = target_dir.join("documents.maps.bin");
                 if maps_path.exists() {
-                    let _ = fs::remove_file(&maps_path);
+                    drop(fs::remove_file(&maps_path));
                 }
 
                 info!(self.log, "restore: applied incremental backup"; "target" => %target_dir.display());

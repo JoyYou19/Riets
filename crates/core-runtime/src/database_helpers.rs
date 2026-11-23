@@ -53,7 +53,7 @@ pub(crate) fn load_saved_shard_managers(
 pub(crate) fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
     if name.is_empty() {
         return Err(CorelamoError::InvalidData(
-            "database name cannot be empty".to_string(),
+            "database name cannot be empty".to_owned(),
         ));
     }
     if name.len() > 30 {
@@ -85,7 +85,7 @@ pub(crate) fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> 
             continue;
         };
         if other.eq_ignore_ascii_case(name) {
-            return Some(other.to_string());
+            return Some(other.to_owned());
         }
     }
     None
@@ -208,9 +208,9 @@ pub(crate) fn compute_disk_usage(
         if let Some(s) = size {
             config_total += s;
         }
-        config_json.insert(key.to_string(), format_size_opt(size));
+        config_json.insert(key.to_owned(), format_size_opt(size));
     }
-    config_json.insert("total".to_string(), json!(format_size(config_total)));
+    config_json.insert("total".to_owned(), json!(format_size(config_total)));
 
     // --- backups: single total, not split by shard ---
     let backups_bytes = dir_total_size_opt(&db_root.join("backups"))?.unwrap_or(0);
@@ -227,7 +227,7 @@ pub(crate) fn compute_disk_usage(
             if entry.path().is_dir()
                 && let Some(name) = entry.file_name().to_str()
             {
-                shard_names.push(name.to_string());
+                shard_names.push(name.to_owned());
             }
         }
     }
@@ -279,10 +279,10 @@ pub(crate) fn compute_disk_usage(
         );
     }
 
-    documents_per_shard.insert("total".to_string(), json!(format_size(documents_total)));
-    wal_per_shard.insert("total".to_string(), json!(format_size(wal_total)));
-    logs_per_shard.insert("total".to_string(), json!(format_size(logs_total)));
-    index_per_shard.insert("total".to_string(), json!(format_size(index_total)));
+    documents_per_shard.insert("total".to_owned(), json!(format_size(documents_total)));
+    wal_per_shard.insert("total".to_owned(), json!(format_size(wal_total)));
+    logs_per_shard.insert("total".to_owned(), json!(format_size(logs_total)));
+    index_per_shard.insert("total".to_owned(), json!(format_size(index_total)));
 
     let grand_total_bytes =
         config_total + backups_bytes + documents_total + wal_total + logs_total + index_total;

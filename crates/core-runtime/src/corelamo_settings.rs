@@ -119,7 +119,7 @@ pub(crate) fn parse_args() -> Result<HashMap<String, String>, String> {
                     "--overwrite_config must be 'true' or 'false', got '{val}'"
                 ));
             }
-            overrides.insert(key.to_string(), val);
+            overrides.insert(key.to_owned(), val);
             continue;
         }
 
@@ -131,7 +131,7 @@ pub(crate) fn parse_args() -> Result<HashMap<String, String>, String> {
             .next()
             .ok_or_else(|| format!("--{key} requires a value"))?;
 
-        overrides.insert(key.to_string(), val);
+        overrides.insert(key.to_owned(), val);
     }
 
     Ok(overrides)
@@ -146,7 +146,7 @@ pub(crate) fn load_or_init_settings(
     let root_path_str = cli_overrides
         .get("root-path")
         .cloned()
-        .unwrap_or_else(|| default_value("root-path").to_string());
+        .unwrap_or_else(|| default_value("root-path").to_owned());
     let root_path = resolve_root(PathBuf::from(root_path_str));
 
     let settings_path = root_path.join("CorelamoSettings.toml");
@@ -201,7 +201,7 @@ pub(crate) fn load_or_init_settings(
     }
 
     settings.insert(
-        "root-path".to_string(),
+        "root-path".to_owned(),
         root_path.to_string_lossy().to_string(),
     );
 
@@ -231,7 +231,7 @@ pub(crate) fn get(settings: &HashMap<String, String>, key: &str) -> String {
     settings
         .get(key)
         .cloned()
-        .unwrap_or_else(|| default_value(key).to_string())
+        .unwrap_or_else(|| default_value(key).to_owned())
 }
 
 // Maybe useful later
@@ -284,7 +284,7 @@ pub(crate) fn init_synonyms(settings: &HashMap<String, String>) -> Result<(), St
     info!(log, "synonym dictionary loaded"; "template_path" => %registry.template_path().display());
     SYNONYM_REGISTRY
         .set(registry)
-        .map_err(|_| "synonym registry initialised twice".to_string())
+        .map_err(|_| "synonym registry initialised twice".to_owned())
 }
 
 pub(crate) fn synonym_registry() -> &'static SynonymRegistry {
@@ -319,7 +319,7 @@ pub(crate) fn init_models(settings: &HashMap<String, String>) -> Result<(), Stri
         "cache_dir" => %registry.cache_dir().display());
     MODEL_REGISTRY
         .set(Arc::new(registry))
-        .map_err(|_| "model registry initialised twice".to_string())
+        .map_err(|_| "model registry initialised twice".to_owned())
 }
 
 pub(crate) fn model_registry() -> Arc<ModelRegistry> {

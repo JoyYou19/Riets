@@ -3,7 +3,10 @@ use std::io;
 use crate::{
     disk::{block_cursor::BlockCursor, format::SkipEntry}, posting::{DeleteSet, Posting, PostingList}, types::{DocId, position_start},
 };
-
+#[allow(
+    variant_size_differences,
+    reason = "32 bytes in total; boxing `Slice` would add an allocation per term on the search hot path"
+)]
 pub enum TermCursor<'a>{
     Empty,
     //a list in memory
@@ -13,7 +16,7 @@ pub enum TermCursor<'a>{
     /// Several sources merged by doc id, with deleted documents skipped.
     Union(Box<UnionCursor<'a>>),
 }
-impl <'a> TermCursor<'a> {
+impl  TermCursor<'_> {
     pub fn is_exhausted(&self) -> bool{
         match self {
             Self::Slice(cursor)=>cursor.is_exhausted(),

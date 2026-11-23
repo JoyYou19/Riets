@@ -20,12 +20,7 @@ use core_protocol::{errors::CorelamoError, format::Format};
 use core_storage::binary_store::BinaryDocumentStore;
 use slog::{debug, error, info, warn};
 use std::{
-    fs::{File, OpenOptions, TryLockError},
-    io::{self, Read, Seek, Write},
-    path::{Path, PathBuf},
-    process,
-    sync::{Arc, RwLock},
-    time::Duration,
+        fs::{File, OpenOptions, TryLockError}, io::{self, Seek, Write}, path::{Path, PathBuf}, process::{self, ExitCode}, sync::{Arc, RwLock}, time::Duration,
 };
 
 use tokio::{
@@ -72,10 +67,9 @@ fn lock_root(root: &Path) -> io::Result<File> {
         .open(&path)?;
     match file.try_lock() {
         Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            let mut holder = String::new();
+         Err(TryLockError::WouldBlock) => {
             // the pid is only for the message; a failed read must not hide the real error
-            let _ = file.read_to_string(&mut holder);
+            let holder = std::fs::read_to_string(&path).unwrap_or_default();
             let holder = holder.trim();
             let holder = if holder.is_empty() { "unknown" } else { holder };
             return Err(io::Error::new(
@@ -139,9 +133,31 @@ fn print_password(password: &str) {
         "\n  user:     {SUPERUSER}\n  password: {password}\n  Shown once, keep it safe, the password cannot be recovered\n"
     );
 }
+/// First start only: prints the generated superuser password and, while someone is at the
+/// terminal, offers to replace it with their own.
+#[allow(clippy::print_stderr, reason = "interactive first-start prompt on the terminal")]
+async fn announce_superuser(auth: &mut AuthService, password: &str, log: &slog::Logger) {
+    eprintln!("\n Inital start: superuser created.");
+    print_password(password);
+    warn!(log, "created the superuser with a generated password (printed on stderr)";
+        "user" => SUPERUSER);
+    // first start only: offer to replace it while someone is at the terminal
+    match tokio::task::spawn_blocking(ask_to_set_password).await {
+        Ok(Ok(Some(own))) => match auth.set_initial_password(&own) {
+            Ok(()) => {
+                eprintln!("Password for '{SUPERUSER}' updated.");
+                info!(log, "superuser password set at first start"; "user" => SUPERUSER);
+            }
+            Err(e) => eprintln!("error: {e}; the printed password stays valid"),
+        },
+        Ok(Ok(None)) => {}
+        Ok(Err(e)) => eprintln!("error: {e}; the printed password stays valid"),
+        Err(e) => eprintln!("error: password prompt failed: {e}; the printed password stays valid"),
+    }
+}
 #[derive(Clone)]
 pub struct AppState {
-    pub databases: Arc<Databases>,
+    pub(crate) databases: Arc<Databases>,
     pub default_format: Format,
     pub default_pretty: bool,
     pub auth: Arc<RwLock<AuthService>>,
@@ -169,42 +185,42 @@ impl AppState {
     }
 }
 
+/// Waits for `kind`. When its handler cannot be installed this logs why and never completes, so
+/// the other signals still shut the server down.
+#[cfg(unix)]
+async fn unix_signal(kind: signal::unix::SignalKind, name: &str, log: &slog::Logger) {
+    match signal::unix::signal(kind) {
+        Ok(mut stream) => {
+            stream.recv().await;
+        }
+        Err(e) => {
+            warn!(log, "signal handler not installed"; "signal" => name, "error" => %e);
+            std::future::pending::<()>().await;
+        }
+    }
+}
 //TODO: maybe check if there are more possible signals
 async fn shutdown_signal() {
     let log = slog_scope::logger();
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            warn!(log, "Ctrl+C handler not installed"; "error" => %e);
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
+    let terminate = unix_signal(signal::unix::SignalKind::terminate(), "SIGTERM", &log);
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
     #[cfg(unix)]
-    let hangup = async {
-        signal::unix::signal(signal::unix::SignalKind::hangup())
-            .expect("failed to install SIGHUP handler")
-            .recv()
-            .await;
-    };
+    let hangup = unix_signal(signal::unix::SignalKind::hangup(), "SIGHUP", &log);
     #[cfg(not(unix))]
     let hangup = std::future::pending::<()>();
 
     #[cfg(unix)]
-    let quit = async {
-        signal::unix::signal(signal::unix::SignalKind::quit())
-            .expect("failed to install SIGQUIT handler")
-            .recv()
-            .await;
-    };
+    let quit = unix_signal(signal::unix::SignalKind::quit(), "SIGQUIT", &log);
     #[cfg(not(unix))]
     let quit = std::future::pending::<()>();
 
@@ -215,52 +231,56 @@ async fn shutdown_signal() {
         () = quit => "SIGQUIT",
     };
 
-    warn!(log,"Shutting down gracefully..."; "shutdown_signal"=>%reason,);
+    warn!(log, "Shutting down gracefully..."; "shutdown_signal" => %reason);
 }
 
-fn main() -> io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+fn main() -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(e) => return fatal(&e),
+    };
     let result = runtime.block_on(run());
     // dropping the runtime would wait without limit for every spawn_blocking task still
     // running (model load, embedding, backup), which kept the process alive after shutdown
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
-    result
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fatal(&e),
+    }
+}
+
+/// The one place the process reports a fatal error itself: before the logger exists, stderr is
+/// all there is, and after it the operator still sees why the server did not start.
+#[allow(clippy::print_stderr, reason = "fatal errors go to the terminal")]
+fn fatal(e: &io::Error) -> ExitCode {
+    eprintln!("error: {e}");
+    ExitCode::FAILURE
+}
+
+/// A second shutdown signal: exit at once, without waiting for databases or connections.
+#[allow(clippy::exit, reason = "the operator asked twice; skipping the orderly shutdown is the point")]
+fn force_exit() -> ! {
+    process::exit(FORCED_EXIT_CODE)
 }
 
 async fn run() -> io::Result<()> {
     //logging izmantojot slog lib
-    let cli_overrides = match corelamo_settings::parse_args() {
-        Ok(overrides) => overrides,
-        Err(_) => {
-            process::exit(1);
-        }
-    };
-    let settings = match corelamo_settings::load_or_init_settings(cli_overrides) {
-        Ok(s) => s,
-        Err(_) => {
-            process::exit(1);
-        }
-    };
+     let cli_overrides = corelamo_settings::parse_args()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let settings = corelamo_settings::load_or_init_settings(cli_overrides)?;
+    corelamo_settings::validate_settings(&settings)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
-    if corelamo_settings::validate_settings(&settings).is_err() {
-        process::exit(1);
-    }
+
     let root_path = PathBuf::from(corelamo_settings::get(&settings, "root-path"));
     let (log, _guard) = logger::program_logger(&root_path);
     let _slog_guard = slog_scope::set_global_logger(log.clone());
     info!(log, "Riets activated");
 
     //held until the process exits; must be taken before any database file is touched
-    let _root_lock = match lock_root(&root_path) {
-        Ok(file) => file,
-        Err(e) => {
-            error!(log, "cannot start: data directory is in use"; "error" => %e);
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
+      let _root_lock = lock_root(&root_path).inspect_err(|e| {
+        error!(log, "cannot start: data directory is in use"; "error" => %e);
+    })?;
 
     let name = corelamo_settings::get(&settings, "name");
     let host = corelamo_settings::get(&settings, "host");
@@ -289,25 +309,21 @@ async fn run() -> io::Result<()> {
     let databases_dir = root_path.join("databases");
     info!(log, "databases_dir:";"databases_dir" => %databases_dir.display());
 
-    if let Err(e) = corelamo_settings::init_synonyms(&settings) {
+     corelamo_settings::init_synonyms(&settings).map_err(|e| {
         error!(log, "error loading the synonym dictionary"; "error" => %e);
-        process::exit(1);
-    }
-    if let Err(e) = corelamo_settings::init_models(&settings) {
+        io::Error::other(e)
+    })?;
+    corelamo_settings::init_models(&settings).map_err(|e| {
         error!(log, "error setting up embedding models"; "error" => %e);
-        process::exit(1);
-    }
+        io::Error::other(e)
+    })?;
 
     //clear all directories that somehow didnt get deleted before restart
     sweep_trash(&databases_dir);
 
-    let databases = match database_helpers::load_saved_shard_managers(&databases_dir) {
-        Ok(dbs) => dbs,
-        Err(e) => {
-            error!(log,"error loading databases " ;"error"=>%e);
-            process::exit(1);
-        }
-    };
+    let databases = database_helpers::load_saved_shard_managers(&databases_dir).inspect_err(|e| {
+        error!(log, "error loading databases"; "error" => %e);
+    })?;
 
     info!(log,"found and loaded database(s) in total"; "databases"=>%databases.len());
 
@@ -334,34 +350,15 @@ async fn run() -> io::Result<()> {
 
     let user_db = UserDatabase::new(store, index, analyzer)?;
     let auth = match AuthService::bootstrap(user_db) {
-        Ok((mut auth, created)) => {
+         Ok((mut auth, created)) => {
             if let Some(password) = created {
-                eprintln!("\n Inital start: superuser created.");
-                print_password(&password);
-                warn!(log, "created the superuser with a generated password (printed on stderr)";
-                    "user" => SUPERUSER);
-                // first start only: offer to replace it while someone is at the terminal
-                match tokio::task::spawn_blocking(ask_to_set_password).await {
-                    Ok(Ok(Some(own))) => match auth.set_initial_password(&own) {
-                        Ok(()) => {
-                            eprintln!("Password for '{SUPERUSER}' updated.");
-                            info!(log, "superuser password set at first start"; "user" => SUPERUSER);
-                        }
-                        Err(e) => eprintln!("error: {e}; the printed password stays valid"),
-                    },
-                    Ok(Ok(None)) => {}
-                    Ok(Err(e)) => eprintln!("error: {e}; the printed password stays valid"),
-                    Err(e) => eprintln!(
-                        "error: password prompt failed: {e}; the printed password stays valid"
-                    ),
-                }
+                announce_superuser(&mut auth, &password, &log).await;
             }
             Arc::new(RwLock::new(auth))
         }
         Err(e) => {
             error!(log, "cannot start: user bootstrap failed"; "error" => %e);
-            eprintln!("error: {e}");
-            process::exit(1);
+            return Err(io::Error::other(e.to_string()));
         }
     };
 
@@ -575,11 +572,10 @@ async fn run() -> io::Result<()> {
         .merge(public_routes)
         .merge(protected_routes)
         .layer(RequestDecompressionLayer::new())
-        .layer(DefaultBodyLimit::max(max_payload_size * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(max_payload_size.saturating_mul(1024 * 1024)))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            //we parse this as uzise to bypass negative time and shit
-            Duration::from_secs(max_request_timeout as u64),
+            Duration::from_secs(u64::try_from(max_request_timeout).unwrap_or(u64::MAX)),
         ))
         //to and from gzip n shit
         // .layer(CompressionLayer::new())
@@ -598,20 +594,20 @@ async fn run() -> io::Result<()> {
     debug!(log,"listening on";"address"=>%addr);
 
     // first signal: graceful shutdown; a second signal: exit at once
-    let (stop_tx, stop_rx) = watch::channel(false);
+     let (stop_tx, stop_rx) = watch::channel(false);
     tokio::spawn(async move {
         shutdown_signal().await;
-        let _ = stop_tx.send(true);
+        // fails only when nothing is listening any more, which is fine at shutdown
+        let _unheard = stop_tx.send(true);
         shutdown_signal().await;
-        let log = slog_scope::logger();
-        error!(log, "second shutdown signal, exiting without waiting");
-        process::exit(FORCED_EXIT_CODE);
+        error!(slog_scope::logger(), "second shutdown signal, exiting without waiting");
+        force_exit();
     });
 
     let mut graceful_rx = stop_rx.clone();
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = graceful_rx.wait_for(|stop| *stop).await;
+            drop(graceful_rx.wait_for(|stop| *stop).await);
         })
         .into_future();
     tokio::pin!(server);
@@ -622,7 +618,7 @@ async fn run() -> io::Result<()> {
     tokio::select! {
         served = &mut server => served?,
         () = async {
-            let _ = deadline_rx.wait_for(|stop| *stop).await;
+            drop(deadline_rx.wait_for(|stop| *stop).await);
             tokio::time::sleep(HTTP_DRAIN_TIMEOUT).await;
         } => {
             warn!(log, "connections still open after the drain timeout, closing them";
@@ -636,17 +632,17 @@ async fn run() -> io::Result<()> {
     // ShardManager::shutdown blocks (it waits for shard threads); run it off the runtime
     // threads and stop waiting after a limit, so a stuck shard cannot keep the process alive
     let shutdown_log = log.clone();
-    let databases = Arc::clone(&state_for_shutdown.databases);
+    let shutdown_databases = Arc::clone(&state_for_shutdown.databases);
     let shutdown = tokio::task::spawn_blocking(move || {
-        for slot in databases.list() {
+        for slot in shutdown_databases.list() {
             let Ok(manager) = slot.manager() else {
-                info!(shutdown_log, "skipping transient database at shutdown"; "db" => %slot.name);
+                info!(shutdown_log, "skipping transient database at shutdown"; "db" => %slot.0);
                 continue;
             };
-            info!(shutdown_log, "shutting down database ..."; "database" => %slot.name);
+            info!(shutdown_log, "shutting down database ..."; "database" => %slot.0);
             if let Err(e) = manager.shutdown() {
                 error!(shutdown_log, "error shutting down database";
-                "db" => %slot.name, "error" => %e);
+                "db" => %slot.0, "error" => %e);
             }
         }
     });
@@ -659,6 +655,7 @@ async fn run() -> io::Result<()> {
             error!(log, "databases did not shut down in time, exiting anyway";
                 "timeout_secs" => DB_SHUTDOWN_TIMEOUT.as_secs());
         }
+        
     }
 
     //TODO: we might have extra stuff to do here later, for now i cant think of anything else

@@ -281,7 +281,7 @@ pub fn compact_vectors(
         match merge_vector_files(&inputs, deleted, &target) {
             Ok(written) if written > 0 => produced.push(xpath),
             Ok(_) | Err(_) => {
-                let _ = fs::remove_file(&target);
+                drop(fs::remove_file(&target));
             }
         }
     }

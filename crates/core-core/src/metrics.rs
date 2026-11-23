@@ -411,7 +411,7 @@ impl DbStats {
         }
     }
 
-    pub fn snapshot(&self) -> DatabaseStats {
+    pub(crate) fn snapshot(&self) -> DatabaseStats {
         let mut documents = 0usize;
         let mut segments = 0usize;
         let mut terms = 0usize;

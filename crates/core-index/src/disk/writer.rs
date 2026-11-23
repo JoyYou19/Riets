@@ -595,7 +595,7 @@ pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::
         finish_file(out, &tmp, path)
     });
     if written.is_err() {
-        let _ = fs::remove_file(&tmp);
+        drop(fs::remove_file(&tmp));
     }
     written
 }
@@ -729,7 +729,7 @@ fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Resul
         finish_file(out, &tmp, path)
     });
     if written.is_err() {
-        let _ = fs::remove_file(&tmp);
+        drop(fs::remove_file(&tmp));
     }
     written
 }

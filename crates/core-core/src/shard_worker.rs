@@ -1114,7 +1114,7 @@ pub fn spawn(
             shared_worker
                 .is_running
                 .store(bootable && ok, Ordering::Release);
-            let _ = boot_tx.send(started);
+            drop(boot_tx.send(started));
             if ok {
                 run(shard, rx, shared_worker);
             }
@@ -1151,39 +1151,39 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
         };
         match cmd {
             ShardCmd::Insert { inputs, resp, user } => {
-                let _ = resp.send(shard.insert(inputs, user));
+                drop(resp.send(shard.insert(inputs, user)));
             }
             ShardCmd::Flush { resp } => {
-                let _ = resp.send(shard.flush());
+                drop(resp.send(shard.flush()));
             }
             ShardCmd::SetConfig {
                 options,
                 resp,
                 user,
             } => {
-                let _ = resp.send(shard.set_options(options, user));
+                drop(resp.send(shard.set_options(options, user)));
             }
             ShardCmd::SetPolicy { policy, resp, user } => {
-                let _ = resp.send(shard.set_policy(policy, user));
+                drop(resp.send(shard.set_policy(policy, user)));
             }
             ShardCmd::Upsert { inputs, resp, user } => {
-                let _ = resp.send(shard.upsert(inputs, user));
+                drop(resp.send(shard.upsert(inputs, user)));
             }
             ShardCmd::Replace { inputs, resp, user } => {
-                let _ = resp.send(shard.replace(inputs, user));
+                drop(resp.send(shard.replace(inputs, user)));
             }
             ShardCmd::PartialReplace { user, items, resp } => {
-                let _ = resp.send(shard.partial_replace(items, user));
+                drop(resp.send(shard.partial_replace(items, user)));
             }
             ShardCmd::Delete { ids, resp, user } => {
-                let _ = resp.send(shard.delete(ids, user));
+                drop(resp.send(shard.delete(ids, user)));
             }
             ShardCmd::PrepareReindex {
                 progress,
                 stats,
                 resp,
             } => {
-                let _ = resp.send(shard.prepare_reindex(progress, stats));
+                drop(resp.send(shard.prepare_reindex(progress, stats)));
             }
             ShardCmd::CommitReindex {
                 done,
@@ -1212,24 +1212,24 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 shard.apply_config(policy, options);
                 let result = shard.start();
                 shared.is_running.store(result.is_ok(), Ordering::Release);
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
             ShardCmd::Stop { resp } => {
                 let result = shard.stop();
                 shared.is_running.store(false, Ordering::Release);
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
             ShardCmd::Shutdown { resp } => {
                 let result = shard.stop();
                 shared.is_running.store(false, Ordering::Release);
-                let _ = resp.send(result);
+                drop(resp.send(result));
                 return;
             }
             ShardCmd::Clear { resp } => {
                 shared.is_clearing.store(true, Ordering::Release);
                 let result = shard.clear();
                 shared.is_clearing.store(false, Ordering::Release);
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
             ShardCmd::BackupFull {
                 shard_backup_path,
@@ -1250,7 +1250,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);
                 }
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
             ShardCmd::BackupIncremental {
                 shard_backup_path,
@@ -1264,9 +1264,9 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_none()
                 {
-                    let _ = resp.send(Err(CorelamoError::Internal(
+                    drop(resp.send(Err(CorelamoError::Internal(
                         "no previous backup found for incremental backup".into(),
-                    )));
+                    ))));
                     continue;
                 }
                 shared.is_backing_up.store(true, Ordering::Release);
@@ -1284,7 +1284,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                         .last_backup_at
                         .store(manifest.created_at, Ordering::Release);
                 }
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
 
             ShardCmd::PrepareRestore {
@@ -1298,7 +1298,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     .is_running
                     .store(shard.is_running(), Ordering::Release);
                 shared.is_restoring.store(false, Ordering::Release);
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
             ShardCmd::CommitRestore { backup_id, resp } => {
                 shared.is_restoring.store(true, Ordering::Release);
@@ -1307,15 +1307,15 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                     .is_running
                     .store(shard.is_running(), Ordering::Release);
                 shared.is_restoring.store(false, Ordering::Release);
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
             ShardCmd::AbortRestore { resp } => {
                 let result = shard.abort_restore();
-                let _ = resp.send(result);
+                drop(resp.send(result));
             }
 
             ShardCmd::ListBackups { resp } => {
-                let _ = resp.send(shard.list_backups());
+                drop(resp.send(shard.list_backups()));
             }
 
             ShardCmd::DeleteBackup {
@@ -1323,11 +1323,11 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 user,
                 resp,
             } => {
-                let _ = resp.send(shard.delete_backup(&backup_id, user));
+                drop(resp.send(shard.delete_backup(&backup_id, user)));
             }
 
             ShardCmd::DeleteBackupAuto { cutoff, resp } => {
-                let _ = resp.send(shard.delete_backups_old(cutoff));
+                drop(resp.send(shard.delete_backups_old(cutoff)));
             }
 
             ShardCmd::PlanSegmentCompaction {
@@ -1335,13 +1335,13 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 reply,
             } => {
                 let job = shard.plan_segment_compaction(dead_ratio_threshold);
-                let _ = reply.send(job);
+                drop(reply.send(job));
             }
 
             ShardCmd::InstallSegmentCompaction { completed, ack } => {
                 let result = shard.install_segment_compaction_cmd(completed);
                 if let Some(ack) = ack {
-                    let _ = ack.send(result);
+                    drop(ack.send(result));
                 }
             }
         }

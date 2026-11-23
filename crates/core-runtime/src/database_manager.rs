@@ -12,7 +12,7 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock as Gate};
 use crate::database_helpers::{colliding_dir, normalize_db_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlotState {
+pub(crate) enum SlotState {
     Creating,
     Live,
     Deleting,
@@ -24,13 +24,7 @@ struct Inner {
     manager: Option<Arc<ShardManager>>,
 }
 
-pub struct DbSlot {
-    pub name: String,
-    pub dir: PathBuf,
-    //dont be scared Valters, this lock is only for the lifecycle opperations of the databse
-    inner: RwLock<Inner>,
-    pub gate: Arc<Gate<()>>,
-}
+pub(crate) struct DbSlot(pub String, pub PathBuf, RwLock<Inner>, pub Arc<Gate<()>>);
 
 impl DbSlot {
     fn with_state(
@@ -39,95 +33,95 @@ impl DbSlot {
         state: SlotState,
         manager: Option<Arc<ShardManager>>,
     ) -> Self {
-        Self {
+        Self(
             name,
             dir,
-            inner: RwLock::new(Inner { state, manager }),
-            gate: Arc::new(Gate::new(())),
-        }
+            RwLock::new(Inner { state, manager }),
+            Arc::new(Gate::new(())),
+        )
     }
 
-    pub fn live(name: String, dir: PathBuf, manager: Arc<ShardManager>) -> Self {
+    pub(crate) fn live(name: String, dir: PathBuf, manager: Arc<ShardManager>) -> Self {
         Self::with_state(name, dir, SlotState::Live, Some(manager))
     }
 
-    pub fn state(&self) -> SlotState {
+    pub(crate) fn state(&self) -> SlotState {
         self.inner_read().state
     }
 
     /// Read access to this database's gate: held by document and search work for as long as
     /// it touches the database. Owned, so it can outlive the caller's `Arc<DbSlot>`.
-    pub async fn read(&self) -> OwnedRwLockReadGuard<()> {
-        Arc::clone(&self.gate).read_owned().await
+    pub(crate) async fn read(&self) -> OwnedRwLockReadGuard<()> {
+        Arc::clone(&self.3).read_owned().await
     }
 
     /// Write access: held by lifecycle, configuration and restore work.
-    pub async fn write(&self) -> OwnedRwLockWriteGuard<()> {
-        Arc::clone(&self.gate).write_owned().await
+    pub(crate) async fn write(&self) -> OwnedRwLockWriteGuard<()> {
+        Arc::clone(&self.3).write_owned().await
     }
 
-    pub fn manager(&self) -> Result<Arc<ShardManager>, CorelamoError> {
+    pub(crate) fn manager(&self) -> Result<Arc<ShardManager>, CorelamoError> {
         let inner = self.inner_read();
         match inner.state {
             SlotState::Live => inner.manager.as_ref().map(Arc::clone).ok_or_else(|| {
-                CorelamoError::Internal(format!("database '{}' has no manager", self.name))
+                CorelamoError::Internal(format!("database '{}' has no manager", self.0))
             }),
             SlotState::Creating => Err(CorelamoError::Conflict(format!(
                 "database '{}' is being created",
-                self.name
+                self.0
             ))),
             SlotState::Deleting => Err(CorelamoError::Conflict(format!(
                 "database '{}' is being deleted",
-                self.name
+                self.0
             ))),
             SlotState::Renaming => Err(CorelamoError::Conflict(format!(
                 "database '{}' is being renamed",
-                self.name
+                self.0
             ))),
         }
     }
 
-    pub fn set_live(&self, manager: Arc<ShardManager>) {
+    pub(crate) fn set_live(&self, manager: Arc<ShardManager>) {
         let mut inner = self.inner_write();
         inner.manager = Some(manager);
         inner.state = SlotState::Live;
     }
 
-    pub fn set_state(&self, state: SlotState) {
+    pub(crate) fn set_state(&self, state: SlotState) {
         self.inner_write().state = state;
     }
 
     fn inner_read(&self) -> RwLockReadGuard<'_, Inner> {
-        self.inner
+        self.2
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn inner_write(&self) -> RwLockWriteGuard<'_, Inner> {
-        self.inner
+        self.2
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
-pub struct Databases {
+pub(crate) struct Databases {
     dir: PathBuf,
     slots: RwLock<HashMap<String, Arc<DbSlot>>>,
 }
 
 impl Databases {
-    pub fn new(dir: PathBuf) -> Self {
+    pub(crate) fn new(dir: PathBuf) -> Self {
         Self {
             dir,
             slots: RwLock::new(HashMap::new()),
         }
     }
 
-    pub fn dir(&self) -> &PathBuf {
+    pub(crate) const fn dir(&self) -> &PathBuf {
         &self.dir
     }
 
-    pub fn get(&self, name: &str) -> Result<Arc<DbSlot>, CorelamoError> {
+    pub(crate) fn get(&self, name: &str) -> Result<Arc<DbSlot>, CorelamoError> {
         let name = normalize_db_name(name);
         self.read()
             .get(&name)
@@ -135,15 +129,15 @@ impl Databases {
             .ok_or_else(|| CorelamoError::NotFound(format!("database '{name}' not found")))
     }
 
-    pub fn list(&self) -> Vec<Arc<DbSlot>> {
+    pub(crate) fn list(&self) -> Vec<Arc<DbSlot>> {
         self.read().values().cloned().collect()
     }
 
-    pub fn remove(&self, name: &str) -> Option<Arc<DbSlot>> {
+    pub(crate) fn remove(&self, name: &str) -> Option<Arc<DbSlot>> {
         self.write().remove(&normalize_db_name(name))
     }
 
-    pub fn reserve(&self, name: &str) -> Result<Arc<DbSlot>, CorelamoError> {
+    pub(crate) fn reserve(&self, name: &str) -> Result<Arc<DbSlot>, CorelamoError> {
         let name = normalize_db_name(name);
         let mut slots = self.write();
         if slots.contains_key(&name) {
@@ -167,15 +161,15 @@ impl Databases {
     }
 
     /// Puts a slot in without reserving: used at boot, and by a rename for its new name.
-    pub fn insert(&self, slot: Arc<DbSlot>) -> Result<(), CorelamoError> {
+    pub(crate) fn insert(&self, slot: Arc<DbSlot>) -> Result<(), CorelamoError> {
         let mut slots = self.write();
-        if slots.contains_key(&slot.name) {
+        if slots.contains_key(&slot.0) {
             return Err(CorelamoError::AlreadyExists(format!(
                 "database '{}' already exists",
-                slot.name
+                slot.0
             )));
         }
-        slots.insert(slot.name.clone(), slot);
+        slots.insert(slot.0.clone(), slot);
         Ok(())
     }
 

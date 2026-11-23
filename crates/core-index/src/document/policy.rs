@@ -1063,7 +1063,7 @@ impl Serialize for Full<'_> {
         if !self.0.analyzers.is_empty() {
             m.serialize_entry("analyzers", &self.0.analyzers)?;
         }
-        let document: BTreeMap<&str, FullField> = self
+        let document: BTreeMap<&str, FullField<'_>> = self
             .0
             .fields
             .iter()

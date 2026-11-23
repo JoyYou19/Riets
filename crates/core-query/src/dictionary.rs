@@ -478,7 +478,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         fs::rename(&tmp, path)
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        drop(fs::remove_file(&tmp));
     }
     result?;
     sync_dir(&dir)

@@ -10,7 +10,7 @@ use crate::ast::PhraseTerm;
 
 /// Live document count and total token length of one field.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct FieldTotals {
+pub(crate) struct FieldTotals {
     pub doc_count: u64,
     pub total_doc_len: u64,
 }
@@ -143,7 +143,7 @@ impl CorpusStats {
             .unwrap_or(0)
     }
 
-    pub fn field(&self, xpath: XPathId) -> Option<FieldTotals> {
+    pub(crate) fn field(&self, xpath: XPathId) -> Option<FieldTotals> {
         self.fields.get(&xpath).copied()
     }
 

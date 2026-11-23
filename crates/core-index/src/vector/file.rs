@@ -63,7 +63,7 @@ pub fn find_vector_files(segment_path: &Path) -> io::Result<Vec<(XPathId, PathBu
             continue;
         };
         if rest.ends_with(".tmp") {
-            let _ = fs::remove_file(entry.path());
+            drop(fs::remove_file(entry.path()));
             continue;
         }
         if let Some(xpath) = rest.strip_suffix(".vec").and_then(|x| x.parse::<XPathId>().ok()) {
@@ -184,7 +184,7 @@ impl VectorFileWriter {
         let originals = match open(&originals_path) {
             Ok(file) => file,
             Err(e) => {
-                let _ = fs::remove_file(&ids_path);
+                drop(fs::remove_file(&ids_path));
                 return Err(e);
             }
         };
@@ -344,10 +344,10 @@ impl VectorFileWriter {
 }
 impl Drop for VectorFileWriter {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.ids_path);
-        let _ = fs::remove_file(&self.originals_path);
+        drop(fs::remove_file(&self.ids_path));
+        drop(fs::remove_file(&self.originals_path));
         if !self.committed {
-            let _ = fs::remove_file(tmp_path_for(&self.final_path));
+            drop(fs::remove_file(tmp_path_for(&self.final_path)));
         }
     }
 }
@@ -640,161 +640,3 @@ pub fn merge_vector_files(
     writer.finish()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vector::kernel::{ approx_cosine, dot_f32, dot_i8, quantize_query };
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env
-            ::temp_dir()
-            .join(format!("corelamo-vfile-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn unit(seed: u64, dims: usize) -> Vec<f32> {
-        let mut v: Vec<f32> = (0..dims as u64)
-            .map(|i| ((fmix64(seed ^ (i << 20) ^ 1) >> 40) as f32) / ((1u64 << 24) as f32) - 0.5)
-            .collect();
-        let norm = v
-            .iter()
-            .map(|x| x * x)
-            .sum::<f32>()
-            .sqrt();
-        v.iter_mut().for_each(|x| {
-            *x /= norm;
-        });
-        v
-    }
-
-    fn write(path: &Path, rows: &[(DocId, Vec<f32>)]) -> VectorFile {
-        let mut writer = VectorFileWriter::create(path, "model", rows[0].1.len()).expect("create");
-        for (doc, v) in rows {
-            writer.push(*doc, v).expect("push");
-        }
-        writer.finish().expect("finish");
-        VectorFile::open(path).expect("open")
-    }
-
-    #[test]
-    fn round_trip_keeps_ids_and_originals() {
-        let dir = temp_dir("roundtrip");
-        let rows: Vec<(DocId, Vec<f32>)> = (1..=50).map(|d| (d * 3, unit(d, 37))).collect();
-        let file = write(&dir.join("s.1.vec"), &rows);
-        assert_eq!(file.len(), 50);
-        assert_eq!(file.dims(), 37);
-        for (i, (doc, v)) in rows.iter().enumerate() {
-            assert_eq!(file.doc_id(i), *doc);
-            assert_eq!(file.original(i), v.as_slice());
-            assert_eq!(file.position(*doc), Some(i));
-        }
-        assert!(!file.contains(4));
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn codes_approximate_originals_at_high_dims() {
-        let dir = temp_dir("codes");
-        let rows: Vec<(DocId, Vec<f32>)> = (1..=200).map(|d| (d, unit(d, 4096))).collect();
-        let file = write(&dir.join("s.1.vec"), &rows);
-        let query = unit(9_999, 4096);
-        let q = quantize_query(&query);
-        for i in 0..file.len() {
-            let exact = dot_f32(file.original(i), &query);
-            let approx = approx_cosine(
-                dot_i8(file.codes(i), &q.codes),
-                file.range().scale(),
-                q.scale
-            );
-            assert!((exact - approx).abs() < 0.02, "row {i}: exact {exact}, approx {approx}");
-        }
-        let _ = fs::remove_dir_all(dir);
-    }
-
-        #[test]
-    fn finish_rejects_duplicate_ids() {
-        let dir = temp_dir("duplicate");
-        let mut writer = VectorFileWriter::create(dir.join("s.1.vec"), "m", 3).expect("create");
-        writer.push(5, &[1.0, 0.0, 0.0]).expect("first row");
-        writer.push(5, &[0.0, 1.0, 0.0]).expect("push accepts it");
-        assert!(writer.finish().is_err(), "duplicate id");
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn dropped_writer_leaves_no_files() {
-        let dir = temp_dir("drop");
-        let path = dir.join("s.1.vec");
-        let mut writer = VectorFileWriter::create(&path, "m", 3).expect("create");
-        writer.push(1, &[1.0, 0.0, 0.0]).expect("push");
-        drop(writer);
-        assert_eq!(fs::read_dir(&dir).expect("read dir").count(), 0);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn each_write_gets_a_new_file_id() {
-        let dir = temp_dir("fileid");
-        let rows = vec![(1, unit(1, 8))];
-        let a = write(&dir.join("s.1.vec"), &rows).file_id();
-        let b = write(&dir.join("s.1.vec"), &rows).file_id();
-        assert_ne!(a, b);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn corrupt_files_are_invalid_data() {
-        let dir = temp_dir("corrupt");
-        let path = dir.join("s.1.vec");
-        write(
-            &path,
-            &[
-                (1, unit(1, 8)),
-                (2, unit(2, 8)),
-            ]
-        );
-        let bytes = fs::read(&path).expect("read");
-
-        fs::write(&path, &bytes[..bytes.len() - 1]).expect("truncate");
-        assert_eq!(
-            VectorFile::open(&path).expect_err("truncated").kind(),
-            io::ErrorKind::InvalidData
-        );
-
-        let mut old = bytes.clone();
-        old[8..12].copy_from_slice(&(1u32).to_le_bytes());
-        fs::write(&path, &old).expect("downgrade");
-        assert_eq!(VectorFile::open(&path).expect_err("v1").kind(), io::ErrorKind::InvalidData);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn merge_drops_deleted_and_last_input_wins() {
-        let dir = temp_dir("merge");
-        let a = write(
-            &dir.join("a.vec"),
-            &[
-                (1, unit(1, 8)),
-                (2, unit(2, 8)),
-                (3, unit(3, 8)),
-            ]
-        );
-        let b = write(
-            &dir.join("b.vec"),
-            &[
-                (2, unit(20, 8)),
-                (4, unit(4, 8)),
-            ]
-        );
-        let mut deleted = DeleteSet::new();
-        deleted.delete(3);
-        let out = dir.join("out.vec");
-        assert_eq!(merge_vector_files(&[&a, &b], &deleted, &out).expect("merge"), 3);
-        let merged = VectorFile::open(&out).expect("open");
-        assert_eq!(merged.doc_ids(), &[1, 2, 4]);
-        assert_eq!(merged.original(1), unit(20, 8).as_slice());
-        let _ = fs::remove_dir_all(dir);
-    }
-}

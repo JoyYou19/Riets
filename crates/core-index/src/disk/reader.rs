@@ -173,7 +173,7 @@ impl DiskSegment {
             return;
         };
 
-        let _ = read_posting_list_into(bytes, meta, out);
+        drop(read_posting_list_into(bytes, meta, out));
     }
 
     /// The bytes of one term's region, or `None` when the meta points outside the file.

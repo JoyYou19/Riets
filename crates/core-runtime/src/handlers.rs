@@ -1,5 +1,5 @@
 use crate::{
-    AppState, database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name}, database_manager::{DbSlot, SlotState}, doc_parser, http_response::{BatchOutcome, HttpError, HttpOk}, middleware::RequestContext,
+    AppState, database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name}, database_manager::{DbSlot, SlotState}, doc_parser, http_response::{BatchOutcome, HttpError, HttpOk, millis}, middleware::RequestContext,
 };
 use axum::{
     Extension,
@@ -60,7 +60,7 @@ fn require_body(body: String) -> Result<String, CorelamoError> {
     let trimmed = body.trim();
     if trimmed.is_empty() || trimmed == "{}" {
         return Err(CorelamoError::InvalidData(
-            "request body is empty".to_string(),
+            "request body is empty".to_owned(),
         ));
     }
     Ok(body)
@@ -117,7 +117,7 @@ pub(crate) async fn login_handler(
         Ok(Ok(token)) => token,
         _ => {
             return HttpError::from_corelamo(
-                CorelamoError::Internal("auth service unavailable".to_string()),
+                CorelamoError::Internal("auth service unavailable".to_owned()),
                 &ctx,
             )
             .into_response();
@@ -127,10 +127,10 @@ pub(crate) async fn login_handler(
     match token {
         Ok(Some(token)) => {
             let resp = LoginResponse { token: token.0 };
-            HttpOk::with_response("Login successful".to_string(), resp, &ctx).into_response()
+            HttpOk::with_response("Login successful".to_owned(), resp, &ctx).into_response()
         }
         Ok(None) => HttpError::from_corelamo(
-            CorelamoError::Unauthorized("invalid username or password".to_string()),
+            CorelamoError::Unauthorized("invalid username or password".to_owned()),
             &ctx,
         )
         .into_response(),
@@ -154,7 +154,7 @@ pub(crate) async fn logout_handler(
         Ok(auth) => auth,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    auth.logout(&Token(token.to_string()));
+    auth.logout(&Token(token.to_owned()));
     HttpOk::new("logged out", &ctx).into_response()
 }
 pub(crate) async fn list_users_handler(
@@ -179,7 +179,7 @@ pub(crate) async fn list_users_handler(
         }
         Err(_) => {
             return HttpError::from_corelamo(
-                CorelamoError::Internal("auth service unavailable".to_string()),
+                CorelamoError::Internal("auth service unavailable".to_owned()),
                 &ctx,
             )
             .into_response();
@@ -246,7 +246,7 @@ pub(crate) async fn create_user_handler(
         Ok(Ok(())) => HttpOk::new(format!("user '{username}' created"), &ctx).into_response(),
         Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
         Err(_) => HttpError::from_corelamo(
-            CorelamoError::Internal("auth service unavailable".to_string()),
+            CorelamoError::Internal("auth service unavailable".to_owned()),
             &ctx,
         )
         .into_response(),
@@ -320,7 +320,7 @@ pub(crate) async fn update_user_password_handler(
         }
         Ok(Err(e)) => HttpError::from_corelamo(e, &ctx).into_response(),
         Err(_) => HttpError::from_corelamo(
-            CorelamoError::Internal("auth service unavailable".to_string()),
+            CorelamoError::Internal("auth service unavailable".to_owned()),
             &ctx,
         )
         .into_response(),
@@ -670,8 +670,10 @@ pub(crate) async fn analyze_handler(
     }
 
     let rescount = results.len();
-    let data = if results.len() == 1 {
-        results.into_iter().next().unwrap()
+    let data = if results.len() == 1
+        && let Some(one) = results.pop()
+    {
+        one
     } else {
         serde_json::Value::Array(results)
     };
@@ -719,7 +721,7 @@ pub(crate) async fn insert_handler(
         tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
-    let outcome = match parsed {
+    let parsed_batch = match parsed {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -733,10 +735,10 @@ pub(crate) async fn insert_handler(
         }
     };
 
-    let doc_indices = outcome.indices;
-    let parse_failures = outcome.failures;
+    let doc_indices = parsed_batch.indices;
+    let parse_failures = parsed_batch.failures;
 
-    let report = match handle.insert(outcome.docs, principal.id.0.clone()).await {
+    let report = match handle.insert(parsed_batch.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1208,7 +1210,7 @@ pub(crate) async fn replace_document_handler(
         tokio::task::spawn_blocking(move || doc_parser::parse_documents(body, format, &policy))
             .await;
 
-    let outcome = match parsed {
+    let parsed_batch = match parsed {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1222,11 +1224,11 @@ pub(crate) async fn replace_document_handler(
         }
     };
 
-    let doc_indices = outcome.indices;
-    let parse_failures = outcome.failures;
+    let doc_indices = parsed_batch.indices;
+    let parse_failures = parsed_batch.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.replace(outcome.docs, principal.id.0.clone()).await {
+    let report = match manager.replace(parsed_batch.docs, principal.id.0.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
@@ -1391,7 +1393,7 @@ pub(crate) async fn create_database_handler(
     }
     if shard_count < 1 {
         return HttpError::from_corelamo(
-            CorelamoError::InvalidData("database must have atleast one shard".to_string()),
+            CorelamoError::InvalidData("database must have atleast one shard".to_owned()),
             &ctx,
         )
         .into_response();
@@ -1404,7 +1406,7 @@ pub(crate) async fn create_database_handler(
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
     };
-    let db_path = slot.dir.clone();
+    let db_path = slot.1.clone();
 
     //build it on disk
     let created = tokio::task::spawn_blocking(move || {
@@ -1446,14 +1448,14 @@ pub(crate) async fn create_database_handler(
     }
 }
 fn discard_failed_create(state: &AppState, slot: &DbSlot, db_name: &str) {
-    match std::fs::remove_dir_all(&slot.dir) {
+    match std::fs::remove_dir_all(&slot.1) {
         Ok(()) => {}
         // nothing was written yet, or it is already gone: nothing to clean up
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             let log = slog_scope::logger();
             warn!(log, "failed database could not be cleaned up; delete its directory by hand";
-                "db" => db_name, "dir" => %slot.dir.display(), "error" => %e);
+                "db" => db_name, "dir" => %slot.1.display(), "error" => %e);
         }
     }
     state.databases.remove(db_name);
@@ -1478,7 +1480,7 @@ pub(crate) async fn delete_database_handler(
         }
     };
 
-    let _gate = slot.gate.write().await;
+    let _gate = slot.3.write().await;
 
     let manager = match slot.manager() {
         Ok(manager) => manager,
@@ -1517,7 +1519,7 @@ pub(crate) async fn delete_database_handler(
 
     //we first move the "database" to deleting-database and then delete it for crash ssafety and
     //preventing a partially deleted database
-    let dir = slot.dir.clone();
+    let dir = slot.1.clone();
     let trash = trash_dir_for(state.databases.dir(), &db_name);
     let removed = tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
         std::fs::rename(&dir, &trash)?;
@@ -1531,7 +1533,7 @@ pub(crate) async fn delete_database_handler(
             info!(log, "database deleted"; "name" => %db_name);
             HttpOk::new(format!("database '{db_name}' deleted"), &ctx).into_response()
         }
-        Ok(Err(e)) if slot.dir.exists() => {
+        Ok(Err(e)) if slot.1.exists() => {
             // nothing moved, so the files are still ours: hand the database back stopped
             slot.set_state(SlotState::Live);
             error!(log, "database delete failed, database kept"; "name" => %db_name, "error" => %e);
@@ -1557,7 +1559,7 @@ pub(crate) async fn delete_database_handler(
         }
         Err(e) => {
             // the task panicked, so whether the directory moved can only be read off the disk
-            if slot.dir.exists() {
+            if slot.1.exists() {
                 slot.set_state(SlotState::Live);
             } else {
                 state.databases.remove(&db_name);
@@ -1610,16 +1612,16 @@ pub(crate) async fn stats_handler(
             "background_compaction_enabled": stats.background_compaction_enabled,
             "shard_count": stats.shard_count,
             "metrics": {
-                "average_search_ms": metrics.average_search_time().map(|d| d.as_millis() as u64),
-                "search_p50_ms": metrics.search_percentile(500).map(|d| d.as_millis() as u64),
-                "search_p95_ms": metrics.search_percentile(950).map(|d| d.as_millis() as u64),
-                "search_p99_ms": metrics.search_percentile(990).map(|d| d.as_millis() as u64),
+                "average_search_ms": metrics.average_search_time().map(millis),
+                "search_p50_ms": metrics.search_percentile(500).map(millis),
+                "search_p95_ms": metrics.search_percentile(950).map(millis),
+                "search_p99_ms": metrics.search_percentile(990).map(millis),
                 "indexing_requests": metrics.indexing_requests,
                 "indexing_errors": metrics.indexing_errors,
-                "average_indexing_ms": metrics.average_indexing_time().map(|d| d.as_millis() as u64),
-                "indexing_p50_ms": metrics.indexing_percentile(500).map(|d| d.as_millis() as u64),
-                "indexing_p95_ms": metrics.indexing_percentile(950).map(|d| d.as_millis() as u64),
-                "indexing_p99_ms": metrics.indexing_percentile(990).map(|d| d.as_millis() as u64),
+                "average_indexing_ms": metrics.average_indexing_time().map(millis),
+                "indexing_p50_ms": metrics.indexing_percentile(500).map(millis),
+                "indexing_p95_ms": metrics.indexing_percentile(950).map(millis),
+                "indexing_p99_ms": metrics.indexing_percentile(990).map(millis),
                 "reindex_requests": metrics.reindex_requests,
                 "reindex_errors": metrics.reindex_errors,
             },
@@ -1696,7 +1698,7 @@ pub(crate) async fn prometheus_metrics_handler(
             };
             let stats = manager.stats();
             let m = &stats.metrics;
-            let db = slot.name.replace('\\', "\\\\").replace('"', "\\\"");
+            let db = slot.0.replace('\\', "\\\\").replace('"', "\\\"");
             let _ = writeln!(
                 out,
                 "corelamo_documents{{db=\"{db}\"}} {}",
@@ -2072,7 +2074,7 @@ pub(crate) async fn list_databases_handler(
                     return None;
                 }
                 let manager = slot.manager().ok()?;
-                Some(json!({ "name": slot.name.clone(), "running": manager.all_running() }))
+                Some(json!({ "name": slot.0.clone(), "running": manager.all_running() }))
             })
             .collect::<Vec<_>>()
     })
@@ -2133,7 +2135,7 @@ pub(crate) async fn list_models_handler(
         .collect();
 
     HttpOk::with_data(
-        "Embedding models".to_string(),
+        "Embedding models".to_owned(),
         ListModelsResponse { models },
         &ctx,
     )
@@ -2392,7 +2394,7 @@ pub(crate) async fn rename_database_handler(
     if new_name == db_name {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData(
-                "new name is the same as the current name (names are case-insensitive)".to_string(),
+                "new name is the same as the current name (names are case-insensitive)".to_owned(),
             ),
             &ctx,
         )
@@ -2409,7 +2411,7 @@ pub(crate) async fn rename_database_handler(
     };
 
     // one lifecycle operation per database; released on every return path
-    let _gate = slot.gate.write().await;
+    let _gate = slot.3.write().await;
 
     let manager = match slot.manager() {
         Ok(manager) => manager,
@@ -2432,7 +2434,7 @@ pub(crate) async fn rename_database_handler(
     // holds and a directory that only exists on disk, and the claimed slot is what makes a
     // concurrent create for the same name fail instead of racing this rename.
     let new_slot = match state.databases.reserve(&new_name) {
-        Ok(slot) => slot,
+        Ok(reserved) => reserved,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -2461,8 +2463,8 @@ pub(crate) async fn rename_database_handler(
 
     // Move the directory, then reopen it. `false` means "do not boot": the database has to
     // still be stopped when it is handed back, and load() honours that.
-    let old_path = slot.dir.clone();
-    let new_path = new_slot.dir.clone();
+    let old_path = slot.1.clone();
+    let new_path = new_slot.1.clone();
     let (old_task, new_task) = (old_path.clone(), new_path.clone());
     let (old_label, new_label) = (db_name.clone(), new_name.clone());
 
@@ -2597,8 +2599,8 @@ pub(crate) async fn disk_usage_handler(
     let _gate = slot.read().await;
 
     // the slot knows the real directory, which keeps whatever case it was created with
-    let db_root = slot.dir.clone();
-    let name_for_task = slot.name.clone();
+    let db_root = slot.1.clone();
+    let name_for_task = slot.0.clone();
 
     let result =
         tokio::task::spawn_blocking(move || compute_disk_usage(&db_root, &name_for_task)).await;

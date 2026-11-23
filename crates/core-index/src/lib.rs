@@ -34,7 +34,7 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
         file.sync_all()
     })();
     if let Err(e) = written {
-        let _ = fs::remove_file(&tmp);
+        drop(fs::remove_file(&tmp));
         return Err(e);
     }
     fs::rename(&tmp, path)?;

@@ -350,8 +350,8 @@ impl Drop for IndexWorker {
     /// sender to its own channel, so it would not notice the handle going away otherwise.
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
-            let _ = self.sender.send(IndexCommand::Shutdown);
-            let _ = handle.join();
+            drop(self.sender.send(IndexCommand::Shutdown));
+            drop(handle.join());
         }
     }
 }
@@ -463,7 +463,7 @@ fn run_index_worker(
             IndexCommand::PlanCompaction { config, reply } => {
                 let plan = index.plan_compaction(config);
                 // A compaction thread that stopped waiting must not stop the index worker.
-                let _ = reply.send(plan);
+                drop(reply.send(plan));
             }
             IndexCommand::InstallCompaction { completed, ack } => {
                 let outcome = index.install_compaction(completed);
@@ -480,7 +480,7 @@ fn run_index_worker(
                 }
             }
             IndexCommand::SegmentCount { ack } => {
-                let _ = ack.send(Ok(index.segment_count()));
+                drop(ack.send(Ok(index.segment_count())));
             }
             IndexCommand::Flush { ack } => {
                 let queued = index.queue_flush().and_then(|()| writer.submit(&mut index));
@@ -524,13 +524,13 @@ fn run_index_worker(
             }
             IndexCommand::DiskSegments { reply } => {
                 // A requester that stopped waiting must not stop the index worker.
-                let _ = reply.send(Ok(index.disk_segment_paths()));
+                drop(reply.send(Ok(index.disk_segment_paths())));
             }
             //publishes like new snapshot so search can see
             IndexCommand::InstallVectors { segment, xpath, reply } => {
                 let outcome = index.install_vectors(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -540,7 +540,7 @@ fn run_index_worker(
             IndexCommand::InstallTail { segment, xpath, reply } => {
                 let outcome = index.install_tail(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -550,7 +550,7 @@ fn run_index_worker(
             IndexCommand::InstallGraph { segment, xpath, reply } => {
                 let outcome = index.install_graph(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -560,7 +560,7 @@ fn run_index_worker(
             IndexCommand::InstallFold { segment, xpath, reply } => {
                 let outcome = index.install_fold(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -587,7 +587,7 @@ fn run_index_worker(
     while index.has_pending_flushes() {
         match receiver.recv() {
             Ok(IndexCommand::SegmentWritten { seq, replay }) => {
-                let _ = index.complete_flush(seq, replay);
+                drop(index.complete_flush(seq, replay));
             }
             // Commands sent after Shutdown are dropped; their senders see a closed reply.
             Ok(_) => {}
@@ -658,7 +658,7 @@ fn send_acknowledgement(
     result: io::Result<()>
 ) -> io::Result<()> {
     if let Some(acknowledgement) = acknowledgement {
-        let _ = acknowledgement.send(result);
+        drop(acknowledgement.send(result));
     }
 
     Ok(())
@@ -666,7 +666,7 @@ fn send_acknowledgement(
 /// A batch that is already tokenized, in the form `AddIndexedDocuments` takes.
 fn ready(documents: Vec<AnalyzedDocument>) -> Receiver<Vec<AnalyzedDocument>> {
     let (sender, receiver) = mpsc::channel();
-    let _ = sender.send(documents);
+    drop(sender.send(documents));
     receiver
 }
 
