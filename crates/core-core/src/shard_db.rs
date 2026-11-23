@@ -925,7 +925,7 @@ impl ShardDb {
                 match db.get_document(&id) {
                     Ok(Some(_)) => to_delete.push(id),
                     Ok(None) => {
-                        failures.push(DocFailure::new(None, Some(id), FailReason::NotFound))
+                        failures.push(DocFailure::new(None, Some(id), FailReason::NotFound));
                     }
                     Err(e) => failures.push(DocFailure::new(
                         None,
@@ -1011,8 +1011,8 @@ impl ShardDb {
         };
         let submitted = match self.background_worker.as_ref() {
             Some(worker) => worker.submit_reindex(ReindexTask {
-                store,
                 params,
+                store,
                 progress,
                 stats,
             }),
@@ -1780,7 +1780,7 @@ impl ShardDb {
         }
         self.stats.set_compaction_enabled(compacting);
 
-        self.background_worker = Some(BackgroundWorker::start(BackgroundConfig {
+       self.background_worker = match BackgroundWorker::start(BackgroundConfig {
             index: db.index_sender(),
             shard_tx,
             compaction,
@@ -1791,7 +1791,15 @@ impl ShardDb {
             models: Arc::clone(&self.models),
             stats: self.stats.clone(),
             log: self.log.new(slog::o!("component" => "background")),
-        }));
+        }){
+        Ok(worker) => Some(worker),
+            Err(e) => {
+                // the shard still serves reads and writes; compaction and embedding wait for the
+                // next restart of the background worker
+                error!(self.log, "background worker could not start"; "error" => %e);
+                None
+            }
+        };
     }
 }
 //helper functions

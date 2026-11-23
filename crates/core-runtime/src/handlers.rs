@@ -1,10 +1,5 @@
 use crate::{
-    AppState,
-    database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name},
-    database_manager::SlotState,
-    doc_parser,
-    http_response::{BatchOutcome, HttpError, HttpOk},
-    middleware::RequestContext,
+    AppState, database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name}, database_manager::{DbSlot, SlotState}, doc_parser, http_response::{BatchOutcome, HttpError, HttpOk}, middleware::RequestContext,
 };
 use axum::{
     Extension,
@@ -82,6 +77,9 @@ fn check_permission(
         .map_err(|_| CorelamoError::Internal("auth service unavailable".into()))?;
     auth.check(principal, permission)
 }
+fn auth_unavailable<T>(_:std::sync::PoisonError<T>) -> CorelamoError{
+    CorelamoError::Internal("auth service unavailable".into())
+}
 
 pub(crate) async fn login_handler(
     State(state): State<AppState>,
@@ -152,10 +150,10 @@ pub(crate) async fn logout_handler(
         )
         .into_response();
     };
-    let auth = state
-        .auth
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let auth = match state.auth.read().map_err(auth_unavailable) {
+        Ok(auth) => auth,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
     auth.logout(&Token(token.to_string()));
     HttpOk::new("logged out", &ctx).into_response()
 }
@@ -170,9 +168,7 @@ pub(crate) async fn list_users_handler(
 
     let auth = Arc::clone(&state.auth);
     let listed = tokio::task::spawn_blocking(move || {
-        let auth = auth
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let auth = auth.read().map_err(auth_unavailable)?;
         auth.list_users()
     })
     .await;
@@ -241,9 +237,7 @@ pub(crate) async fn create_user_handler(
     let created = tokio::task::spawn_blocking(move || {
         let hash = hash_password(&req.password)?;
 
-        let mut auth = auth
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut auth = auth.write().map_err(auth_unavailable)?;
         auth.create_user(&principal, &req.username, hash, req.roles)
     })
     .await;
@@ -268,10 +262,10 @@ pub(crate) async fn delete_user_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-    let mut auth = state
-        .auth
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+     let mut auth = match state.auth.write().map_err(auth_unavailable) {
+        Ok(auth) => auth,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
     match auth.delete_user(&principal, &username) {
         Ok(()) => HttpOk::new(format!("user '{username}' deleted"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -315,9 +309,7 @@ pub(crate) async fn update_user_password_handler(
         let hash = hash_password(&req.password)?;
         // short: the write lock only covers the store update; update_user_password checks
         // the permission again, since it may have changed while hashing
-        let mut auth = auth
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+           let mut auth = auth.write().map_err(auth_unavailable)?;
         auth.update_user_password(&principal, &target, hash)
     })
     .await;
@@ -364,10 +356,10 @@ pub(crate) async fn update_user_roles_handler(
         }
     };
 
-    let mut auth = state
-        .auth
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut auth = match state.auth.write().map_err(auth_unavailable) {
+        Ok(auth) => auth,
+        Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
+    };
     match auth.update_user_roles(&principal, &username, req.roles) {
         Ok(()) => HttpOk::new(format!("roles updated for '{username}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
@@ -402,7 +394,7 @@ pub(crate) async fn search_handler(
     }
 
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -483,7 +475,7 @@ pub(crate) async fn did_you_mean_handler(
     }
 
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -684,7 +676,7 @@ pub(crate) async fn analyze_handler(
         serde_json::Value::Array(results)
     };
 
-    HttpOk::with_data(format!("analyzed {} document(s)", rescount), data, &ctx).into_response()
+    HttpOk::with_data(format!("analyzed {rescount} document(s)"), data, &ctx).into_response()
 }
 
 #[timed(inserting)]
@@ -783,7 +775,7 @@ pub(crate) async fn retrieve_handler(
     }
 
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -1043,7 +1035,7 @@ pub(crate) async fn delete_document_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -1113,7 +1105,7 @@ pub(crate) async fn partial_replace_handler(
     }
 
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -1189,7 +1181,7 @@ pub(crate) async fn replace_document_handler(
     }
 
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -1277,7 +1269,7 @@ pub(crate) async fn upsert_document_handler(
     }
 
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -1440,13 +1432,11 @@ pub(crate) async fn create_database_handler(
             .into_response()
         }
         Ok(Err(e)) => {
-            let _ = std::fs::remove_dir_all(&slot.dir);
-            state.databases.remove(&db_name);
+            discard_failed_create(&state, &slot, &db_name);
             HttpError::from_corelamo(e, &ctx).into_response()
         }
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&slot.dir);
-            state.databases.remove(&db_name);
+            discard_failed_create(&state, &slot, &db_name);
             HttpError::from_corelamo(
                 CorelamoError::Internal(format!("create task panicked: {e}")),
                 &ctx,
@@ -1455,7 +1445,19 @@ pub(crate) async fn create_database_handler(
         }
     }
 }
-
+fn discard_failed_create(state: &AppState, slot: &DbSlot, db_name: &str) {
+    match std::fs::remove_dir_all(&slot.dir) {
+        Ok(()) => {}
+        // nothing was written yet, or it is already gone: nothing to clean up
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            let log = slog_scope::logger();
+            warn!(log, "failed database could not be cleaned up; delete its directory by hand";
+                "db" => db_name, "dir" => %slot.dir.display(), "error" => %e);
+        }
+    }
+    state.databases.remove(db_name);
+}
 #[timed(database_lifecycle)]
 pub(crate) async fn delete_database_handler(
     State(state): State<AppState>,
@@ -1609,15 +1611,15 @@ pub(crate) async fn stats_handler(
             "shard_count": stats.shard_count,
             "metrics": {
                 "average_search_ms": metrics.average_search_time().map(|d| d.as_millis() as u64),
-                "search_p50_ms": metrics.search_percentile(0.50).map(|d| d.as_millis() as u64),
-                "search_p95_ms": metrics.search_percentile(0.95).map(|d| d.as_millis() as u64),
-                "search_p99_ms": metrics.search_percentile(0.99).map(|d| d.as_millis() as u64),
+                "search_p50_ms": metrics.search_percentile(500).map(|d| d.as_millis() as u64),
+                "search_p95_ms": metrics.search_percentile(950).map(|d| d.as_millis() as u64),
+                "search_p99_ms": metrics.search_percentile(990).map(|d| d.as_millis() as u64),
                 "indexing_requests": metrics.indexing_requests,
                 "indexing_errors": metrics.indexing_errors,
                 "average_indexing_ms": metrics.average_indexing_time().map(|d| d.as_millis() as u64),
-                "indexing_p50_ms": metrics.indexing_percentile(0.50).map(|d| d.as_millis() as u64),
-                "indexing_p95_ms": metrics.indexing_percentile(0.95).map(|d| d.as_millis() as u64),
-                "indexing_p99_ms": metrics.indexing_percentile(0.99).map(|d| d.as_millis() as u64),
+                "indexing_p50_ms": metrics.indexing_percentile(500).map(|d| d.as_millis() as u64),
+                "indexing_p95_ms": metrics.indexing_percentile(950).map(|d| d.as_millis() as u64),
+                "indexing_p99_ms": metrics.indexing_percentile(990).map(|d| d.as_millis() as u64),
                 "reindex_requests": metrics.reindex_requests,
                 "reindex_errors": metrics.reindex_errors,
             },
@@ -1800,7 +1802,7 @@ pub(crate) async fn info_words_handler(
     }
 
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }
@@ -1956,7 +1958,7 @@ pub(crate) async fn set_policy_handler(
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
     let body = match require_body(body) {
-        Ok(b) => b.to_string(),
+        Ok(b) => b.clone(),
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
         }

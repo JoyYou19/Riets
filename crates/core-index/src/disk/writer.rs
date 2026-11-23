@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{array_rows::ArrayRowIndex, disk::{block_cursor::{BlockCursor, TermRegion}, format::{BLOCK_LEN, SkipEntry}}, posting::{DeleteSet, PostingCursor, cursor::TermCursor}};
-use crate::document::document::BoolField;
+use crate::document::indexed::BoolField;
 use crate::tmp_path_for;
 use crate::{
     disk::{

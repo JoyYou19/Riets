@@ -472,9 +472,7 @@ impl ResponseData for RetrieveResponse {
             "skipped_ids": self.skipped,
         }))
     }
-    // fn to_xml(&self, w: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), io::Error> {
-    //     todo!();
-    // }
+   
 }
 
 #[derive(Debug, Deserialize)]

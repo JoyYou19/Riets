@@ -1,4 +1,4 @@
-///storeddocument -> json for response + return_fields
+///storeddocument -> json for response + `return_fields`
 use std::io;
 use std::sync::Arc;
 
@@ -106,7 +106,7 @@ fn lookup_up<'a>(map: &'a IndexMap<String, bool>, path: &str) -> Option<&'a bool
         }
         {
             let idx = candidate.rfind('/')?;
-            candidate = &candidate[..idx]
+            candidate = &candidate[..idx];
         }
     }
 }
@@ -119,7 +119,7 @@ fn policy_list(policy: &IndexPolicy, path: &str) -> Option<bool> {
         }
         {
             let idx = candidate.rfind('/')?;
-            candidate = &candidate[..idx]
+            candidate = &candidate[..idx];
         }
     }
 }

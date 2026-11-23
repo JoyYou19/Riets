@@ -4,7 +4,7 @@ use core_index::{ posting::cursor::TermCursor, search::SearchStats, types::{ Doc
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
-use crate::{ ranking::COVERAGE_POWER, scorer::{ bm25_score_scaled, bm25_upper_bound } };
+use crate::{ ranking::COVERAGE_POWER, scorer::{ bm25_idf, bm25_score_scaled, bm25_upper_bound } };
 use crate::executor::phrase_matches;
 
 /// One query term's postings in a field, borrowed from wherever they were read.
@@ -87,7 +87,7 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
     }
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
-    let mut doc_len_cache: Vec<Option<u32>> = vec![None; field_count];
+    let mut doc_len_cache: Vec<Option<Option<u32>>> = vec![None; field_count];
 
     loop {
         terms.retain(|term| !term.cursor.is_exhausted());
@@ -144,7 +144,7 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                         bm25_score_scaled(
                             entry.max_tf,
                             entry.max_weight,
-                            entry.min_doc_len,
+                            Some(entry.min_doc_len),
                             avg_doc_len,
                             doc_count,
                             term.doc_freq
@@ -172,9 +172,8 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                         continue;
                     }
                     let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
-                    let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
-                        stats.doc_len(pivot_doc, xpath).unwrap_or(avg_doc_len as u32)
-                    });
+                     let doc_len = *doc_len_cache[term.field]
+                        .get_or_insert_with(|| stats.doc_len(pivot_doc, xpath));
 
                     score = score.saturating_add(
                         bm25_score_scaled(
@@ -295,7 +294,7 @@ fn finish_heap(heap: BinaryHeap<HeapHit>) -> Vec<WandHit> {
 struct FieldConjunction<'a> {
     xpath: XPathId,
     doc_count: u64,
-    avg_doc_len: f32,
+    avg_doc_len: f64,
     terms: Vec<WandTerm<'a>>,
     started: bool,
 }
@@ -356,7 +355,7 @@ impl<'a> FieldConjunction<'a> {
 
     /// The BM25 score of the document the conjunction is currently on.
     fn score<S: SearchStats>(&mut self, stats: &S, doc_id: DocId) -> u64 {
-        let doc_len = stats.doc_len(doc_id, self.xpath).unwrap_or(self.avg_doc_len as u32);
+         let doc_len = stats.doc_len(doc_id, self.xpath);
 
         let mut score = 0u64;
         for term in &mut self.terms {
@@ -451,7 +450,7 @@ struct FormCursor<'a> {
     doc_freqs: Vec<u32>,
     xpath: XPathId,
     doc_count: u64,
-    avg_doc_len: f32,
+    avg_doc_len: f64,
     weight: u16,
     upper_bound: u64,
     // each list's best possible score (whole list), for cursors without block bounds
@@ -483,14 +482,7 @@ impl<'a> FormCursor<'a> {
             .map(|list| bm25_upper_bound(list.max_weight, doc_count, list.doc_freq))
             .collect();
         let upper_bound = list_bounds.iter().copied().fold(0u64, u64::saturating_add);
-        let rarity = |doc_freq: u32| -> f32 {
-            let n = doc_count as f32;
-            let df = (doc_freq as f32).min(n);
-            if n <= 0.0 || df <= 0.0 {
-                return 0.0;
-            }
-            ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
-        };
+        let rarity = |doc_freq: u32| bm25_idf(doc_freq, doc_count);
         let idf = form.lists
             .iter()
             .map(|list| rarity(list.doc_freq))
@@ -594,7 +586,7 @@ impl<'a> FormCursor<'a> {
 
     /// The weighted score of the document the form is on: the lists on it, added up.
     fn score<S: SearchStats>(&mut self, stats: &S, doc: DocId) -> u64 {
-        let doc_len = stats.doc_len(doc, self.xpath).unwrap_or(self.avg_doc_len as u32);
+        let doc_len = stats.doc_len(doc, self.xpath);
         let mut score = 0u64;
         for (cursor, &doc_freq) in self.cursors.iter_mut().zip(&self.doc_freqs) {
             // all-forms: every list is on the doc; any-forms: only some are
@@ -709,9 +701,9 @@ fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
 /// Up to this many allowed documents are visited one by one (see `wand_top_k_grouped`).
 const DIRECT_RESTRICT_MAX: usize = 4096;
 
-pub fn wand_top_k_grouped<'a, S: SearchStats>(
+pub fn wand_top_k_grouped<S: SearchStats>(
     stats: &S,
-    fields: Vec<FieldClauses<'a>>,
+    fields: Vec<FieldClauses<'_>>,
     k: usize,
     coverage: Option<f32>,
     restrict: Option<&RoaringTreemap>
@@ -877,7 +869,7 @@ pub fn wand_top_k_grouped_with_any<'a, S: SearchStats>(
             // sum, so the plain block bound is safe for both)
             if threshold > 0 {
                 let mut block_bound = 0u64;
-                let mut skip_to = clauses.get(on_pivot).and_then(|clause| clause.doc_id());
+                let mut skip_to = clauses.get(on_pivot).and_then(ClauseCursor::doc_id);
                 for clause in &clauses[..on_pivot] {
                     let mut per_form = Vec::with_capacity(clause.forms.len());
                     for form in &clause.forms {
@@ -908,7 +900,7 @@ pub fn wand_top_k_grouped_with_any<'a, S: SearchStats>(
                                 bm25_score_scaled(
                                     entry.max_tf,
                                     entry.max_weight,
-                                    entry.min_doc_len,
+                                    Some(entry.min_doc_len),
                                     form.avg_doc_len,
                                     form.doc_count,
                                     doc_freq

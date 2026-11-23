@@ -29,7 +29,7 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "proprietary"
-rust-version = "1.85"
+rust-version = "1.95"
 publish=false
 
 [workspace.dependencies]
@@ -38,17 +38,106 @@ tokio = { version = "1", features = ["full"] }
 criterion = "0.7.0"
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }   # priority -1 so the overrides below win
+# --- whole groups ---
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }    # newer lints; occasionally wrong, but useful
+cargo = { level = "warn", priority = -1 }      # Cargo.toml checks: metadata, duplicate versions
+
+# keep only what is truly noise in this codebase
 module_name_repetitions = "allow"
-must_use_candidate = "allow"
-missing_errors_doc = "allow"
-# Hand-picked from the "restriction" group (never enable that group wholesale)
-dbg_macro = "warn"
+cargo_common_metadata = "allow"   # publish = false: no crates.io description/license needed
+multiple_crate_versions = "allow" # duplicate versions come from dependencies; not fixable here
+
+# --- panics: every way to crash at runtime is a warning ---
+unwrap_used = "warn"
+expect_used = "warn"              # each expect has to justify itself, or become `?`
+panic = "warn"
+unreachable = "warn"
 todo = "warn"
+unimplemented = "warn"
+indexing_slicing = "warn"         # `v[i]` can panic; noisy in parsers, but finds real bugs
+unwrap_in_result = "warn"         # an unwrap inside a function that could return the error
+panic_in_result_fn = "warn"
+get_unwrap = "warn"
+missing_assert_message = "warn"
+
+# --- casts and arithmetic ---
+as_conversions = "warn"           # every `as`; forces From / try_from / a documented helper
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+lossy_float_literal = "warn"
+float_cmp_const = "warn"
+
+# --- error handling ---
+map_err_ignore = "warn"           # `.map_err(|_| ...)` throws away the cause
+let_underscore_must_use = "warn"  # `let _ = result;` hides an error
+unused_result_ok = "warn"
+error_impl_error = "warn"
+
+# --- unsafe ---
 undocumented_unsafe_blocks = "warn"
-unwrap_used = "warn"           # forces `?` / `expect("why")` instead
+multiple_unsafe_ops_per_block = "warn"
+
+# --- allows must say why ---
+allow_attributes_without_reason = "warn"   # every #[allow] needs reason = "..."
+
+# --- debugging leftovers and output ---
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"             # use the logger; main's password print gets a local allow
+exit = "warn"                     # process::exit skips destructors; return an error from main
+
+# --- clarity ---
+shadow_unrelated = "warn"
+clone_on_ref_ptr = "warn"         # Arc::clone(&x) instead of x.clone()
+str_to_string = "warn"
+if_then_some_else_none = "warn"
+redundant_type_annotations = "warn"
+tests_outside_test_module = "warn"
+verbose_file_reads = "warn"
+rc_buffer = "warn"
+mem_forget = "warn"
 
 [workspace.lints.rust]
-unreachable_pub = "warn"       # pub → pub(crate) where possible
-unused_qualifications = "warn"
-unsafe_op_in_unsafe_fn = "warn"
+# --- whole groups (priority -1 so the single lints below win) ---
+rust_2018_idioms = { level = "warn", priority = -1 }   # elided lifetimes in paths, unused extern crate, ...
+future_incompatible = { level = "warn", priority = -1 } # code a future Rust version will reject
+nonstandard_style = { level = "warn", priority = -1 }   # naming: snake_case, CamelCase, UPPER_CASE
+unused = { level = "warn", priority = -1 }              # unused imports, variables, mut, ...
+keyword_idents = { level = "warn", priority = -1 }      # names that are keywords in newer editions
+
+# --- visibility and API surface ---
+unreachable_pub = "warn"          # pub that is not reachable from outside: make it pub(crate)
+unnameable_types = "warn"         # a pub item exposes a type outsiders cannot name
+
+# --- casts ---
+trivial_casts = "warn"            # `x as T` where x already is a T
+trivial_numeric_casts = "warn"
+
+# --- lifetimes ---
+unused_lifetimes = "warn"
+single_use_lifetimes = "warn"     # 'a used once: let it be elided
+redundant_lifetimes = "warn"      # two lifetimes that are always the same
+elided_lifetimes_in_paths = "warn" # write Foo<'_> so it is visible a borrow is held
+
+# --- unsafe ---
+unsafe_op_in_unsafe_fn = "warn"   # unsafe calls inside an unsafe fn still need an unsafe block
+
+# --- dead and leftover code ---
+unused_qualifications = "warn"    # std::io::Result where Result is already imported
+unused_import_braces = "warn"     # use foo::{bar};
+unused_macro_rules = "warn"
+let_underscore_drop = "warn"      # `let _ = guard;` drops it immediately, often by mistake
+unit_bindings = "warn"            # `let x = ();`
+
+# --- macros and identifiers ---
+meta_variable_misuse = "warn"     # macro_rules! variables used wrongly
+non_ascii_idents = "warn"
+
+# --- size ---
+variant_size_differences = "warn" # one enum variant much bigger than the rest (like the 240-byte one)
+
+# --- off on purpose ---
+missing_debug_implementations = "allow"   # not every type needs Debug

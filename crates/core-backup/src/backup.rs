@@ -493,7 +493,16 @@ impl BackupManager {
                         let mut dst = OpenOptions::new()
                             .create(true)
                             .write(true)
+                            // a whole segment replaces the file; a continuation keeps the parent's bytes
+                            .truncate(start_offset == 0)
                             .open(&dst_path)?;
+                        if start_offset > 0 && dst.metadata()?.len() != start_offset {
+                            return Err(BackupError::IoError(io::Error::other(format!(
+                                "{} is {} bytes, the parent backup ended at {start_offset}",
+                                dst_path.display(),
+                                dst.metadata()?.len()
+                            ))));
+                        }
                         dst.seek(SeekFrom::Start(start_offset))?;
                         io::copy(&mut src, &mut dst)?;
                     }

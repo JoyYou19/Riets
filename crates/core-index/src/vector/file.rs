@@ -567,7 +567,10 @@ impl VectorFile {
         assert!(index < self.count, "row {index} out of {} rows", self.count);
         let start = self.layout.originals + index * self.dims * 4;
         let bytes = &self.mmap[start..start + self.dims * 4];
-
+        // SAFETY: the section starts on a 64-byte boundary of a mapping checked to be 64-byte
+        // aligned at open, so `bytes` is 4-byte aligned. `index < count` is asserted above, so it
+        // holds exactly `dims` little-endian f32s (length checked at open, little-endian host
+        // enforced at compile time), and every bit pattern is a valid f32.
         #[allow(clippy::cast_ptr_alignment, reason = "alignment checked at open")]
         unsafe {
             std::slice::from_raw_parts(bytes.as_ptr().cast::<f32>(), self.dims)

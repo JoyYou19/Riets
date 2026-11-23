@@ -387,29 +387,26 @@ impl ShardHandle {
             stats.merge(p.stats());
         }
 
-        let filter = match earlier_filter {
-            Some(filter) => filter,
-            None => {
-                let mut restrict = filters
-                    .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f));
-                for group in groups {
-                    for negative in &group.negatives {
-                        let executor = QueryExecutor::new(&*snapshot, &group.analyzer);
-                        if let EvalOutcome::Docs(docs) =
-                            executor.evaluate(negative, &group.ctxs, EvalMode::Filter)
-                        {
-                            restrict = Some(match restrict {
-                                Some(cur) => cur & docs,
-                                None => docs,
-                            });
-                            if restrict.as_ref().is_some_and(RoaringTreemap::is_empty) {
-                                break;
-                            }
+        let filter = if let Some(filter) = earlier_filter { filter } else {
+            let mut restrict = filters
+                .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f));
+            for group in groups {
+                for negative in &group.negatives {
+                    let executor = QueryExecutor::new(&*snapshot, &group.analyzer);
+                    if let EvalOutcome::Docs(docs) =
+                        executor.evaluate(negative, &group.ctxs, EvalMode::Filter)
+                    {
+                        restrict = Some(match restrict {
+                            Some(cur) => cur & docs,
+                            None => docs,
+                        });
+                        if restrict.as_ref().is_some_and(RoaringTreemap::is_empty) {
+                            break;
                         }
                     }
                 }
-                restrict.map(Arc::new)
             }
+            restrict.map(Arc::new)
         };
 
         PreparedShardSearch {
@@ -431,7 +428,7 @@ impl ShardHandle {
         k: usize,
         mactmode: MatchMode,
     ) -> (usize, Vec<SearchHit>) {
-        if k == 0 || filters.is_some_and(|f| f.is_empty()) {
+        if k == 0 || filters.is_some_and(RoaringTreemap::is_empty) {
             return (0, Vec::new());
         }
         // each group sees only part of a document's evidence: keep more of its candidates, so
@@ -835,7 +832,7 @@ impl ShardHandle {
         }
 
         //adds the array[index] so that highlighter can find the precise place where search found it
-        for matches in out.iter_mut() {
+        for matches in &mut out {
             Self::fill_row_paths(prepared.snapshot.as_ref(), matches);
         }
 

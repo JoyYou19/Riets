@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{ AtomicU8, AtomicU64, Ordering::Relaxed };
 
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -40,33 +40,42 @@ impl BackupProgressSnapshot {
         if self.bytes_total == 0 {
             return None;
         }
-        Some(round2(
-            ((self.bytes_done as f64) / (self.bytes_total as f64)) * 100.0,
-        ))
+        let done = u128::from(self.bytes_done.min(self.bytes_total));
+        let total = u128::from(self.bytes_total);
+        let hundredths = (done * 10_000 + total / 2) / total; // rounded to the nearest
+        let hundredths = u32::try_from(hundredths).unwrap_or(10_000);
+        Some(f64::from(hundredths) / 100.0)
     }
 
-    pub fn mb_done(&self) -> f64 {
-        round2((self.bytes_done as f64) / MIB)
+     pub fn mb_done(&self) -> f64 {
+        round2(mib(self.bytes_done))
     }
 
     pub fn mb_total(&self) -> f64 {
-        round2((self.bytes_total as f64) / MIB)
+        round2(mib(self.bytes_total))
     }
 
+    
     pub fn eta_seconds(&self) -> Option<u64> {
         let elapsed_ms = self.elapsed_ms?;
         if elapsed_ms == 0 || self.bytes_done == 0 {
             return None;
         }
-        let rate = (self.bytes_done as f64) / ((elapsed_ms as f64) / 1000.0);
-        if rate <= 0.0 {
-            return None;
-        }
-        let remaining = self.bytes_total.saturating_sub(self.bytes_done) as f64;
-        Some((remaining / rate).round() as u64)
+        // remaining / (done per second) = remaining * elapsed_ms / (done * 1000), rounded
+        let remaining = u128::from(self.bytes_total.saturating_sub(self.bytes_done));
+        let per = u128::from(self.bytes_done) * 1000;
+        let eta = (remaining * u128::from(elapsed_ms) + per / 2) / per;
+        Some(u64::try_from(eta).unwrap_or(u64::MAX))
     }
 }
-
+/// Bytes as MiB for display; the caller rounds it to two decimals.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a display value: rounding a large byte count is harmless"
+    )]
+    fn mib(bytes: u64) -> f64 {
+        (bytes as f64) / MIB
+    }
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackupStats {
     pub status: String,
@@ -79,13 +88,14 @@ pub struct BackupStats {
 impl From<BackupProgressSnapshot> for BackupStats {
     fn from(s: BackupProgressSnapshot) -> Self {
         BackupStats {
-            status: (match s.phase {
-                BackupPhase::Idle => "idle",
-                BackupPhase::Running => "running",
-                BackupPhase::Complete => "complete",
-                BackupPhase::Failed => "failed",
-            })
-            .to_string(),
+            status: (
+                match s.phase {
+                    BackupPhase::Idle => "idle",
+                    BackupPhase::Running => "running",
+                    BackupPhase::Complete => "complete",
+                    BackupPhase::Failed => "failed",
+                }
+            ).to_string(),
             progress_percent: s.percent(),
             mb_done: s.mb_done(),
             mb_total: s.mb_total(),
@@ -113,8 +123,7 @@ impl BackupProgress {
     }
 
     pub fn try_begin(&self) -> bool {
-        let won = self
-            .phase
+        let won = self.phase
             .try_update(Relaxed, Relaxed, |current| {
                 if current == (BackupPhase::Running as u8) {
                     None
@@ -126,8 +135,7 @@ impl BackupProgress {
         if won {
             self.bytes_total.store(0, Relaxed);
             self.bytes_done.store(0, Relaxed);
-            self.started_at_ms
-                .store(chrono::Utc::now().timestamp_millis() as u64, Relaxed);
+            self.started_at_ms.store(chrono::Utc::now().timestamp_millis() as u64, Relaxed);
         }
         won
     }

@@ -7,7 +7,7 @@ use std::{
 use crate::{
     analyzer::{
         Analyzer,
-        analyzer::AnalyzerSet,
+        text_analyzer::AnalyzerSet,
         analyzer_config::{AnalyzerConfig, CharFilter},
     },
     datetimes::validate_date_format,

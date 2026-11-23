@@ -11,7 +11,7 @@ use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use core_auth::{AuthService, MIN_PASSWORD_LEN, SUPERUSER, UserDatabase};
 use core_index::{
-    analyzer::analyzer::Analyzer,
+    analyzer::text_analyzer::Analyzer,
     lsm::{LsmIndex, config::IndexRuntimeConfig},
 };
 
@@ -324,15 +324,15 @@ async fn run() -> io::Result<()> {
     }
 
     let users_dir = root_path.join("users");
-    std::fs::create_dir_all(&users_dir).expect("failed to create users data dir");
+    std::fs::create_dir_all(&users_dir)?;
     let store_root = users_dir.join("documents");
     //INFO:                                      10MB cache for users
-    let store = BinaryDocumentStore::open(&store_root, 10).expect("failed to open users store");
+    let store = BinaryDocumentStore::open(&store_root, 10)?;
     let index_cfg = IndexRuntimeConfig::default();
     let index = LsmIndex::new(index_cfg.flush_threshold); // match the movies construction exactly
     let analyzer = Analyzer::default(); // or however movies builds it
 
-    let user_db = UserDatabase::new(store, index, analyzer);
+    let user_db = UserDatabase::new(store, index, analyzer)?;
     let auth = match AuthService::bootstrap(user_db) {
         Ok((mut auth, created)) => {
             if let Some(password) = created {

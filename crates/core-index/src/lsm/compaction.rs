@@ -5,7 +5,7 @@ use crate::{
         reader::DiskSegment,
         writer::{MergeSource, write_merged_segment},
     },
-    document::document::BoolField,
+    document::indexed::BoolField,
     lsm::index_worker::IndexCommand,
     numeric_values::{NumericFields, NumericPoints, unpack},
     posting::DeleteSet,

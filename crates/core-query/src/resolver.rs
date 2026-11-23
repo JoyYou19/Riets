@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use core_index::datetimes::parse_date;
 use core_index::{
-    analyzer::{Analyzer, analyzer::AnalyzerSet},
+    analyzer::{Analyzer, text_analyzer::AnalyzerSet},
     document::{
         IndexPolicy,
         policy::{FieldKind, FieldPolicy},
@@ -153,8 +153,8 @@ pub fn compile_query(
             .map(|(_, (analyzer, query, negatives, ctxs))| QueryGroup {
                 analyzer,
                 query,
-                negatives,
                 ctxs,
+                negatives,
             })
             .collect(),
     ))

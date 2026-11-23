@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::{
-    analyzer::{ Analyzer, analyzer::AnalyzerSet },
+    analyzer::{ Analyzer, text_analyzer::AnalyzerSet },
     background::background_pool,
     disk::reader::DiskSegment,
     document::{ AnalyzedDocument, IndexedDocument },
@@ -145,7 +145,7 @@ pub struct IndexWorker {
 }
 
 impl IndexWorker {
-    pub fn start(index: LsmIndex, _analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
+    pub fn start(index: LsmIndex, _analyzer: Analyzer, shared: SharedIndexSnapshot) -> io::Result<Self> {
         shared.publish(index.snapshot());
 
         let (sender, receiver) = mpsc::channel();
@@ -158,14 +158,13 @@ impl IndexWorker {
         let handle = thread::Builder
             ::new()
             .name("index-worker".to_string())
-            .spawn(move || run_index_worker(index, shared, receiver, worker_stats, worker_sender))
-            .expect("failed to spawn index worker");
+            .spawn(move || run_index_worker(index, shared, receiver, worker_stats, worker_sender))?;
 
-        Self {
+       Ok( Self {
             sender,
             handle: Some(handle),
             stats,
-        }
+        })
     }
 
     pub fn sender(&self) -> Sender<IndexCommand> {
@@ -373,7 +372,7 @@ fn run_index_worker(
     let mut stats = (**published_stats.load()).clone();
     let mut docs_since_publish: u64 = 0;
     let mut last_publish = Instant::now();
-    let writer = SegmentWriter::start(self_sender);
+    let writer = SegmentWriter::start(self_sender)?;
     // Flush acknowledgements waiting for their segments, with the flush target they need.
     let mut flush_waiters: VecDeque<(u64, Option<Acknowledgement>)> = VecDeque::new();
     loop {
@@ -684,18 +683,17 @@ struct SegmentWriter {
 }
 
 impl SegmentWriter {
-    fn start(done: Sender<IndexCommand>) -> Self {
+    fn start(done: Sender<IndexCommand>) -> io::Result<Self> {
         let (writes, queue) = mpsc::channel();
         let handle = thread::Builder
             ::new()
             .name("segment-writer".to_string())
-            .spawn(move || run_segment_writer(queue))
-            .expect("failed to spawn segment writer");
-        Self {
+            .spawn(move || run_segment_writer(queue))?;
+        Ok(Self {
             writes,
             done,
             handle,
-        }
+        })
     }
 
     /// Hands every segment the index queued to the writer thread.
@@ -1002,25 +1000,21 @@ impl ReindexProgress {
             return None;
         }
 
-        let started = (*self.first_add.lock().ok()?)?;
-        let elapsed = started.elapsed().as_secs_f64();
-        if elapsed < 2.0 {
+         let started = (*self.first_add.lock().ok()?)?;
+        let ms = started.elapsed().as_millis();
+        if ms < 2_000 {
             return None;
         }
-        let rate = (done as f64) / elapsed;
-        if rate <= f64::EPSILON {
-            return None;
-        }
-        let remaining = ((total - done) as f64) / rate;
-        if !remaining.is_finite() {
-            return None;
-        }
-        Some(round_eta(remaining))
+        // remaining / (done per second), whole seconds rounded up; 0 < done < total checked above
+        let remaining = u128::from(total - done);
+        let secs = (remaining * ms).div_ceil(u128::from(done) * 1000);
+        Some(round_eta(u64::try_from(secs).unwrap_or(u64::MAX)))
     }
 }
 
-fn round_eta(secs: f64) -> u64 {
-    let s = secs.ceil().clamp(0.0, f64::from(u32::MAX)) as u64;
+
+fn round_eta(secs: u64) -> u64 {
+    let s = secs.min(u64::from(u32::MAX));
     match s {
         0..=30 => s,
         31..=300 => s.div_ceil(5) * 5,

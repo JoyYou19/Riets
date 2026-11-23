@@ -41,7 +41,7 @@ impl DailyLog {
         let mut part = 0;
         loop {
             let path = Self::path(dir, name, date, part);
-            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let size = fs::metadata(&path).map_or(0, |m| m.len());
             if size < MAX_LOG_FILE_BYTES {
                 let file = OpenOptions::new().create(true).append(true).open(path)?;
                 return Ok((part, size, file));

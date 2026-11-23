@@ -1,4 +1,4 @@
-pub mod analyzer;
+pub mod text_analyzer;
 pub mod analyzer_config;
 pub mod ascii_folding_filter;
 pub mod cached_stemmer;
@@ -10,6 +10,6 @@ pub mod token;
 pub mod tokenizer;
 pub mod url_tokenizer;
 pub mod word_delimiter;
-pub use analyzer::Analyzer;
+pub use text_analyzer::{Analyzer, AnalyzerSet, MAX_NAME_WORDS, NAME_KEY, QUALIFIED_NAME_KEY};
 pub use token::{RawToken, Token};
 pub use tokenizer::SimpleTokenizer;

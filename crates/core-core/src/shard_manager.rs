@@ -10,7 +10,7 @@ use core_backup::backup::{BackupManifest, BackupType};
 use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
-use core_index::analyzer::analyzer::AnalyzerSet;
+use core_index::analyzer::text_analyzer::AnalyzerSet;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
 use core_index::document::{FieldPolicy, IndexPolicy};
@@ -818,7 +818,7 @@ impl ShardManager {
 
         let joins = std::mem::take(&mut *self.joins.lock());
         for j in joins {
-            let _ = j.join();
+            drop(j.join());
         }
 
         match first_err {
@@ -1037,8 +1037,10 @@ impl ShardManager {
         }
         self.db_stats.reindex_progress().set_phase(Phase::Cancelled);
     }
-    fn shard_index_for(&self, external_id: &str) -> usize {
-        shard_for(external_id, self.shards.len() as u16) as usize
+      fn shard_index_for(&self, external_id: &str) -> usize {
+        let shard_count = u16::try_from(self.shards.len())
+            .expect("a database is created with a u16 shard count (ShardManager::create)");
+        usize::from(shard_for(external_id, shard_count))
     }
 
     fn group_by_shard<'a>(&self, ids: &'a [String]) -> HashMap<usize, Vec<&'a String>> {
@@ -2349,7 +2351,7 @@ impl ShardManager {
                     };
                     let matched = matched_by_doc
                         .get(&hit.internal_id)
-                        .map(|v| v.as_slice())
+                        .map(Vec::as_slice)
                         .unwrap_or(&[]);
                     let mut highlights: IndexMap<String, Vec<String>> = IndexMap::new();
                     if !matched.is_empty() {

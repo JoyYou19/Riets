@@ -1,5 +1,4 @@
-use ahash::HashMap;
-use fst::{Automaton, IntoStreamer, Streamer};
+use fst::Automaton ;
 
 pub const DEFAULT_PREFIX_LENGTH: usize = 0;
 //now max terms that the query expand to
@@ -344,59 +343,59 @@ impl Automaton for LevenshteinAutomaton {
 /// Call once per segment with the same `out` so candidates merge before
 /// ranking. Returns `true` if `limit` distinct terms were reached and the walk
 /// stopped early.
-pub fn collect_fst_candidates<D: AsRef<[u8]>>(
-    map: &fst::Map<D>,
-    automaton: &LevenshteinAutomaton,
-    limit: usize,
-    out: &mut HashMap<String, u8>,
-) -> bool {
-    let strip = automaton.key_prefix_len();
-    let mut stream = map.search_with_state(automaton).into_stream();
-    while let Some((key, _value, state)) = stream.next() {
-        let Some(edits) = automaton.distance(&state) else {
-            continue;
-        };
-        let Ok(term) = std::str::from_utf8(&key[strip..]) else {
-            continue;
-        };
-        if let Some(existing) = out.get_mut(term) {
-            *existing = (*existing).min(edits);
-            continue;
-        }
-        if out.len() >= limit {
-            return true;
-        }
-        out.insert(term.to_owned(), edits);
-    }
-    false
-}
+// pub fn collect_fst_candidates<D: AsRef<[u8]>>(
+//     map: &fst::Map<D>,
+//     automaton: &LevenshteinAutomaton,
+//     limit: usize,
+//     out: &mut HashMap<String, u8>,
+// ) -> bool {
+//     let strip = automaton.key_prefix_len();
+//     let mut stream = map.search_with_state(automaton).into_stream();
+//     while let Some((key, _value, state)) = stream.next() {
+//         let Some(edits) = automaton.distance(&state) else {
+//             continue;
+//         };
+//         let Ok(term) = std::str::from_utf8(&key[strip..]) else {
+//             continue;
+//         };
+//         if let Some(existing) = out.get_mut(term) {
+//             *existing = (*existing).min(edits);
+//             continue;
+//         }
+//         if out.len() >= limit {
+//             return true;
+//         }
+//         out.insert(term.to_owned(), edits);
+//     }
+//     false
+// }
 
-/// Same as `collect_fst_candidates` for term sources without an FST (memtable).
-/// The automaton must have been built without a raw key prefix.
-pub fn collect_iter_candidates<'a, I>(
-    terms: I,
-    automaton: &LevenshteinAutomaton,
-    limit: usize,
-    out: &mut HashMap<String, u8>,
-) -> bool
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    for term in terms {
-        let Some(edits) = automaton.distance_to(term) else {
-            continue;
-        };
-        if let Some(existing) = out.get_mut(term) {
-            *existing = (*existing).min(edits);
-            continue;
-        }
-        if out.len() >= limit {
-            return true;
-        }
-        out.insert(term.to_owned(), edits);
-    }
-    false
-}
+// /// Same as `collect_fst_candidates` for term sources without an FST (memtable).
+// /// The automaton must have been built without a raw key prefix.
+// pub fn collect_iter_candidates<'a, I>(
+//     terms: I,
+//     automaton: &LevenshteinAutomaton,
+//     limit: usize,
+//     out: &mut HashMap<String, u8>,
+// ) -> bool
+// where
+//     I: IntoIterator<Item = &'a str>,
+// {
+//     for term in terms {
+//         let Some(edits) = automaton.distance_to(term) else {
+//             continue;
+//         };
+//         if let Some(existing) = out.get_mut(term) {
+//             *existing = (*existing).min(edits);
+//             continue;
+//         }
+//         if out.len() >= limit {
+//             return true;
+//         }
+//         out.insert(term.to_owned(), edits);
+//     }
+//     false
+// }
 
 // ---------------------------------------------------------------------------
 // Ranking
@@ -579,7 +578,6 @@ impl FuzzyMatcher {
 
 #[cfg(test)]
 mod tests {
-    use ahash::HashMapExt;
 
     use super::*;
 
@@ -655,40 +653,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn prefix_lock_and_key_prefix() {
-        let aut = LevenshteinAutomaton::new(b"title\0", "serach", 2, 1);
-        let map = fst::Map::from_iter(
-            [
-                "body\0search",
-                "title\0rearch",
-                "title\0search",
-                "title\0serac",
-                "title\0zzz",
-            ]
-            .iter()
-            .enumerate()
-            .map(|(i, k)| (*k, i as u64)),
-        )
-        .unwrap();
-        let mut out = HashMap::new();
-        assert!(!collect_fst_candidates(&map, &aut, 100, &mut out));
-        let mut got: Vec<_> = out.into_iter().collect();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![("search".to_string(), 1), ("serac".to_string(), 1)]
-        );
-    }
-
-    #[test]
-    fn limit_reports_truncation() {
-        let map = fst::Map::from_iter(["aa", "ab", "ac", "ad"].iter().map(|k| (*k, 0u64))).unwrap();
-        let aut = LevenshteinAutomaton::new(&[], "a", 1, 0);
-        let mut out = HashMap::new();
-        assert!(collect_fst_candidates(&map, &aut, 2, &mut out));
-        assert_eq!(out.len(), 2);
-    }
+    
 
     #[test]
     fn ranking_examples() {

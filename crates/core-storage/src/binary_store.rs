@@ -98,13 +98,14 @@ impl Throttle {
         }
     }
 
-    fn consume(&mut self, bytes: u64) {
+     fn consume(&mut self, bytes: u64) {
         self.bytes += bytes;
-        let due =
-            std::time::Duration::from_secs_f64((self.bytes as f64) / (self.bytes_per_sec as f64));
-        let elapsed = self.started.elapsed();
-        if due > elapsed {
-            std::thread::sleep(due.checked_sub(elapsed).unwrap());
+        // bytes / (bytes per second), in whole milliseconds; integers, so it cannot overflow to
+        // infinity (from_secs_f64 panics on that) and `max(1)` rules out dividing by zero
+        let due_ms = u128::from(self.bytes) * 1000 / u128::from(self.bytes_per_sec.max(1));
+        let due = std::time::Duration::from_millis(u64::try_from(due_ms).unwrap_or(u64::MAX));
+        if let Some(wait) = due.checked_sub(self.started.elapsed()) {
+            std::thread::sleep(wait);
         }
     }
 }

@@ -5,7 +5,7 @@ use roaring::RoaringTreemap;
 
 use crate::{
     array_rows::ArrayRowIndex,
-    document::document::BoolField,
+    document::indexed::BoolField,
     numeric_values::{NumericBound, NumericFields, NumericValue},
     posting::{PostingCursor, PostingList, cursor::TermCursor},
     search::{SearchIndex, SearchNumeric, SearchStats, TermCursorInfo},

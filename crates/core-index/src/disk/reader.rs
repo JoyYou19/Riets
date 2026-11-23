@@ -16,7 +16,7 @@ use crate::{
         format::{FOOTER_LEN, MAGIC, SKIP_ENTRY_LEN, SegmentFooter, SkipEntry, VERSION},
         writer::MergeSource,
     },
-    document::document::BoolField,
+    document::indexed::BoolField,
     document_values::DocValues,
     fuzzy::{FuzzyExpansion, FuzzyOptions},
     numeric_values::{NumericBound, NumericField, NumericFields, NumericKind, NumericValue},
@@ -92,6 +92,9 @@ impl DiskSegment {
     #[timed(disk_io)]
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
+        // SAFETY: segment files are written under a temporary name, renamed into place and
+        // never modified after; a replacement is a new inode, so the mapping cannot change
+        // underneath us.
         let mmap = unsafe { Mmap::map(&file)? };
 
         validate_header(&mmap)?;

@@ -25,7 +25,7 @@ impl Default for LatencyHistogram {
 impl LatencyHistogram {
     pub fn record(&self, elapsed: Duration) {
         let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX).max(1);
-        let bucket = (63 - micros.leading_zeros()) as usize;
+        let bucket = micros.ilog2() as usize;
         self.buckets[bucket.min(LATENCY_BUCKETS - 1)].fetch_add(1, Relaxed);
     }
 
@@ -42,14 +42,15 @@ pub fn bucket_upper_bound(i: usize) -> Duration {
     Duration::from_micros(1u64 << (i + 1).min(63))
 }
 
-/// The duration below which `q` (0..=1) of the recorded values fall, rounded up to a bucket
-/// bound; `None` when nothing was recorded.
-pub fn latency_quantile(counts: &[u64], q: f64) -> Option<Duration> {
+/// The duration below which `permille`/1000 of the recorded values fall (500 = median,
+/// 990 = p99), rounded up to a bucket bound; `None` when nothing was recorded.
+pub fn latency_quantile(counts: &[u64], permille: u16) -> Option<Duration> {
     let total: u64 = counts.iter().sum();
     if total == 0 {
         return None;
     }
-    let target = ((q * (total as f64)).ceil() as u64).clamp(1, total);
+    let target = (u128::from(total) * u128::from(permille.min(1000))).div_ceil(1000);
+    let target = u64::try_from(target).unwrap_or(total).clamp(1, total);
     let mut seen = 0;
     for (i, &count) in counts.iter().enumerate() {
         seen += count;
@@ -226,28 +227,28 @@ pub struct ShardStatsHandle {
 }
 
 impl DatabaseMetrics {
-    pub fn average_search_time(&self) -> Option<Duration> {
-        if self.search_requests == 0 {
-            return None;
-        }
-        Some(self.search_total_time / (self.search_requests as u32))
+     pub fn average_search_time(&self) -> Option<Duration> {
+        average(self.search_total_time, self.search_requests)
     }
 
     pub fn average_indexing_time(&self) -> Option<Duration> {
-        if self.indexing_requests == 0 {
-            return None;
-        }
-        Some(self.indexing_total_time / (self.indexing_requests as u32))
+        average(self.indexing_total_time, self.indexing_requests)
     }
-    pub fn search_percentile(&self, q: f64) -> Option<Duration> {
+    pub fn search_percentile(&self, q:u16) -> Option<Duration> {
         latency_quantile(&self.search_latency, q)
     }
 
-    pub fn indexing_percentile(&self, q: f64) -> Option<Duration> {
+    pub fn indexing_percentile(&self, q: u16) -> Option<Duration> {
         latency_quantile(&self.indexing_latency, q)
     }
 }
-
+fn average(total: Duration, count: u64) -> Option<Duration> {
+    if count == 0 {
+        return None;
+    }
+    let nanos = total.as_nanos() / u128::from(count);
+    Some(Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)))
+}
 impl DbStats {
     pub fn new(shard_count: usize) -> Arc<Self> {
         Arc::new(Self {
@@ -547,28 +548,30 @@ impl DbStats {
             EmbeddingStatus::Complete | EmbeddingStatus::Disabled => None,
             _ => *lock(&self.embedding_rate),
         };
-        let rate = anchor
+        let window = anchor
             .map(|anchor| {
                 (
-                    anchor.started.elapsed().as_secs_f64(),
-                    embedded.saturating_sub(anchor.embedded_before),
+                    anchor.started.elapsed().as_millis(),
+                    u128::from(embedded.saturating_sub(anchor.embedded_before)),
                 )
             })
-            .filter(|(secs, _)| *secs >= 2.0)
-            .map(|(secs, made)| (made as f64) / secs)
-            .filter(|rate| rate.is_finite() && *rate > 0.0);
-        let eta_seconds = match (status, rate) {
-            (EmbeddingStatus::Embedding, Some(rate)) => {
-                Some((((total - done) as f64) / rate).ceil() as u64)
+            .filter(|&(ms, made)| ms >= 2_000 && made > 0);
+        let eta_seconds = match (status, window) {
+            (EmbeddingStatus::Embedding, Some((ms, made))) => {
+                // remaining / (made per second), rounded up
+                let remaining = u128::from(total.saturating_sub(done));
+                u64::try_from((remaining * ms).div_ceil(made * 1000)).ok()
             }
             _ => None,
         };
+        
         EmbeddingStats {
             status,
             progress,
             vectors_total: total,
             vectors_done: done,
-            docs_per_second: rate.map(|rate| rate.round() as u64),
+            docs_per_second: window
+                .map(|(ms, made)| u64::try_from((made * 1000 + ms / 2) / ms).unwrap_or(u64::MAX)),
             eta_seconds,
             error: match status {
                 EmbeddingStatus::Complete | EmbeddingStatus::Disabled => None,

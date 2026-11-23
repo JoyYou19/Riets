@@ -60,7 +60,7 @@ impl DatabaseOptions {
     }
 
     pub fn doc_cache_budget_bytes(&self, shard_count: u16) -> u64 {
-        let shards = shard_count.max(1) as u64;
+        let shards = u64::from(shard_count.max(1));
         self.doc_cache_mb.max(1).saturating_mul(1024 * 1024) / shards
     }
 }

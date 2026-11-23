@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use crate::permission::Permission;
 
-#[derive(Default)]
+#[derive(Default,Debug)]
 pub struct PolicyStore {
     role_permissions: HashMap<String, HashSet<Permission>>,
 }

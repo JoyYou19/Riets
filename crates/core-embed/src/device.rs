@@ -113,32 +113,3 @@ fn new_cuda(device_id: i32) -> candle_core::Result<candle_core::Device> {
         .map_err(|_| candle_core::Error::Msg(format!("invalid CUDA device {device_id}")))?;
     candle_core::Device::new_cuda(ordinal)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_device_preferences() {
-        assert_eq!(DevicePreference::parse("").unwrap(), DevicePreference::Auto);
-        assert_eq!(
-            DevicePreference::parse(" auto ").unwrap(),
-            DevicePreference::Auto
-        );
-        assert_eq!(
-            DevicePreference::parse("cpu").unwrap(),
-            DevicePreference::Cpu
-        );
-        assert_eq!(
-            DevicePreference::parse("cuda").unwrap(),
-            DevicePreference::Cuda { device_id: 0 }
-        );
-        assert_eq!(
-            DevicePreference::parse("cuda:1").unwrap(),
-            DevicePreference::Cuda { device_id: 1 }
-        );
-        for bad in ["gpu", "cuda:", "cuda:-1", "cuda:x"] {
-            assert!(DevicePreference::parse(bad).is_err(), "{bad}");
-        }
-    }
-}

@@ -3,8 +3,8 @@
 
 use ahash::AHashMap;
 
-use crate::analyzer::analyzer::AnalyzerSet;
-use crate::document::document::{BoolPoint, NumericPoint};
+use crate::analyzer::text_analyzer::AnalyzerSet;
+use crate::document::indexed::{BoolPoint, NumericPoint};
 use crate::document::{DocumentPart, IndexedDocument};
 use crate::types::{ArrayRowId, DocId, XPathId, encode_position};
 
