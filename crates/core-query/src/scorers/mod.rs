@@ -1,2 +1,7 @@
+mod and;
+mod or;
 mod term;
-pub use term::TermScorer;
+
+pub(crate) use and::AndScorer;
+pub(crate) use or::OrScorer;
+pub(crate) use term::TermScorer;

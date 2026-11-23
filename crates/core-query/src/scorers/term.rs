@@ -10,7 +10,7 @@ use crate::{
     scorer::Scorer,
 };
 
-pub struct TermScorer<'a> {
+pub(crate) struct TermScorer<'a> {
     cursor: TermCursor<'a>,
     xpath: XPathId,
     doc_freq: u32,
@@ -22,7 +22,7 @@ pub struct TermScorer<'a> {
 
 impl<'a> TermScorer<'a> {
     //Wraps a posting-list cursor and caches the field stats BM25 needs.
-    pub fn new(
+    pub(crate) fn new(
         cursor: TermCursor<'a>,
         xpath: XPathId,
         doc_freq: u32,

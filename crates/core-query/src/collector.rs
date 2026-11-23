@@ -6,7 +6,7 @@ use roaring::RoaringTreemap;
 
 use crate::{
     ranking::COVERAGE_POWER,
-    scorer::BoxScorer,
+    scorer::{BoxScorer, Scorer},
     wand::{DIRECT_RESTRICT_MAX, HeapHit, WandHit, finish_heap, next_allowed, push_top_k},
 };
 
@@ -108,7 +108,6 @@ pub(crate) fn top_k_with_any<'a>(
                 any_heap.peek().map_or(0, |hit| hit.score)
             }
         });
-        let threshold = any_threshold.map_or(pool_threshold, |any| any.min(pool_threshold));
 
         // Pivot: the first prefix that can still beat the threshold and cover enough.
         let mut accumulated_bound = 0u64;
@@ -209,8 +208,11 @@ pub(crate) fn conjunctive_top_k<'a>(
 }
 
 /// The next document every scorer in the group is on, after `after`.
-fn next_common<'a>(scorers: &mut [BoxScorer<'a>], after: Option<DocId>) -> Option<DocId> {
-    if let Some(doc) = after {
+pub(crate) fn next_common<'a>(
+    scorers: &mut [BoxScorer<'a>],
+    after: Option<DocId>,
+) -> Option<DocId> {
+    if after.is_some() {
         for scorer in scorers.iter_mut() {
             scorer.next();
         }
@@ -229,4 +231,22 @@ fn next_common<'a>(scorers: &mut [BoxScorer<'a>], after: Option<DocId>) -> Optio
             return Some(target);
         }
     }
+}
+
+///Walk every document a scorer produces and keep the top k
+pub(crate) fn collect_all<S: Scorer + ?Sized>(
+    stats: &dyn SearchStats,
+    scorer: &mut S,
+    k: usize,
+    restrict: Option<&RoaringTreemap>,
+) -> Vec<WandHit> {
+    let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
+    while let Some(doc) = scorer.doc() {
+        if restrict.is_none_or(|docs| docs.contains(doc)) {
+            let score = scorer.score(stats, doc);
+            push_top_k(&mut heap, doc, score, score, 1, k);
+        }
+        scorer.next();
+    }
+    finish_heap(heap)
 }
