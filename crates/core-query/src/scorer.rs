@@ -1,15 +1,21 @@
-use std::collections::HashMap;
+//! The query layer's scoring interface.
+//! One `Scorer` per query node (term, AND, OR, ...). A scorer is a forward-only stream of
+//! documents with a score and a safe upper bound, so the top-k collector can skip cheaply.
+use core_index::{search::SearchStats, types::DocId};
+use roaring::RoaringTreemap;
 
 use core_index::{
     num::u64_to_f64, posting::PostingList, search::SearchStats, types::{DocId, XPathId},
 };
 use core_timing::timed;
 
-use crate::ScoredPosting;
+///A stream of documents with scores — the unit the top-k collector works on.
+pub(crate) trait Scorer {
+    /// The document the scorer sits on, or `None` when it is exhausted.
+    fn doc(&self) -> Option<DocId>;
 
-/*
-* Turns postings into scored postings based on whatever criteria
-*/
+    /// Move past the current document.
+    fn next(&mut self);
 
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
@@ -108,15 +114,16 @@ pub(crate) fn score_term_into<S: SearchStats>(
             doc_frequency,
         );
 
-        out.push(ScoredPosting {
-            doc_id: posting.doc_id,
-            score,
-            matched_terms: 1,
-            density: 1.0,
-        });
+    /// The top `k` documents, best first (default: walk every one).
+    fn top_k(
+        &mut self,
+        stats: &dyn SearchStats,
+        k: usize,
+        restrict: Option<&RoaringTreemap>,
+    ) -> Vec<WandHit> {
+        crate::collector::collect_all(stats, self, k, restrict)
     }
 }
 
-pub(crate) fn fuzzy_decay(edits: u8) -> f32 {
-    1.0 / (1.0 + f32::from(edits))
-}
+/// A boxed scorer borrowing from the index for `'a`.
+pub(crate) type BoxScorer<'a> = Box<dyn Scorer + 'a>;

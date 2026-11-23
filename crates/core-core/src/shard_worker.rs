@@ -438,12 +438,14 @@ impl ShardHandle {
         } else {
             k
         };
+
         // `prepare_search` prepared only the groups that kept a query, in order
         let searched = groups
             .iter()
             .zip(plans)
             .filter_map(|(group, plan)| group.query.as_ref().map(|query| (group, plan, query)));
         let mut ranked = Vec::with_capacity(groups.len());
+
         //WARN: this is done sequencially for each query group we might need to do some par_iter()
         //bs if slow
         for ((group, plan, query), prepared_group) in searched.zip(prepared) {
