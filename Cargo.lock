@@ -806,6 +806,7 @@ dependencies = [
  "ahash",
  "core-index",
  "core-protocol",
+ "core-storage",
  "core-timing",
  "indexmap",
  "roaring",

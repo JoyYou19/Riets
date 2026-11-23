@@ -15,6 +15,10 @@ toml = "1.2.0"
 roaring = "0.12.0"
 unicode-segmentation = "1.13"
 
+
+[dev-dependencies]
+core-storage = { path = "../core-storage" }
+
 [features]
 timing = ["core-timing/timing", "core-index/timing"]
 
