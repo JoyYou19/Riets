@@ -8,13 +8,13 @@ pub mod highlight;
 mod matched_terms;
 pub use matched_terms::MatchedTerm;
 
+mod bm25;
 pub mod planner;
 mod prepared;
 pub mod query_string_parser;
 pub mod ranking;
 pub mod resolver;
 mod scored_posting;
-mod scorer;
 mod search_hit;
 pub mod synonyms;
 pub mod wand;

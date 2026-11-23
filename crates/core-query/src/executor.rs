@@ -22,13 +22,13 @@ use core_timing::timed;
 use crate::{
     MatchedTerm, ScoredPosting, SearchHit, TopHit,
     ast::{PhraseTerm, Query, SynonymAlternative},
+    bm25::{bm25_idf, fuzzy_decay, score_term_into},
     corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
     planner::{RankPlan, Tier},
     prepared::PreparedQuery,
     rank_order,
     ranking::{ANY_POOL_SIZE, MAX_CLAUSES, MIN_COVERAGE, POOL_SIZE, RankedGroup, finalize},
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
-    scorer::{bm25_idf, fuzzy_decay, score_term_into},
     wand::{
         FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
         conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_grouped_with_any,

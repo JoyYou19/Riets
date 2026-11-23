@@ -1,25 +1,27 @@
 use std::io;
 
 use crate::{
-    disk::{block_cursor::BlockCursor, format::SkipEntry}, posting::{DeleteSet, Posting, PostingList}, types::{DocId, position_start},
+    disk::{block_cursor::BlockCursor, format::SkipEntry},
+    posting::{DeleteSet, Posting, PostingList},
+    types::{DocId, position_start},
 };
 
-pub enum TermCursor<'a>{
+pub enum TermCursor<'a> {
     Empty,
     //a list in memory
     Slice(PostingCursor<'a>),
-    //one disk 
+    //one disk
     Block(Box<BlockCursor<'a>>),
     /// Several sources merged by doc id, with deleted documents skipped.
     Union(Box<UnionCursor<'a>>),
 }
-impl <'a> TermCursor<'a> {
-    pub fn is_exhausted(&self) -> bool{
+impl<'a> TermCursor<'a> {
+    pub fn is_exhausted(&self) -> bool {
         match self {
-            Self::Slice(cursor)=>cursor.is_exhausted(),
-            Self::Block(cursor)=>cursor.is_exhausted(),
-            Self::Union(cursor)=>cursor.current.is_none(),
-            Self::Empty=>true,
+            Self::Slice(cursor) => cursor.is_exhausted(),
+            Self::Block(cursor) => cursor.is_exhausted(),
+            Self::Union(cursor) => cursor.current.is_none(),
+            Self::Empty => true,
         }
     }
     pub fn doc_id(&self) -> Option<DocId> {
@@ -27,35 +29,43 @@ impl <'a> TermCursor<'a> {
             Self::Slice(cursor) => cursor.doc_id(),
             Self::Block(cursor) => cursor.doc_id(),
             Self::Union(cursor) => cursor.current,
-            Self::Empty=> None
+            Self::Empty => None,
         }
     }
-    
-   pub fn term_freq(&mut self) -> u32 {
-    match self {
-        Self::Slice(cursor) => cursor.current().map_or(0, |posting| {
-            u32::try_from(posting.positions.len()).unwrap_or(u32::MAX)
-        }),
-        Self::Block(cursor) => cursor.term_freq(),
-        Self::Union(cursor) => cursor.on_current_mut().map(TermCursor::term_freq).max().unwrap_or(0),
-        Self::Empty => 0,
-    }
-}
 
-pub fn weight(&mut self) -> u16 {
-    match self {
-        Self::Slice(cursor) => cursor.current().map_or(0, |posting| posting.weight),
-        Self::Block(cursor) => cursor.weight(),
-        Self::Union(cursor) => cursor.on_current_mut().map(TermCursor::weight).max().unwrap_or(0),
-        Self::Empty => 0,
+    pub fn term_freq(&mut self) -> u32 {
+        match self {
+            Self::Slice(cursor) => cursor.current().map_or(0, |posting| {
+                u32::try_from(posting.positions.len()).unwrap_or(u32::MAX)
+            }),
+            Self::Block(cursor) => cursor.term_freq(),
+            Self::Union(cursor) => cursor
+                .on_current_mut()
+                .map(TermCursor::term_freq)
+                .max()
+                .unwrap_or(0),
+            Self::Empty => 0,
+        }
     }
-}
+
+    pub fn weight(&mut self) -> u16 {
+        match self {
+            Self::Slice(cursor) => cursor.current().map_or(0, |posting| posting.weight),
+            Self::Block(cursor) => cursor.weight(),
+            Self::Union(cursor) => cursor
+                .on_current_mut()
+                .map(TermCursor::weight)
+                .max()
+                .unwrap_or(0),
+            Self::Empty => 0,
+        }
+    }
     pub fn next(&mut self) {
         match self {
             Self::Slice(cursor) => cursor.next(),
             Self::Block(cursor) => cursor.next(),
             Self::Union(cursor) => cursor.next(),
-            Self::Empty=> {}
+            Self::Empty => {}
         }
     }
 
@@ -64,34 +74,34 @@ pub fn weight(&mut self) -> u16 {
             Self::Slice(cursor) => cursor.advance_to(target),
             Self::Block(cursor) => cursor.advance_to(target),
             Self::Union(cursor) => cursor.advance_to(target),
-            Self::Empty=>{}
+            Self::Empty => {}
         }
     }
 
     pub fn positions_into(&mut self, out: &mut Vec<u32>) -> io::Result<()> {
-    match self {
-        Self::Slice(cursor) => {
-            out.clear();
-            if let Some(posting) = cursor.current() {
-                out.extend_from_slice(&posting.positions);
+        match self {
+            Self::Slice(cursor) => {
+                out.clear();
+                if let Some(posting) = cursor.current() {
+                    out.extend_from_slice(&posting.positions);
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        Self::Block(cursor) => cursor.positions_into(out),
-        Self::Union(cursor) => match cursor.on_current_mut().next() {
-            Some(child) => child.positions_into(out),
-            None => {
+            Self::Block(cursor) => cursor.positions_into(out),
+            Self::Union(cursor) => match cursor.on_current_mut().next() {
+                Some(child) => child.positions_into(out),
+                None => {
+                    out.clear();
+                    Ok(())
+                }
+            },
+            Self::Empty => {
                 out.clear();
                 Ok(())
             }
-        },
-        Self::Empty => {
-            out.clear();
-            Ok(())
         }
     }
-}
-     /// The skip entry of the block the cursor is in; `None` for cursors without blocks
+    /// The skip entry of the block the cursor is in; `None` for cursors without blocks
     /// (memory lists, unions), which then use the term-wide bound.
     pub fn block_entry(&self) -> Option<SkipEntry> {
         match self {
@@ -99,7 +109,7 @@ pub fn weight(&mut self) -> u16 {
             _ => None,
         }
     }
-        pub fn offsets_into(&mut self, out: &mut Vec<(u32, u32)>) -> io::Result<()> {
+    pub fn offsets_into(&mut self, out: &mut Vec<(u32, u32)>) -> io::Result<()> {
         match self {
             Self::Slice(cursor) => {
                 out.clear();
@@ -109,7 +119,7 @@ pub fn weight(&mut self) -> u16 {
                 Ok(())
             }
             Self::Block(cursor) => cursor.offsets_into(out),
-           Self::Union(cursor) => match cursor.on_current_mut().next() {
+            Self::Union(cursor) => match cursor.on_current_mut().next() {
                 Some(child) => child.offsets_into(out),
                 None => {
                     out.clear();
@@ -123,29 +133,28 @@ pub fn weight(&mut self) -> u16 {
         }
     }
     pub fn advance_to_position(&mut self, target: u32) -> io::Result<bool> {
-         match self {
-             Self::Slice(cursor) => Ok(cursor.advance_to_position(target)),
-             Self::Block(cursor) => cursor.advance_to_position(target),
-             Self::Union(_) | Self::Empty => Ok(false),
-         }
-     }
+        match self {
+            Self::Slice(cursor) => Ok(cursor.advance_to_position(target)),
+            Self::Block(cursor) => cursor.advance_to_position(target),
+            Self::Union(_) | Self::Empty => Ok(false),
+        }
+    }
 
-     pub fn current_position(&self) -> Option<u32> {
-         match self {
-             Self::Slice(cursor) => cursor.current_position(),
-             Self::Block(cursor) => cursor.current_position(),
-             Self::Union(_) | Self::Empty => None,
-         }
-     }
-
+    pub fn current_position(&self) -> Option<u32> {
+        match self {
+            Self::Slice(cursor) => cursor.current_position(),
+            Self::Block(cursor) => cursor.current_position(),
+            Self::Union(_) | Self::Empty => None,
+        }
+    }
 }
 
-pub struct UnionCursor<'a>{
+pub struct UnionCursor<'a> {
     children: Vec<TermCursor<'a>>,
     deleted: &'a DeleteSet,
     current: Option<DocId>,
 }
-impl <'a> UnionCursor<'a>{
+impl<'a> UnionCursor<'a> {
     pub fn new(mut children: Vec<TermCursor<'a>>, deleted: &'a DeleteSet) -> Self {
         children.retain(|child| !child.is_exhausted());
         let mut cursor = Self {
@@ -158,11 +167,11 @@ impl <'a> UnionCursor<'a>{
     }
 
     fn on_current_mut(&mut self) -> impl Iterator<Item = &mut TermCursor<'a>> {
-    let current = self.current;
-    self.children
-        .iter_mut()
-        .filter(move |child| current.is_some() && child.doc_id() == current)
-}
+        let current = self.current;
+        self.children
+            .iter_mut()
+            .filter(move |child| current.is_some() && child.doc_id() == current)
+    }
     /// Sets `current` to the smallest live doc id among the children.
     fn settle(&mut self) {
         loop {
@@ -203,24 +212,24 @@ impl <'a> UnionCursor<'a>{
 pub struct PostingCursor<'a> {
     postings: &'a [Posting],
     index: usize,
-    position_index:usize
+    position_index: usize,
 }
 
 impl<'a> PostingCursor<'a> {
     pub fn new(list: &'a PostingList) -> Self {
-         Self {
-             postings: list.items(),
-             index: 0,
-             position_index: 0,
-         }
-     }
+        Self {
+            postings: list.items(),
+            index: 0,
+            position_index: 0,
+        }
+    }
 
-     pub fn next(&mut self) {
-         if !self.is_exhausted() {
-             self.index += 1;
-             self.position_index = 0;
-         }
-     }
+    pub fn next(&mut self) {
+        if !self.is_exhausted() {
+            self.index += 1;
+            self.position_index = 0;
+        }
+    }
 
     // Returns whether the cursor has moved past the final posting
     pub fn is_exhausted(&self) -> bool {
@@ -238,8 +247,6 @@ impl<'a> PostingCursor<'a> {
         self.postings.get(self.index)
     }
 
-
-   
     pub fn advance_to(&mut self, target: DocId) {
         if self.is_exhausted() {
             return;
@@ -274,26 +281,26 @@ impl<'a> PostingCursor<'a> {
         }
 
         self.index = left;
-        self.position_index=0;
+        self.position_index = 0;
     }
-     pub fn advance_to_position(&mut self, target: u32) -> bool {
-         let Some(posting) = self.postings.get(self.index) else {
-             return false;
-         };
-         let positions = &posting.positions;
-         while self.position_index < positions.len()
-             && position_start(positions[self.position_index]) < target
-         {
-             self.position_index += 1;
-         }
-         self.position_index < positions.len()
-     }
+    pub fn advance_to_position(&mut self, target: u32) -> bool {
+        let Some(posting) = self.postings.get(self.index) else {
+            return false;
+        };
+        let positions = &posting.positions;
+        while self.position_index < positions.len()
+            && position_start(positions[self.position_index]) < target
+        {
+            self.position_index += 1;
+        }
+        self.position_index < positions.len()
+    }
 
-     /// Returns the current position without advancing.
-     pub fn current_position(&self) -> Option<u32> {
-         self.postings
-             .get(self.index)
-             .and_then(|p| p.positions.get(self.position_index))
-             .copied()
-     }
+    /// Returns the current position without advancing.
+    pub fn current_position(&self) -> Option<u32> {
+        self.postings
+            .get(self.index)
+            .and_then(|p| p.positions.get(self.position_index))
+            .copied()
+    }
 }
