@@ -1,7 +1,7 @@
 //! Integration tests for ranking: a tiny in-memory index, real queries, checked by doc id.
 
 use core_index::{
-    analyzer::analyzer::AnalyzerSet, array_rows::ArrayRowAllocator, document::IndexPolicy,
+    analyzer::AnalyzerSet, array_rows::ArrayRowAllocator, document::IndexPolicy,
     mem::MemIndex,
 };
 use core_protocol::command_reponse_definitions::MatchMode;
