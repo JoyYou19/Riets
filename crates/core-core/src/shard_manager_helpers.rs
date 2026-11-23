@@ -1,4 +1,4 @@
-use core_index::analyzer::analyzer::AnalyzerSet;
+use core_index::analyzer::text_analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::numeric_values::NumericValue;
 use core_index::types::XPathId;

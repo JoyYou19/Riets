@@ -511,7 +511,7 @@ mod disabled {
     pub struct Timer;
 
     impl Timer {
-        #[inline(always)]
+        #[inline]
         pub const fn start(
             _category: &'static str,
             _name: &'static str,
@@ -539,12 +539,12 @@ mod disabled {
     ) {
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn snapshot() -> Vec<(&'static str, CategoryEntries)> {
         Vec::new()
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn snapshot_filtered<S: AsRef<str>>(
         _categories: &[S],
         _file: Option<&str>,

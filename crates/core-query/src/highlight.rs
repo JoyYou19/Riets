@@ -192,7 +192,7 @@ pub fn highlight_field_row_keyed(
         let Some(OwnedValue::String(text)) = value_for_row(value, full_path, &row_path) else {
             continue;
         };
-        let (filtered, tokens) = analyzer.analyze_text(&text);
+        let (filtered, tokens) = analyzer.analyze_text(text);
         let mut ranges: Vec<Span> = Vec::new();
         for token in &tokens {
             if let Some(&weight) = want.get(&token.position) {

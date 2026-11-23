@@ -22,7 +22,7 @@ use std::{
 #[derive(Clone)]
 pub struct Analyzer {
     id: u64,
-    analyzer: TextAnalyzer,
+    analyzer_pipeline: TextAnalyzer,
     literal_symbols: HashSet<char>,
     lowercase: bool,
     char_filters: Vec<CompiledCharFilter>,
@@ -170,7 +170,7 @@ impl Analyzer {
             .map(str::to_string)
             .collect();
 
-        let analyzer = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
+        let analyzer_pipeline = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
             .filter(RemoveLongFilter::limit(40))
             .filter(LowerCaser)
             .filter(StopWordFilter::remove(stopwords))
@@ -181,7 +181,7 @@ impl Analyzer {
             .build();
         Self {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
-            analyzer,
+            analyzer_pipeline,
             literal_symbols,
             lowercase: true,
             char_filters: Vec::new(),
@@ -244,10 +244,10 @@ impl Analyzer {
             .collect();
 
         //final-final
-        let analyzer = builder.build();
+        let analyzer_pipeline = builder.build();
         Self {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
-            analyzer,
+            analyzer_pipeline,
             literal_symbols,
             lowercase: config.lowercase,
             char_filters,
@@ -287,7 +287,7 @@ impl Analyzer {
             }
             let analyzer = cache
                 .entry(self.id)
-                .or_insert_with(|| self.analyzer.clone());
+                .or_insert_with(|| self.analyzer_pipeline.clone());
             f(analyzer)
         })
     }

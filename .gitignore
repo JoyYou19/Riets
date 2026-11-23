@@ -26,6 +26,7 @@
 /scripts/kilt_knowledgesource.json.gz.part
 /scripts/beir
 /scripts/beir_test
+/scripts/WIKI
 # If all fixtures are generated and should never be committed:
 
 .fastembed_cache

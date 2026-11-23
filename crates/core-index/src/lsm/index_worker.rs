@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::{
-    analyzer::{ Analyzer, analyzer::AnalyzerSet },
+    analyzer::{ Analyzer, text_analyzer::AnalyzerSet },
     background::background_pool,
     disk::reader::DiskSegment,
     document::{ AnalyzedDocument, IndexedDocument },
@@ -145,7 +145,7 @@ pub struct IndexWorker {
 }
 
 impl IndexWorker {
-    pub fn start(index: LsmIndex, _analyzer: Analyzer, shared: SharedIndexSnapshot) -> Self {
+    pub fn start(index: LsmIndex, _analyzer: Analyzer, shared: SharedIndexSnapshot) -> io::Result<Self> {
         shared.publish(index.snapshot());
 
         let (sender, receiver) = mpsc::channel();
@@ -158,14 +158,13 @@ impl IndexWorker {
         let handle = thread::Builder
             ::new()
             .name("index-worker".to_string())
-            .spawn(move || run_index_worker(index, shared, receiver, worker_stats, worker_sender))
-            .expect("failed to spawn index worker");
+            .spawn(move || run_index_worker(index, shared, receiver, worker_stats, worker_sender))?;
 
-        Self {
+       Ok( Self {
             sender,
             handle: Some(handle),
             stats,
-        }
+        })
     }
 
     pub fn sender(&self) -> Sender<IndexCommand> {
@@ -351,8 +350,8 @@ impl Drop for IndexWorker {
     /// sender to its own channel, so it would not notice the handle going away otherwise.
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
-            let _ = self.sender.send(IndexCommand::Shutdown);
-            let _ = handle.join();
+            drop(self.sender.send(IndexCommand::Shutdown));
+            drop(handle.join());
         }
     }
 }
@@ -373,7 +372,7 @@ fn run_index_worker(
     let mut stats = (**published_stats.load()).clone();
     let mut docs_since_publish: u64 = 0;
     let mut last_publish = Instant::now();
-    let writer = SegmentWriter::start(self_sender);
+    let writer = SegmentWriter::start(self_sender)?;
     // Flush acknowledgements waiting for their segments, with the flush target they need.
     let mut flush_waiters: VecDeque<(u64, Option<Acknowledgement>)> = VecDeque::new();
     loop {
@@ -464,7 +463,7 @@ fn run_index_worker(
             IndexCommand::PlanCompaction { config, reply } => {
                 let plan = index.plan_compaction(config);
                 // A compaction thread that stopped waiting must not stop the index worker.
-                let _ = reply.send(plan);
+                drop(reply.send(plan));
             }
             IndexCommand::InstallCompaction { completed, ack } => {
                 let outcome = index.install_compaction(completed);
@@ -481,7 +480,7 @@ fn run_index_worker(
                 }
             }
             IndexCommand::SegmentCount { ack } => {
-                let _ = ack.send(Ok(index.segment_count()));
+                drop(ack.send(Ok(index.segment_count())));
             }
             IndexCommand::Flush { ack } => {
                 let queued = index.queue_flush().and_then(|()| writer.submit(&mut index));
@@ -525,13 +524,13 @@ fn run_index_worker(
             }
             IndexCommand::DiskSegments { reply } => {
                 // A requester that stopped waiting must not stop the index worker.
-                let _ = reply.send(Ok(index.disk_segment_paths()));
+                drop(reply.send(Ok(index.disk_segment_paths())));
             }
             //publishes like new snapshot so search can see
             IndexCommand::InstallVectors { segment, xpath, reply } => {
                 let outcome = index.install_vectors(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -541,7 +540,7 @@ fn run_index_worker(
             IndexCommand::InstallTail { segment, xpath, reply } => {
                 let outcome = index.install_tail(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -551,7 +550,7 @@ fn run_index_worker(
             IndexCommand::InstallGraph { segment, xpath, reply } => {
                 let outcome = index.install_graph(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -561,7 +560,7 @@ fn run_index_worker(
             IndexCommand::InstallFold { segment, xpath, reply } => {
                 let outcome = index.install_fold(&segment, xpath);
                 let installed = matches!(&outcome, Ok(true));
-                let _ = reply.send(outcome);
+                drop(reply.send(outcome));
                 if installed {
                     shared.publish(index.publish_snapshot());
                     docs_since_publish = 0;
@@ -588,7 +587,7 @@ fn run_index_worker(
     while index.has_pending_flushes() {
         match receiver.recv() {
             Ok(IndexCommand::SegmentWritten { seq, replay }) => {
-                let _ = index.complete_flush(seq, replay);
+                drop(index.complete_flush(seq, replay));
             }
             // Commands sent after Shutdown are dropped; their senders see a closed reply.
             Ok(_) => {}
@@ -659,7 +658,7 @@ fn send_acknowledgement(
     result: io::Result<()>
 ) -> io::Result<()> {
     if let Some(acknowledgement) = acknowledgement {
-        let _ = acknowledgement.send(result);
+        drop(acknowledgement.send(result));
     }
 
     Ok(())
@@ -667,7 +666,7 @@ fn send_acknowledgement(
 /// A batch that is already tokenized, in the form `AddIndexedDocuments` takes.
 fn ready(documents: Vec<AnalyzedDocument>) -> Receiver<Vec<AnalyzedDocument>> {
     let (sender, receiver) = mpsc::channel();
-    let _ = sender.send(documents);
+    drop(sender.send(documents));
     receiver
 }
 
@@ -684,18 +683,17 @@ struct SegmentWriter {
 }
 
 impl SegmentWriter {
-    fn start(done: Sender<IndexCommand>) -> Self {
+    fn start(done: Sender<IndexCommand>) -> io::Result<Self> {
         let (writes, queue) = mpsc::channel();
         let handle = thread::Builder
             ::new()
             .name("segment-writer".to_string())
-            .spawn(move || run_segment_writer(queue))
-            .expect("failed to spawn segment writer");
-        Self {
+            .spawn(move || run_segment_writer(queue))?;
+        Ok(Self {
             writes,
             done,
             handle,
-        }
+        })
     }
 
     /// Hands every segment the index queued to the writer thread.
@@ -1002,25 +1000,21 @@ impl ReindexProgress {
             return None;
         }
 
-        let started = (*self.first_add.lock().ok()?)?;
-        let elapsed = started.elapsed().as_secs_f64();
-        if elapsed < 2.0 {
+         let started = (*self.first_add.lock().ok()?)?;
+        let ms = started.elapsed().as_millis();
+        if ms < 2_000 {
             return None;
         }
-        let rate = (done as f64) / elapsed;
-        if rate <= f64::EPSILON {
-            return None;
-        }
-        let remaining = ((total - done) as f64) / rate;
-        if !remaining.is_finite() {
-            return None;
-        }
-        Some(round_eta(remaining))
+        // remaining / (done per second), whole seconds rounded up; 0 < done < total checked above
+        let remaining = u128::from(total - done);
+        let secs = (remaining * ms).div_ceil(u128::from(done) * 1000);
+        Some(round_eta(u64::try_from(secs).unwrap_or(u64::MAX)))
     }
 }
 
-fn round_eta(secs: f64) -> u64 {
-    let s = secs.ceil().clamp(0.0, f64::from(u32::MAX)) as u64;
+
+fn round_eta(secs: u64) -> u64 {
+    let s = secs.min(u64::from(u32::MAX));
     match s {
         0..=30 => s,
         31..=300 => s.div_ceil(5) * 5,

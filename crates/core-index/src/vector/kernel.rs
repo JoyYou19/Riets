@@ -107,6 +107,7 @@ pub(crate) fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
     }
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     {
+         // SAFETY: this block is compiled only with target_feature = "neon" enabled.
         return unsafe { neon::dot_i8(a, b) };
     }
     #[allow(unreachable_code)]
@@ -204,14 +205,7 @@ mod x86 {
         _mm512_setzero_si512,
     };
 
-    /// int8 dot product, 32 bytes per step.
-    ///
-    /// `maddubs` multiplies unsigned bytes by signed bytes, so the sign of each `a` byte is first
-    /// moved onto the matching `b` byte: `|a| × (b × sign(a)) = a × b`. The 16-bit pair sums
-    /// stay in range, so `maddubs` never saturates, and `madd` with ones widens them to 32 bits.
-    ///
-    /// # Safety
-    /// The CPU must support AVX2.
+    
     #[target_feature(enable = "avx2")]
     pub(super) unsafe fn dot_i8_avx2(a: &[u8], b: &[u8]) -> i32 {
         let a_chunks = a.chunks_exact(32);

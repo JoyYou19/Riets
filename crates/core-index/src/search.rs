@@ -143,14 +143,12 @@ pub trait SearchStats {
     fn total_doc_len(&self, xpath: XPathId) -> u64;
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32>;
     fn doc_range(&self) -> Option<(DocId, DocId)>;
-    fn avg_doc_len(&self, xpath: XPathId) -> f32 {
+    fn avg_doc_len(&self, xpath: XPathId) -> f64 {
         let count = self.doc_count(xpath);
-
         if count == 0 {
             return 0.0;
         }
-
-        (self.total_doc_len(xpath) as f32) / (count as f32)
+        crate::num::u64_to_f64(self.total_doc_len(xpath)) / crate::num::u64_to_f64(count)
     }
 }
 

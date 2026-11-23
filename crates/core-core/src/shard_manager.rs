@@ -10,7 +10,7 @@ use core_backup::backup::{BackupManifest, BackupType};
 use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
-use core_index::analyzer::analyzer::AnalyzerSet;
+use core_index::analyzer::text_analyzer::AnalyzerSet;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::FieldKind;
 use core_index::document::{FieldPolicy, IndexPolicy};
@@ -801,7 +801,7 @@ impl ShardManager {
             .iter()
             .map(|h| {
                 let (rtx, rrx) = bounded(1);
-                let _ = h.send_raw(ShardCmd::Shutdown { resp: rtx });
+                drop(h.send_raw(ShardCmd::Shutdown { resp: rtx }));
                 rrx
             })
             .collect();
@@ -818,7 +818,7 @@ impl ShardManager {
 
         let joins = std::mem::take(&mut *self.joins.lock());
         for j in joins {
-            let _ = j.join();
+            drop(j.join());
         }
 
         match first_err {
@@ -906,7 +906,7 @@ impl ShardManager {
         };
         if let Some(e) = failure {
             for handle in &self.shards {
-                let _ = handle.set_policy((*previous).clone(), user.clone()).await;
+                drop(handle.set_policy((*previous).clone(), user.clone()).await);
             }
             return Err(e);
         }
@@ -974,7 +974,7 @@ impl ShardManager {
 
         if let Some(e) = failure {
             for handle in &self.shards {
-                let _ = handle.set_config(previous.clone(), user.clone()).await;
+                drop(handle.set_config(previous.clone(), user.clone()).await);
             }
             return Err(e);
         }
@@ -1033,12 +1033,14 @@ impl ShardManager {
         }
         // staging dirs live under each shard root, not the db root
         for h in &self.shards {
-            let _ = fs::remove_dir_all(h.shard_root().join("index.new"));
+            drop(fs::remove_dir_all(h.shard_root().join("index.new")));
         }
         self.db_stats.reindex_progress().set_phase(Phase::Cancelled);
     }
-    fn shard_index_for(&self, external_id: &str) -> usize {
-        shard_for(external_id, self.shards.len() as u16) as usize
+      fn shard_index_for(&self, external_id: &str) -> usize {
+        let shard_count = u16::try_from(self.shards.len())
+            .expect("a database is created with a u16 shard count (ShardManager::create)");
+        usize::from(shard_for(external_id, shard_count))
     }
 
     fn group_by_shard<'a>(&self, ids: &'a [String]) -> HashMap<usize, Vec<&'a String>> {
@@ -1639,7 +1641,7 @@ impl ShardManager {
             }
         }
         if let Some(e) = first_err {
-            let _ = fs::remove_dir_all(&backup_root);
+            drop(fs::remove_dir_all(&backup_root));
             return Err(e);
         }
         Ok(manifests)
@@ -1690,13 +1692,13 @@ impl ShardManager {
         }
 
         if let Some(e) = first_err {
-            let _ = fs::remove_dir_all(&backup_root);
+            drop(fs::remove_dir_all(&backup_root));
             return Err(e);
         }
 
         // Nothing to back up (no shard produced a manifest): remove the empty directory.
         if manifests.iter().all(Option::is_none) {
-            let _ = fs::remove_dir_all(&backup_root);
+            drop(fs::remove_dir_all(&backup_root));
         }
         Ok(manifests)
     }
@@ -2067,7 +2069,7 @@ impl ShardManager {
         if !failures.is_empty() {
             // 2. any failure: every shard drops its staging and runs on its old data again
             for shard in &self.shards {
-                let _ = shard.abort_restore().await;
+                drop(shard.abort_restore().await);
             }
             self.start().await?;
             return Err(CorelamoError::Internal(format!(
@@ -2349,7 +2351,7 @@ impl ShardManager {
                     };
                     let matched = matched_by_doc
                         .get(&hit.internal_id)
-                        .map(|v| v.as_slice())
+                        .map(Vec::as_slice)
                         .unwrap_or(&[]);
                     let mut highlights: IndexMap<String, Vec<String>> = IndexMap::new();
                     if !matched.is_empty() {
@@ -2516,7 +2518,7 @@ impl ShardManager {
                 };
                 this.finish_backup(ok);
                 let lifetime = this.options.read().backup_lifetime;
-                let _ = this.delete_backups_old(lifetime);
+                drop(this.delete_backups_old(lifetime));
             }
         });
     }

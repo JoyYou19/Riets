@@ -5,7 +5,7 @@ use crate::{
         reader::DiskSegment,
         writer::{MergeSource, write_merged_segment},
     },
-    document::document::BoolField,
+    document::indexed::BoolField,
     lsm::index_worker::IndexCommand,
     numeric_values::{NumericFields, NumericPoints, unpack},
     posting::DeleteSet,
@@ -281,7 +281,7 @@ pub fn compact_vectors(
         match merge_vector_files(&inputs, deleted, &target) {
             Ok(written) if written > 0 => produced.push(xpath),
             Ok(_) | Err(_) => {
-                let _ = fs::remove_file(&target);
+                drop(fs::remove_file(&target));
             }
         }
     }

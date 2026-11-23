@@ -1,8 +1,8 @@
-use crate::analyzer::analyzer::AnalyzerSet;
+use crate::analyzer::text_analyzer::AnalyzerSet;
 use crate::array_rows::ArrayRowIndex;
 use crate::document::IndexedDocument;
 use crate::document::analyzed::{AnalyzedDocument, AnalyzedField, AnalyzedTarget};
-use crate::document::document::BoolField;
+use crate::document::indexed::BoolField;
 use crate::fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton};
 use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
 use crate::posting::cursor::TermCursor;

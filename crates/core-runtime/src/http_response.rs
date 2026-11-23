@@ -1,8 +1,6 @@
 //INFO: response.rs is responsible for sending messages in a constant format with the help of
 use axum::{
-    body::Body,
-    http::{StatusCode, header},
-    response::{IntoResponse, Response},
+    http::{HeaderValue, StatusCode, header}, response::{IntoResponse, Response},
 };
 use core_protocol::{
     command_reponse_definitions::ResponseData,
@@ -12,7 +10,7 @@ use core_protocol::{
 
 use simd_json::{OwnedValue, json, owned::Object};
 use slog::{error, o, warn};
-use std::time::Instant;
+use std::{fmt::Write as _, time::Instant};
 
 use uuid::Uuid;
 
@@ -42,14 +40,17 @@ fn escape_json_text(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             //"pats" rakstiju:
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if u32::from(c) < 0x20 => {
+                // writing into a String cannot fail
+                let _written = write!(out, "\\u{:04x}", u32::from(c));
+            }
             c => out.push(c),
         }
     }
     out
 }
 
-fn error_to_status(err: &CorelamoError) -> StatusCode {
+const fn error_to_status(err: &CorelamoError) -> StatusCode {
     match err {
         CorelamoError::NotFound(_) => StatusCode::NOT_FOUND,
         CorelamoError::AlreadyExists(_) => StatusCode::CONFLICT,
@@ -83,13 +84,13 @@ impl HttpError {
     pub(crate) fn from_corelamo(err: CorelamoError, ctx: &RequestContext) -> Self {
         Self {
             error_type: format!("{}{}", DOCS_ROOT_URL, err.code()),
-            title: err.title().to_string(),
+            title: err.title().to_owned(),
             status: error_to_status(&err),
             detail: err.message(),
             instance: ctx.instance.clone(),
             request_id: ctx.request_id,
             format: ctx.format,
-            time_taken_ms: ctx.time_start.elapsed().as_millis() as u64,
+            time_taken_ms: millis(ctx.time_start.elapsed()),
         }
     }
 
@@ -102,13 +103,13 @@ impl HttpError {
     ) -> Self {
         Self {
             error_type: format!("{}{}", DOCS_ROOT_URL, err.code()),
-            title: err.title().to_string(),
+            title: err.title().to_owned(),
             status: error_to_status(&err),
             detail: err.message(),
             instance,
             request_id,
             format,
-            time_taken_ms: time_start.elapsed().as_millis() as u64,
+            time_taken_ms: millis(time_start.elapsed()),
         }
     }
 }
@@ -151,12 +152,7 @@ impl IntoResponse for HttpError {
                     self.request_id,
                     self.time_taken_ms,
                 );
-                Response::builder()
-                    .status(self.status)
-                    .header(header::CONTENT_TYPE, "application/problem+json")
-                    .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
-                    .body(Body::from(body))
-                    .unwrap()
+                build_response(self.status, "application/problem+json", &self.request_id, body)
             } //Format::XML => todo!(),
         }
     }
@@ -191,7 +187,7 @@ fn envelope_raw(
         body.extend_from_slice(b",\"");
         body.extend_from_slice(escape_json_text(key).as_bytes());
         body.extend_from_slice(b"\":");
-        let value = simd_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+        let value = simd_json::to_string(value).unwrap_or_else(|_| "null".to_owned());
         body.extend_from_slice(value.as_bytes());
     }
 
@@ -300,15 +296,21 @@ impl HttpOk {
         body: String,
         ctx: &RequestContext,
     ) -> Response {
-        Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, content_type)
-            .header(REQUEST_ID_HEADER_NAME, ctx.request_id.to_string())
-            .body(Body::from(body))
-            .unwrap()
+        build_response(status, content_type, &ctx.request_id, body)
     }
 }
-
+fn build_response(
+    status: StatusCode,
+    content_type: &'static str,
+    request_id: &Uuid,
+    body: impl IntoResponse,
+) -> Response {
+    let mut response = (status, [(header::CONTENT_TYPE, content_type)], body).into_response();
+    if let Ok(id) = HeaderValue::from_str(&request_id.to_string()) {
+        response.headers_mut().insert(REQUEST_ID_HEADER_NAME, id);
+    }
+    response
+}
 impl IntoResponse for HttpOk {
     fn into_response(self) -> Response {
         match self.format {
@@ -331,12 +333,7 @@ impl IntoResponse for HttpOk {
                         &fragment,
                         &extra,
                     );
-                    return Response::builder()
-                        .status(self.status)
-                        .header(header::CONTENT_TYPE, "application/json")
-                        .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
-                        .body(Body::from(body))
-                        .unwrap();
+                    return build_response(self.status, "application/json", &self.request_id, body);
                 }
 
                 let data_value = match &self.data {
@@ -380,14 +377,9 @@ impl IntoResponse for HttpOk {
                 } else {
                     simd_json::to_string(&OwnedValue::Object(obj.into()))
                 }
-                .unwrap_or_else(|_| "{}".to_string());
+                .unwrap_or_else(|_| "{}".to_owned());
 
-                Response::builder()
-                    .status(self.status)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .header(REQUEST_ID_HEADER_NAME, self.request_id.to_string())
-                    .body(Body::from(body))
-                    .expect("Failed to build response")
+                build_response(self.status, "application/json", &self.request_id, body)
             }
         }
     }
@@ -401,7 +393,7 @@ pub(crate) struct BatchOutcome {
 }
 
 impl BatchOutcome {
-    pub(crate) fn new(success_label: &'static str, all_failed_status: StatusCode) -> Self {
+    pub(crate) const fn new(success_label: &'static str, all_failed_status: StatusCode) -> Self {
         Self {
             success_label,
             all_failed_status,
@@ -414,7 +406,7 @@ impl BatchOutcome {
     //     self.succeeded += 1;
     // }
 
-    pub(crate) fn succeed_many(&mut self, n: u32) {
+    pub(crate) const fn succeed_many(&mut self, n: u32) {
         self.succeeded += n;
     }
 
@@ -426,32 +418,32 @@ impl BatchOutcome {
         self.failures.extend(failures);
     }
 
-    pub(crate) fn succeeded_count(&self) -> u32 {
+    pub(crate) const fn succeeded_count(&self) -> u32 {
         self.succeeded
     }
 
-    pub(crate) fn failed_count(&self) -> usize {
+    pub(crate) const fn failed_count(&self) -> usize {
         self.failures.len()
     }
 
-    pub(crate) fn has_failures(&self) -> bool {
+    pub(crate) const fn has_failures(&self) -> bool {
         !self.failures.is_empty()
     }
 
     fn to_value(&self, db_name: &str) -> OwnedValue {
         let mut obj = Object::new();
         obj.insert(
-            self.success_label.to_string(),
+            self.success_label.to_owned(),
             OwnedValue::from(self.succeeded),
         );
         obj.insert(
-            "database".to_string(),
-            OwnedValue::String(db_name.to_string()),
+            "database".to_owned(),
+            OwnedValue::String(db_name.to_owned()),
         );
 
         if !self.failures.is_empty() {
             obj.insert(
-                "failed".to_string(),
+                "failed".to_owned(),
                 OwnedValue::from(self.failures.len() as u64),
             );
             let results: Vec<OwnedValue> = self
@@ -467,7 +459,7 @@ impl BatchOutcome {
                     })
                 })
                 .collect();
-            obj.insert("results".to_string(), OwnedValue::Array(results.into()));
+            obj.insert("results".to_owned(), OwnedValue::Array(results.into()));
         }
 
         OwnedValue::Object(obj.into())
@@ -492,4 +484,7 @@ impl BatchOutcome {
         let body = self.to_value(db_name);
         HttpOk::with_data_and_status(status, title, body, ctx)
     }
+}
+pub(crate) fn millis(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }

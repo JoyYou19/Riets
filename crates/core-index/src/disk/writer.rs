@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{array_rows::ArrayRowIndex, disk::{block_cursor::{BlockCursor, TermRegion}, format::{BLOCK_LEN, SkipEntry}}, posting::{DeleteSet, PostingCursor, cursor::TermCursor}};
-use crate::document::document::BoolField;
+use crate::document::indexed::BoolField;
 use crate::tmp_path_for;
 use crate::{
     disk::{
@@ -595,7 +595,7 @@ pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::
         finish_file(out, &tmp, path)
     });
     if written.is_err() {
-        let _ = fs::remove_file(&tmp);
+        drop(fs::remove_file(&tmp));
     }
     written
 }
@@ -729,7 +729,7 @@ fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Resul
         finish_file(out, &tmp, path)
     });
     if written.is_err() {
-        let _ = fs::remove_file(&tmp);
+        drop(fs::remove_file(&tmp));
     }
     written
 }

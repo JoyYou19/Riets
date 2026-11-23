@@ -19,5 +19,5 @@ pub const QUANT_SCALE: f32 = 127.0;
 
 /// Errors from downloading, loading or running a model.
 pub(crate) fn model_error(e: impl fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, format!("embedding model: {e}"))
+    io::Error::other(format!("embedding model: {e}"))
 }

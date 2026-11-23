@@ -72,7 +72,7 @@ pub(crate) async fn request_context_middleware(
 ) -> Response {
     let request_id = Uuid::new_v4();
     let start = Instant::now();
-    let instance = request.uri().path().to_string();
+    let instance = request.uri().path().to_owned();
     let log = slog_scope::logger().new(o!("component"=> "middleware"));
     let (format, pretty_override) = match resolve_accept(&state, &request) {
         Ok(v) => v,
@@ -121,13 +121,13 @@ pub(crate) async fn auth_middleware(
         .headers()
         .get("X-Corelamo-Key")
         .and_then(|v| v.to_str().ok())
-        .map(ToString::to_string);
+        .map(str::to_owned);
 
     let Some(token) = token else {
         warn!(log, "rejected request: missing auth token";
         "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
         let mut response = HttpError::from_corelamo(
-            CorelamoError::Unauthorized("missing X-Corelamo-Key header".to_string()),
+            CorelamoError::Unauthorized("missing X-Corelamo-Key header".to_owned()),
             &ctx,
         )
         .into_response();
@@ -143,7 +143,7 @@ pub(crate) async fn auth_middleware(
             error!(log, "auth service unavailable: lock poisoned";
                 "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
             return HttpError::from_corelamo(
-                CorelamoError::Internal("authentication is unavailable".to_string()),
+                CorelamoError::Internal("authentication is unavailable".to_owned()),
                 &ctx,
             )
             .into_response();
@@ -159,7 +159,7 @@ pub(crate) async fn auth_middleware(
         warn!(log, "rejected request: invalid or expired token";
     "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
         let mut response = HttpError::from_corelamo(
-            CorelamoError::Unauthorized("invalid or expired token".to_string()),
+            CorelamoError::Unauthorized("invalid or expired token".to_owned()),
             &ctx,
         )
         .into_response();

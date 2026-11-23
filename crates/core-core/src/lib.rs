@@ -8,7 +8,7 @@ pub mod shared_state;
 use core_index::hash::stable_hash64;
 use core_timing::timed;
 pub use options::DatabaseOptions;
-pub use shard_db::ShardDb;
+pub use shard_db::{DatabaseStats, ShardDb};
 pub mod background_worker;
 pub mod embed;
 pub mod shard_manager_helpers;

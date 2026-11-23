@@ -276,7 +276,7 @@ impl BackupManager {
                 Ok(manifest)
             }
             Err(e) => {
-                let _ = fs::remove_dir_all(backup_path);
+                drop(fs::remove_dir_all(backup_path));
                 Err(e)
             }
         }
@@ -378,7 +378,7 @@ impl BackupManager {
                 Ok(Some(manifest))
             }
             Err(e) => {
-                let _ = fs::remove_dir_all(backup_path);
+                drop(fs::remove_dir_all(backup_path));
                 Err(e)
             }
         }
@@ -463,7 +463,7 @@ impl BackupManager {
 
                 let maps_path = target_dir.join("documents.maps.bin");
                 if maps_path.exists() {
-                    let _ = fs::remove_file(&maps_path);
+                    drop(fs::remove_file(&maps_path));
                 }
 
                 info!(self.log, "restore: unpacked full backup"; "target" => %target_dir.display());
@@ -493,7 +493,16 @@ impl BackupManager {
                         let mut dst = OpenOptions::new()
                             .create(true)
                             .write(true)
+                            // a whole segment replaces the file; a continuation keeps the parent's bytes
+                            .truncate(start_offset == 0)
                             .open(&dst_path)?;
+                        if start_offset > 0 && dst.metadata()?.len() != start_offset {
+                            return Err(BackupError::IoError(io::Error::other(format!(
+                                "{} is {} bytes, the parent backup ended at {start_offset}",
+                                dst_path.display(),
+                                dst.metadata()?.len()
+                            ))));
+                        }
                         dst.seek(SeekFrom::Start(start_offset))?;
                         io::copy(&mut src, &mut dst)?;
                     }
@@ -501,7 +510,7 @@ impl BackupManager {
 
                 let maps_path = target_dir.join("documents.maps.bin");
                 if maps_path.exists() {
-                    let _ = fs::remove_file(&maps_path);
+                    drop(fs::remove_file(&maps_path));
                 }
 
                 info!(self.log, "restore: applied incremental backup"; "target" => %target_dir.display());

@@ -925,7 +925,7 @@ impl ShardDb {
                 match db.get_document(&id) {
                     Ok(Some(_)) => to_delete.push(id),
                     Ok(None) => {
-                        failures.push(DocFailure::new(None, Some(id), FailReason::NotFound))
+                        failures.push(DocFailure::new(None, Some(id), FailReason::NotFound));
                     }
                     Err(e) => failures.push(DocFailure::new(
                         None,
@@ -1011,8 +1011,8 @@ impl ShardDb {
         };
         let submitted = match self.background_worker.as_ref() {
             Some(worker) => worker.submit_reindex(ReindexTask {
-                store,
                 params,
+                store,
                 progress,
                 stats,
             }),
@@ -1030,13 +1030,13 @@ impl ShardDb {
     #[timed(reindex)]
     pub fn commit_reindex(&mut self, done: CompletedShardReindex) -> Result<(), CorelamoError> {
         if done.generation != self.generation {
-            let _ = fs::remove_dir_all(&done.staging_root);
+            drop( fs::remove_dir_all(&done.staging_root));
             return Err(CorelamoError::Conflict(
                 "reindex result is from a superseded run".into(),
             ));
         }
         if !done.staging_root.join(REINDEX_COMPLETE).exists() {
-            let _ = fs::remove_dir_all(&done.staging_root);
+            drop(fs::remove_dir_all(&done.staging_root));
             self.wal_reindex = None;
             return Err(CorelamoError::Internal(
                 "reindex output is incomplete; the current index is kept".into(),
@@ -1091,7 +1091,7 @@ impl ShardDb {
             return;
         }
         self.wal_reindex = None;
-        let _ = fs::remove_dir_all(self.root.join("index.new"));
+        drop(fs::remove_dir_all(self.root.join("index.new")));
         info!(self.log, "reindex abandoned"; "shard_id" => self.shard_id, "generation" => generation);
         // the worker that built it may be parked waiting for a commit that failed
     }
@@ -1537,7 +1537,7 @@ impl ShardDb {
         remove_dir_if_exists(&staging)
             .map_err(|e| CorelamoError::Internal(format!("restore: {e}")))?;
         if let Err(e) = self.backup.restore_chain(backup_id, &staging) {
-            let _ = fs::remove_dir_all(&staging);
+            drop(fs::remove_dir_all(&staging));
             return Err(CorelamoError::Internal(e.to_string()));
         }
         Ok(())
@@ -1780,7 +1780,7 @@ impl ShardDb {
         }
         self.stats.set_compaction_enabled(compacting);
 
-        self.background_worker = Some(BackgroundWorker::start(BackgroundConfig {
+       self.background_worker = match BackgroundWorker::start(BackgroundConfig {
             index: db.index_sender(),
             shard_tx,
             compaction,
@@ -1791,7 +1791,15 @@ impl ShardDb {
             models: Arc::clone(&self.models),
             stats: self.stats.clone(),
             log: self.log.new(slog::o!("component" => "background")),
-        }));
+        }){
+        Ok(worker) => Some(worker),
+            Err(e) => {
+                // the shard still serves reads and writes; compaction and embedding wait for the
+                // next restart of the background worker
+                error!(self.log, "background worker could not start"; "error" => %e);
+                None
+            }
+        };
     }
 }
 //helper functions

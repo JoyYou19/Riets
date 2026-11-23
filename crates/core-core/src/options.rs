@@ -25,7 +25,7 @@ pub struct DatabaseOptions {
     #[serde(default)]
     pub embed: EmbeddingConfig,
     #[serde(default)]
-    pub search: SearchOptions,
+    pub(crate) search: SearchOptions,
     #[serde(default)]
     pub skip_unreplayable_wal_records: bool,
 
@@ -60,7 +60,7 @@ impl DatabaseOptions {
     }
 
     pub fn doc_cache_budget_bytes(&self, shard_count: u16) -> u64 {
-        let shards = shard_count.max(1) as u64;
+        let shards = u64::from(shard_count.max(1));
         self.doc_cache_mb.max(1).saturating_mul(1024 * 1024) / shards
     }
 }
@@ -85,7 +85,7 @@ impl Default for DatabaseOptions {
     }
 }
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SearchOptions {
+pub(crate) struct SearchOptions {
     /// Rank of each cascade tier, 1 first. A tier left out is off. Empty: the default order.
     pub cascade: std::collections::BTreeMap<TierKind, u8>,
 }
@@ -100,7 +100,7 @@ impl SearchOptions {
                 .collect(),
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
         for (kind, rank) in &self.cascade {
             if !seen.insert(*rank) {
@@ -108,12 +108,12 @@ impl SearchOptions {
                     "search.cascade: rank {rank} is given twice (at {kind:?})"
                 ));
             }
-        }
+            }
         Ok(())
     }
 
     /// The tiers in the order they run.
-    pub fn cascade_order(&self) -> Vec<TierKind> {
+    pub(crate) fn cascade_order(&self) -> Vec<TierKind> {
         if self.cascade.is_empty() {
             return TierKind::DEFAULT_ORDER.to_vec();
         }

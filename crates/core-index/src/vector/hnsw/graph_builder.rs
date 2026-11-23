@@ -86,7 +86,7 @@ pub(crate) fn build_and_write(
     let result = GraphUnderConstruction::build(vectors, params)
         .and_then(|graph| graph.write(path, vectors.file_id(), vectors.dims()));
     if result.is_err() {
-        let _ = fs::remove_file(tmp_path_for(path));
+        drop(fs::remove_file(tmp_path_for(path)));
     }
     result
 }
@@ -105,7 +105,7 @@ pub fn extend_graph_file(
     let result = GraphUnderConstruction::extend(old, vectors, params)
         .and_then(|graph| graph.write(path, vectors.file_id(), vectors.dims()));
     if result.is_err() {
-        let _ = fs::remove_file(tmp_path_for(path));
+        drop(fs::remove_file(tmp_path_for(path)));
     }
     result
 }
@@ -657,7 +657,7 @@ mod tests {
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("corelamo-gbuild-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        drop(fs::remove_dir_all(&dir));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
     }
@@ -717,7 +717,7 @@ mod tests {
             }
         }
         assert_eq!(reachable_on_level0(&graph), 2_000);
-        let _ = fs::remove_dir_all(dir);
+        drop(fs::remove_dir_all(dir));
     }
 
     #[test]
@@ -727,7 +727,7 @@ mod tests {
         let graph =
             GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
         assert_eq!(reachable_on_level0(&graph), 500);
-        let _ = fs::remove_dir_all(dir);
+        drop(fs::remove_dir_all(dir));
     }
 
     #[test]
@@ -749,7 +749,7 @@ mod tests {
             bytes.len(),
             GraphLayout::new(&header).expect("layout").total_length
         );
-        let _ = fs::remove_dir_all(dir);
+        drop(fs::remove_dir_all(dir));
     }
 
     #[test]
@@ -759,7 +759,7 @@ mod tests {
         let path = dir.join("s.1.hnsw");
         assert!(!build_graph_file(&vectors, &path, &GraphBuildParams::default()).expect("build"));
         assert!(!path.exists());
-        let _ = fs::remove_dir_all(dir);
+        drop(fs::remove_dir_all(dir));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 use core_index::array_rows::ArrayRowAllocator;
 use core_index::datetimes::parse_date;
 use core_index::document::FieldPolicy;
-use core_index::document::document::{ArrayRow, BoolPoint, NumericPoint};
+use core_index::document::indexed::{ArrayRow, BoolPoint, NumericPoint};
 use core_index::document::policy::ARRAY_GAP;
 use core_index::document::{DocumentPart, IndexPolicy, IndexedDocument, policy::FieldKind};
 use core_index::numeric_values::{NumericValue, parse_float, parse_integer};
@@ -33,13 +33,12 @@ pub fn index_document(
         &mut indexed.bool_points,
         policy,
     );
-    index_arrays(
+     index_arrays(
         &parsed.arrays,
         // doc_id,
         None,
         &mut indexed.parts,
         &mut indexed.array_rows,
-        &mut indexed.bool_points,
         policy,
         allocator,
     );
@@ -52,7 +51,6 @@ fn index_arrays(
     parent_row: Option<ArrayRowId>,
     parts: &mut Vec<DocumentPart>,
     rows: &mut Vec<ArrayRow>,
-    bool_points: &mut Vec<BoolPoint>,
     policy: &IndexPolicy,
     allocator: &mut ArrayRowAllocator,
 ) {
@@ -89,7 +87,6 @@ fn index_arrays(
                 Some(row_id),
                 &mut row.parts,
                 rows,
-                bool_points,
                 policy,
                 allocator,
             );

@@ -146,26 +146,26 @@ fn split_forms(
     (chunk.to_string(), parts, joined)
 }
 
-pub fn expand_word_delimiters(
-    word: &str,
-    literal_symbols: &HashSet<char>,
-    split_case: bool,
-    split_numerics: bool,
-) -> Vec<String> {
-    let (original, parts, joined) = split_forms(word, literal_symbols, split_case, split_numerics);
+// pub fn expand_word_delimiters(
+//     word: &str,
+//     literal_symbols: &HashSet<char>,
+//     split_case: bool,
+//     split_numerics: bool,
+// ) -> Vec<String> {
+//     let (original, parts, joined) = split_forms(word, literal_symbols, split_case, split_numerics);
 
-    if parts.len() <= 1 {
-        return vec![original];
-    }
+//     if parts.len() <= 1 {
+//         return vec![original];
+//     }
 
-    let mut out = vec![original];
-    out.extend(parts.iter().map(|(p, _, _)| p.clone()));
+//     let mut out = vec![original];
+//     out.extend(parts.iter().map(|(p, _, _)| p.clone()));
 
-    if !joined.is_empty() && joined != out[0] {
-        out.push(joined);
-    }
-    out
-}
+//     if !joined.is_empty() && joined != out[0] {
+//         out.push(joined);
+//     }
+//     out
+// }
 
 #[derive(Clone)]
 pub struct WordDelimiterTokenizer {
@@ -307,53 +307,9 @@ mod tests {
         s.iter().copied().collect()
     }
 
-    #[test]
-    fn literal_symbol_stays_whole() {
-        assert_eq!(
-            expand_word_delimiters("spider_man", &syms(&['_']), false, false),
-            vec!["spider_man".to_string()]
-        );
-    }
+   
 
-    #[test]
-    fn hyphen_splits_catenates_preserves() {
-        assert_eq!(
-            expand_word_delimiters("spider-man", &syms(&['_']), false, false),
-            vec!["spider-man", "spider", "man", "spiderman"]
-        );
-    }
-
-    #[test]
-    fn no_delimiter_unchanged() {
-        assert_eq!(
-            expand_word_delimiters("spiderman", &syms(&['_']), false, false),
-            vec!["spiderman".to_string()]
-        );
-    }
-
-    #[test]
-    fn case_split() {
-        assert_eq!(
-            expand_word_delimiters("getHTTPResponse", &syms(&['_']), true, false),
-            vec!["getHTTPResponse", "get", "HTTP", "Response"]
-        );
-    }
-
-    #[test]
-    fn numeric_split() {
-        assert_eq!(
-            expand_word_delimiters("page42", &syms(&['_']), false, true),
-            vec!["page42", "page", "42"]
-        );
-    }
-
-    #[test]
-    fn code_split_drops_one_char_fragment() {
-        assert_eq!(
-            expand_word_delimiters("utf8", &syms(&['_']), true, true),
-            vec!["utf8", "utf", "8"]
-        );
-    }
+   
 
     #[test]
     fn split_forms_offsets_delimiter() {

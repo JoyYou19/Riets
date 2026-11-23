@@ -91,7 +91,7 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
     }
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
-    let mut doc_len_cache: Vec<Option<u32>> = vec![None; field_count];
+    let mut doc_len_cache: Vec<Option<Option<u32>>> = vec![None; field_count];
 
     loop {
         terms.retain(|term| !term.cursor.is_exhausted());
@@ -225,7 +225,7 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
 struct FieldConjunction<'a> {
     xpath: XPathId,
     doc_count: u64,
-    avg_doc_len: f32,
+    avg_doc_len: f64,
     terms: Vec<WandTerm<'a>>,
     started: bool,
 }
@@ -384,7 +384,7 @@ pub struct FieldClauses<'a> {
 #[timed(search)]
 pub fn conjunctive_top_k_grouped<'a, S: SearchStats>(
     stats: &S,
-    fields: Vec<FieldClauses<'a>>,
+    fields: Vec<FieldClauses<'_>>,
     k: usize,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {

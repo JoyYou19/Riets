@@ -415,8 +415,9 @@ impl IndexSnapshot {
         keep: impl Fn(&str) -> bool,
     ) -> Vec<String> {
         let mut freq: HashMap<String, u32> = HashMap::new();
-        let sources = std::iter::once(&*self.mem as &dyn SearchReader)
-            .chain(self.segments.iter().map(|s| &**s as &dyn SearchReader));
+         let mem: &dyn SearchReader = &*self.mem;
+        let sources = std::iter::once(mem)
+            .chain(self.segments.iter().map(|s| -> &dyn SearchReader { &**s }));
         for source in sources {
             for (term, df) in source.prefix_terms(prefix, xpath) {
                 if keep(&term) {

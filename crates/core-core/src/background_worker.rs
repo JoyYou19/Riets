@@ -58,7 +58,7 @@ pub struct BackgroundWorker {
 
 impl BackgroundWorker {
     /// Returns None when there is nothing to run: compaction disabled and no vector fields.
-    pub(crate) fn start(config: BackgroundConfig) -> Self {
+    pub(crate) fn start(config: BackgroundConfig) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let current = Arc::new(Mutex::new(None));
         let (reindex_tx, reindex_rx) = unbounded();
@@ -76,14 +76,13 @@ impl BackgroundWorker {
         let stop_thread = Arc::clone(&stop);
         let handle = thread::Builder::new()
             .name("shard-background".to_string())
-            .spawn(move || looped.run(&stop_thread))
-            .expect("failed to spawn shard background worker");
-        Self {
+            .spawn(move || looped.run(&stop_thread))?;
+        Ok(Self {
             stop,
             reindex_tx,
             current,
             handle: Some(handle),
-        }
+        })
     }
 
     /// Queues a reindex. It starts once the current step finishes; nothing else starts before it.
@@ -134,7 +133,7 @@ impl BackgroundLoop {
         let result = self.run_loop(stop);
        
         while let Ok(task) = self.reindex_rx.try_recv() {
-            let _ = std::fs::remove_dir_all(task.params.shard_root.join("index.new"));
+            drop(std::fs::remove_dir_all(task.params.shard_root.join("index.new")));
             task.stats.finish_shard_reindex(false, Duration::ZERO);
         }
         result
@@ -297,13 +296,13 @@ impl BackgroundLoop {
                         thread::sleep(STOP_POLL);
                     }
                 } else {
-                    let _ = std::fs::remove_dir_all(shard_root.join("index.new"));
+                    drop(std::fs::remove_dir_all(shard_root.join("index.new")));
                     stats.finish_shard_reindex(false, started.elapsed());
                 }
             }
             Err(e) => {
                 warn!(self.config.log, "reindex build failed or was cancelled"; "error" => %e);
-                let _ = std::fs::remove_dir_all(shard_root.join("index.new"));
+                drop(std::fs::remove_dir_all(shard_root.join("index.new")));
                 self.send_to_shard(stop, ShardCmd::ReindexAbandoned { generation });
                 stats.finish_shard_reindex(false, started.elapsed());
             }
@@ -340,14 +339,14 @@ impl BackgroundLoop {
         match completed {
             Ok(completed) => {
                 let (ack, rx) = bounded(1);
-                let _ = self.ask_shard(
+                drop(self.ask_shard(
                     stop,
                     ShardCmd::InstallSegmentCompaction {
                         completed,
                         ack: Some(ack),
                     },
                     &rx,
-                );
+                ))
             }
             Err(e) => warn!(self.config.log, "store compaction failed"; "error" => %e),
         }

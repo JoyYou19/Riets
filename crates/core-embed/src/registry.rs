@@ -188,7 +188,7 @@ impl ModelRegistry {
             .name("model-load".into())
             .spawn(move || {
                 // the outcome is recorded in the map; callers read it from there
-                let _ = registry.load_and_record(spec);
+                drop(registry.load_and_record(spec));
             });
         if let Err(e) = started {
             // nobody will load it: record that, so callers don't wait for a load that

@@ -6,7 +6,7 @@ use core_storage::json_parse::ParsedNode;
 use simd_json::{json, prelude::*, OwnedValue};
 
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use core_index::{analyzer::analyzer::Analyzer, lsm::LsmIndex};
+use core_index::{analyzer::text_analyzer::Analyzer, lsm::LsmIndex};
 use core_storage::{document_store::DocumentStore, search_database::SearchDatabase};
 // Adjust these three to wherever your movies code imports them from:
 use core_protocol::format::Format;
@@ -20,10 +20,10 @@ pub struct UserDatabase<S: DocumentStore> {
 }
 
 impl<S: DocumentStore> UserDatabase<S> {
-    pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> Self {
-        Self {
-            db: SearchDatabase::new(store, index, analyzer).expect("Failed to create UserDatabase"),
-        }
+    pub fn new(store: S, index: LsmIndex, analyzer: Analyzer) -> io::Result<Self> {
+        Ok(Self {
+            db: SearchDatabase::new(store, index, analyzer)?,
+        })
     }
 
     // Shared write path so add/update don't duplicate document construction

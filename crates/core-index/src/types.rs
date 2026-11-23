@@ -26,7 +26,7 @@ impl std::fmt::Display for ShardId {
 impl slog::Value for ShardId {
     fn serialize(
         &self,
-        _record: &slog::Record,
+        _record: &slog::Record<'_>,
         key: slog::Key,
         serializer: &mut dyn slog::Serializer,
     ) -> slog::Result {

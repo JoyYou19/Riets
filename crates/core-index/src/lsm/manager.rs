@@ -412,9 +412,9 @@ impl LsmIndex {
                     }
                     // Derived data: drop it and let the embedding worker rebuild it.
                     Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                        let _ = std::fs::remove_file(&vector_path);
+                        drop(std::fs::remove_file(&vector_path));
                         // a tail without its main file is embedded again with the rest
-                        let _ = std::fs::remove_file(tail_file_path(&path, xpath));
+                        drop(std::fs::remove_file(tail_file_path(&path, xpath)));
                     }
                     Err(e) => {
                         return Err(e);
@@ -523,12 +523,15 @@ impl LsmIndex {
         segments.extend(
             self.generations
                 .iter()
-                .map(|generation| Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>),
+                 .map(|generation| -> Arc<dyn SearchReader + Send + Sync> {
+                    Arc::<MemIndex>::clone(generation)
+                }),
         );
         for flush in &self.flush_queue.pending {
             segments.extend(
                 flush.generations.iter().map(|generation| {
-                    Arc::clone(generation) as Arc<dyn SearchReader + Send + Sync>
+                   let reader: Arc<dyn SearchReader + Send + Sync> = Arc::<MemIndex>::clone(generation);
+                    reader
                 }),
             );
         }
@@ -593,7 +596,7 @@ impl LsmIndex {
             self.segment_handles
                 .push(SegmentHandle::Memory(Arc::clone(&segment)));
             Arc::make_mut(&mut self.query_segments)
-                .push(segment as Arc<dyn SearchReader + Send + Sync>);
+                .push(segment);
         }
         Ok(())
     }
@@ -663,7 +666,7 @@ impl LsmIndex {
         self.segment_handles
             .insert(position, SegmentHandle::Memory(Arc::clone(&segment)));
         Arc::make_mut(&mut self.query_segments)
-            .insert(position, segment as Arc<dyn SearchReader + Send + Sync>);
+            .insert(position, segment);
 
         Ok(())
     }
@@ -703,7 +706,7 @@ impl LsmIndex {
             } else {
                 self.segment_handles
                     .push(SegmentHandle::Memory(segment.clone()));
-                segment as Arc<dyn SearchReader + Send + Sync>
+                segment 
             };
             Arc::make_mut(&mut self.query_segments).push(reader);
             self.flush_queue.segment_added();
@@ -1015,7 +1018,7 @@ impl LsmIndex {
             .iter()
             .any(|handle| matches!(handle, SegmentHandle::Disk(p) if p == segment));
         if !live {
-            let _ = std::fs::remove_file(vector_file_path(segment, xpath));
+            drop(std::fs::remove_file(vector_file_path(segment, xpath)));
             return Ok(false);
         }
         self.attach_vectors(segment, xpath)?;
@@ -1031,7 +1034,7 @@ impl LsmIndex {
             .iter()
             .any(|handle| matches!(handle, SegmentHandle::Disk(p) if p == segment));
         if !live {
-            let _ = std::fs::remove_file(&path);
+            drop(std::fs::remove_file(&path));
             return Ok(false);
         }
         let vectors = Arc::make_mut(&mut self.vectors);
@@ -1039,7 +1042,7 @@ impl LsmIndex {
             .iter_mut()
             .find(|entry| entry.segment == segment && entry.xpath == xpath)
         else {
-            let _ = std::fs::remove_file(&path);
+            drop(std::fs::remove_file(&path));
             return Ok(false);
         };
         entry.tail = Some(Arc::new(VectorFile::open(&path)?));
@@ -1056,7 +1059,7 @@ impl LsmIndex {
             .iter_mut()
             .find(|entry| entry.segment == segment && entry.xpath == xpath)
         else {
-            let _ = std::fs::remove_file(&path);
+            drop(std::fs::remove_file(&path));
             return Ok(false);
         };
         match HnswGraph::open(&path, Arc::clone(&entry.file)) {
@@ -1066,7 +1069,7 @@ impl LsmIndex {
             }
             // derived data: a stale or corrupt graph is dropped and built again
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                let _ = std::fs::remove_file(&path);
+                drop(std::fs::remove_file(&path));
                 Ok(false)
             }
             Err(e) => Err(e),
@@ -1082,8 +1085,8 @@ impl LsmIndex {
             .iter()
             .any(|handle| matches!(handle, SegmentHandle::Disk(p) if p == segment));
         if !live {
-            let _ = std::fs::remove_file(vector_file_path(segment, xpath));
-            let _ = std::fs::remove_file(hnsw_file_path(segment, xpath));
+            drop(std::fs::remove_file(vector_file_path(segment, xpath)));
+            drop(std::fs::remove_file(hnsw_file_path(segment, xpath)));
             return Ok(false);
         }
         let file = Arc::new(VectorFile::open(vector_file_path(segment, xpath))?);
@@ -1098,7 +1101,7 @@ impl LsmIndex {
         entry.file = file;
         entry.graph = graph;
         if let Some(tail) = entry.tail.take() {
-            let _ = std::fs::remove_file(tail.path());
+            drop(std::fs::remove_file(tail.path()));
         }
         Ok(true)
     }
@@ -1116,12 +1119,12 @@ impl LsmIndex {
                 // one. Removing can fail while a reader still maps it (Windows); the stale file
                 // is then rejected by its file id at the next open or install.
                 if existing.graph.take().is_some() {
-                    let _ = std::fs::remove_file(hnsw_file_path(segment, xpath));
+                    drop(std::fs::remove_file(hnsw_file_path(segment, xpath)));
                 }
                 // a new main file either holds the tail's rows (a fold) or replaces them (a new
                 // model), so the tail is never kept beside it
                 if let Some(tail) = existing.tail.take() {
-                    let _ = std::fs::remove_file(tail.path());
+                    drop(std::fs::remove_file(tail.path()));
                 }
             }
             None => vectors.push(SegmentVectors {
@@ -1139,11 +1142,11 @@ impl LsmIndex {
         let vectors = Arc::make_mut(&mut self.vectors);
         vectors.retain(|entry| {
             if entry.segment == segment {
-                let _ = std::fs::remove_file(entry.file.path());
+                drop(std::fs::remove_file(entry.file.path()));
                 if let Some(tail) = &entry.tail {
-                    let _ = std::fs::remove_file(tail.path());
+                    drop(std::fs::remove_file(tail.path()));
                 }
-                let _ = std::fs::remove_file(hnsw_file_path(segment, entry.xpath));
+                drop(std::fs::remove_file(hnsw_file_path(segment, entry.xpath)));
                 false
             } else {
                 true
@@ -1159,7 +1162,7 @@ fn open_graph(segment: &Path, xpath: XPathId, file: &Arc<VectorFile>) -> Option<
         Ok(graph) => Some(Arc::new(graph)),
         Err(e) => {
             if e.kind() == io::ErrorKind::InvalidData {
-                let _ = std::fs::remove_file(&path);
+                drop(std::fs::remove_file(&path));
             }
             None
         }
@@ -1171,19 +1174,19 @@ fn open_tail(segment: &Path, xpath: XPathId, main: &VectorFile) -> Option<Arc<Ve
         Ok(tail) if tail.matches(main.model_id(), main.dims()) => {
             // a fold that stopped before removing the tail left rows already in the main file
             if tail.doc_ids().first().is_some_and(|&doc_id| main.contains(doc_id)) {
-                let _ = std::fs::remove_file(&path);
+                drop(std::fs::remove_file(&path));
                 None
             } else {
                 Some(Arc::new(tail))
             }
         }
         Ok(_) => {
-            let _ = std::fs::remove_file(&path);
+            drop(std::fs::remove_file(&path));
             None
         }
         Err(e) => {
             if e.kind() == io::ErrorKind::InvalidData {
-                let _ = std::fs::remove_file(&path);
+                drop(std::fs::remove_file(&path));
             }
             None
         }

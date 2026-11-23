@@ -12,7 +12,7 @@ use crate::{
     json_parse::{ParsedNode, parse_source_into_node},
 };
 use core_index::{
-    analyzer::analyzer::{Analyzer, AnalyzerSet},
+    analyzer::text_analyzer::{Analyzer, AnalyzerSet},
     array_rows::ArrayRowAllocator,
     document::{AnalyzedDocument, IndexPolicy, IndexedDocument},
     lsm::{
@@ -231,7 +231,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         );
 
         let snapshot = SharedIndexSnapshot::empty();
-        let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone());
+        let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone())?;
 
         let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
 
@@ -265,7 +265,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 .max(ARRAY_ROW_FLAG),
         );
 
-        let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone());
+        let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone())?;
         let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
 
         Ok(Self {
@@ -427,7 +427,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 if let Ok(docs) =
                     panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &indexed)))
                 {
-                    let _ = analyzed.send(docs);
+                    drop(analyzed.send(docs));
                 }
             });
             // delete without publishing; the add right after it publishes both together
@@ -664,10 +664,11 @@ impl<S: DocumentStore> IndexPipeline<'_, S> {
             .map(|d| d.source.len() as u64)
             .sum();
         core_timing::add_bytes("inserting", "flush_batch", file!(), batch_bytes);
-
+        
+        self.db.error_return()?;
         let stored = std::mem::take(&mut self.current_store_batch);
         self.db.store.put_batch(stored)?;
-        self.db.error_return()?;
+       
 
         let indexed = std::mem::take(&mut self.current_batch);
         let analyzer = self.db.analyzer_set.clone();
@@ -678,7 +679,7 @@ impl<S: DocumentStore> IndexPipeline<'_, S> {
             if let Ok(docs) =
                 panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &indexed)))
             {
-                let _ = analyzed.send(docs);
+                drop(analyzed.send(docs));
             }
         });
         let pending = self
@@ -718,7 +719,7 @@ fn send_reindex_batch(
     rayon::spawn(move || {
         if let Ok(docs) = panic::catch_unwind(AssertUnwindSafe(|| analyze_batch(&analyzer, &batch)))
         {
-            let _ = analyzed.send(docs);
+            drop(analyzed.send(docs));
         }
     });
     in_flight.push_back(worker.add_indexed_documents_deferred(documents)?);

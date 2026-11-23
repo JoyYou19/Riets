@@ -1,6 +1,6 @@
 use crate::ast::{PhraseTerm, Query};
 use core_index::analyzer::Analyzer;
-use core_index::analyzer::analyzer::MAX_NAME_WORDS;
+use core_index::analyzer::text_analyzer::MAX_NAME_WORDS;
 use core_index::fuzzy::{DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzySpec};
 use core_protocol::command_reponse_definitions::Fuzziness;
 use core_timing::timed;

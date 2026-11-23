@@ -57,7 +57,7 @@ pub struct EmbeddingConfig {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            max_docs_per_round: 10000,
+            max_docs_per_round: 1000,
             round_time_budget: Duration::from_secs(120),
             embed_batch: 1024,
             wait_for_load: true,

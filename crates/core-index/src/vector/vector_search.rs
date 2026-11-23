@@ -78,7 +78,10 @@ impl SegmentVectors {
     pub fn len(&self) -> usize {
         self.file.len() + self.tail.as_ref().map_or(0, |tail| tail.len())
     }
-
+    // True when neither the main file nor the tail holds a row.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     /// True when the main file or the tail holds a vector for `doc_id`.
     pub fn contains(&self, doc_id: DocId) -> bool {
         self.file.contains(doc_id) || self.tail.as_ref().is_some_and(|tail| tail.contains(doc_id))

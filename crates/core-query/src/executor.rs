@@ -1,5 +1,5 @@
 use core_index::{
-    analyzer::analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
+    analyzer::text_analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
     fuzzy::{
         DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec,
         select_expansions,
@@ -679,14 +679,11 @@ where
                 Query::And(words) => {
                     let lists: Option<Vec<(ListSource<'a>, u32)>> = words
                         .iter()
-                        .map(|word| match word {
-                            Query::Term(term) => Some(self.term_source(term, ctx.xpath)),
-                            _ => {
-                                let leaf = self.leaf(word, ctx)?;
-                                let doc_freq =
-                                    self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
-                                Some((ListSource::Decoded(leaf.postings), doc_freq))
-                            }
+                        .map(|word| if let Query::Term(term) = word { Some(self.term_source(term, ctx.xpath)) } else {
+                            let leaf = self.leaf(word, ctx)?;
+                            let doc_freq =
+                                self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+                            Some((ListSource::Decoded(leaf.postings), doc_freq))
                         })
                         .collect();
                     lists.map(|lists| FormLists {
@@ -733,16 +730,13 @@ where
         min_doc_freq: Option<u32>,
         weight: u16,
     ) -> Option<FormLists<'a>> {
-        let (xpath, source, own) = match query {
-            Query::Term(term) => {
-                let (source, own) = self.term_source(term, ctx.xpath);
-                (ctx.xpath, source, own)
-            }
-            _ => {
-                let leaf = self.leaf(query, ctx)?;
-                let own = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
-                (leaf.xpath, ListSource::Decoded(leaf.postings), own)
-            }
+        let (xpath, source, own) = if let Query::Term(term) = query {
+            let (source, own) = self.term_source(term, ctx.xpath);
+            (ctx.xpath, source, own)
+        } else {
+            let leaf = self.leaf(query, ctx)?;
+            let own = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
+            (leaf.xpath, ListSource::Decoded(leaf.postings), own)
         };
         let doc_freq = min_doc_freq.map_or(own, |floor| own.max(floor));
         Some(FormLists {
@@ -949,7 +943,7 @@ where
             rows = rows
                 .into_iter()
                 .filter_map(|raw| self.index.parent_of_row(ArrayRowId::from_raw(raw)))
-                .map(|row| row.raw())
+                .map(ArrayRowId::raw)
                 .collect();
         }
         rows
@@ -1179,8 +1173,8 @@ where
         weight: f32,
         out: &mut Vec<MatchedTerm>,
     ) {
-        if let Some(p) = posting {
-            if !p.positions.is_empty() {
+        if let Some(p) = posting
+            && !p.positions.is_empty() {
                 out.push(MatchedTerm {
                     xpath,
                     row_id: None,
@@ -1190,7 +1184,6 @@ where
                     offsets: p.offsets.to_vec(),
                 });
             }
-        }
     }
 
     //row-keyed postings have array_row_id we need to match it to the correct dovument
@@ -1460,7 +1453,7 @@ where
         let stats = self.stats();
         let mut acc: Vec<ScoredPosting> = Vec::new();
         let mut merged: Vec<ScoredPosting> = Vec::new();
-        let mut doc_len: HashMap<DocId, f32> = HashMap::new();
+        let mut doc_len: HashMap<DocId, Option<u32>> = HashMap::new();
         let mut scored: Vec<ScoredPosting> = Vec::new();
 
         for (index, &ctx) in ctxs.iter().enumerate() {
@@ -2260,7 +2253,7 @@ where
                             let mut rest: Vec<DocId> =
                                 fresh.iter().filter(|doc| !scored.contains(doc)).collect();
                             rest.sort_unstable();
-                            rest.truncate(((wanted as usize) - level_hits.len()) as usize);
+                            rest.truncate((wanted as usize) - level_hits.len());
                             level_hits.extend(rest.into_iter().map(|doc_id| SearchHit {
                                 doc_id,
                                 ..SearchHit::default()
@@ -2667,7 +2660,7 @@ where
 
         let stats = self.stats();
         let mut acc: HashMap<DocId, ScoredPosting> = HashMap::new();
-        let mut doc_len: HashMap<DocId, f32> = HashMap::new();
+        let mut doc_len: HashMap<DocId, Option<u32>> = HashMap::new();
         let mut scored: Vec<ScoredPosting> = Vec::new();
         for ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed) {
             doc_len.clear();
@@ -3007,7 +3000,7 @@ where
         //caching look-up-ed values since its the slow part cause some fuzzed expansions could lead
         //to a different document
         let mut scored_buf: Vec<ScoredPosting> = Vec::new();
-        let mut doc_len: HashMap<DocId, f32> = HashMap::new();
+        let mut doc_len: HashMap<DocId, Option<u32>> = HashMap::new();
 
         for (word_index, word) in words.iter().enumerate() {
             //how many edits for this word
