@@ -49,7 +49,7 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    pub fn new(
+    pub const fn new(
         policy: PolicyStore,
         tokens: TokenStore,
         users: UserDatabase<BinaryDocumentStore>
@@ -67,7 +67,7 @@ impl AuthService {
         if users.is_empty() {
             let password = generate_password()?;
             users
-                .add_user(SUPERUSER, hash_password(&password)?, vec!["admin".to_string()])
+                .add_user(SUPERUSER, hash_password(&password)?, vec!["admin".to_owned()])
                 .map_err(|e| CorelamoError::Internal(format!("creating '{SUPERUSER}': {e}")))?;
             created = Some(password);
         }
@@ -116,7 +116,7 @@ impl AuthService {
     ) -> Result<(), CorelamoError> {
         self.check(requester, Permission::DeleteUser)?;
         if username == SUPERUSER {
-            Err(CorelamoError::NotFound("superuser cannot be deleted".to_string()))
+            Err(CorelamoError::NotFound("superuser cannot be deleted".to_owned()))
         } else if self.users.remove_user(username) && username != SUPERUSER {
             self.tokens.revoke_user(username);
             Ok(())
@@ -161,7 +161,7 @@ impl AuthService {
         if self.users.verify(username, password).is_none() {
             return Ok(None);
         }
-        self.tokens.issue(username.to_string()).map(Some)
+        self.tokens.issue(username.to_owned()).map(Some)
     }
     pub fn logout(&self, token: &Token) -> bool {
         self.tokens.revoke(token)

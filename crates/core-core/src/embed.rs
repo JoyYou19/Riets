@@ -176,7 +176,8 @@ impl EmbeddingJob {
     }
 
     /// Whether embedding waits while documents are loaded in bulk (`wait_for_load`).
-    pub fn waits_for_load(&self) -> bool {
+    #[must_use]
+    pub const fn waits_for_load(&self) -> bool {
         self.config.wait_for_load
     }
 
@@ -187,7 +188,7 @@ impl EmbeddingJob {
         lease: &mut EmbedLease<'_>,
         stop: &AtomicBool,
     ) -> io::Result<Option<usize>> {
-        let vector_id = lease.vector_id().to_string();
+        let vector_id = lease.vector_id().to_owned();
         let dims = lease.spec().dims;
         let Some(task) = self.next_task(&vector_id, dims)? else {
             return Ok(None);
@@ -263,6 +264,7 @@ impl EmbeddingJob {
     pub fn graph_failed(&mut self, file_id: u64) {
         self.graph_failed.insert(file_id);
     }
+    #[must_use]
     pub fn next_fold(&self, vector_id: &str, dims: usize) -> Option<FoldTask> {
         let snapshot = self.shared.snapshot.get();
         snapshot
@@ -329,10 +331,10 @@ impl EmbeddingJob {
 
                 return Ok(Some(Task {
                     segment,
-                    field: field.clone(),
+                    field: field,
                     existing,
                     missing,
-                    vector_id: vector_id.to_string(),
+                    vector_id: vector_id.to_owned(),
                     dims,
                 }));
             }
@@ -525,11 +527,11 @@ impl EmbeddingJob {
         let cursor = self
             .cursors
             .entry((segment.to_path_buf(), xpath))
-            .or_insert_with(|| Cursor { vector_id: vector_id.to_string(), dims, done_through });
+            .or_insert_with(|| Cursor { vector_id: vector_id.to_owned(), dims, done_through });
         if cursor.vector_id == vector_id && cursor.dims == dims {
             cursor.done_through = cursor.done_through.max(done_through);
         } else {
-            *cursor = Cursor { vector_id: vector_id.to_string(), dims, done_through };
+            *cursor = Cursor { vector_id: vector_id.to_owned(), dims, done_through };
         }
     }
     /// Drops cached segments that compaction removed.

@@ -18,6 +18,7 @@ use crate::ast::{PhraseTerm, Query, SynonymAlternative};
 pub const MAX_PHRASE_TOKENS: usize = 8;
 
 /// Splits text into its alphanumeric words, keeping their case.
+#[must_use]
 pub fn tokenize(text: &str) -> Vec<&str> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|token| !token.is_empty())
@@ -26,6 +27,7 @@ pub fn tokenize(text: &str) -> Vec<&str> {
 
 /// The form a word is looked up by: what the analyzer makes of it (lowercased and stemmed), or
 /// the lowercased word when the analyzer drops it (a stopword), so every word keeps its place.
+#[must_use]
 pub fn lookup_key(analyzer: &Analyzer, token: &str) -> String {
     analyzer
         .analyze(token)
@@ -110,11 +112,13 @@ impl Variant {
         })
     }
 
+    #[must_use]
     pub fn tokens(&self) -> &[String] {
         &self.tokens
     }
 
-    pub fn case(&self) -> CaseMode {
+    #[must_use]
+    pub const fn case(&self) -> CaseMode {
         self.case
     }
 
@@ -169,8 +173,8 @@ pub enum QueryNode {
 
 impl QueryNode {
     fn from_terms(terms: Vec<String>) -> Self {
-        match <[String; 1]>::try_from(terms.clone()) {
-            Ok([term]) => QueryNode::Term(term),
+        match <[String; 1]>::try_from(terms) {
+            Ok([term]) => Self::Term(term),
             Err(terms) => {
                 let phrase_terms = terms
                     .into_iter()
@@ -180,7 +184,7 @@ impl QueryNode {
                         offset: index as u32,
                     })
                     .collect();
-                QueryNode::Phrase(phrase_terms)
+                Self::Phrase(phrase_terms)
             }
         }
     }
@@ -409,6 +413,7 @@ impl DictionaryBuilder {
         self.add_group(parsed)
     }
 
+    #[must_use]
     pub fn build(&self, analyzer: &Analyzer) -> SynonymDictionary {
         let mut nodes = vec![TrieNode::default()];
         for (group_index, group) in self.groups.iter().enumerate() {
@@ -451,6 +456,7 @@ pub struct SynonymDictionary {
 }
 
 impl SynonymDictionary {
+    #[must_use]
     pub fn builder() -> DictionaryBuilder {
         DictionaryBuilder::default()
     }
@@ -525,6 +531,7 @@ impl SynonymDictionary {
     ///
     /// Only an uppercase numeral triggers this (`II`, not `ii` or `mix`), but the numeral is
     /// searched lowercase: the analyzed index stores `II` as `ii`.
+    #[must_use]
     pub fn expand_number(&self, surface: &str) -> Option<Vec<Alternative>> {
         if !self.roman.enabled {
             return None;
@@ -568,7 +575,8 @@ pub struct Synonyms {
 }
 
 impl Synonyms {
-    pub fn new(layers: Vec<Arc<SynonymDictionary>>) -> Self {
+    #[must_use]
+    pub const fn new(layers: Vec<Arc<SynonymDictionary>>) -> Self {
         Self { layers }
     }
 
@@ -601,6 +609,7 @@ impl Synonyms {
     }
 
     /// `SynonymDictionary::expand_number` of the first dictionary that expands numbers.
+    #[must_use]
     pub fn expand_number(&self, surface: &str) -> Option<Vec<Alternative>> {
         self.layers
             .iter()
@@ -616,6 +625,7 @@ pub struct SynonymStore {
 }
 
 impl SynonymStore {
+    #[must_use]
     pub fn new(synonyms: Synonyms) -> Self {
         Self {
             current: RwLock::new(Arc::new(synonyms)),

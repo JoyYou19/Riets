@@ -14,12 +14,12 @@ pub struct Token(pub String);
 impl Token {
     /// 256 bits from the operating system's RNG, hex encoded. The OS RNG can fail (rand 0.10
     /// made it fallible), and a login must then fail too rather than panic.
-    fn generate() -> Result<Token, CorelamoError> {
+    fn generate() -> Result<Self, CorelamoError> {
         let mut bytes = [0u8; 32];
         SysRng.try_fill_bytes(&mut bytes).map_err(|e|
             CorelamoError::Internal(format!("token generation failed: {e}"))
         )?;
-        Ok(Token(hex::encode(bytes)))
+        Ok(Self(hex::encode(bytes)))
     }
 }
 fn hash_token(token: &Token) -> String {
@@ -37,6 +37,7 @@ pub struct TokenStore {
     tokens: RwLock<HashMap<String, TokenEntry>>,
 }
 impl TokenStore {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

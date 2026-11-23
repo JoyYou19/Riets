@@ -36,7 +36,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             .map_err(|e| io::Error::other(format!("failed to serialize user document: {e}")))?;
 
         let input = DocumentInput {
-            external_id: username.to_string(),
+            external_id: username.to_owned(),
             parsed: ParsedNode::default(),
             source,
             format: Format::JSON,
@@ -73,7 +73,7 @@ impl<S: DocumentStore> UserDatabase<S> {
         let mut buf = doc.source.to_vec();
         let value: OwnedValue = simd_json::to_owned_value(&mut buf).ok()?;
         let obj = value.as_object()?;
-        let password = obj.get("password")?.as_str()?.to_string();
+        let password = obj.get("password")?.as_str()?.to_owned();
         let roles = match obj.get("roles") {
             Some(OwnedValue::Array(items)) => items
                 .iter()
@@ -156,7 +156,7 @@ impl<S: DocumentStore> UserDatabase<S> {
             .map(|doc| {
                 let roles = Self::parse_user(&doc)
                     .map(|(_, roles)| roles)
-                    .ok_or_else(|| "user record is not valid JSON or has no password".to_string());
+                    .ok_or_else(|| "user record is not valid JSON or has no password".to_owned());
                 (doc.external_id, roles)
             })
             .collect())

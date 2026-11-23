@@ -113,6 +113,7 @@ pub struct FnStats {
 }
 
 impl FnStats {
+    #[must_use]
     pub fn avg_ns(&self) -> f64 {
         if self.count == 0 {
             0.0
@@ -123,6 +124,7 @@ impl FnStats {
 
     /// Current throughput in bytes/sec, if this function has ever reported
     /// bytes. `None` if no bytes were reported or no time has elapsed yet.
+    #[must_use]
     pub fn bytes_per_sec(&self) -> Option<f64> {
         if self.total_bytes == 0 || self.total_ns == 0 {
             return None;
@@ -133,6 +135,7 @@ impl FnStats {
     /// Percent change vs. the frozen baseline, on a "positive = faster"
     /// scale regardless of whether the comparison is rate-based or
     /// duration-based. `None` if there's no baseline yet.
+    #[must_use]
     pub fn drift_pct(&self) -> Option<f64> {
         if let Some(baseline_rate) = self.baseline_bytes_rate {
             let current_rate = self.bytes_per_sec()?;
@@ -517,12 +520,12 @@ mod disabled {
             _name: &'static str,
             _file: &'static str,
         ) -> Self {
-            Timer
+            Self
         }
     }
 
     #[inline(always)]
-    pub fn record(
+    pub const fn record(
         _category: &'static str,
         _name: &'static str,
         _file: &'static str,
@@ -531,7 +534,7 @@ mod disabled {
     }
 
     #[inline(always)]
-    pub fn add_bytes(
+    pub const fn add_bytes(
         _category: &'static str,
         _name: &'static str,
         _file: &'static str,
@@ -540,12 +543,13 @@ mod disabled {
     }
 
     #[inline]
-    pub fn snapshot() -> Vec<(&'static str, CategoryEntries)> {
+    #[must_use]
+    pub const fn snapshot() -> Vec<(&'static str, CategoryEntries)> {
         Vec::new()
     }
 
     #[inline]
-    pub fn snapshot_filtered<S: AsRef<str>>(
+    pub const fn snapshot_filtered<S: AsRef<str>>(
         _categories: &[S],
         _file: Option<&str>,
     ) -> Vec<(&'static str, CategoryEntries)> {
@@ -553,14 +557,15 @@ mod disabled {
     }
 
     #[inline(always)]
-    pub fn reset() {}
+    pub const fn reset() {}
 
+    #[must_use]
     pub fn report() -> String {
-        NOTHING_RECORDED.to_string()
+        NOTHING_RECORDED.to_owned()
     }
 
     pub fn report_filtered<S: AsRef<str>>(_categories: &[S], _file: Option<&str>) -> String {
-        NOTHING_RECORDED.to_string()
+        NOTHING_RECORDED.to_owned()
     }
 }
 

@@ -38,6 +38,7 @@ const MAPS_MAGIC: &[u8; 8] = b"CLMAPS02";
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
 
+#[must_use]
 pub fn doc_cache_weigher(key: &String, value: &StoredDocument) -> u32 {
     let bytes = key.len() + value.external_id.len() + value.source.len();
     bytes.min(u32::MAX as usize) as u32
@@ -68,7 +69,7 @@ impl CompactionPermit {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         *running += 1;
-        CompactionPermit
+        Self
     }
 }
 
@@ -120,6 +121,7 @@ pub struct StoreSnapshot {
     highest_id: DocId,
 }
 impl StoreSnapshot {
+    #[must_use]
     pub fn capture(
         dir: PathBuf,
         locations: &DashMap<String, DocLocation>,
@@ -306,6 +308,7 @@ impl BinaryDocumentStore {
 
         Ok(store)
     }
+    #[must_use]
     pub fn segment_filename(id: u32) -> String {
         format!("seg_{id:05}.bin")
     }
@@ -777,7 +780,7 @@ impl DocumentStore for BinaryDocumentStore {
             .fetch_max(doc.internal_id, Ordering::Relaxed);
         self.internal_to_external
             .insert(doc.internal_id, doc.external_id.clone());
-        self.locations.insert(doc.external_id.clone(), location);
+        self.locations.insert(doc.external_id, location);
         //self.docs.insert(doc.external_id.clone(), doc);
         Ok(())
     }
@@ -835,7 +838,7 @@ impl DocumentStore for BinaryDocumentStore {
         };
 
         let doc = self.read_document_at(loc.segment, loc.offset)?;
-        self.docs.insert(external_id.to_string(), doc.clone());
+        self.docs.insert(external_id.to_owned(), doc.clone());
         Ok(Some(doc))
     }
 
@@ -1216,11 +1219,11 @@ struct CountingReader<R> {
 }
 
 impl<R: Read> CountingReader<R> {
-    fn new(inner: R) -> Self {
+    const fn new(inner: R) -> Self {
         Self { inner, pos: 0 }
     }
 
-    fn position(&self) -> u64 {
+    const fn position(&self) -> u64 {
         self.pos
     }
 }
@@ -1240,11 +1243,11 @@ struct CountingWriter<W> {
 }
 
 impl<W: Write> CountingWriter<W> {
-    fn new(inner: W, start: u64) -> Self {
+    const fn new(inner: W, start: u64) -> Self {
         Self { inner, pos: start }
     }
 
-    fn position(&self) -> u64 {
+    const fn position(&self) -> u64 {
         self.pos
     }
     fn into_inner(self) -> W {

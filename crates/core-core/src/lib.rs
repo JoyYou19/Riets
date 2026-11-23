@@ -25,6 +25,7 @@ pub mod shard_manager_helpers;
 /// Bucket: jump consistent hash (Lamping & Veach, 2014). It is as uniform as `%`, and if
 /// the shard count ever grows from n to n + 1, only about 1/(n + 1) of the documents move.
 #[timed(shard_manager)]
+#[must_use]
 pub fn shard_for(external_id: &str, num_shards: u16) -> u16 {
     shard_for_untimed(external_id, num_shards)
 }

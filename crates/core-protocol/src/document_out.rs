@@ -12,17 +12,18 @@ pub enum DocumentOut {
 }
 
 impl DocumentOut {
+    #[must_use]
     pub fn raw_bytes(&self) -> Option<&[u8]> {
         match self {
-            DocumentOut::Raw(bytes) => Some(bytes.as_ref()),
-            DocumentOut::Json(_) => None,
+            Self::Raw(bytes) => Some(bytes.as_ref()),
+            Self::Json(_) => None,
         }
     }
 
     pub fn value(&self) -> Result<Cow<'_, OwnedValue>, CorelamoError> {
         match self {
-            DocumentOut::Raw(bytes) => Ok(Cow::Owned(parse_source(bytes)?)),
-            DocumentOut::Json(value) => Ok(Cow::Borrowed(value)),
+            Self::Raw(bytes) => Ok(Cow::Owned(parse_source(bytes)?)),
+            Self::Json(value) => Ok(Cow::Borrowed(value)),
         }
     }
 }

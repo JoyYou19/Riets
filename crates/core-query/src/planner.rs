@@ -38,21 +38,22 @@ pub enum TierKind {
 impl TierKind {
     /// The order used when the config names none: the cascade as it has always been.
     /// Kinds that feed the one relevance tier instead of being a tier of their own.
-    pub fn is_relevance_source(self) -> bool {
-        !matches!(self, TierKind::Name | TierKind::Exact)
+    #[must_use]
+    pub const fn is_relevance_source(self) -> bool {
+        !matches!(self, Self::Name | Self::Exact)
     }
 
-    pub const DEFAULT_ORDER: [TierKind; 7] = [
-        TierKind::Name,
-        TierKind::Exact,
-        TierKind::Phrase,
-        TierKind::Fuzzy,
-        TierKind::All,
-        TierKind::AllButOne,
-        TierKind::Any,
+    pub const DEFAULT_ORDER: [Self; 7] = [
+        Self::Name,
+        Self::Exact,
+        Self::Phrase,
+        Self::Fuzzy,
+        Self::All,
+        Self::AllButOne,
+        Self::Any,
     ];
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tier {
     /// A name field (a field with `$exact`) whose whole value is the query or one of its
     /// dictionary forms: the article itself, before the ones that only mention it. exact sentance basically
@@ -91,6 +92,7 @@ impl Default for TierRanks {
 }
 
 impl TierRanks {
+    #[must_use]
     pub fn from_order(order: &[TierKind]) -> Self {
         // a kind missing from the order gets the last possible place
         let rank = |position: Option<usize>| {
@@ -121,6 +123,7 @@ pub struct RankPlan {
 }
 impl RankPlan {
     /// The same plan without its fuzzy tier.
+    #[must_use]
     pub fn without_fuzzy(&self) -> Self {
         Self {
             tiers: self
@@ -138,7 +141,8 @@ impl RankPlan {
         }
     }
 
-    pub fn stopping_after(mut self, results: usize) -> Self {
+    #[must_use]
+    pub const fn stopping_after(mut self, results: usize) -> Self {
         self.stop_after = results;
         self
     }
@@ -152,6 +156,7 @@ impl RankPlan {
 
     /// `raw` is the text as typed; `resolved` is it after synonym expansion and analysis.
     #[timed(search)]
+    #[must_use]
     pub fn cascade(
         raw: &str,
         resolved: Query,
@@ -193,7 +198,7 @@ impl RankPlan {
                     }
                 }
                 TierKind::Fuzzy => tiers.push(Tier::Fuzzy(Query::Fuzzy(
-                    raw.trim().to_string(),
+                    raw.trim().to_owned(),
                     Fuzziness::Auto,
                     FuzzySpec {
                         prefix_length: DEFAULT_PREFIX_LENGTH,
@@ -237,6 +242,7 @@ impl RankPlan {
     /// Hits numbered below this come from the tiers that match the query as typed, as a whole
     /// value or exact text (the name and exact tiers): what the query names. Semantic fusion
     /// keeps them first.
+    #[must_use]
     pub fn named_tier_limit(&self) -> u8 {
         let named_first = self.tiers.iter().all(|tier| match tier {
             Tier::Name { .. } => self.ranks.name < self.ranks.relevance,

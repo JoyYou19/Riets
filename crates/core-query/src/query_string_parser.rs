@@ -25,15 +25,15 @@ fn classify_word(word: &str, default: fn(Vec<Query>) -> Query, wildcard_enabled:
     }
     if !wildcard_enabled {
         //wildcards disabled
-        return Query::Term(word.to_string());
+        return Query::Term(word.to_owned());
     }
     let pattern = WildcardPattern::parse(word);
     if pattern.is_prefix_only() {
-        Query::Prefix(pattern.prefix().to_string())
+        Query::Prefix(pattern.prefix().to_owned())
     } else if has_wildcard(word) {
-        Query::Wildcard(word.to_string())
+        Query::Wildcard(word.to_owned())
     } else {
-        Query::Term(word.to_string())
+        Query::Term(word.to_owned())
     }
 }
 
@@ -294,7 +294,7 @@ fn leaf(
         .ok_or_else(|| CorelamoError::InvalidData("leaf value must be a string".into()))?;
     Ok(match kind {
         //exact allows multiple words too
-        Leaf::Exact => Query::Exact(s.to_string()),
+        Leaf::Exact => Query::Exact(s.to_owned()),
         Leaf::Term => {
             if s.split_whitespace().count() > 1 {
                 return Err(CorelamoError::InvalidData(
@@ -309,7 +309,7 @@ fn leaf(
 fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
     let words: Vec<String> = match inner {
         OwnedValue::String(s) => {
-            let words: Vec<String> = s.split_whitespace().map(str::to_string).collect();
+            let words: Vec<String> = s.split_whitespace().map(str::to_owned).collect();
             if words.is_empty() {
                 return Err(CorelamoError::InvalidData(
                     "'phrase' must not be empty".into(),
@@ -328,7 +328,7 @@ fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
                         "'phrase' elements must be single words".into(),
                     ));
                 }
-                words.push(s.to_string());
+                words.push(s.to_owned());
             }
             words
         }
@@ -355,7 +355,7 @@ fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
     //fuzzy ALSO allows multiple words now
     if let Some(s) = inner.as_str() {
         return Ok(Query::Fuzzy(
-            s.to_string(),
+            s.to_owned(),
             Fuzziness::Auto,
             FuzzySpec {
                 prefix_length: DEFAULT_PREFIX_LENGTH,
@@ -372,8 +372,7 @@ fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
     let value = obj
         .get("value")
         .and_then(OwnedValue::as_str)
-        .ok_or_else(|| CorelamoError::InvalidData("'fuzzy' requires a string 'value'".into()))?
-        .to_string();
+        .ok_or_else(|| CorelamoError::InvalidData("'fuzzy' requires a string 'value'".into()))?.to_owned();
     Ok(Query::Fuzzy(
         value,
         obj.get("fuzziness")

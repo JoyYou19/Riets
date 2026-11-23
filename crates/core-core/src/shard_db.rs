@@ -184,8 +184,7 @@ impl ShardDb {
         let name = root
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .unwrap_or("unknown").to_owned();
 
         if !root.exists() {
             return Err(CorelamoError::NotFound(format!(
@@ -625,19 +624,19 @@ impl ShardDb {
         Ok(())
     }
 
-    pub fn shard_id(&self) -> ShardId {
+    pub const fn shard_id(&self) -> ShardId {
         self.shard_id
     }
 
-    pub fn policy(&self) -> &IndexPolicy {
+    pub const fn policy(&self) -> &IndexPolicy {
         &self.policy
     }
 
-    pub fn options(&self) -> &DatabaseOptions {
+    pub const fn options(&self) -> &DatabaseOptions {
         &self.options
     }
 
-    pub fn is_running(&self) -> bool {
+    pub const fn is_running(&self) -> bool {
         self.db.is_some()
     }
 
@@ -1166,7 +1165,7 @@ impl ShardDb {
         }
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
-            "user" => user.clone(),
+            "user" => user,
             "shard_id" => %self.shard_id,
             "requested" => count,
             "replaced" => replaced,
@@ -1707,7 +1706,7 @@ impl ShardDb {
                     .remove_through(through_segment)
                     .map_err(|e| CorelamoError::Internal(format!("wal cleanup failed: {e}")))
             });
-        if let Ok(()) = &outcome {
+        if matches!(&outcome, Ok(())) {
             self.publish_stats();
         } else {
             self.failed = true;

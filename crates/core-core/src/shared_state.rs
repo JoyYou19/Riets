@@ -79,7 +79,7 @@ impl SharedShardState {
                 .await
                 .map_err(|e| io::Error::other(format!("disk read task panicked: {e}")))??;
 
-        self.docs.insert(external_id.to_string(), doc.clone());
+        self.docs.insert(external_id.to_owned(), doc.clone());
         Ok(Some(doc))
     }
     ///VECTOR THINGS

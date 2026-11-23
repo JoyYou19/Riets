@@ -127,8 +127,8 @@ impl From<ConfigError> for core_protocol::errors::CorelamoError {
     fn from(err: ConfigError) -> Self {
         use core_protocol::errors::CorelamoError;
         match err {
-            ConfigError::Io { .. } => CorelamoError::Internal(err.to_string()),
-            _ => CorelamoError::InvalidData(err.to_string()),
+            ConfigError::Io { .. } => Self::Internal(err.to_string()),
+            _ => Self::InvalidData(err.to_string()),
         }
     }
 }
@@ -163,7 +163,7 @@ pub struct DatabaseFile {
     one_way: GroupSection,
 }
 
-fn uses_default() -> bool {
+const fn uses_default() -> bool {
     true
 }
 
@@ -294,7 +294,7 @@ impl<F: DeserializeOwned> Document<F> {
         &self.text
     }
 
-    pub fn exists_on_disk(&self) -> bool {
+    pub const fn exists_on_disk(&self) -> bool {
         self.disk_fingerprint.is_some()
     }
 
@@ -554,6 +554,7 @@ impl SynonymRegistry {
         })
     }
 
+    #[must_use]
     pub fn template_path(&self) -> &Path {
         &self.template_path
     }

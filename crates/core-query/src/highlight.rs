@@ -10,6 +10,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 //we need to re-analyze flattened arrays cause the position and offsets dont match in them
 #[timed(highlight)]
+#[must_use]
 pub fn highlight_field_array(
     texts: &[String],
     analyzer: &Analyzer,
@@ -26,6 +27,7 @@ pub fn highlight_field_array(
 //                                  this bs:
 //like ummm cast: {name, surname, aliases["", "", ""],}
 #[timed(highlight)]
+#[must_use]
 pub fn highlight_field_row_keyed_flattened(
     value: &OwnedValue,
     full_path: &str,
@@ -70,6 +72,7 @@ pub fn highlight_field_row_keyed_flattened(
 //(char-filtered field, no offsets) re-analyzes and maps positions to spans on the
 //filtered text.
 #[timed(highlight)]
+#[must_use]
 pub fn highlight_field(
     text: &str,
     analyzer: &Analyzer,
@@ -168,6 +171,7 @@ fn highlight_flattened_texts(
 //rewalks the json to get the precise element from the [index] of the array
 #[timed(highlight)]
 #[timed(highlight)]
+#[must_use]
 pub fn highlight_field_row_keyed(
     value: &OwnedValue,
     full_path: &str,
@@ -311,7 +315,7 @@ fn build_snippet(
     }
 
     out.push_str(&text[pos..we]);
-    out.trim().to_string()
+    out.trim().to_owned()
 }
 
 fn fragments_by_chars(text: &str, ranges: &[Span], opts: &HighlightFieldOptions) -> Vec<String> {
@@ -399,14 +403,14 @@ fn split_sentences(text: &str) -> Vec<(usize, usize)> {
 }
 
 //these two so that doesnt get cut off mid-word
-fn snap_down(text: &str, mut i: usize) -> usize {
+const fn snap_down(text: &str, mut i: usize) -> usize {
     while i > 0 && !text.is_char_boundary(i) {
         i -= 1;
     }
     i
 }
 
-fn snap_up(text: &str, mut i: usize) -> usize {
+const fn snap_up(text: &str, mut i: usize) -> usize {
     while i < text.len() && !text.is_char_boundary(i) {
         i += 1;
     }
@@ -469,7 +473,7 @@ fn region_score(spans: &[Span], start: usize, end: usize, fragment_size: usize) 
     }
     let extent = last.saturating_sub(first).max(1);
     let closeness = 1.0 - (extent as f32 / fragment_size.max(1) as f32);
-    total * (1.0 + DENSITY_BOOST * closeness.max(0.0))
+    total * DENSITY_BOOST.mul_add(closeness.max(0.0), 1.0)
 }
 
 fn top_regions(
@@ -493,6 +497,7 @@ fn top_regions(
         .collect()
 }
 
+#[must_use]
 pub fn field_texts(value: &OwnedValue, path: &str) -> Vec<String> {
     match walk_path(value, path) {
         Some(OwnedValue::String(s)) => vec![s.clone()],

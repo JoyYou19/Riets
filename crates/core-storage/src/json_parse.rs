@@ -22,19 +22,21 @@ pub enum LeafData {
 }
 
 impl LeafData {
+    #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            LeafData::Text(s) => Some(s),
+            Self::Text(s) => Some(s),
             _ => None,
         }
     }
 
+    #[must_use]
     pub fn to_text(&self) -> String {
         match self {
-            LeafData::Text(s) => s.clone(),
-            LeafData::Integer(i) => i.to_string(),
-            LeafData::Float(f) => f.to_string(),
-            LeafData::Bool(b) => b.to_string(),
+            Self::Text(s) => s.clone(),
+            Self::Integer(i) => i.to_string(),
+            Self::Float(f) => f.to_string(),
+            Self::Bool(b) => b.to_string(),
         }
     }
 }
@@ -128,8 +130,8 @@ fn walk_fields(
                     let OwnedValue::Object(_) = element else {
                         return Err(FailReason::InvalidField {
                             field: field.name.clone(),
-                            expected: "object".to_string(),
-                            got: value_type_name(element).to_string(),
+                            expected: "object".to_owned(),
+                            got: value_type_name(element).to_owned(),
                         });
                     };
                     let mut child = ParsedNode::default();
@@ -210,7 +212,7 @@ pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), Fail
         .validate_value(&raw)
         .map_err(|_| FailReason::InvalidField {
             field: field.name.clone(),
-            expected: field.kind.label().to_string(),
+            expected: field.kind.label().to_owned(),
             got: raw,
         })
 }
@@ -231,7 +233,7 @@ fn validate_date_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), Fai
     } else {
         Err(FailReason::InvalidField {
             field: field.name.clone(),
-            expected: format!("date in format '{format}'").to_string(),
+            expected: format!("date in format '{format}'"),
             got: leaf_text(value).unwrap_or_default(),
         })
     }
@@ -247,6 +249,7 @@ fn get_by_path<'a>(mut value: &'a OwnedValue, path: &str) -> Option<&'a OwnedVal
     Some(value)
 }
 
+#[must_use]
 pub fn leaf_text(value: &OwnedValue) -> Option<String> {
     match value {
         OwnedValue::String(s) => Some(s.clone()),
@@ -256,7 +259,7 @@ pub fn leaf_text(value: &OwnedValue) -> Option<String> {
     }
 }
 
-fn value_type_name(value: &OwnedValue) -> &'static str {
+const fn value_type_name(value: &OwnedValue) -> &'static str {
     match value {
         OwnedValue::Static(node) => match node {
             simd_json::StaticNode::Null => "null",

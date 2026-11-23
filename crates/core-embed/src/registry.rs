@@ -69,7 +69,7 @@ impl ModelRegistry {
         &self.cache_dir
     }
 
-    pub fn default_model(&self) -> &'static ModelSpec {
+    pub const fn default_model(&self) -> &'static ModelSpec {
         self.default_model
     }
 

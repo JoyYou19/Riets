@@ -156,17 +156,17 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Self::with_policy(store, index, analyzer, IndexPolicy::default_document())
     }
 
-    pub fn store(&self) -> &S {
+    pub const fn store(&self) -> &S {
         &self.store
     }
-    pub fn mut_store(&mut self) -> &mut S {
+    pub const fn mut_store(&mut self) -> &mut S {
         &mut self.store
     }
-    pub fn index_worker(&self) -> &IndexWorker {
+    pub const fn index_worker(&self) -> &IndexWorker {
         &self.index_worker
     }
 
-    pub fn shard_id(&self) -> ShardId {
+    pub const fn shard_id(&self) -> ShardId {
         self.shard_id
     }
     /// Collects the results of batches the worker has finished, oldest first, without waiting.
@@ -231,7 +231,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         );
 
         let snapshot = SharedIndexSnapshot::empty();
-        let index_worker = IndexWorker::start(index, analyzer.clone(), snapshot.clone())?;
+        let index_worker = IndexWorker::start(index, analyzer, snapshot)?;
 
         let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
 
@@ -265,7 +265,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
                 .max(ARRAY_ROW_FLAG),
         );
 
-        let index_worker = IndexWorker::start(index, analyzer.clone(), shared_snapshot.clone())?;
+        let index_worker = IndexWorker::start(index, analyzer, shared_snapshot)?;
         let analyzer_set = AnalyzerSet::from_policy(&policy.analyzers);
 
         Ok(Self {
@@ -542,7 +542,7 @@ impl<S: DocumentStore> SearchDatabase<S> {
         Ok(())
     }
 
-    pub fn policy(&self) -> &IndexPolicy {
+    pub const fn policy(&self) -> &IndexPolicy {
         &self.policy
     }
 

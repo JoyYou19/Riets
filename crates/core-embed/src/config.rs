@@ -26,7 +26,7 @@ pub struct ModelConfig {
 impl Default for ModelConfig {
         fn default() -> Self {
         Self {
-            model_id: "multilingual-e5-base".to_string(),
+            model_id: "multilingual-e5-base".to_owned(),
             instances: 1,
             batch_size: 128,
             max_tokens: 256,

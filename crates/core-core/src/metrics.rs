@@ -38,12 +38,14 @@ impl LatencyHistogram {
 }
 
 /// Upper bound of bucket `i`.
+#[must_use]
 pub fn bucket_upper_bound(i: usize) -> Duration {
     Duration::from_micros(1u64 << (i + 1).min(63))
 }
 
 /// The duration below which `permille`/1000 of the recorded values fall (500 = median,
 /// 990 = p99), rounded up to a bucket bound; `None` when nothing was recorded.
+#[must_use]
 pub fn latency_quantile(counts: &[u64], permille: u16) -> Option<Duration> {
     let total: u64 = counts.iter().sum();
     if total == 0 {
@@ -89,7 +91,7 @@ pub enum BackgroundActivity {
 }
 
 impl BackgroundActivity {
-    fn from_u8(value: u8) -> Self {
+    const fn from_u8(value: u8) -> Self {
         match value {
             1 => Self::Compacting,
             2 => Self::Embedding,
@@ -116,7 +118,8 @@ pub enum EmbeddingStatus {
 }
 
 impl EmbeddingStatus {
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
             Self::Waiting => "waiting",
@@ -127,7 +130,7 @@ impl EmbeddingStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingStats {
     pub status: EmbeddingStatus,
     pub progress: u8,
@@ -227,17 +230,21 @@ pub struct ShardStatsHandle {
 }
 
 impl DatabaseMetrics {
+     #[must_use]
      pub fn average_search_time(&self) -> Option<Duration> {
         average(self.search_total_time, self.search_requests)
     }
 
+    #[must_use]
     pub fn average_indexing_time(&self) -> Option<Duration> {
         average(self.indexing_total_time, self.indexing_requests)
     }
+    #[must_use]
     pub fn search_percentile(&self, q:u16) -> Option<Duration> {
         latency_quantile(&self.search_latency, q)
     }
 
+    #[must_use]
     pub fn indexing_percentile(&self, q: u16) -> Option<Duration> {
         latency_quantile(&self.indexing_latency, q)
     }
@@ -250,6 +257,7 @@ fn average(total: Duration, count: u64) -> Option<Duration> {
     Some(Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)))
 }
 impl DbStats {
+    #[must_use]
     pub fn new(shard_count: usize) -> Arc<Self> {
         Arc::new(Self {
             counters: Counters::default(),
@@ -284,11 +292,11 @@ impl DbStats {
         self.backup.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
 
-    pub fn backup_progress(&self) -> &Arc<BackupProgress> {
+    pub const fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.backup
     }
 
-    pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
+    pub const fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.reindex
     }
     pub fn reindex_running(&self) -> bool {
@@ -609,10 +617,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ShardStatsHandle {
+    #[must_use]
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.stats.reindex
     }
 
+    #[must_use]
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.stats.backup
     }

@@ -9,6 +9,7 @@ pub struct PolicyStore {
 }
 
 impl PolicyStore {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -24,10 +25,12 @@ impl PolicyStore {
             entry.insert(permission);
         }
     }
+    #[must_use]
     pub fn has_role(&self, role: &str) -> bool {
         self.role_permissions.contains_key(role)
     }
 
+    #[must_use]
     pub fn role_has_permission(&self, role: &str, permission: &Permission) -> bool {
         self.role_permissions
             .get(role)

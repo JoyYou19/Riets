@@ -147,7 +147,7 @@ fn dominant_model(files: &[VectorFile]) -> Option<String> {
         .into_iter()
         .filter(|(_, rows)| *rows > 0)
         .max_by_key(|(_, rows)| *rows)
-        .map(|(model, _)| model.to_string())
+        .map(|(model, _)| model.to_owned())
 }
 
 fn write_carried(

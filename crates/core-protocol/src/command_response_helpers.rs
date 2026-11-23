@@ -2,6 +2,7 @@ use core_timing::timed;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, StaticNode, owned::Object};
 
+#[must_use]
 pub fn escape_json_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

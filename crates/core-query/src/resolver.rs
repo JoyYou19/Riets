@@ -69,6 +69,7 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
     }
 }
 
+#[must_use]
 pub fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
     let a = field
         .analyzer
@@ -160,6 +161,7 @@ pub fn compile_query(
     ))
 }
 
+#[must_use]
 pub fn is_blank_query(v: &OwnedValue) -> bool {
     match v {
         OwnedValue::String(s) => s.trim().is_empty(),
@@ -433,8 +435,7 @@ fn resolve_date_filter(
     let format = field
         .date_format
         .as_deref()
-        .unwrap_or("YYYY-MM-DD")
-        .to_string();
+        .unwrap_or("YYYY-MM-DD").to_owned();
 
     // a bare date string, an epoch-millis number, or a range string
     let text: String = match v {
@@ -633,7 +634,7 @@ pub fn parse_numeric_range(
 ) -> Result<NumericRange, String> {
     let s = raw.trim();
     if s.is_empty() {
-        return Err("empty numeric filter".to_string());
+        return Err("empty numeric filter".to_owned());
     }
 
     if let Some(idx) = s.find("..") {

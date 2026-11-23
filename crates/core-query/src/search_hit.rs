@@ -24,6 +24,7 @@ pub struct SearchHit {
 
 /// The one order of ranked hits everywhere: best tier first, then highest score, then lowest
 /// doc id. `total_cmp` keeps the order total even if a score is NaN.
+#[must_use]
 pub fn rank_order(a: &SearchHit, b: &SearchHit) -> Ordering {
     a.tier
         .cmp(&b.tier)

@@ -107,7 +107,7 @@ fn flatten_scalar_array(
         .flat_map(|e| {
             e.leaves
                 .iter()
-                .filter_map(|l| l.data.as_str().map(str::to_string))
+                .filter_map(|l| l.data.as_str().map(str::to_owned))
         })
         .collect();
 
@@ -152,7 +152,7 @@ fn index_leaves(
                 };
                 parts.push(DocumentPart {
                     xpath: field.xpath(policy),
-                    text: text.to_string(),
+                    text: text.to_owned(),
                     weight: field.weight,
                     exact: false,
                     names: false,
@@ -163,7 +163,7 @@ fn index_leaves(
                 if let Some(exact_xpath) = field.exact_xpath(policy) {
                     parts.push(DocumentPart {
                         xpath: exact_xpath,
-                        text: text.to_string(),
+                        text: text.to_owned(),
                         weight: field.weight,
                         analyzer: field.analyzer.clone(),
                         exact: true,
@@ -180,7 +180,7 @@ fn index_leaves(
                 if field.searchable() {
                     parts.push(DocumentPart {
                         xpath: field.xpath(policy),
-                        text: text.to_string(),
+                        text: text.to_owned(),
                         analyzer: field.analyzer.clone(),
                         weight: field.weight,
                         exact: false,
@@ -191,7 +191,7 @@ fn index_leaves(
                     if let Some(exact_xpath) = field.exact_xpath(policy) {
                         parts.push(DocumentPart {
                             xpath: exact_xpath,
-                            text: text.to_string(),
+                            text: text.to_owned(),
                             analyzer: field.analyzer.clone(),
                             weight: field.weight,
                             exact: true,

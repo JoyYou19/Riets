@@ -20,7 +20,7 @@ const MIN_RECORD_SIZE: u64 = HEADER_SIZE + 1;
 /// File extension of WAL segments.
 const SEGMENT_EXTENSION: &str = "wal";
 
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
 pub enum SyncMode {
     /// fsync before every append returns, once per write request. An acknowledged write
     /// survives a crash or a power loss.
@@ -209,7 +209,7 @@ impl Wal {
         let valid_end = scan_and_truncate(&mut file)?;
         // Makes the truncation durable.
         file.sync_data()?;
-        Ok(Wal {
+        Ok(Self {
             inner: Mutex::new(Inner {
                 file,
                 segment,

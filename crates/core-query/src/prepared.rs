@@ -13,7 +13,8 @@ pub struct PreparedQuery {
 
 impl PreparedQuery {
     /// This index's share of the statistics of the search.
-    pub fn stats(&self) -> &CorpusStats {
+    #[must_use]
+    pub const fn stats(&self) -> &CorpusStats {
         &self.stats
     }
 

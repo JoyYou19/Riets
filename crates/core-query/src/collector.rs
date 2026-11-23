@@ -164,9 +164,9 @@ pub(crate) fn top_k_with_any<'a>(
 }
 
 /// Exact top-k for a conjunction: every scorer in a group must be on the document.
-pub(crate) fn conjunctive_top_k<'a>(
+pub(crate) fn conjunctive_top_k(
     stats: &dyn SearchStats,
-    groups: &mut Vec<Vec<BoxScorer<'a>>>,
+    groups: &mut Vec<Vec<BoxScorer<'_>>>,
     k: usize,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
@@ -207,8 +207,8 @@ pub(crate) fn conjunctive_top_k<'a>(
 }
 
 /// The next document every scorer in the group is on, after `after`.
-pub(crate) fn next_common<'a>(
-    scorers: &mut [BoxScorer<'a>],
+pub(crate) fn next_common(
+    scorers: &mut [BoxScorer<'_>],
     after: Option<DocId>,
 ) -> Option<DocId> {
     if after.is_some() {

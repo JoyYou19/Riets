@@ -75,7 +75,7 @@ impl BackgroundWorker {
         };
         let stop_thread = Arc::clone(&stop);
         let handle = thread::Builder::new()
-            .name("shard-background".to_string())
+            .name("shard-background".to_owned())
             .spawn(move || looped.run(&stop_thread))?;
         Ok(Self {
             stop,
@@ -346,7 +346,7 @@ impl BackgroundLoop {
                         ack: Some(ack),
                     },
                     &rx,
-                ))
+                ));
             }
             Err(e) => warn!(self.config.log, "store compaction failed"; "error" => %e),
         }

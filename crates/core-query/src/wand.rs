@@ -36,6 +36,7 @@ pub struct WandTerm<'a> {
 }
 
 impl<'a> WandTerm<'a> {
+    #[must_use]
     pub fn new(cursor: TermCursor<'a>, doc_freq: u32, max_weight: u16, doc_count: u64) -> Self {
         Self {
             cursor,
@@ -420,9 +421,9 @@ pub fn wand_top_k_grouped_with_any<'a, S: SearchStats>(
 
 /// `wand_top_k_grouped_with_any` without the extra "any" list.
 #[timed(search)]
-pub fn wand_top_k_grouped<'a, S: SearchStats>(
+pub fn wand_top_k_grouped<S: SearchStats>(
     stats: &S,
-    fields: Vec<FieldClauses<'a>>,
+    fields: Vec<FieldClauses<'_>>,
     k: usize,
     coverage: Option<f32>,
     restrict: Option<&RoaringTreemap>,

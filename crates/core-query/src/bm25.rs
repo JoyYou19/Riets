@@ -26,7 +26,7 @@ fn idf(doc_frequency: u32, doc_count: u64) -> f64 {
     if n <= 0.0 || df <= 0.0 {
         return 0.0;
     }
-    ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+    ((n - df + 0.5) / (df + 0.5)).ln_1p()
 }
 
 /// BM25's idf: how rare a term is among `doc_count` documents.
@@ -49,8 +49,8 @@ fn bm25_score(
     }
     let tf = f64::from(tf);
     let dl = doc_len.map_or(avg_doc_len, f64::from);
-    let norm = 1.0 - BM25_B + BM25_B * (dl / avg_doc_len);
-    let tf_component = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);
+    let norm = BM25_B.mul_add(dl / avg_doc_len, 1.0 - BM25_B);
+    let tf_component = (tf * (BM25_K1 + 1.0)) / BM25_K1.mul_add(norm, tf);
 
     //INFO: noneemu + 1.0
     f64::from(weight) * idf(doc_frequency, doc_count) * tf_component

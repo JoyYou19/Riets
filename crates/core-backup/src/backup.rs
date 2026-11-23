@@ -25,7 +25,7 @@ pub struct BackupManifest {
     pub last_backup_segment: u32,
     pub last_backup_offset: u64,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackupType {
     Full,
     Incremental,
@@ -77,29 +77,29 @@ impl<W: Write> Write for ProgressWriter<'_, W> {
 }
 impl From<io::Error> for BackupError {
     fn from(error: io::Error) -> Self {
-        BackupError::IoError(error)
+        Self::IoError(error)
     }
 }
 
 impl From<simd_json::Error> for BackupError {
     fn from(error: simd_json::Error) -> Self {
-        BackupError::SerdeError(error)
+        Self::SerdeError(error)
     }
 }
 
 impl std::fmt::Display for BackupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackupError::IoError(e) => write!(f, "IO error: {e}"),
-            BackupError::SerdeError(e) => write!(f, "Serde error: {e}"),
-            BackupError::BincodeError(e) => write!(f, "Bincode error: {e}"),
-            BackupError::WalError(e) => write!(f, "WAL error: {e}"),
-            BackupError::CorruptRecord(e) => write!(f, "Corrupt WAL record: {e}"),
-            BackupError::NoBackupChain => {
+            Self::IoError(e) => write!(f, "IO error: {e}"),
+            Self::SerdeError(e) => write!(f, "Serde error: {e}"),
+            Self::BincodeError(e) => write!(f, "Bincode error: {e}"),
+            Self::WalError(e) => write!(f, "WAL error: {e}"),
+            Self::CorruptRecord(e) => write!(f, "Corrupt WAL record: {e}"),
+            Self::NoBackupChain => {
                 write!(f, "Could not resolve a full backup at chain root")
             }
-            BackupError::NoBaseBackup => write!(f, "No full backup exists to base an increment on"),
-            BackupError::ChainGap {
+            Self::NoBaseBackup => write!(f, "No full backup exists to base an increment on"),
+            Self::ChainGap {
                 parent_id,
                 parent_end,
                 child_id,
@@ -136,7 +136,7 @@ impl BackupManager {
                     .as_u64()
                     .unwrap_or(u64::from(last_segment_id)) as u32;
                 let offset = parsed["last_segment_offset"].as_u64().unwrap_or(0);
-                let id = parsed["last_backup_id"].as_str().map(ToString::to_string);
+                let id = parsed["last_backup_id"].as_str().map(str::to_owned);
                 (segment, offset, id)
             } else {
                 (last_segment_id, last_segment_offset, None)
@@ -247,7 +247,7 @@ impl BackupManager {
             })??;
 
             let manifest = BackupManifest {
-                backup_id: backup_id.to_string(),
+                backup_id: backup_id.to_owned(),
                 created_at: chrono::Utc::now().timestamp_millis() as u64,
                 backup_type: BackupType::Full,
                 start_offset: 0,
@@ -264,7 +264,7 @@ impl BackupManager {
         match result {
             Ok(manifest) => {
                 let old_id = self.last_backup_id.clone();
-                self.last_backup_id = Some(backup_id.to_string());
+                self.last_backup_id = Some(backup_id.to_owned());
                 // in create_full_backup, where last_backup_offset is set
                 self.last_segment_offset = last_segment_offset;
                 self.last_segment_id = last_segment;
@@ -355,7 +355,7 @@ impl BackupManager {
             progress.grow_total(total);
 
             let manifest = BackupManifest {
-                backup_id: backup_id.to_string(),
+                backup_id: backup_id.to_owned(),
                 created_at: chrono::Utc::now().timestamp() as u64,
                 backup_type: BackupType::Incremental,
                 start_offset: self.last_segment_offset,
@@ -373,7 +373,7 @@ impl BackupManager {
             Ok(manifest) => {
                 self.last_segment_id = new_segment_id;
                 self.last_segment_offset = new_segment_offset;
-                self.last_backup_id = Some(backup_id.to_string());
+                self.last_backup_id = Some(backup_id.to_owned());
                 self.save_state()?;
                 Ok(Some(manifest))
             }
@@ -385,7 +385,7 @@ impl BackupManager {
     }
     #[timed(backup)]
     fn delete_incremental_chain(&self, from_id: &str) {
-        let mut current_id = from_id.to_string();
+        let mut current_id = from_id.to_owned();
         loop {
             let manifest = match self.load_manifest(&current_id) {
                 Ok(m) => m,
@@ -597,7 +597,7 @@ impl BackupManager {
 
         // Reset manager state to the restored point so the next incremental
         // starts from the correct offset.
-        self.last_backup_id = Some(restored_backup_id.to_string());
+        self.last_backup_id = Some(restored_backup_id.to_owned());
         self.last_segment_id = restored_manifest.last_backup_segment;
         self.last_segment_offset = restored_manifest.last_backup_offset;
         self.save_state()?;
@@ -683,6 +683,7 @@ fn dir_size(path: &Path) -> io::Result<u64> {
     }
     Ok(total)
 }
+#[must_use]
 pub fn is_valid_backup_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128

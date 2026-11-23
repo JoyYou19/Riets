@@ -65,9 +65,10 @@ pub struct DidYouMeanReport {
 }
 
 impl DidYouMeanReport {
+    #[must_use]
     pub fn empty(original: &str) -> Self {
-        DidYouMeanReport {
-            original: original.to_string(),
+        Self {
+            original: original.to_owned(),
             corrected: String::new(),
             words: Vec::new(),
             confident: false,
@@ -194,7 +195,7 @@ impl<'a, I> QueryExecutor<'a, I>
 where
     I: SearchIndex + SearchStats + SearchNumeric,
 {
-    pub fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
+    pub const fn new(index: &'a I, analyzer: &'a Analyzer) -> Self {
         Self {
             index,
             analyzer,
@@ -204,18 +205,20 @@ where
     }
 
     /// Scores with the statistics of the whole search instead of this index's own.
-    pub fn with_corpus(mut self, corpus: &'a CorpusStats) -> Self {
+    #[must_use]
+    pub const fn with_corpus(mut self, corpus: &'a CorpusStats) -> Self {
         self.corpus = Some(corpus);
         self
     }
 
     /// Reads the posting lists `prepared` already holds from it instead of from the index.
-    pub fn with_prepared(mut self, prepared: &'a PreparedQuery) -> Self {
+    #[must_use]
+    pub const fn with_prepared(mut self, prepared: &'a PreparedQuery) -> Self {
         self.prepared = Some(prepared);
         self
     }
 
-    fn stats(&self) -> ScoringStats<'_, I> {
+    const fn stats(&self) -> ScoringStats<'_, I> {
         ScoringStats {
             index: self.index,
             corpus: self.corpus,
@@ -259,7 +262,7 @@ where
 
     #[timed(search)]
     fn fetch_term_list(&self, term: &str, xpath: XPathId) -> (Cow<'a, PostingList>, u32) {
-        let key = LeafKey::Term(term.to_string());
+        let key = LeafKey::Term(term.to_owned());
         let (postings, local_doc_freq) =
             if let Some(list) = self.prepared.and_then(|p| p.list(xpath, &key)) {
                 (Cow::Borrowed(list), list.len() as u32)
@@ -282,16 +285,16 @@ where
     /// The document frequency `term` is scored with: the whole search's when known.
     fn term_doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         let local = self.local_doc_freq(term, xpath);
-        self.leaf_doc_freq(xpath, &LeafKey::Term(term.to_string()), local as usize)
+        self.leaf_doc_freq(xpath, &LeafKey::Term(term.to_owned()), local as usize)
     }
 
     /// `term` as a form list, read through a cursor when used.
     fn term_source(&self, term: &str, xpath: XPathId) -> (ListSource<'a>, u32) {
         let local = self.local_doc_freq(term, xpath);
-        let doc_freq = self.leaf_doc_freq(xpath, &LeafKey::Term(term.to_string()), local as usize);
+        let doc_freq = self.leaf_doc_freq(xpath, &LeafKey::Term(term.to_owned()), local as usize);
         (
             ListSource::Term {
-                term: term.to_string(),
+                term: term.to_owned(),
                 xpath,
                 local,
             },
@@ -316,7 +319,7 @@ where
         }
         let index: &'a I = self.index;
         let info = index.term_cursor(term, xpath)?;
-        let key = LeafKey::Term(term.to_string());
+        let key = LeafKey::Term(term.to_owned());
         let doc_freq = self.leaf_doc_freq(xpath, &key, info.doc_freq as usize);
         Some(TermRef {
             cursor: info.cursor,
@@ -950,6 +953,7 @@ where
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn evaluate(&self, query: &Query, ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match query {
             Query::Term(_)
@@ -1020,6 +1024,7 @@ where
     }
 
     #[timed(highlight)]
+    #[must_use]
     pub fn matched_terms(
         &self,
         query: &Query,
@@ -1958,7 +1963,7 @@ where
         };
 
         //explicit match_all
-        if let Query::MatchAll = query {
+        if matches!(query, Query::MatchAll) {
             return match restrict {
                 Some(allowed) => allowed.iter().take(k).map(unscored).collect(),
                 None => match self.index.doc_range() {
@@ -2774,6 +2779,7 @@ where
             hits[i].distance_factor = best.unwrap_or(0.0);
         }
     }
+    #[must_use]
     pub fn rank(
         &self,
         query: Option<&Query>,
@@ -2791,6 +2797,7 @@ where
 
     /// The candidates of one analyzer group with their raw evidence, not yet scored: several
     /// groups are merged by `ranking::finalize` before anything is scored.
+    #[must_use]
     pub fn rank_features(
         &self,
         query: Option<&Query>,
@@ -3245,6 +3252,7 @@ fn plan_fuzzy_spec(plan: &RankPlan) -> FuzzySpec {
         })
 }
 //derives how much a word can be fuzzed basically
+#[must_use]
 pub fn fuzzy_options(word: &str, fuzziness: Fuzziness, spec: FuzzySpec) -> FuzzyOptions {
     // a number is never a typo: 2021 must not also match 2020 or 2022
     let max_edits = if !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()) {
@@ -3270,6 +3278,7 @@ fn blended_doc_freq(expansions: &[FuzzyExpansion]) -> u32 {
         .unwrap_or(0)
 }
 //fuzzable words for did_you_mean
+#[must_use]
 pub fn fuzzable_words(analyzer: &Analyzer, raw: &str) -> Vec<String> {
     raw.split_whitespace()
         .filter_map(|w| analyzer.analyze_query(w).into_iter().next().map(|t| t.text))

@@ -136,7 +136,7 @@ fn cmp_asc(a: Option<NumericValue>, b: Option<NumericValue>) -> Ordering {
 fn apply_modifier(v: f64, m: SortModifier) -> f64 {
     match m {
         SortModifier::None => v,
-        SortModifier::Log1p => (v + 1.0).ln(),
+        SortModifier::Log1p => v.ln_1p(),
         SortModifier::Sqrt => v.sqrt(),
     }
 }
@@ -251,7 +251,7 @@ pub fn order_blended(
                         _ => 1.0,
                     },
                 };
-                field += f32::from(spec.ratio) * component;
+                field = f32::mul_add(f32::from(spec.ratio), component, field);
             }
             relevance + field
         })
@@ -335,8 +335,7 @@ pub fn resolve_sorts(
                 total_ratio += u32::from(r);
                 if total_ratio > 100 {
                     return Err(CorelamoError::InvalidData(
-                        "sort ratios must add up to at most 100 (the rest is relevance)"
-                            .to_string(),
+                        "sort ratios must add up to at most 100 (the rest is relevance)".to_owned(),
                     ));
                 }
                 r

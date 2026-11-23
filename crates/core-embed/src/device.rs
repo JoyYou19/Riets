@@ -58,9 +58,9 @@ pub enum Device {
 impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Device::Cpu => f.write_str("cpu"),
-            Device::Cuda { device_id } => write!(f, "cuda:{device_id}"),
-            Device::Metal => f.write_str("metal"),
+            Self::Cpu => f.write_str("cpu"),
+            Self::Cuda { device_id } => write!(f, "cuda:{device_id}"),
+            Self::Metal => f.write_str("metal"),
         }
     }
 }

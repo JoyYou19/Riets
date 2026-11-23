@@ -39,7 +39,7 @@ pub(crate) struct FuzzyKey {
 impl FuzzyKey {
     pub(crate) fn new(word: &str, opts: FuzzyOptions) -> Self {
         Self {
-            word: word.to_string(),
+            word: word.to_owned(),
             max_edits: opts.max_edits,
             prefix_length: opts.prefix_length,
         }
@@ -63,6 +63,7 @@ pub struct CorpusStats {
 }
 
 impl CorpusStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -96,7 +97,7 @@ impl CorpusStats {
     }
 
     /// Adds another shard's statistics to these.
-    pub fn merge(&mut self, other: &CorpusStats) {
+    pub fn merge(&mut self, other: &Self) {
         for (&xpath, totals) in &other.fields {
             let entry = self.fields.entry(xpath).or_default();
             entry.doc_count = entry.doc_count.saturating_add(totals.doc_count);
@@ -138,8 +139,9 @@ impl CorpusStats {
 
     /// Documents containing `term` in `xpath`, summed over every shard. Every term of the query
     /// is prepared, so a term with no entry is in no document.
+    #[must_use]
     pub fn term_doc_freq(&self, xpath: XPathId, term: &str) -> u32 {
-        self.doc_freq(xpath, &LeafKey::Term(term.to_string()))
+        self.doc_freq(xpath, &LeafKey::Term(term.to_owned()))
             .unwrap_or(0)
     }
 

@@ -54,7 +54,7 @@ fn fetch_model_files(spec: &ModelSpec, cache_dir: &Path) -> io::Result<ModelFile
     let cache_dir =
         std::env::var_os("HF_HOME").map_or_else(|| cache_dir.to_path_buf(), PathBuf::from);
     let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
+        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_owned());
     let repo = ApiBuilder::new()
         .with_cache_dir(cache_dir)
         .with_endpoint(endpoint)
@@ -62,9 +62,9 @@ fn fetch_model_files(spec: &ModelSpec, cache_dir: &Path) -> io::Result<ModelFile
         .build()
         .map_err(model_error)?
         .repo(Repo::with_revision(
-            spec.repo.to_string(),
+            spec.repo.to_owned(),
             RepoType::Model,
-            spec.revision.to_string(),
+            spec.revision.to_owned(),
         ));
     let get = |file: &str| {
         repo.get(file)
@@ -129,6 +129,7 @@ pub static MODELS: &[ModelSpec] = &[
     },
 ];
 
+#[must_use]
 pub fn find_model(id: &str) -> Option<&'static ModelSpec> {
     MODELS.iter().find(|spec| spec.id == id)
 }

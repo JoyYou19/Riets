@@ -3,7 +3,7 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UserId(pub String);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
     pub id: UserId,
     pub roles: HashSet<String>,
