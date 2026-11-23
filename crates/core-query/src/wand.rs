@@ -8,11 +8,11 @@ use core_index::{
 use core_timing::timed;
 use roaring::RoaringTreemap;
 
-use crate::executor::phrase_matches;
 use crate::{
     bm25::{bm25_score_scaled, bm25_upper_bound},
     ranking::COVERAGE_POWER,
 };
+use crate::{executor::phrase_matches, scorer::Scorer};
 
 /// One query term's postings in a field, borrowed from wherever they were read.
 pub struct TermRef<'a> {
@@ -49,7 +49,7 @@ pub struct FieldTerms<'a> {
 }
 
 /// Smallest allowed doc id `>= d`, or `None` when the filter has no documents left.
-fn next_allowed(allowed: &RoaringTreemap, d: DocId) -> Option<DocId> {
+pub(crate) fn next_allowed(allowed: &RoaringTreemap, d: DocId) -> Option<DocId> {
     if d == 0 {
         allowed.select(0)
     } else {
@@ -242,11 +242,11 @@ pub struct WandHit {
 //
 // Rust binary heap is a max heap but WAND needs quick acces to the worst result instead of the max
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HeapHit {
-    doc_id: DocId,
-    score: u64,
-    raw: u64,
-    matched_terms: usize,
+pub(crate) struct HeapHit {
+    pub(crate) doc_id: DocId,
+    pub(crate) score: u64,
+    pub(crate) raw: u64,
+    pub(crate) matched_terms: usize,
 }
 
 impl Ord for HeapHit {
@@ -264,7 +264,7 @@ impl PartialOrd for HeapHit {
     }
 }
 
-fn push_top_k(
+pub(crate) fn push_top_k(
     heap: &mut BinaryHeap<HeapHit>,
     doc_id: DocId,
     score: u64,
@@ -297,7 +297,7 @@ fn push_top_k(
     }
 }
 
-fn finish_heap(heap: BinaryHeap<HeapHit>) -> Vec<WandHit> {
+pub(crate) fn finish_heap(heap: BinaryHeap<HeapHit>) -> Vec<WandHit> {
     let mut hits: Vec<WandHit> = heap
         .into_iter()
         .map(|hit| WandHit {
@@ -617,7 +617,7 @@ impl<'a> FormCursor<'a> {
     }
 
     /// The weighted score of the document the form is on: the lists on it, added up.
-    fn score<S: SearchStats>(&mut self, stats: &S, doc: DocId) -> u64 {
+    fn score(&mut self, stats: &dyn SearchStats, doc: DocId) -> u64 {
         let doc_len = stats
             .doc_len(doc, self.xpath)
             .unwrap_or(self.avg_doc_len as u32);
@@ -696,13 +696,42 @@ impl<'a> ClauseCursor<'a> {
         }
     }
 
-    fn score<S: SearchStats>(&mut self, stats: &S, doc: DocId) -> u64 {
+    fn score(&mut self, stats: &dyn SearchStats, doc: DocId) -> u64 {
         best_per_field(
             self.forms
                 .iter_mut()
                 .filter(|form| form.doc == Some(doc))
                 .map(|form| (form.field, form.score(stats, doc))),
         )
+    }
+}
+
+//temp bridge
+impl Scorer for ClauseCursor<'_> {
+    fn doc(&self) -> Option<DocId> {
+        self.doc_id()
+    }
+
+    fn next(&mut self) {
+        if let Some(doc) = self.doc_id() {
+            self.step_past(doc);
+        }
+    }
+
+    fn advance_to(&mut self, target: DocId) {
+        ClauseCursor::advance_to(self, target);
+    }
+
+    fn score(&mut self, stats: &dyn SearchStats, doc: DocId) -> u64 {
+        ClauseCursor::score(self, stats, doc)
+    }
+
+    fn upper_bound(&self) -> u64 {
+        self.upper_bound
+    }
+
+    fn weight(&self) -> f32 {
+        self.weight
     }
 }
 
@@ -724,23 +753,23 @@ fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
     total.saturating_add(current.map_or(0, |(_, best)| best))
 }
 /// Up to this many allowed documents are visited one by one (see `wand_top_k_grouped`).
-const DIRECT_RESTRICT_MAX: usize = 4096;
+pub(crate) const DIRECT_RESTRICT_MAX: usize = 4096;
 
-pub fn wand_top_k_grouped<'a, S: SearchStats>(
+pub fn wand_top_k_grouped_old<'a, S: SearchStats>(
     stats: &S,
     fields: Vec<FieldClauses<'a>>,
     k: usize,
     coverage: Option<f32>,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
-    wand_top_k_grouped_with_any(stats, fields, k, coverage, restrict, 0).0
+    wand_top_k_grouped_with_any_old(stats, fields, k, coverage, restrict, 0).0
 }
 
 /// `wand_top_k_grouped`, and in the same walk the top `any_k` documents holding any clause,
 /// ranked by their plain BM25 sum (the "any word" source). The walk skips only what neither
 /// list could take. `any_k == 0`: just the first list.
 #[timed(search)]
-pub fn wand_top_k_grouped_with_any<'a, S: SearchStats>(
+pub fn wand_top_k_grouped_with_any_old<'a, S: SearchStats>(
     stats: &S,
     fields: Vec<FieldClauses<'a>>,
     k: usize,

@@ -9,6 +9,7 @@ mod matched_terms;
 pub use matched_terms::MatchedTerm;
 
 mod bm25;
+mod collector;
 pub mod planner;
 mod prepared;
 pub mod query_string_parser;

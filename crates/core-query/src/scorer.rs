@@ -29,3 +29,5 @@ pub trait Scorer {
         0.0
     }
 }
+
+pub type BoxScorer<'a> = Box<dyn Scorer + 'a>;

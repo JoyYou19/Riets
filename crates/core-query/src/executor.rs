@@ -31,7 +31,7 @@ use crate::{
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
     wand::{
         FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
-        conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_grouped_with_any,
+        conjunctive_top_k_multi_field, wand_top_k_grouped_old, wand_top_k_grouped_with_any_old,
         wand_top_k_multi_field,
     },
 };
@@ -450,7 +450,7 @@ where
                     })
                     .collect(),
             };
-            return Some(wand_top_k_grouped(
+            return Some(wand_top_k_grouped_old(
                 &self.stats(),
                 vec![clauses],
                 k,
@@ -557,12 +557,13 @@ where
         } else {
             match any {
                 Some((out, any_k)) => {
-                    let (hits, any_hits) =
-                        wand_top_k_grouped_with_any(&stats, fields, k, coverage, restrict, any_k);
+                    let (hits, any_hits) = wand_top_k_grouped_with_any_old(
+                        &stats, fields, k, coverage, restrict, any_k,
+                    );
                     *out = any_hits;
                     hits
                 }
-                None => wand_top_k_grouped(&stats, fields, k, coverage, restrict),
+                None => wand_top_k_grouped_old(&stats, fields, k, coverage, restrict),
             }
         })
     }
