@@ -12,7 +12,7 @@ pub(crate) struct AndScorer<'a> {
 
 impl<'a> AndScorer<'a> {
     //Builds the conjunction and lines the children up on their first common document.
-    pub(crate) fn new(mut children: Vec<BoxScorer<'a>>) -> Self {
+    pub(crate) fn new(children: Vec<BoxScorer<'a>>) -> Self {
         let upper_bound = children.iter().map(|child| child.upper_bound()).sum();
         let mut this = Self {
             children,
@@ -69,6 +69,10 @@ impl Scorer for AndScorer<'_> {
             }
             self.current = self.next_common(None);
         }
+    }
+
+    fn weight(&self) -> f32 {
+        self.children.iter().map(|child| child.weight()).sum()
     }
 
     //Sum every child's score on `doc`.

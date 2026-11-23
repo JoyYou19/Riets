@@ -28,6 +28,10 @@ pub(crate) trait Scorer {
         0.0
     }
 
+    fn doc_count(&self) -> u64 {
+        0
+    }
+
     /// The top `k` documents, best first (default: walk every one).
     fn top_k(
         &mut self,

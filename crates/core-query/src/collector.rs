@@ -1,5 +1,5 @@
 //! The top-k collector: walks a set of scorers and keeps the k best documents.
-use std::collections::BinaryHeap;
+use std::{cmp::Ordering, collections::BinaryHeap};
 
 use core_index::{search::SearchStats, types::DocId};
 use roaring::RoaringTreemap;
@@ -7,7 +7,6 @@ use roaring::RoaringTreemap;
 use crate::{
     ranking::COVERAGE_POWER,
     scorer::{BoxScorer, Scorer},
-    wand::{DIRECT_RESTRICT_MAX, HeapHit, WandHit, finish_heap, next_allowed, push_top_k},
 };
 
 //Top `k` documents by summed scorer score (WAND), plus the top `any_k` documents holding
@@ -250,3 +249,93 @@ pub(crate) fn collect_all<S: Scorer + ?Sized>(
     }
     finish_heap(heap)
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WandHit {
+    pub doc_id: DocId,
+    /// Top-k score, after coverage scaling.
+    pub score: u64,
+    /// The plain BM25 sum.
+    pub raw: u64,
+    pub matched_terms: usize,
+}
+
+/// Heap entry ordered so the worst hit is on top (for eviction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HeapHit {
+    pub(crate) doc_id: DocId,
+    pub(crate) score: u64,
+    pub(crate) raw: u64,
+    pub(crate) matched_terms: usize,
+}
+
+impl Ord for HeapHit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .score
+            .cmp(&self.score)
+            .then_with(|| self.doc_id.cmp(&other.doc_id))
+    }
+}
+
+impl PartialOrd for HeapHit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The smallest allowed doc id >= `d`, or `None` when the filter has nothing left.
+pub(crate) fn next_allowed(allowed: &RoaringTreemap, d: DocId) -> Option<DocId> {
+    if d == 0 {
+        allowed.select(0)
+    } else {
+        allowed.select(allowed.rank(d - 1))
+    }
+}
+
+/// Keeps the heap at `k` entries, keeping the best score (ties by smaller doc id).
+pub(crate) fn push_top_k(
+    heap: &mut BinaryHeap<HeapHit>,
+    doc_id: DocId,
+    score: u64,
+    raw: u64,
+    matched_terms: usize,
+    k: usize,
+) {
+    let hit = HeapHit {
+        doc_id,
+        score,
+        raw,
+        matched_terms,
+    };
+    if heap.len() < k {
+        heap.push(hit);
+        return;
+    }
+    let Some(worst) = heap.peek() else {
+        heap.push(hit);
+        return;
+    };
+    if score > worst.score || (score == worst.score && doc_id < worst.doc_id) {
+        heap.pop();
+        heap.push(hit);
+    }
+}
+
+/// Drains the heap into hits, best first.
+pub(crate) fn finish_heap(heap: BinaryHeap<HeapHit>) -> Vec<WandHit> {
+    let mut hits: Vec<WandHit> = heap
+        .into_iter()
+        .map(|hit| WandHit {
+            doc_id: hit.doc_id,
+            score: hit.score,
+            raw: hit.raw,
+            matched_terms: hit.matched_terms,
+        })
+        .collect();
+    hits.sort_unstable_by(|a, b| b.score.cmp(&a.score).then_with(|| a.doc_id.cmp(&b.doc_id)));
+    hits
+}
+
+/// Up to this many allowed documents are visited one by one.
+pub(crate) const DIRECT_RESTRICT_MAX: usize = 4096;

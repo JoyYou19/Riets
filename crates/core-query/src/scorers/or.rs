@@ -67,6 +67,10 @@ impl Scorer for OrScorer<'_> {
         self.upper_bound
     }
 
+    fn weight(&self) -> f32 {
+        self.children.iter().map(|child| child.weight()).sum()
+    }
+
     /// Disjunctions use WAND instead of the default full walk.
     fn top_k(
         &mut self,

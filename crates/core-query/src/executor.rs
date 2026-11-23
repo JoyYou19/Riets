@@ -29,6 +29,8 @@ use crate::{
     rank_order,
     ranking::{ANY_POOL_SIZE, MAX_CLAUSES, MIN_COVERAGE, POOL_SIZE, RankedGroup, finalize},
     resolver::{FieldCtx, FieldQuery, SameElementBinding},
+    scorer::BoxScorer,
+    scorers::{AndScorer, OrScorer},
     wand::{
         FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
         conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_grouped_with_any,
@@ -130,6 +132,8 @@ impl ListSource<'_> {
         }
     }
 }
+
+type LeafForms<'a> = Vec<(usize, FormLists<'a>)>;
 
 // One form of a query clause read in one field: its lists with the document frequency each is
 // scored with (see `wand::FormRef`).
@@ -565,6 +569,63 @@ where
                 None => wand_top_k_grouped(&stats, fields, k, coverage, restrict),
             }
         })
+    }
+
+    //walks the query in the same order and records every leaf's forms.
+    fn collect_leaves(&self, query: &Query, ctxs: &[FieldCtx], out: &mut Vec<LeafForms<'a>>) {
+        match query {
+            Query::And(parts) | Query::Or(parts) | Query::Wand(parts) => {
+                for part in parts {
+                    self.collect_leaves(part, ctxs, out);
+                }
+            }
+            _ => {
+                let mut forms = Vec::new();
+                for (field, &ctx) in ctxs.iter().enumerate() {
+                    forms.extend(
+                        self.clause_forms(query, ctx)
+                            .into_iter()
+                            .map(|form| (field, form)),
+                    );
+                }
+                out.push(forms);
+            }
+        }
+    }
+
+    //rebuilds the same traversal as a scorer tree, reading the leaves in order.
+    fn build_scorer<'s, S: SearchStats>(
+        &'s self,
+        query: &Query,
+        leaves: &'s [LeafForms<'a>],
+        at: &mut usize,
+        stats: &'s S,
+    ) -> Option<BoxScorer<'s>> {
+        match query {
+            Query::And(parts) => {
+                let children = parts
+                    .iter()
+                    .map(|part| self.build_scorer(part, leaves, at, stats))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Box::new(AndScorer::new(children)) as BoxScorer<'s>)
+            }
+            Query::Or(parts) | Query::Wand(parts) => {
+                let children = parts
+                    .iter()
+                    .map(|part| self.build_scorer(part, leaves, at, stats))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Box::new(OrScorer::new(children, None)) as BoxScorer<'s>)
+            }
+            _ => {
+                let forms = &leaves[*at];
+                *at += 1;
+                let refs: Vec<FormRef<'s>> = forms
+                    .iter()
+                    .map(|(field, form)| form.as_ref(self.index, *field))
+                    .collect();
+                crate::scorers::clause_scorer(stats, refs)
+            }
+        }
     }
 
     /// The forms of one part of a flat query in one field, read and weighted the way
@@ -1991,6 +2052,21 @@ where
                 {
                     return hits.into_iter().map(wand_hit_to_search_hit).collect();
                 }
+
+                // nested shapes: build a scorer tree instead of scoring every match
+                if ctxs.iter().all(|ctx| !ctx.row_keyed) {
+                    let stats = self.stats();
+                    let mut leaves: Vec<LeafForms<'a>> = Vec::new();
+                    self.collect_leaves(query, ctxs, &mut leaves);
+                    let mut at = 0usize;
+                    if let Some(mut root) = self.build_scorer(query, &leaves, &mut at, &stats) {
+                        return root
+                            .top_k(&stats, k, restrict)
+                            .into_iter()
+                            .map(wand_hit_to_search_hit)
+                            .collect();
+                    }
+                }
                 return top_k_from_hits(self.cross_field_hits(query, ctxs, restrict), k);
             }
         }
@@ -2719,6 +2795,7 @@ where
             k,
         )
     }
+
     /// The candidates of one analyzer group with their raw evidence, not yet scored: several
     /// groups are merged by `ranking::finalize` before anything is scored.
     pub fn rank_features(
@@ -2758,21 +2835,41 @@ where
         restrict: Option<&RoaringTreemap>,
         by_doc: &mut HashMap<DocId, SearchHit>,
     ) {
-        if !ctx.row_keyed
-            && let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict)
-        {
-            for h in hits {
-                let hit = wand_hit_to_search_hit(h);
-                by_doc
-                    .entry(hit.doc_id)
-                    .and_modify(|e| {
-                        e.score += hit.score;
-                        e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
-                        e.distance_factor = e.distance_factor.max(hit.distance_factor);
-                    })
-                    .or_insert(hit);
+        if !ctx.row_keyed {
+            if let Some(hits) = self.execute_top_k_retrieval(query, &[ctx.xpath], k, restrict) {
+                for h in hits {
+                    let hit = wand_hit_to_search_hit(h);
+                    by_doc
+                        .entry(hit.doc_id)
+                        .and_modify(|e| {
+                            e.score += hit.score;
+                            e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                            e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                        })
+                        .or_insert(hit);
+                }
+                return;
             }
-            return;
+
+            // nested shapes: a scorer tree, not a full evaluate
+            let stats = self.stats();
+            let mut leaves: Vec<LeafForms<'a>> = Vec::new();
+            self.collect_leaves(query, &[ctx], &mut leaves);
+            let mut at = 0usize;
+            if let Some(mut root) = self.build_scorer(query, &leaves, &mut at, &stats) {
+                for h in root.top_k(&stats, k, restrict) {
+                    let hit = wand_hit_to_search_hit(h);
+                    by_doc
+                        .entry(hit.doc_id)
+                        .and_modify(|e| {
+                            e.score += hit.score;
+                            e.matched_terms = e.matched_terms.saturating_add(hit.matched_terms);
+                            e.distance_factor = e.distance_factor.max(hit.distance_factor);
+                        })
+                        .or_insert(hit);
+                }
+                return;
+            }
         }
 
         let EvalOutcome::Scored(scored) = self.evaluate(query, &[ctx], EvalMode::Rank) else {

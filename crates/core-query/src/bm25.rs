@@ -19,13 +19,13 @@ const SCORE_SCALE: f32 = 1000.0;
 
 /// BM25's idf: how rare a term is among `doc_count` documents.
 pub(crate) fn bm25_idf(doc_frequency: u32, doc_count: u64) -> f32 {
-     let n = doc_count as f32;
-     let df = (doc_frequency as f32).min(n);
-     if n <= 0.0 || df <= 0.0 {
-         return 0.0;
-     }
-     ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
- }
+    let n = doc_count as f32;
+    let df = (doc_frequency as f32).min(n);
+    if n <= 0.0 || df <= 0.0 {
+        return 0.0;
+    }
+    ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+}
 pub(crate) fn bm25_score(
     tf: u32,
     weight: u16,
@@ -73,7 +73,7 @@ pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u
     }
 
     let n = doc_count as f32;
-     let df = (doc_frequency as f32).min(n);
+    let df = (doc_frequency as f32).min(n);
 
     let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
 
@@ -129,4 +129,26 @@ pub(crate) fn score_term_into<S: SearchStats>(
 
 pub(crate) fn fuzzy_decay(edits: u8) -> f32 {
     1.0 / (1.0 + f32::from(edits))
+}
+
+//Scales a score by a weight in thousandths.
+pub(crate) fn weighted(score: u64, weight: u16) -> u64 {
+    score.saturating_mul(u64::from(weight)) / 1000
+}
+
+//The best value of each field, added up over the fields (one field's values come together).
+pub(crate) fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
+    let mut total = 0u64;
+    let mut current: Option<(usize, u64)> = None;
+    for (field, value) in values {
+        current = match current {
+            Some((at, best)) if at == field => Some((at, best.max(value))),
+            Some((_, best)) => {
+                total = total.saturating_add(best);
+                Some((field, value))
+            }
+            None => Some((field, value)),
+        };
+    }
+    total.saturating_add(current.map_or(0, |(_, best)| best))
 }
