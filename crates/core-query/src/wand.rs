@@ -152,7 +152,7 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                     block_bound = block_bound.saturating_add(bm25_score_scaled(
                         entry.max_tf,
                         entry.max_weight,
-                        entry.min_doc_len,
+                        Some(entry.min_doc_len),
                         avg_doc_len,
                         doc_count,
                         term.doc_freq,
@@ -185,11 +185,9 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                         continue;
                     }
                     let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
-                    let doc_len = *doc_len_cache[term.field].get_or_insert_with(|| {
-                        stats
-                            .doc_len(pivot_doc, xpath)
-                            .unwrap_or(avg_doc_len as u32)
-                    });
+                    let doc_len = *doc_len_cache[term.field]
+                        .get_or_insert_with(|| stats.doc_len(pivot_doc, xpath));
+                   
 
                     score = score.saturating_add(bm25_score_scaled(
                         term.cursor.term_freq(),
@@ -292,9 +290,7 @@ impl<'a> FieldConjunction<'a> {
 
     /// The BM25 score of the document the conjunction is currently on.
     fn score<S: SearchStats>(&mut self, stats: &S, doc_id: DocId) -> u64 {
-        let doc_len = stats
-            .doc_len(doc_id, self.xpath)
-            .unwrap_or(self.avg_doc_len as u32);
+        let doc_len = stats.doc_len(doc_id, self.xpath);
 
         let mut score = 0u64;
         for term in &mut self.terms {
@@ -384,7 +380,7 @@ pub struct FieldClauses<'a> {
 #[timed(search)]
 pub fn conjunctive_top_k_grouped<'a, S: SearchStats>(
     stats: &S,
-    fields: Vec<FieldClauses<'_>>,
+    fields: Vec<FieldClauses<'a>>,
     k: usize,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {

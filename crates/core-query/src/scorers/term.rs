@@ -7,10 +7,7 @@ use core_index::{
 };
 
 use crate::{
-    bm25::{bm25_score_scaled, bm25_upper_bound, weighted},
-    executor::phrase_matches,
-    scorer::Scorer,
-    wand::FormRef,
+    bm25::{bm25_idf, bm25_score_scaled, bm25_upper_bound, weighted}, executor::phrase_matches, scorer::Scorer, wand::FormRef,
 };
 
 /// One query form in one field, walked as a single cursor.
@@ -20,7 +17,7 @@ pub(crate) struct TermScorer<'a> {
     doc_freqs: Vec<u32>,
     xpath: XPathId,
     doc_count: u64,
-    avg_doc_len: f32,
+    avg_doc_len: f64,
     weight: u16,
     upper_bound: u64,
     // any list is enough (synonym typed words), or all of them must be on the doc
@@ -48,14 +45,7 @@ impl<'a> TermScorer<'a> {
             .iter()
             .map(|list| bm25_upper_bound(list.max_weight, doc_count, list.doc_freq))
             .fold(0u64, u64::saturating_add);
-        let rarity = |doc_freq: u32| -> f32 {
-            let n = doc_count as f32;
-            let df = (doc_freq as f32).min(n);
-            if n <= 0.0 || df <= 0.0 {
-                return 0.0;
-            }
-            ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
-        };
+        let rarity = |doc_freq: u32| bm25_idf(doc_freq, doc_count);
         let idf = form.lists.iter().map(|list| rarity(list.doc_freq)).sum();
         let doc_freqs = form.lists.iter().map(|list| list.doc_freq).collect();
         let mut scorer = Self {
@@ -161,9 +151,7 @@ impl Scorer for TermScorer<'_> {
     }
 
     fn score(&mut self, stats: &dyn SearchStats, doc: DocId) -> u64 {
-        let doc_len = stats
-            .doc_len(doc, self.xpath)
-            .unwrap_or(self.avg_doc_len as u32);
+        let doc_len = stats.doc_len(doc, self.xpath);
         let mut score = 0u64;
         for (cursor, &doc_freq) in self.cursors.iter_mut().zip(&self.doc_freqs) {
             if cursor.doc_id() != Some(doc) {

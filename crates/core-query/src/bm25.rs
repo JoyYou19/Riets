@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use core_index::{
+    num::u64_to_f64,
     posting::PostingList,
     search::SearchStats,
     types::{DocId, XPathId},
@@ -13,41 +14,46 @@ use crate::ScoredPosting;
 * Turns postings into scored postings based on whatever criteria
 */
 
-const BM25_K1: f32 = 1.2;
-const BM25_B: f32 = 0.75;
-const SCORE_SCALE: f32 = 1000.0;
+const BM25_K1: f64 = 1.2;
+const BM25_B: f64 = 0.75;
+const SCORE_SCALE: f64 = 1000.0;
 
-/// BM25's idf: how rare a term is among `doc_count` documents.
-pub(crate) fn bm25_idf(doc_frequency: u32, doc_count: u64) -> f32 {
-    let n = doc_count as f32;
-    let df = (doc_frequency as f32).min(n);
+/// BM25's idf, in f64: how rare a term is among `doc_count` documents. f64 keeps rare terms
+/// apart in large indexes; in f32 the counts lose their last digits above ~16.7M documents.
+fn idf(doc_frequency: u32, doc_count: u64) -> f64 {
+    let n = u64_to_f64(doc_count);
+    let df = f64::from(doc_frequency).min(n);
     if n <= 0.0 || df <= 0.0 {
         return 0.0;
     }
     ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
 }
-pub(crate) fn bm25_score(
+
+/// BM25's idf: how rare a term is among `doc_count` documents.
+pub(crate) fn bm25_idf(doc_frequency: u32, doc_count: u64) -> f32 {
+    idf(doc_frequency, doc_count) as f32
+}
+
+/// `doc_len` is None when the index has no length for the document: the field's average is
+/// used, exactly (it used to be cut to a whole number).
+fn bm25_score(
     tf: u32,
     weight: u16,
-    doc_len: u32,
-    avg_doc_len: f32,
+    doc_len: Option<u32>,
+    avg_doc_len: f64,
     doc_count: u64,
     doc_frequency: u32,
-) -> f32 {
+) -> f64 {
     if tf == 0 || doc_count == 0 || doc_frequency == 0 || avg_doc_len <= 0.0 {
         return 0.0;
     }
-
-    let tf = tf as f32;
-    let dl = doc_len as f32;
-
-    let idf = bm25_idf(doc_frequency, doc_count);
+    let tf = f64::from(tf);
+    let dl = doc_len.map_or(avg_doc_len, f64::from);
     let norm = 1.0 - BM25_B + BM25_B * (dl / avg_doc_len);
-
     let tf_component = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);
 
     //INFO: noneemu + 1.0
-    f32::from(weight) * idf * (tf_component)
+    f64::from(weight) * idf(doc_frequency, doc_count) * tf_component
 }
 
 // I just put this function here so we automatically multiply, I can already see ways of me messing
@@ -55,39 +61,28 @@ pub(crate) fn bm25_score(
 pub(crate) fn bm25_score_scaled(
     tf: u32,
     weight: u16,
-    doc_len: u32,
-    avg_doc_len: f32,
+    doc_len: Option<u32>,
+    avg_doc_len: f64,
     doc_count: u64,
     doc_freq: u32,
 ) -> u64 {
     (bm25_score(tf, weight, doc_len, avg_doc_len, doc_count, doc_freq) * SCORE_SCALE) as u64
 }
 
-// Returns a safe upper bound on the BM25 score that this term can contribute to any document. I
-// took this code from our generative friend, and honestly, I have no clue how it measures
-// anything, but if this is what they use in ElasticSearch then we use it as well. At least for
-// now.
+// A safe upper bound on the BM25 score this term can contribute to any document: the highest
+// weight, the term's idf, and the largest the tf part can get (k1 + 1). Uses the same `idf` as
+// the real score, so it can never fall below one.
 pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
     if doc_count == 0 || doc_frequency == 0 || max_weight == 0 {
         return 0;
     }
-
-    let n = doc_count as f32;
-    let df = (doc_frequency as f32).min(n);
-
-    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-
     let max_tf_component = BM25_K1 + 1.0;
 
     //INFO: nonemu + 1.0
-    let max_score = f32::from(max_weight) * idf * (max_tf_component);
+    let max_score = f64::from(max_weight) * idf(doc_frequency, doc_count) * max_tf_component;
 
     (max_score * SCORE_SCALE).ceil() as u64
 }
-
-// fn trace_bm25() -> bool {
-//     std::env::var_os("CORELAMO_TRACE_BM25").is_some()
-// }
 
 #[timed(search)]
 pub(crate) fn score_term_into<S: SearchStats>(
@@ -95,7 +90,7 @@ pub(crate) fn score_term_into<S: SearchStats>(
     postings: &PostingList,
     xpath: XPathId,
     true_df: u32,
-    doc_len: &mut HashMap<DocId, f32>,
+    doc_len: &mut HashMap<DocId, Option<u32>>,
     out: &mut Vec<ScoredPosting>,
 ) {
     let doc_count = stats.doc_count(xpath);
@@ -103,16 +98,14 @@ pub(crate) fn score_term_into<S: SearchStats>(
     let avg_doc_len = stats.avg_doc_len(xpath);
 
     for posting in postings.items().iter().filter(|p| !p.positions.is_empty()) {
-        let dl = *doc_len.entry(posting.doc_id).or_insert_with(|| {
-            stats
-                .doc_len(posting.doc_id, xpath)
-                .unwrap_or(avg_doc_len as u32) as f32
-        });
+        let dl = *doc_len
+            .entry(posting.doc_id)
+            .or_insert_with(|| stats.doc_len(posting.doc_id, xpath));
 
         let score = bm25_score_scaled(
-            posting.positions.len() as u32,
+            u32::try_from(posting.positions.len()).unwrap_or(u32::MAX),
             posting.weight,
-            dl as u32,
+            dl,
             avg_doc_len,
             doc_count,
             doc_frequency,
