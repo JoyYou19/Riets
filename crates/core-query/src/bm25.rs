@@ -1,0 +1,154 @@
+use std::collections::HashMap;
+
+use core_index::{
+    posting::PostingList,
+    search::SearchStats,
+    types::{DocId, XPathId},
+};
+use core_timing::timed;
+
+use crate::ScoredPosting;
+
+/*
+* Turns postings into scored postings based on whatever criteria
+*/
+
+const BM25_K1: f32 = 1.2;
+const BM25_B: f32 = 0.75;
+const SCORE_SCALE: f32 = 1000.0;
+
+/// BM25's idf: how rare a term is among `doc_count` documents.
+pub(crate) fn bm25_idf(doc_frequency: u32, doc_count: u64) -> f32 {
+    let n = doc_count as f32;
+    let df = (doc_frequency as f32).min(n);
+    if n <= 0.0 || df <= 0.0 {
+        return 0.0;
+    }
+    ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+}
+pub(crate) fn bm25_score(
+    tf: u32,
+    weight: u16,
+    doc_len: u32,
+    avg_doc_len: f32,
+    doc_count: u64,
+    doc_frequency: u32,
+) -> f32 {
+    if tf == 0 || doc_count == 0 || doc_frequency == 0 || avg_doc_len <= 0.0 {
+        return 0.0;
+    }
+
+    let tf = tf as f32;
+    let dl = doc_len as f32;
+
+    let idf = bm25_idf(doc_frequency, doc_count);
+    let norm = 1.0 - BM25_B + BM25_B * (dl / avg_doc_len);
+
+    let tf_component = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);
+
+    //INFO: noneemu + 1.0
+    f32::from(weight) * idf * (tf_component)
+}
+
+// I just put this function here so we automatically multiply, I can already see ways of me messing
+// this up in the future
+pub(crate) fn bm25_score_scaled(
+    tf: u32,
+    weight: u16,
+    doc_len: u32,
+    avg_doc_len: f32,
+    doc_count: u64,
+    doc_freq: u32,
+) -> u64 {
+    (bm25_score(tf, weight, doc_len, avg_doc_len, doc_count, doc_freq) * SCORE_SCALE) as u64
+}
+
+// Returns a safe upper bound on the BM25 score that this term can contribute to any document. I
+// took this code from our generative friend, and honestly, I have no clue how it measures
+// anything, but if this is what they use in ElasticSearch then we use it as well. At least for
+// now.
+pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
+    if doc_count == 0 || doc_frequency == 0 || max_weight == 0 {
+        return 0;
+    }
+
+    let n = doc_count as f32;
+    let df = (doc_frequency as f32).min(n);
+
+    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+
+    let max_tf_component = BM25_K1 + 1.0;
+
+    //INFO: nonemu + 1.0
+    let max_score = f32::from(max_weight) * idf * (max_tf_component);
+
+    (max_score * SCORE_SCALE).ceil() as u64
+}
+
+// fn trace_bm25() -> bool {
+//     std::env::var_os("CORELAMO_TRACE_BM25").is_some()
+// }
+
+#[timed(search)]
+pub(crate) fn score_term_into<S: SearchStats>(
+    stats: &S,
+    postings: &PostingList,
+    xpath: XPathId,
+    true_df: u32,
+    doc_len: &mut HashMap<DocId, f32>,
+    out: &mut Vec<ScoredPosting>,
+) {
+    let doc_count = stats.doc_count(xpath);
+    let doc_frequency = true_df;
+    let avg_doc_len = stats.avg_doc_len(xpath);
+
+    for posting in postings.items().iter().filter(|p| !p.positions.is_empty()) {
+        let dl = *doc_len.entry(posting.doc_id).or_insert_with(|| {
+            stats
+                .doc_len(posting.doc_id, xpath)
+                .unwrap_or(avg_doc_len as u32) as f32
+        });
+
+        let score = bm25_score_scaled(
+            posting.positions.len() as u32,
+            posting.weight,
+            dl as u32,
+            avg_doc_len,
+            doc_count,
+            doc_frequency,
+        );
+
+        out.push(ScoredPosting {
+            doc_id: posting.doc_id,
+            score,
+            matched_terms: 1,
+            density: 1.0,
+        });
+    }
+}
+
+pub(crate) fn fuzzy_decay(edits: u8) -> f32 {
+    1.0 / (1.0 + f32::from(edits))
+}
+
+//Scales a score by a weight in thousandths.
+pub(crate) fn weighted(score: u64, weight: u16) -> u64 {
+    score.saturating_mul(u64::from(weight)) / 1000
+}
+
+//The best value of each field, added up over the fields (one field's values come together).
+pub(crate) fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
+    let mut total = 0u64;
+    let mut current: Option<(usize, u64)> = None;
+    for (field, value) in values {
+        current = match current {
+            Some((at, best)) if at == field => Some((at, best.max(value))),
+            Some((_, best)) => {
+                total = total.saturating_add(best);
+                Some((field, value))
+            }
+            None => Some((field, value)),
+        };
+    }
+    total.saturating_add(current.map_or(0, |(_, best)| best))
+}
