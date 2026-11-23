@@ -15,6 +15,8 @@ pub mod query_string_parser;
 pub mod ranking;
 pub mod resolver;
 mod scored_posting;
+mod scorer;
+mod scorers;
 mod search_hit;
 pub mod synonyms;
 pub mod wand;
