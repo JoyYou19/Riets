@@ -1,11 +1,11 @@
 // "# **bold** [link](url)" -> "bold link"
+#[must_use]
 pub fn strip_markdown(input: &str) -> String {
     let text = strip_links(input);
     text.chars()
         .filter(|c| !matches!(c, '#' | '*' | '_' | '`' | '~' | '>'))
         .collect::<String>()
-        .trim()
-        .to_string()
+        .trim().to_owned()
 }
 
 // "[text](url)" -> "text"

@@ -4,9 +4,9 @@
 use ahash::AHashMap;
 
 use crate::analyzer::text_analyzer::AnalyzerSet;
-use crate::document::indexed::{BoolPoint, NumericPoint};
-use crate::document::{DocumentPart, IndexedDocument};
-use crate::types::{ArrayRowId, DocId, XPathId, encode_position};
+use crate::document::indexed::{ BoolPoint, NumericPoint };
+use crate::document::{ DocumentPart, IndexedDocument };
+use crate::types::{ ArrayRowId, DocId, XPathId, encode_position };
 
 /// One term of one field, ready to become a posting.
 pub struct AnalyzedTerm {
@@ -55,10 +55,9 @@ impl IndexedDocument {
                 &self.parts,
                 &self.numeric_points,
                 &self.bool_points,
-                false,
+                false
             ),
-            array_rows: self
-                .array_rows
+            array_rows: self.array_rows
                 .iter()
                 .map(|row| AnalyzedArrayRow {
                     array_row_id: row.array_row_id,
@@ -69,7 +68,7 @@ impl IndexedDocument {
                         &row.parts,
                         &row.numeric_points,
                         &row.bool_points,
-                        true,
+                        true
                     ),
                 })
                 .collect(),
@@ -82,7 +81,7 @@ fn analyze_target(
     parts: &[DocumentPart],
     numeric_points: &[NumericPoint],
     bool_points: &[BoolPoint],
-    is_row_keyed: bool,
+    is_row_keyed: bool
 ) -> AnalyzedTarget {
     AnalyzedTarget {
         fields: parts
@@ -96,11 +95,9 @@ fn analyze_target(
 
 //Moved unchanged from `MemIndex::add_weighted` (the half before any index write).
 fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool) -> AnalyzedField {
-    // analyzed.rs add_weighted
-    //eprintln!("[idx] xpath={:?} analyzer={:?}", part.xpath, part.analyzer);
+    type Occurrences = AHashMap<String, (Vec<u32>, Vec<(u32, u32)>)>;
 
-    let field_analyzer = part
-        .analyzer
+    let field_analyzer = part.analyzer
         .as_deref()
         .and_then(|name| analyzers.get(name))
         .unwrap_or_else(|| analyzers.default_analyzer());
@@ -115,7 +112,7 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
     //when no char filters
     let store_offsets = !field_analyzer.has_char_filters() && !is_row_keyed;
 
-    let mut occurrences: AHashMap<String, (Vec<u32>, Vec<(u32, u32)>)> = AHashMap::new();
+    let mut occurrences = Occurrences::new();
     let mut total_words_len = 0u32;
     let mut cur_position = 0u32;
 
@@ -131,7 +128,7 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
 
     for seg in &segments {
         let (words, span) = if part.exact {
-            let offset = (0u32, seg.len() as u32);
+            let offset = (0u32, u32::try_from(seg.len()).unwrap_or(u32::MAX));
             let exact = if field_analyzer.lowercases() {
                 seg.to_lowercase()
             } else {
@@ -152,7 +149,7 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
                     let encoded = encode_position(cur_position + position, length);
                     push(term, encoded, (start, end));
                     span = span.max(position + length);
-                },
+                }
             );
             (words, span)
         };
@@ -160,20 +157,14 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
         cur_position += span + gap;
     }
 
-    // eprintln!(
-    //     "[idx-terms] xpath={:?} analyzer={:?} terms={:?}",
-    //     part.xpath,
-    //     part.analyzer,
-    //     occurrences.keys().collect::<Vec<_>>()
-    // );
+
 
     let terms = occurrences
         .into_iter()
         .map(|(term, (positions, offsets))| {
-            let extra_hits = positions.len().saturating_sub(1);
-            let weight = usize::from(part.weight.min)
-                .saturating_add(extra_hits)
-                .min(usize::from(part.weight.max)) as u16;
+            let extra_hits = u16::try_from(positions.len().saturating_sub(1)).unwrap_or(u16::MAX);
+            let weight = part.weight.min.saturating_add(extra_hits).min(part.weight.max);
+
             AnalyzedTerm {
                 term,
                 positions,

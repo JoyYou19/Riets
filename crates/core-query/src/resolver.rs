@@ -2,12 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use core_index::datetimes::parse_date;
+use core_index::document::policy::FieldPolicy;
 use core_index::{
     analyzer::{Analyzer, text_analyzer::AnalyzerSet},
-    document::{
-        IndexPolicy,
-        policy::{FieldKind, FieldPolicy},
-    },
+    document::{IndexPolicy, policy::FieldKind},
     numeric_values::{NumericBound, NumericRange, NumericValue, parse_float, parse_integer},
     types::XPathId,
 };
@@ -71,25 +69,18 @@ fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
 
 #[must_use]
 pub fn field_analyzer<'a>(field: &FieldPolicy, analyzers: &'a AnalyzerSet) -> &'a Analyzer {
-    let a = field
-        .analyzer
-        .as_deref()
-        .and_then(|name| analyzers.get(name));
-    // eprintln!(
-    //     "[query] field={} name={:?} found={}",
-    //     field.name,
-    //     field.analyzer,
-    //     a.is_some()
-    // );
-    a.unwrap_or_else(|| analyzers.default_analyzer());
-
     field
         .analyzer
         .as_deref()
         .and_then(|name| analyzers.get(name))
         .unwrap_or_else(|| analyzers.default_analyzer())
 }
+type ByName = BTreeMap<Option<String>, (Analyzer, Option<Query>, Vec<Query>, Vec<FieldCtx>)>;
 
+#[allow(
+    clippy::rc_buffer,
+    reason = "callers keep the compiled groups as Arc<Vec<_>>"
+)]
 pub fn compile_query(
     raw: &OwnedValue,
     search_fields: Option<&[String]>,
@@ -123,11 +114,7 @@ pub fn compile_query(
     };
 
     // group fields by analyzer name; analyze once per analyzer, then reuse
-    let mut by_name: BTreeMap<
-        Option<String>,
-        //analyzer  query         netgatives      filters
-        (Analyzer, Option<Query>, Vec<Query>, Vec<FieldCtx>),
-    > = BTreeMap::new();
+    let mut by_name: ByName = BTreeMap::new();
     for field in fields {
         let key = field.analyzer.clone();
         let entry = by_name.entry(key).or_insert_with(|| {
@@ -150,8 +137,8 @@ pub fn compile_query(
 
     Ok(Arc::new(
         by_name
-            .into_iter()
-            .map(|(_, (analyzer, query, negatives, ctxs))| QueryGroup {
+            .into_values()
+            .map(|(analyzer, query, negatives, ctxs)| QueryGroup {
                 analyzer,
                 query,
                 ctxs,
@@ -160,7 +147,6 @@ pub fn compile_query(
             .collect(),
     ))
 }
-
 #[must_use]
 pub fn is_blank_query(v: &OwnedValue) -> bool {
     match v {
@@ -216,7 +202,7 @@ fn reject_filter_only_operators(v: &OwnedValue) -> Result<(), CorelamoError> {
                     "'range' is only valid as a filter, not as the main query".into(),
                 ));
             }
-            for (_, child) in obj.iter() {
+            for child in obj.values() {
                 reject_filter_only_operators(child)?;
             }
         }
@@ -256,23 +242,23 @@ fn collapse_not(
     make: fn(Vec<Query>) -> Query,
     negatives: &mut Vec<Query>,
 ) -> Query {
-    let kept: Vec<Query> = parts
+    let mut kept: Vec<Query> = parts
         .into_iter()
         .map(|p| strip_not_in_query(p, negatives))
         .filter(|q| !matches!(q, Query::MatchAll))
         .collect();
-    match kept.len() {
-        0 => Query::MatchAll,
-        1 => kept.into_iter().next().unwrap(),
-        _ => make(kept),
+    if kept.len() > 1 {
+        return make(kept);
     }
+    kept.pop().unwrap_or(Query::MatchAll)
 }
 
 fn tree_has_exact(q: &Query) -> bool {
     match q {
         Query::Exact(_) => true,
-        Query::And(ps) | Query::Or(ps) | Query::Wand(ps) => ps.iter().any(tree_has_exact),
-        Query::SameElement(ps) => ps.iter().any(tree_has_exact),
+        Query::And(ps) | Query::Or(ps) | Query::Wand(ps) | Query::SameElement(ps) => {
+            ps.iter().any(tree_has_exact)
+        }
         Query::Not(inner) => tree_has_exact(inner),
         //the dictionary's exact forms are optional: only what was typed counts
         Query::Synonym(forms) => forms
@@ -296,30 +282,29 @@ pub fn resolve_filters(
             .ok_or_else(|| CorelamoError::PathNotIndexed(name.clone()))?;
 
         //same_element is a container spec — handle it before the blank check
-        let (negate, inner_raw) = match raw {
-            OwnedValue::Object(o) => match o.get("NOT") {
-                Some(inner) => (true, inner),
-                None => (false, raw),
-            },
-            _ => (false, raw),
+        let (negate, inner_raw) = if let OwnedValue::Object(o) = raw
+            && let Some(inner) = o.get("NOT")
+        {
+            (true, inner)
+        } else {
+            (false, raw)
         };
-        let is_same_element =
-            matches!(inner_raw, OwnedValue::Object(o) if o.contains_key("same_element"));
+        let same_element_inner = match inner_raw {
+            OwnedValue::Object(o) => o.get("same_element"),
+            _ => None,
+        };
+        let is_same_element = same_element_inner.is_some();
 
-        let (query, same_element) = if is_same_element {
-            let OwnedValue::Object(obj) = inner_raw else {
-                unreachable!()
-            };
-            let inner = obj.get("same_element").unwrap();
+        let (query, same_element) = if let Some(inner) = same_element_inner {
             let (q, b) = resolve_same_element(field, inner, analyzers, policy, wildcards_enabled)?
                 .ok_or_else(|| CorelamoError::InvalidData(format!("blank filter '{name}'")))?;
             let q = if negate { Query::Not(Box::new(q)) } else { q };
             (q, Some(b))
         } else {
-            match build_node(raw, field, analyzers, wildcards_enabled)? {
-                Some(q) => (q, None),
-                None => continue,
-            }
+            let Some(q) = build_node(raw, field, analyzers, wildcards_enabled)? else {
+                continue;
+            };
+            (q, None)
         };
 
         if !is_same_element && tree_has_exact(&query) && field.exact_xpath(policy).is_none() {
@@ -432,10 +417,7 @@ fn resolve_date_filter(
     field: &FieldPolicy,
     v: &OwnedValue,
 ) -> Result<Option<Query>, CorelamoError> {
-    let format = field
-        .date_format
-        .as_deref()
-        .unwrap_or("YYYY-MM-DD").to_owned();
+    let format = field.date_format.as_deref().unwrap_or("YYYY-MM-DD");
 
     // a bare date string, an epoch-millis number, or a range string
     let text: String = match v {
@@ -452,9 +434,9 @@ fn resolve_date_filter(
     };
 
     let parse = |s: &str| -> Result<NumericValue, &'static str> {
-        parse_date(s, &format)
+        parse_date(s, format)
             .map(NumericValue::Int)
-            .map_err(|_| "invalid date")
+            .map_err(|_invalid| "invalid date")
     };
     let r = parse_numeric_range(&text, parse).map_err(|e| {
         CorelamoError::InvalidData(format!("invalid filter on '{}': {e}", field.name))
@@ -532,16 +514,13 @@ fn resolve_same_element(
 
         //nested array-in-array
         if let OwnedValue::Object(o) = sub_v
-            && o.contains_key("same_element")
+            && let Some(nested) = o.get("same_element")
         {
-            let (sub_query, sub_binding) = resolve_same_element(
-                sub_field,
-                o.get("same_element").unwrap(),
-                analyzers,
-                policy,
-                wildcards_enabled,
-            )?
-            .ok_or_else(|| CorelamoError::InvalidData(format!("blank clause '{sub_name}'")))?;
+            let (sub_query, sub_binding) =
+                resolve_same_element(sub_field, nested, analyzers, policy, wildcards_enabled)?
+                    .ok_or_else(|| {
+                        CorelamoError::InvalidData(format!("blank clause '{sub_name}'"))
+                    })?;
 
             clauses.push(ClauseBinding {
                 ctx: FieldCtx {
@@ -627,7 +606,7 @@ pub fn resolve_suggest_xpaths(
     Ok(out)
 }
 
-//vibemaxxing funciton: parsing the query for the foken numbres
+//vibemaxxing funciton: parsing the query for the foken numbres splitted 2 helpers below
 pub fn parse_numeric_range(
     raw: &str,
     parse: impl Fn(&str) -> Result<NumericValue, &'static str>,
@@ -637,102 +616,86 @@ pub fn parse_numeric_range(
         return Err("empty numeric filter".to_owned());
     }
 
-    if let Some(idx) = s.find("..") {
-        let left = s[..idx].trim();
-        let right = s[idx + 2..].trim();
-        if has_op_prefix(left) || has_op_prefix(right) {
-            return Err(format!(
-                "comparison operators can't be combined with '..' (use '30..40', or '>40'): '{s}'"
-            ));
-        }
-        if left.is_empty() || right.is_empty() {
-            return Err(format!(
-                "'..' requires both bounds, e.g. '30..40' (use '>=30' or '<=40' for one-sided ranges): '{s}'"
-            ));
-        }
-        let lo = NumericBound {
-            value: parse(left).map_err(|e| format!("invalid lower bound '{left}': {e}"))?,
-            inclusive: true,
-        };
-        let hi = NumericBound {
-            value: parse(right).map_err(|e| format!("invalid upper bound '{right}': {e}"))?,
-            inclusive: true,
-        };
-        if lo.value > hi.value {
-            return Err(format!(
-                "empty range: lower '{left}' is greater than upper '{right}'"
-            ));
-        }
-        return Ok(NumericRange {
-            lo: Some(lo),
-            hi: Some(hi),
-        });
+    if let Some((left, right)) = s.split_once("..") {
+        return parse_between(s, left.trim(), right.trim(), &parse);
     }
 
-    let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
-        (">=", r)
-    } else if let Some(r) = s.strip_prefix("<=") {
-        ("<=", r)
-    } else if let Some(r) = s.strip_prefix("==") {
-        ("==", r)
-    } else if let Some(r) = s.strip_prefix('>') {
-        (">", r)
-    } else if let Some(r) = s.strip_prefix('<') {
-        ("<", r)
-    } else if let Some(r) = s.strip_prefix('=') {
-        ("=", r)
-    } else {
-        ("", s)
-    };
-
+    let (op, rest) = split_operator(s);
     let rest = rest.trim();
     if rest.is_empty() {
         return Err(format!("missing number after '{op}'"));
     }
     let value = parse(rest).map_err(|e| format!("invalid value '{rest}': {e}"))?;
 
-    let range = match op {
-        "=" | "==" | "" => {
-            let bound = NumericBound {
-                value,
-                inclusive: true,
-            };
-            NumericRange {
-                lo: Some(bound),
-                hi: Some(bound),
-            }
-        }
-        ">=" => NumericRange {
-            lo: Some(NumericBound {
-                value,
-                inclusive: true,
-            }),
+    let bound = |inclusive: bool| Some(NumericBound { value, inclusive });
+    match op {
+        "=" | "==" | "" => Ok(NumericRange {
+            lo: bound(true),
+            hi: bound(true),
+        }),
+        ">=" => Ok(NumericRange {
+            lo: bound(true),
             hi: None,
-        },
-        ">" => NumericRange {
-            lo: Some(NumericBound {
-                value,
-                inclusive: false,
-            }),
+        }),
+        ">" => Ok(NumericRange {
+            lo: bound(false),
             hi: None,
-        },
-        "<=" => NumericRange {
+        }),
+        "<=" => Ok(NumericRange {
             lo: None,
-            hi: Some(NumericBound {
-                value,
-                inclusive: true,
-            }),
-        },
-        "<" => NumericRange {
+            hi: bound(true),
+        }),
+        "<" => Ok(NumericRange {
             lo: None,
-            hi: Some(NumericBound {
-                value,
-                inclusive: false,
-            }),
-        },
-        _ => return Err(format!("unknown operator in '{s}'")),
+            hi: bound(false),
+        }),
+        _ => Err(format!("unknown operator in '{s}'")),
+    }
+}
+
+fn parse_between(
+    s: &str,
+    left: &str,
+    right: &str,
+    parse: &impl Fn(&str) -> Result<NumericValue, &'static str>,
+) -> Result<NumericRange, String> {
+    if has_op_prefix(left) || has_op_prefix(right) {
+        return Err(format!(
+            "comparison operators can't be combined with '..' (use '30..40', or '>40'): '{s}'"
+        ));
+    }
+    if left.is_empty() || right.is_empty() {
+        return Err(format!(
+            "'..' requires both bounds, e.g. '30..40' (use '>=30' or '<=40' for one-sided ranges): '{s}'"
+        ));
+    }
+    let lo = NumericBound {
+        value: parse(left).map_err(|e| format!("invalid lower bound '{left}': {e}"))?,
+        inclusive: true,
     };
-    Ok(range)
+    let hi = NumericBound {
+        value: parse(right).map_err(|e| format!("invalid upper bound '{right}': {e}"))?,
+        inclusive: true,
+    };
+    if lo.value > hi.value {
+        return Err(format!(
+            "empty range: lower '{left}' is greater than upper '{right}'"
+        ));
+    }
+    Ok(NumericRange {
+        lo: Some(lo),
+        hi: Some(hi),
+    })
+}
+
+//longest operators first, so ">=" is not read as ">"
+fn split_operator(s: &str) -> (&str, &str) {
+    for op in [">=", "<=", "==", ">", "<", "="] {
+        if let Some(rest) = s.strip_prefix(op) {
+            return (op, rest);
+        }
+    }
+    ("", s)
 }
 
 fn has_op_prefix(t: &str) -> bool {

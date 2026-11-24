@@ -186,12 +186,7 @@ fn walk_fields(
 pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), FailReason> {
     use simd_json::StaticNode::{Bool as JsonBool, F64, I64, U64};
 
-    let already_valid = match (field.kind, value) {
-        (FieldKind::Integer | FieldKind::Float, OwnedValue::Static(I64(_) | U64(_))) => true,
-        (FieldKind::Float, OwnedValue::Static(F64(_))) => true,
-        (FieldKind::Bool, OwnedValue::Static(JsonBool(_))) => true,
-        _ => false,
-    };
+    let already_valid = matches!((field.kind, value), (FieldKind::Integer | FieldKind::Float, OwnedValue::Static(I64(_) | U64(_))) | (FieldKind::Float, OwnedValue::Static(F64(_))) | (FieldKind::Bool, OwnedValue::Static(JsonBool(_))));
 
     if already_valid {
         return Ok(());
@@ -210,7 +205,7 @@ pub fn validate_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), Fail
     field
         .kind
         .validate_value(&raw)
-        .map_err(|_| FailReason::InvalidField {
+        .map_err(|_invalid| FailReason::InvalidField {
             field: field.name.clone(),
             expected: field.kind.label().to_owned(),
             got: raw,
@@ -224,8 +219,7 @@ fn validate_date_leaf(field: &FieldPolicy, value: &OwnedValue) -> Result<(), Fai
         ("epoch-millis", OwnedValue::Static(simd_json::StaticNode::U64(u))) => {
             i64::try_from(*u).is_ok()
         }
-        ("epoch-millis", OwnedValue::String(s)) => parse_date(s, format).is_ok(),
-        (_, OwnedValue::String(s)) => parse_date(s, format).is_ok(),
+        ("epoch-millis" | _, OwnedValue::String(s)) => parse_date(s, format).is_ok(),
         _ => false,
     };
     if ok {
@@ -255,7 +249,7 @@ pub fn leaf_text(value: &OwnedValue) -> Option<String> {
         OwnedValue::String(s) => Some(s.clone()),
         OwnedValue::Static(simd_json::StaticNode::Null) => None,
         OwnedValue::Object(_) | OwnedValue::Array(_) => Some(value.to_string()),
-        other => Some(other.to_string()),
+        other @ OwnedValue::Static(_) => Some(other.to_string()),
     }
 }
 

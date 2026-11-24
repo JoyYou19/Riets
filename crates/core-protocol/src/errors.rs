@@ -186,10 +186,7 @@ impl FailReason {
     #[must_use]
     pub const fn status(&self) -> u16 {
         match self {
-            Self::InvalidJson(_) => 400,
-            Self::MissingId { .. } => 400,
-            Self::InvalidField { .. } => 400,
-            Self::NoIdField => 400,
+            Self::InvalidJson(_) | Self::MissingId { .. } | Self::InvalidField { .. } | Self::NoIdField => 400,
             Self::DuplicatePrimaryId => 409,
             Self::NotFound => 404,
             Self::Internal { .. } => 500,

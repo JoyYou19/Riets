@@ -13,7 +13,7 @@ const DELETES_FILE: &str = "deletes.txt";
 #[timed(database_lifecycle)]
 pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
     let path = root.as_ref().join(DELETES_FILE);
-    let bytes = match std::fs::read(&path) {
+    let mut bytes = match std::fs::read(&path)  {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(DeleteSet::new()),
         Err(e) => return Err(e),
@@ -29,9 +29,10 @@ pub fn read_deletes(root: impl AsRef<Path>) -> io::Result<DeleteSet> {
             .write(true)
             .open(&path)?
             .set_len(complete as u64)?;
+        bytes.truncate(complete);
     }
 
-    let text = std::str::from_utf8(&bytes[..complete]).map_err(|e| {
+    let text = std::str::from_utf8(&bytes).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{}: {e}", path.display()),

@@ -12,6 +12,7 @@ pub struct CachedStemmer {
 }
 
 impl CachedStemmer {
+    #[must_use]
     pub fn new(algorithm: Algorithm, capacity: usize) -> Self {
         Self {
             algorithm,

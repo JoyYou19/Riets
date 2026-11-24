@@ -57,7 +57,7 @@ pub mod num {
     #[allow(clippy::cast_precision_loss, reason = "see the doc comment")]
     #[inline]
     #[must_use]
-    pub fn u64_to_f64(value: u64) -> f64 {
+    pub const fn u64_to_f64(value: u64) -> f64 {
         value as f64
     }
 }

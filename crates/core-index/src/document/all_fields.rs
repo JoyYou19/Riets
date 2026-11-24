@@ -43,11 +43,11 @@ impl AllFields {
         crate::write_atomically(&Self::path(root.as_ref()), contents.as_bytes())
     }
 
-    pub fn get_fields(&self) -> &BTreeMap<String, FieldKind> {
+    pub const fn get_fields(&self) -> &BTreeMap<String, FieldKind> {
         &self.fields
     }
 
-    pub fn get_fields_mut(&mut self) -> &mut BTreeMap<String, FieldKind> {
+    pub const fn get_fields_mut(&mut self) -> &mut BTreeMap<String, FieldKind> {
         &mut self.fields
     }
 

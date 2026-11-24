@@ -17,7 +17,9 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::io;
 use std::sync::Arc;
-
+fn len_u32(list: &PostingList) -> u32 {
+    u32::try_from(list.len()).unwrap_or(u32::MAX)
+}
 // Memory inverted index, the core of the index
 #[derive(Debug, Clone)]
 pub struct MemIndex {
@@ -133,21 +135,21 @@ impl SearchIndex for MemIndex {
             .collect()
     }
 
-    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.terms
             .get(&TermKey::new(term, xpath))
-            .map_or(0, |list| list.len() as u32)
+            .map_or(0, len_u32)
     }
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
     }
-    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
         self.terms
             .iter()
             .filter(|(key, list)| {
                 key.xpath == xpath && !list.is_empty() && key.term.starts_with(prefix)
             })
-            .map(|(key, list)| (key.term.clone(), list.len() as u32))
+            .map(|(key, list)| (key.term.clone(), len_u32(list)))
             .collect()
     }
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
@@ -155,7 +157,7 @@ impl SearchIndex for MemIndex {
     }
     fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
         // the inherent lookup borrows the list; the trait one would clone it
-        let list = MemIndex::lookup(self, term, xpath)?;
+        let list = Self::lookup(self, term, xpath)?;
         if list.is_empty() {
             return None;
         }
@@ -213,30 +215,17 @@ impl SearchStats for MemIndex {
 }
 
 impl MemIndex {
+    #[must_use]
     pub fn new() -> Self {
-        Self {
-            terms: AHashMap::new(),
-            doc_lengths: AHashMap::new(),
-            field_stats: BTreeMap::new(),
-            numeric_points: NumericPoints::default(),
-            bool_fields: AHashMap::new(),
-            estimated_bytes: 0,
-            min_doc_id: None,
-            max_doc_id: None,
-            array_row_index: ArrayRowIndex::default(),
-        }
+        Self::default()
     }
+
+    #[must_use]
     pub fn with_capacity(expected_docs: usize, expected_terms: usize) -> Self {
         Self {
             terms: AHashMap::with_capacity(expected_terms),
             doc_lengths: AHashMap::with_capacity(expected_docs),
-            field_stats: BTreeMap::new(),
-            numeric_points: NumericPoints::default(),
-            bool_fields: AHashMap::new(),
-            estimated_bytes: 0,
-            min_doc_id: None,
-            max_doc_id: None,
-            array_row_index: ArrayRowIndex::default(),
+            ..Self::default()
         }
     }
 
@@ -261,7 +250,7 @@ impl MemIndex {
     /// whole. Each posting list is copied once, into the segment.
     #[timed(indexing_documents)]
     pub(crate) fn freeze_shared(
-        generations: &[Arc<MemIndex>],
+        generations: &[Arc<Self>],
     ) -> io::Result<crate::segment::ImmutableSegment> {
         let mut terms: BTreeMap<TermKey, PostingList> = BTreeMap::new();
         let mut doc_lengths: BTreeMap<(DocId, XPathId), u32> = BTreeMap::new();
@@ -308,8 +297,8 @@ impl MemIndex {
         self.min_doc_id = Some(self.min_doc_id.map_or(doc_id, |m| m.min(doc_id)));
         self.max_doc_id = Some(self.max_doc_id.map_or(doc_id, |m| m.max(doc_id)));
     }
-
-    pub fn doc_id_range(&self) -> Option<(DocId, DocId)> {
+    #[must_use]
+    pub const fn doc_id_range(&self) -> Option<(DocId, DocId)> {
         match (self.min_doc_id, self.max_doc_id) {
             (Some(min), Some(max)) => Some((min, max)),
             _ => None,
@@ -321,14 +310,14 @@ impl MemIndex {
         term: impl Into<String>,
         xpath: XPathId,
         doc_id: DocId,
-        positions: Vec<u32>,
-        offsets: Vec<(u32, u32)>,
+        positions: &[u32],
+        offsets: &[(u32, u32)],
         weight: u16,
     ) {
         self.estimated_bytes += size_of::<DocId>()
             + size_of::<u16>()
-            + positions.len() * size_of::<u32>()
-            + offsets.len() * size_of::<(u32, u32)>();
+            + size_of_val(positions)
+            + size_of_val(offsets);
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             Entry::Occupied(mut slot) => {
@@ -342,15 +331,16 @@ impl MemIndex {
             }
         }
     }
-
+     #[must_use]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {
         self.terms.get(&TermKey::new(term, xpath))
     }
-
+     #[must_use]
     pub fn term_count(&self) -> usize {
         self.terms.len()
     }
-    pub fn estimated_size_bytes(&self) -> usize {
+     #[must_use]
+    pub const fn estimated_size_bytes(&self) -> usize {
         self.estimated_bytes
     }
 
@@ -413,13 +403,13 @@ impl MemIndex {
                 term.term,
                 field.xpath,
                 doc_id,
-                term.positions,
-                term.offsets,
+                &term.positions,
+                &term.offsets,
                 term.weight,
             );
         }
     }
-
+     #[must_use]
     pub fn lookup_or_empty(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup(term, xpath).cloned().unwrap_or_default()
     }
@@ -452,7 +442,7 @@ impl MemIndex {
     //TEST
 
     #[timed(indexing_documents)]
-    pub fn merge_from(&mut self, newer: MemIndex) -> io::Result<()> {
+    pub fn merge_from(&mut self, newer: Self) -> io::Result<()> {
         // Capture this before we start moving fields out of `newer`.
         let newer_doc_range = newer.doc_id_range();
 

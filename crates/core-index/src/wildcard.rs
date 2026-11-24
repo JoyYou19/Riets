@@ -25,7 +25,7 @@ impl WildcardPattern {
     pub fn parse(input: &str) -> Self {
         let mut tokens = Vec::new();
         let mut literal = String::new();
-        let mut chars = input.chars().peekable();
+        let mut chars = input.chars();
 
         while let Some(ch) = chars.next() {
             match ch {
@@ -76,7 +76,7 @@ impl WildcardPattern {
         }
     }
 
-    pub fn is_prefix_only(&self) -> bool {
+    pub const fn is_prefix_only(&self) -> bool {
         matches!(
             self.tokens.as_slice(),
             [WildcardToken::Literal(_), WildcardToken::Any]
@@ -89,49 +89,29 @@ impl WildcardPattern {
         self.matches_from(0, 0, &chars)
     }
 
-    fn matches_from(&self, token_i: usize, char_i: usize, chars: &[char]) -> bool {
-        if token_i == self.tokens.len() {
+        fn matches_from(&self, token_i: usize, char_i: usize, chars: &[char]) -> bool {
+        let Some(token) = self.tokens.get(token_i) else {
             return char_i == chars.len();
-        }
+        };
+        let rest = chars.get(char_i..).unwrap_or_default();
 
-        match &self.tokens[token_i] {
+        match token {
             WildcardToken::Literal(lit) => {
-                let lit_chars: Vec<char> = lit.chars().collect();
-
-                if chars.len() < char_i + lit_chars.len() {
+                let len = lit.chars().count();
+                let Some(window) = rest.get(..len) else {
                     return false;
-                }
-
-                if chars[char_i..char_i + lit_chars.len()] == lit_chars[..] {
-                    self.matches_from(token_i + 1, char_i + lit_chars.len(), chars)
-                } else {
-                    false
-                }
+                };
+                window.iter().copied().eq(lit.chars())
+                    && self.matches_from(token_i + 1, char_i + len, chars)
             }
-
-            WildcardToken::Any => {
-                for next_i in char_i..=chars.len() {
-                    if self.matches_from(token_i + 1, next_i, chars) {
-                        return true;
-                    }
-                }
-                false
-            }
-
+            WildcardToken::Any => (char_i..=chars.len())
+                .any(|next_i| self.matches_from(token_i + 1, next_i, chars)),
             WildcardToken::One => {
-                if char_i < chars.len() {
-                    self.matches_from(token_i + 1, char_i + 1, chars)
-                } else {
-                    false
-                }
+                !rest.is_empty() && self.matches_from(token_i + 1, char_i + 1, chars)
             }
-
             WildcardToken::OneOf(set) => {
-                if char_i < chars.len() && set.contains(&chars[char_i]) {
-                    self.matches_from(token_i + 1, char_i + 1, chars)
-                } else {
-                    false
-                }
+                rest.first().is_some_and(|ch| set.contains(ch))
+                    && self.matches_from(token_i + 1, char_i + 1, chars)
             }
         }
     }

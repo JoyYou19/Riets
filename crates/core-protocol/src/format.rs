@@ -45,23 +45,19 @@ impl TryFrom<u8> for Format {
 
 impl From<CorelamoError> for std::io::Error {
     fn from(err: CorelamoError) -> Self {
-        use std::io::{Error, ErrorKind};
+        use std::io::ErrorKind;
 
         match err {
             CorelamoError::NotFound(msg) => Self::new(ErrorKind::NotFound, msg),
             CorelamoError::AlreadyExists(msg) => Self::new(ErrorKind::AlreadyExists, msg),
-            CorelamoError::InvalidData(msg) => Self::new(ErrorKind::InvalidData, msg),
+            CorelamoError::InvalidData(msg) | CorelamoError::UnsupportedFormat(msg) => Self::new(ErrorKind::InvalidData, msg),
             CorelamoError::PermissionDenied(msg) => Self::new(ErrorKind::PermissionDenied, msg),
-            CorelamoError::UnsupportedFormat(msg) => Self::new(ErrorKind::InvalidData, msg),
-            CorelamoError::DatabaseAlreadyRunning(msg) => Self::other(msg),
-            CorelamoError::PathNotIndexed(msg) => Self::other(msg),
-            CorelamoError::DatabaseNotRunning(msg) => Self::other(msg),
-            CorelamoError::Conflict(msg)
+            CorelamoError::DatabaseAlreadyRunning(msg) | CorelamoError::PathNotIndexed(msg) | CorelamoError::DatabaseNotRunning(msg) | CorelamoError::Conflict(msg)
             | CorelamoError::UnknownRole(msg)
             | CorelamoError::Unauthorized(msg)
             | CorelamoError::Internal(msg)
             | CorelamoError::Busy(msg)
             | CorelamoError::FailedToEx(msg) => Self::other(msg),
-        }
+            }
     }
 }

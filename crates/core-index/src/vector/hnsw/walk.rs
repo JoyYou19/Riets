@@ -48,10 +48,11 @@ impl ScoredNode {
     /// Like `new`, with ties broken in an order that depends on `salt`. Neighbour lists salt
     /// with their owner, so lists full of equal similarities keep different nodes instead of
     /// all keeping the same few.
-    pub(crate) fn salted(node: u32, similarity: f32, salt: u64) -> Self {
+     pub(crate) fn salted(node: u32, similarity: f32, salt: u64) -> Self {
+        let hash = fmix64(u64::from(node) ^ TIE_BREAK_SEED ^ fmix64(salt));
         Self {
             similarity,
-            tie_break: fmix64(u64::from(node) ^ TIE_BREAK_SEED ^ fmix64(salt)) as u32,
+            tie_break: u32::try_from(hash & 0xFFFF_FFFF).unwrap_or(0),
             node,
         }
     }
@@ -103,8 +104,10 @@ impl VisitedSet {
     }
 
     /// Marks `node` visited. Returns true if it had not been visited in this search.
-    pub(crate) fn mark(&mut self, node: u32) -> bool {
-        let slot = &mut self.marks[node as usize];
+      pub(crate) fn mark(&mut self, node: u32) -> bool {
+        let Some(slot) = self.marks.get_mut(node as usize) else {
+            return false;
+        };
         if *slot == self.current_mark {
             false
         } else {

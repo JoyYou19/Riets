@@ -92,6 +92,20 @@ pub const BASELINE_MIN_ELAPSED_NS: u64 = 500_000_000;
 const NOTHING_RECORDED: &str =
     "No timing data recorded (is the `timing` feature of `core-timing` enabled for this build?)";
 
+/// The one place a `u64` becomes an `f64`. There is no `From<u64> for f64`.
+/// The conversion is exact up to 2^53 (about 104 days of accumulated
+/// nanoseconds, or 9 PB of bytes), which is far beyond anything a timing
+/// counter reaches, and these values are only used for statistics.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    reason = "exact below 2^53; only used for statistics and display"
+)]
+#[inline]
+const fn u64_to_f64(value: u64) -> f64 {
+    value as f64
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FnStats {
     pub count: u64,
@@ -114,22 +128,18 @@ pub struct FnStats {
 
 impl FnStats {
     #[must_use]
-    pub fn avg_ns(&self) -> f64 {
-        if self.count == 0 {
-            0.0
-        } else {
-            self.total_ns as f64 / self.count as f64
-        }
+    pub const fn avg_ns(&self) -> f64 {
+        if self.count == 0 { 0.0 } else { u64_to_f64(self.total_ns) / u64_to_f64(self.count) }
     }
 
     /// Current throughput in bytes/sec, if this function has ever reported
     /// bytes. `None` if no bytes were reported or no time has elapsed yet.
     #[must_use]
-    pub fn bytes_per_sec(&self) -> Option<f64> {
+    pub const fn bytes_per_sec(&self) -> Option<f64> {
         if self.total_bytes == 0 || self.total_ns == 0 {
             return None;
         }
-        Some(self.total_bytes as f64 / (self.total_ns as f64 / 1_000_000_000.0))
+        Some((u64_to_f64(self.total_bytes) * 1_000_000_000.0) / u64_to_f64(self.total_ns))
     }
 
     /// Percent change vs. the frozen baseline, on a "positive = faster"
@@ -142,14 +152,14 @@ impl FnStats {
             if baseline_rate <= 0.0 {
                 return None;
             }
-            return Some((current_rate - baseline_rate) / baseline_rate * 100.0);
+            return Some(((current_rate - baseline_rate) / baseline_rate) * 100.0);
         }
         let baseline_avg = self.baseline_avg_ns?;
         if baseline_avg <= 0.0 {
             return None;
         }
         let current_avg = self.avg_ns();
-        Some((baseline_avg - current_avg) / baseline_avg * 100.0)
+        Some(((baseline_avg - current_avg) / baseline_avg) * 100.0)
     }
 }
 
@@ -163,26 +173,35 @@ pub type CategoryEntries = Vec<(&'static str, &'static str, FnStats)>;
 #[cfg(feature = "timing")]
 mod enabled {
     use super::{
-        BASELINE_MIN_CALLS, BASELINE_MIN_ELAPSED_NS, CategoryEntries, FnStats, NOTHING_RECORDED,
+        BASELINE_MIN_CALLS,
+        BASELINE_MIN_ELAPSED_NS,
+        CategoryEntries,
+        FnStats,
+        NOTHING_RECORDED,
+        u64_to_f64,
     };
+    use std::cmp::Reverse;
     use std::collections::HashMap;
     use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-    use std::time::{Duration, Instant};
-
+    use std::hash::{ Hash, Hasher };
+    use std::sync::{ Mutex, MutexGuard, OnceLock, PoisonError };
+    use std::time::{ Duration, Instant };
+    use std::fmt::Write as _;
     // (category, function name, source filename, no directories)
     type Key = (&'static str, &'static str, &'static str);
     type Shard = Mutex<HashMap<Key, FnStats>>;
 
+    /// The shard index is the top `SHARD_BITS` bits of the key hash.
+    const SHARD_BITS: u32 = 4;
+
     /// Number of independently locked registry shards. A key always maps to
     /// the same shard, so per-key updates stay consistent while unrelated
     /// functions do not fight over one global lock.
-    const SHARDS: usize = 16;
+    const SHARDS: usize = 1 << SHARD_BITS;
 
     impl FnStats {
         fn empty() -> Self {
-            FnStats {
+            Self {
                 min_ns: u64::MAX,
                 ..Default::default()
             }
@@ -198,14 +217,18 @@ mod enabled {
     /// leave the map invalid (each update is a few plain field writes), so a
     /// poisoned lock is taken over instead of turning every later timed call
     /// into a panic.
-    fn lock_shard(key: &Key) -> MutexGuard<'static, HashMap<Key, FnStats>> {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        let index = (hasher.finish() as usize) % SHARDS;
-        shards()[index]
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
+   fn lock_shard(key: &Key) -> MutexGuard<'static, HashMap<Key, FnStats>> {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let index =
+        usize::try_from(hasher.finish() >> (u64::BITS - SHARD_BITS)).unwrap_or_default();
+    let all = shards();
+    let [first, ..] = all; // irrefutable: the array always has SHARDS entries
+    all.get(index)
+        .unwrap_or(first)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
     /// Drop guard created by `#[timed]`: records the time from
     /// [`Timer::start`] to drop. Not meant to be used directly.
@@ -221,7 +244,7 @@ mod enabled {
     impl Timer {
         #[inline]
         pub fn start(category: &'static str, name: &'static str, file: &'static str) -> Self {
-            Timer {
+            Self {
                 category,
                 name,
                 file,
@@ -248,29 +271,30 @@ mod enabled {
         file.rsplit(['/', '\\']).next().unwrap_or(file)
     }
 
+    /// Summed `total_ns` of a category, saturating instead of overflowing.
+    fn category_total_ns(entries: &[(&'static str, &'static str, FnStats)]) -> u64 {
+        entries.iter().fold(0_u64, |acc, (_, _, s)| acc.saturating_add(s.total_ns))
+    }
+    fn update(key: Key, apply: impl FnOnce(&mut FnStats)) {
+    apply(lock_shard(&key).entry(key).or_insert_with(FnStats::empty));
+}
     /// Records one call. Called by `#[timed]` / `timed_block!`; not usually
     /// called directly. `file` is the output of `file!()` at the call site.
     ///
     /// Bytes reported via `add_bytes!` before the call returns are folded
     /// into the baseline once both baseline conditions are met.
     pub fn record(
-        category: &'static str,
-        name: &'static str,
-        file: &'static str,
-        elapsed: Duration,
-    ) {
-        let key = (category, name, filename_only(file));
-        let ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-        let mut map = lock_shard(&key);
-        let entry = map.entry(key).or_insert_with(FnStats::empty);
+    category: &'static str,
+    name: &'static str,
+    file: &'static str,
+    elapsed: Duration,
+) {
+    let ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+    update((category, name, filename_only(file)), |entry| {
         entry.count = entry.count.saturating_add(1);
         entry.total_ns = entry.total_ns.saturating_add(ns);
-        if ns < entry.min_ns {
-            entry.min_ns = ns;
-        }
-        if ns > entry.max_ns {
-            entry.max_ns = ns;
-        }
+        entry.min_ns = entry.min_ns.min(ns);
+        entry.max_ns = entry.max_ns.max(ns);
         if entry.baseline_avg_ns.is_none()
             && entry.count >= BASELINE_MIN_CALLS
             && entry.total_ns >= BASELINE_MIN_ELAPSED_NS
@@ -280,7 +304,9 @@ mod enabled {
                 entry.baseline_bytes_rate = entry.bytes_per_sec();
             }
         }
-    }
+    });
+}
+
 
     /// Reports how many bytes of work a timed function did. Prefer the
     /// `add_bytes!` macro, which also skips evaluating `bytes` when timing
@@ -291,37 +317,33 @@ mod enabled {
     /// partially, report the bytes actually processed, not the bytes
     /// requested, so the rate is not optimistic.
     pub fn add_bytes(category: &'static str, name: &'static str, file: &'static str, bytes: u64) {
-        let key = (category, name, filename_only(file));
-        let mut map = lock_shard(&key);
-        let entry = map.entry(key).or_insert_with(FnStats::empty);
+    update((category, name, filename_only(file)), |entry| {
         entry.total_bytes = entry.total_bytes.saturating_add(bytes);
-    }
+    });
+}
 
     /// Snapshot grouped by category, each category's entries sorted by total
     /// time descending, categories sorted by their summed total time
-    /// descending.
+    /// descending (ties broken by category name).
+    #[must_use]
     pub fn snapshot() -> Vec<(&'static str, CategoryEntries)> {
         let mut by_category: HashMap<&'static str, CategoryEntries> = HashMap::new();
         // one shard at a time, so a snapshot never blocks all writers at once
         for shard in shards() {
             let map = shard.lock().unwrap_or_else(PoisonError::into_inner);
             for (&(category, name, file), &stats) in map.iter() {
-                by_category
-                    .entry(category)
-                    .or_default()
-                    .push((name, file, stats));
+                by_category.entry(category).or_default().push((name, file, stats));
             }
         }
 
-        let mut categories: Vec<(&'static str, CategoryEntries)> =
-            by_category.into_iter().collect();
+        let mut categories: Vec<(&'static str, CategoryEntries)> = by_category
+            .into_iter()
+            .collect();
         for (_, entries) in &mut categories {
-            entries.sort_by_key(|e| std::cmp::Reverse(e.2.total_ns));
+            entries.sort_by_key(|e| Reverse(e.2.total_ns));
         }
-        categories.sort_by(|a, b| {
-            let a_total: u64 = a.1.iter().map(|(_, _, s)| s.total_ns).sum();
-            let b_total: u64 = b.1.iter().map(|(_, _, s)| s.total_ns).sum();
-            b_total.cmp(&a_total)
+        categories.sort_by_cached_key(|(category, entries)| {
+            (Reverse(category_total_ns(entries)), *category)
         });
         categories
     }
@@ -329,9 +351,10 @@ mod enabled {
     /// Same as [`snapshot`], restricted to the given categories and/or an
     /// exact source filename (e.g. `"shard_db.rs"`, not a path). An empty
     /// `categories` slice means any category; `file = None` means any file.
+    #[must_use]
     pub fn snapshot_filtered<S: AsRef<str>>(
         categories: &[S],
-        file: Option<&str>,
+        file: Option<&str>
     ) -> Vec<(&'static str, CategoryEntries)> {
         let by_category = if categories.is_empty() {
             snapshot()
@@ -368,6 +391,7 @@ mod enabled {
 
     /// Human-readable table, grouped by category. Each row is labeled with
     /// the function and its file so same-named functions don't collide.
+    #[must_use]
     pub fn report() -> String {
         format_report(snapshot())
     }
@@ -375,6 +399,7 @@ mod enabled {
     /// Same as [`report`], restricted to the given categories and/or a
     /// source file; see [`snapshot_filtered`]. If the filters match nothing,
     /// says so explicitly.
+    #[must_use]
     pub fn report_filtered<S: AsRef<str>>(categories: &[S], file: Option<&str>) -> String {
         if categories.is_empty() && file.is_none() {
             return report();
@@ -384,11 +409,17 @@ mod enabled {
             let mut parts = Vec::new();
             if !categories.is_empty() {
                 let names: Vec<&str> = categories.iter().map(AsRef::as_ref).collect();
-                parts.push(format!(
-                    "categor{} {}",
-                    if names.len() == 1 { "y" } else { "ies" },
-                    names.join(", ")
-                ));
+                parts.push(
+                    format!(
+                        "categor{} {}",
+                        if names.len() == 1 {
+                            "y"
+                        } else {
+                            "ies"
+                        },
+                        names.join(", ")
+                    )
+                );
             }
             if let Some(f) = file {
                 parts.push(format!("file {f}"));
@@ -400,7 +431,7 @@ mod enabled {
 
     fn format_report(categories: Vec<(&'static str, CategoryEntries)>) -> String {
         if categories.is_empty() {
-            return NOTHING_RECORDED.to_string();
+            return NOTHING_RECORDED.to_owned();
         }
 
         let mut out = String::new();
@@ -416,8 +447,7 @@ mod enabled {
                 continue;
             }
 
-            out.push_str(&format!("== {category} ==\n"));
-
+            writeln!(out, "== {category} ==").unwrap_or_default();
             // Column widths sized to this category's content.
             let name_width = entries
                 .iter()
@@ -432,54 +462,62 @@ mod enabled {
                 .unwrap_or(0)
                 .max("file".len());
 
-            out.push_str(&format!(
-                "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>14} {:>24}\n",
-                "function", "file", "calls", "total", "avg", "min", "max", "rate", "vs baseline",
-            ));
+            writeln!(
+                out,
+                "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>14} {:>24}",
+                "function",
+                "file",
+                "calls",
+                "total",
+                "avg",
+                "min",
+                "max",
+                "rate",
+                "vs baseline"
+            ).unwrap_or_default();
             for (name, file, s) in entries {
-                let rate = match s.bytes_per_sec() {
-                    Some(bps) => fmt_bytes_rate(bps),
-                    None => "-".to_string(),
-                };
+                let rate = s.bytes_per_sec().map_or_else(|| "-".to_owned(), fmt_bytes_rate);
                 let drift = match (s.drift_pct(), s.baseline_bytes_rate, s.baseline_avg_ns) {
-                    (Some(pct), Some(rate), _) => {
-                        format!("{:+.1}% (was {})", pct, fmt_bytes_rate(rate))
+                    (Some(pct), Some(base_rate), _) => {
+                        format!("{pct:+.1}% (was {})", fmt_bytes_rate(base_rate))
                     }
-                    (Some(pct), None, Some(avg)) => {
-                        format!("{:+.1}% (was {})", pct, fmt_duration(avg as u64))
+                    (Some(pct), None, Some(base_avg)) => {
+                        format!("{pct:+.1}% (was {})", fmt_duration(base_avg))
                     }
-                    _ => "(warming up)".to_string(),
+                    _ => "(warming up)".to_owned(),
                 };
-                out.push_str(&format!(
-                    "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>14} {:>24}\n",
+                writeln!(
+                    out,
+                    "{:<name_width$}  {:<file_width$} {:>8} {:>12} {:>12} {:>12} {:>12} {:>14} {:>24}",
                     name,
                     file,
                     s.count,
-                    fmt_duration(s.total_ns),
-                    fmt_duration(s.avg_ns() as u64),
-                    fmt_duration(s.min_ns),
-                    fmt_duration(s.max_ns),
+                    fmt_duration(u64_to_f64(s.total_ns)),
+                    fmt_duration(s.avg_ns()),
+                    fmt_duration(u64_to_f64(s.min_ns)),
+                    fmt_duration(u64_to_f64(s.max_ns)),
                     rate,
-                    drift,
-                ));
+                    drift
+                ).unwrap_or_default();
             }
             out.push('\n');
         }
         if out.is_empty() {
-            return NOTHING_RECORDED.to_string();
+            return NOTHING_RECORDED.to_owned();
         }
         out
     }
 
-    fn fmt_duration(ns: u64) -> String {
-        if ns < 1_000 {
-            format!("{ns}ns")
-        } else if ns < 1_000_000 {
-            format!("{:.2}µs", ns as f64 / 1_000.0)
-        } else if ns < 1_000_000_000 {
-            format!("{:.2}ms", ns as f64 / 1_000_000.0)
+    /// Formats a duration given in (possibly fractional) nanoseconds.
+    fn fmt_duration(ns: f64) -> String {
+        if ns < 1_000.0 {
+            format!("{ns:.0}ns")
+        } else if ns < 1_000_000.0 {
+            format!("{:.2}µs", ns / 1_000.0)
+        } else if ns < 1_000_000_000.0 {
+            format!("{:.2}ms", ns / 1_000_000.0)
         } else {
-            format!("{:.2}s", ns as f64 / 1_000_000_000.0)
+            format!("{:.2}s", ns / 1_000_000_000.0)
         }
     }
 
@@ -504,7 +542,7 @@ pub use enabled::*;
 
 #[cfg(not(feature = "timing"))]
 mod disabled {
-    use super::{CategoryEntries, NOTHING_RECORDED};
+    use super::{ CategoryEntries, NOTHING_RECORDED };
     use std::time::Duration;
 
     /// Zero-sized stand-in for the real timer guard. It has no `Drop`
@@ -518,29 +556,27 @@ mod disabled {
         pub const fn start(
             _category: &'static str,
             _name: &'static str,
-            _file: &'static str,
+            _file: &'static str
         ) -> Self {
             Self
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn record(
         _category: &'static str,
         _name: &'static str,
         _file: &'static str,
-        _elapsed: Duration,
-    ) {
-    }
+        _elapsed: Duration
+    ) {}
 
-    #[inline(always)]
+    #[inline]
     pub const fn add_bytes(
         _category: &'static str,
         _name: &'static str,
         _file: &'static str,
-        _bytes: u64,
-    ) {
-    }
+        _bytes: u64
+    ) {}
 
     #[inline]
     #[must_use]
@@ -549,14 +585,15 @@ mod disabled {
     }
 
     #[inline]
+    #[must_use]
     pub const fn snapshot_filtered<S: AsRef<str>>(
         _categories: &[S],
-        _file: Option<&str>,
+        _file: Option<&str>
     ) -> Vec<(&'static str, CategoryEntries)> {
         Vec::new()
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn reset() {}
 
     #[must_use]
@@ -564,6 +601,7 @@ mod disabled {
         NOTHING_RECORDED.to_owned()
     }
 
+    #[must_use]
     pub fn report_filtered<S: AsRef<str>>(_categories: &[S], _file: Option<&str>) -> String {
         NOTHING_RECORDED.to_owned()
     }
@@ -572,10 +610,8 @@ mod disabled {
 #[cfg(not(feature = "timing"))]
 pub use disabled::*;
 
-/// Time an arbitrary expression without needing to own its definition:
-/// a function in a dependency you can't annotate, a specific `.await`, a
-/// specific loop. Works for sync and async expressions, and `?` / early
-/// return inside the expression is fine (the time is still recorded).
+/// Times the evaluation of an expression and records it under `category` and
+/// `label`.
 ///
 /// ```ignore
 /// let command = core_timing::timed_block!(
@@ -596,10 +632,12 @@ macro_rules! timed_block {
     ($label:expr, $body:expr) => {
         $crate::timed_block!("uncategorized", $label, $body)
     };
-    ($category:expr, $label:expr, $body:expr) => {{
+    ($category:expr, $label:expr, $body:expr) => {
+        {
         let __core_timing_guard = $crate::Timer::start($category, $label, ::core::file!());
         $body
-    }};
+        }
+    };
 }
 
 /// Report how many bytes of work the surrounding timed function did.
@@ -619,4 +657,3 @@ macro_rules! add_bytes {
         }
     };
 }
-

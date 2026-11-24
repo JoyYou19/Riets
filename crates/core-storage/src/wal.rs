@@ -1,36 +1,55 @@
-//! The WAL is a folder of numbered segment files (`00000000000000000001.wal`, ...). Records
-//! are appended to the newest segment. A checkpoint `rotate`s to a fresh segment, and once the
-//! store and the index hold everything in the older segments, `remove_through` deletes them.
-//! Recovery replays every segment still present, oldest first.
 use crate::search_database::DocumentInput;
-use bincode::{Decode, Encode};
+use bincode::{ Decode, Encode };
 use core_protocol::format::Format;
 use core_timing::timed;
-use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use serde::{ Deserialize, Serialize };
+use std::fs::{ self, File, OpenOptions };
+use std::io::{ self, Read, Seek, SeekFrom, Write };
+use std::path::{ Path, PathBuf };
+use std::sync::{ Mutex, MutexGuard, PoisonError };
 
 /// Largest payload of a single record (1 GiB).
 const MAX_ENTRY_SIZE: u32 = 1024 * 1024 * 1024;
 /// Record header: payload length (u32) and CRC (u32).
 const HEADER_SIZE: u64 = 8;
+const HEADER_LEN: usize = 8;
 const MIN_RECORD_SIZE: u64 = HEADER_SIZE + 1;
 /// File extension of WAL segments.
 const SEGMENT_EXTENSION: &str = "wal";
+const _: () = assert!(HEADER_LEN == 8 && HEADER_SIZE == 8);
 
+/// `(payload length, crc)` from a record header.
+const fn parse_header(header: [u8; HEADER_LEN]) -> (u32, u32) {
+    let [l0, l1, l2, l3, c0, c1, c2, c3] = header;
+    (u32::from_le_bytes([l0, l1, l2, l3]), u32::from_le_bytes([c0, c1, c2, c3]))
+}
+
+fn record_crc(offset: u64, len: u32, payload: &[u8]) -> u32 {
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(&offset.to_le_bytes());
+    crc.update(&len.to_le_bytes());
+    crc.update(payload);
+    crc.finalize()
+}
+
+/// One record: length, CRC over (offset, length, payload), payload.
+fn encode_record(offset: u64, len: u32, payload: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(HEADER_LEN.saturating_add(payload.len()));
+    buf.extend_from_slice(&len.to_le_bytes());
+    buf.extend_from_slice(&record_crc(offset, len, payload).to_le_bytes());
+    buf.extend_from_slice(payload);
+    buf
+}
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
 pub enum SyncMode {
     /// fsync before every append returns, once per write request. An acknowledged write
     /// survives a crash or a power loss.
-   // #[default] PRODCTION
+    // #[default] PRODCTION
     SyncEach,
-  
-    #[default ]
+
+    #[default]
     Manual,
 }
-
 
 #[derive(Debug, Encode, Decode)]
 pub struct WalDocument {
@@ -52,7 +71,7 @@ impl<'a> From<&'a DocumentInput> for WalDocumentRef<'a> {
     }
 }
 
-#[derive(Encode,Decode)]
+#[derive(Encode, Decode)]
 pub enum WalRecord {
     Create(Vec<WalDocument>),
     Upsert(Vec<WalDocument>),
@@ -102,11 +121,7 @@ impl WalRecords {
                     return Ok(None);
                 };
                 let file = File::open(segment_path(&self.dir, id))?;
-                let end = if id == self.active {
-                    self.active_end
-                } else {
-                    file.metadata()?.len()
-                };
+                let end = if id == self.active { self.active_end } else { file.metadata()?.len() };
                 self.current = Some(SegmentRecords {
                     id,
                     reader: io::BufReader::with_capacity(1 << 20, file),
@@ -115,7 +130,9 @@ impl WalRecords {
                     n: 0,
                 });
             }
-            let segment = self.current.as_mut().expect("set above");
+            let Some(segment) = self.current.as_mut() else {
+                continue;
+            };
             if segment.pos >= segment.end {
                 self.current = None;
                 continue;
@@ -133,25 +150,28 @@ impl SegmentRecords {
     /// The record at `pos`. Every byte up to `end` must belong to a valid record.
     fn read_record(&mut self) -> io::Result<(usize, Vec<u8>)> {
         let truncated = || io::Error::new(io::ErrorKind::InvalidData, "truncated replay");
-        if self.pos + HEADER_SIZE > self.end {
-            return Err(truncated());
-        }
-        let mut header = [0u8; HEADER_SIZE as usize];
+        let header_end = self.pos
+            .checked_add(HEADER_SIZE)
+            .filter(|&end| end <= self.end)
+            .ok_or_else(truncated)?;
+        let mut header = [0u8; HEADER_LEN];
         self.reader.read_exact(&mut header)?;
-        let len = u32::from_le_bytes(header[0..4].try_into().expect("4 bytes"));
-        let crc = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes"));
-        let stop = self.pos + HEADER_SIZE + u64::from(len);
+        let (len, crc) = parse_header(header);
+        let stop = header_end.checked_add(u64::from(len)).ok_or_else(truncated)?;
         if len == 0 || len > MAX_ENTRY_SIZE || stop > self.end {
             return Err(truncated());
         }
-        let mut payload = vec![0u8; len as usize];
+        let payload_len = usize
+            ::try_from(len)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut payload = vec![0u8; payload_len];
         self.reader.read_exact(&mut payload)?;
         // the CRC covers the record's offset in its segment
         if record_crc(self.pos, len, &payload) != crc {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "crc mismatch in replay"));
         }
         let n = self.n;
-        self.n += 1;
+        self.n = n.saturating_add(1);
         self.pos = stop;
         Ok((n, payload))
     }
@@ -191,21 +211,22 @@ impl Wal {
     pub fn open(dir: impl AsRef<Path>, mode: SyncMode) -> io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         if dir.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is a file, expected the WAL folder", dir.display()),
-            ));
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{} is a file, expected the WAL folder", dir.display())
+                )
+            );
         }
         fs::create_dir_all(&dir)?;
-        let segment = if let Some(&newest) = list_segments(&dir)?.last() { newest } else {
+        let segment = if let Some(&newest) = list_segments(&dir)?.last() {
+            newest
+        } else {
             File::create_new(segment_path(&dir, 1))?.sync_all()?;
             sync_dir(&dir)?;
             1
         };
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(segment_path(&dir, segment))?;
+        let mut file = OpenOptions::new().read(true).write(true).open(segment_path(&dir, segment))?;
         let valid_end = scan_and_truncate(&mut file)?;
         // Makes the truncation durable.
         file.sync_data()?;
@@ -222,32 +243,39 @@ impl Wal {
         })
     }
 
-    /// Appends one record and returns its byte offset in the newest segment. In `SyncEach`
-    /// mode the record is durable when this returns.
     #[timed(wal)]
     pub fn append(&self, payload: &[u8]) -> io::Result<u64> {
         if payload.is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty entry"));
         }
-        if (payload.len() as u64) > u64::from(MAX_ENTRY_SIZE) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "entry too large",
-            ));
-        }
-        let mut inner = self.lock();
-        if inner.poisoned {
-            return Err(io::Error::other("wal poisoned by prior fsync failure"));
-        }
-        let offset = inner.written_offset;
-        let record = encode_record(offset, payload);
-        inner.file.seek(SeekFrom::Start(offset))?;
-        inner.file.write_all(&record)?;
-        inner.written_offset = offset + (record.len() as u64);
-        if self.mode == SyncMode::SyncEach {
-            sync_or_poison(&mut inner)?;
-        }
-        core_timing::add_bytes("wal", "append", file!(), record.len() as u64);
+        let len = u32
+            ::try_from(payload.len())
+            .ok()
+            .filter(|&len| len <= MAX_ENTRY_SIZE)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "entry too large"))?;
+        let record_len = HEADER_SIZE.saturating_add(u64::from(len));
+        let offset = {
+            let mut inner = self.lock();
+
+            if inner.poisoned {
+                return Err(io::Error::other("wal poisoned by prior fsync failure"));
+            }
+            let offset = inner.written_offset;
+
+            let new_end = offset
+                .checked_add(record_len)
+                .ok_or_else(|| io::Error::other("wal offset overflow"))?;
+            let record = encode_record(offset, len, payload);
+            inner.file.seek(SeekFrom::Start(offset))?;
+            inner.file.write_all(&record)?;
+            inner.written_offset = new_end;
+            if self.mode == SyncMode::SyncEach {
+                sync_or_poison(&mut inner)?;
+            }
+            drop(inner);
+            offset
+        };
+        core_timing::add_bytes!("wal", "append", record_len);
         Ok(offset)
     }
 
@@ -284,6 +312,7 @@ impl Wal {
         inner.segment = next;
         inner.durable_offset = 0;
         inner.written_offset = 0;
+        drop(inner);
         Ok(closed)
     }
 
@@ -309,7 +338,7 @@ impl Wal {
     pub fn replay_all(&self) -> io::Result<Vec<(u64, usize, Vec<u8>)>> {
         self.records()?.collect()
     }
-     pub fn records(&self) -> io::Result<WalRecords> {
+    pub fn records(&self) -> io::Result<WalRecords> {
         let inner = self.lock();
         Ok(WalRecords {
             dir: self.dir.clone(),
@@ -341,6 +370,7 @@ impl Wal {
             inner.poisoned = true;
             return Err(e);
         }
+        drop(inner);
         sync_dir(&self.dir)
     }
 
@@ -360,25 +390,6 @@ fn sync_or_poison(inner: &mut Inner) -> io::Result<()> {
     Ok(())
 }
 
-fn record_crc(offset: u64, len: u32, payload: &[u8]) -> u32 {
-    let mut crc = crc32fast::Hasher::new();
-    crc.update(&offset.to_le_bytes());
-    crc.update(&len.to_le_bytes());
-    crc.update(payload);
-    crc.finalize()
-}
-
-/// One record: length, CRC over (offset, length, payload), payload.
-fn encode_record(offset: u64, payload: &[u8]) -> Vec<u8> {
-    let len = payload.len() as u32;
-    let mut buf = Vec::with_capacity((HEADER_SIZE as usize) + payload.len());
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(&record_crc(offset, len, payload).to_le_bytes());
-    buf.extend_from_slice(payload);
-    buf
-}
-
-
 /// Cuts a torn final record off the file and returns the new end.
 fn scan_and_truncate(file: &mut File) -> io::Result<u64> {
     let end = valid_end(file)?;
@@ -390,29 +401,35 @@ fn scan_and_truncate(file: &mut File) -> io::Result<u64> {
 
 /// End of the last valid record. Errors when a damaged record sits in front of good data,
 /// which is corruption rather than a torn final write.
+fn has_room(pos: u64, file_len: u64) -> bool {
+    file_len.checked_sub(MIN_RECORD_SIZE).is_some_and(|last_start| pos <= last_start)
+}
+
 fn valid_end(file: &mut File) -> io::Result<u64> {
     let file_len = file.seek(SeekFrom::End(0))?;
     let mut pos = 0u64;
-    while pos + MIN_RECORD_SIZE <= file_len {
-        match read_record_at(file, pos, file_len)? {
-            Some(next) => pos = next,
-            None => break,
-        }
+    while has_room(pos, file_len) {
+        let Some(next) = read_record_at(file, pos, file_len)? else {
+            break;
+        };
+        pos = next;
     }
     if pos < file_len {
-        let mut probe = pos + 1;
-        while probe + MIN_RECORD_SIZE <= file_len {
+        let mut probe = pos.saturating_add(1);
+        while has_room(probe, file_len) {
             if read_record_at(file, probe, file_len)?.is_some() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "wal corruption at offset {pos}: valid record found at {probe}, \
+                return Err(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "wal corruption at offset {pos}: valid record found at {probe}, \
                          refusing to truncate {} bytes",
-                        file_len - pos
-                    ),
-                ));
+                            file_len.saturating_sub(pos)
+                        )
+                    )
+                );
             }
-            probe += 1;
+            probe = probe.saturating_add(1);
         }
     }
     Ok(pos)
@@ -421,23 +438,27 @@ fn valid_end(file: &mut File) -> io::Result<u64> {
 /// `Some(end)` when a valid record starts at `pos`.
 fn read_record_at(file: &mut File, pos: u64, file_len: u64) -> io::Result<Option<u64>> {
     file.seek(SeekFrom::Start(pos))?;
-    let mut header = [0u8; HEADER_SIZE as usize];
+    let mut header = [0u8; HEADER_LEN];
     if file.read_exact(&mut header).is_err() {
         return Ok(None);
     }
-    let len = u32::from_le_bytes(header[0..4].try_into().expect("4 bytes"));
-    let stored_crc = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes"));
-    if len == 0 || len > MAX_ENTRY_SIZE || pos + HEADER_SIZE + u64::from(len) > file_len {
+    let (len, stored_crc) = parse_header(header);
+    let Some(end) = pos
+        .checked_add(HEADER_SIZE)
+        .and_then(|header_end| header_end.checked_add(u64::from(len))) else {
+        return Ok(None);
+    };
+    if len == 0 || len > MAX_ENTRY_SIZE || end > file_len {
         return Ok(None);
     }
-    let mut payload = vec![0u8; len as usize];
-    if file.read_exact(&mut payload).is_err() {
+    let Ok(payload_len) = usize::try_from(len) else {
+        return Ok(None);
+    };
+    let mut payload = vec![0u8; payload_len];
+    if file.read_exact(&mut payload).is_err() || record_crc(pos, len, &payload) != stored_crc {
         return Ok(None);
     }
-    if record_crc(pos, len, &payload) != stored_crc {
-        return Ok(None);
-    }
-    Ok(Some(pos + HEADER_SIZE + u64::from(len)))
+    Ok(Some(end))
 }
 
 fn segment_path(dir: &Path, segment: u64) -> PathBuf {
@@ -452,10 +473,11 @@ fn list_segments(dir: &Path) -> io::Result<Vec<u64>> {
         if path.extension().and_then(|e| e.to_str()) != Some(SEGMENT_EXTENSION) {
             continue;
         }
-        if let Some(id) = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .and_then(|s| s.parse().ok())
+        if
+            let Some(id) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse().ok())
         {
             segments.push(id);
         }
@@ -468,4 +490,3 @@ fn list_segments(dir: &Path) -> io::Result<Vec<u64>> {
 fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
-

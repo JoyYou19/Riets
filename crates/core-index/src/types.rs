@@ -36,7 +36,7 @@ impl slog::Value for ShardId {
 
 impl From<u16> for ShardId {
     fn from(v: u16) -> Self {
-        ShardId(v)
+        Self(v)
     }
 }
 
@@ -49,7 +49,7 @@ impl From<ShardId> for u16 {
 impl TryFrom<usize> for ShardId {
     type Error = std::num::TryFromIntError;
     fn try_from(v: usize) -> Result<Self, Self::Error> {
-        Ok(ShardId(u16::try_from(v)?))
+        Ok(Self(u16::try_from(v)?))
     }
 }
 
@@ -74,16 +74,17 @@ pub fn make_doc_id(shard: ShardId, local: LocalDocId) -> DocId {
         shard.0 <= MAX_SHARD_ID,
         "shard id {shard} exceeds the 15-bit limit (bit 63 reserved for array rows)"
     );
-    ((shard.0 as u64) << LOCAL_BITS) | local
+    (u64::from(shard.0) << LOCAL_BITS) | local
 }
 
 /// Shard that owns a globally packed document ID.
 pub fn shard_of(doc: DocId) -> ShardId {
-    ShardId(((doc >> LOCAL_BITS) & u64::from(MAX_SHARD_ID)) as u16)
+    let shard = (doc >> LOCAL_BITS) & u64::from(MAX_SHARD_ID);
+    ShardId(u16::try_from(shard).unwrap_or(MAX_SHARD_ID))
 }
 
 /// Shard-local id contained in a globally packed document ID.
-pub fn local_of(doc: DocId) -> LocalDocId {
+pub const fn local_of(doc: DocId) -> LocalDocId {
     doc & MAX_LOCAL_DOC_ID
 }
 
@@ -105,7 +106,7 @@ impl ArrayRowId {
 
     /// Re-wrap a raw id read from a posting or the index.
     pub const fn from_raw(raw: u64) -> Self {
-        ArrayRowId(raw)
+        Self(raw)
     }
 
     /// Per-shard sequence number (flag stripped).
@@ -125,11 +126,11 @@ pub fn encode_position(start: u32, span: u32) -> Position {
     (start.min(u32::MAX >> SPAN_BITS) << SPAN_BITS) | (span.clamp(1, MAX_SPAN) - 1)
 }
 
-pub fn position_start(position: Position) -> u32 {
+pub const fn position_start(position: Position) -> u32 {
     position >> SPAN_BITS
 }
 
-pub fn position_span(position: Position) -> u32 {
+pub const fn position_span(position: Position) -> u32 {
     (position & (MAX_SPAN - 1)) + 1
 }
 
@@ -157,7 +158,7 @@ pub struct FieldStats {
 }
 
 impl FieldStats {
-    pub fn add(&mut self, other: &FieldStats) {
+    pub const fn add(&mut self, other: &Self) {
         self.doc_count += other.doc_count;
         self.total_doc_len += other.total_doc_len;
     }

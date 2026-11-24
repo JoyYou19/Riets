@@ -42,28 +42,40 @@ impl TokenStore {
         Self::default()
     }
     pub fn issue(&self, username: String) -> Result<Token, CorelamoError> {
-        let token = Token::generate()?;
-        let hashed = hash_token(&token);
-        let mut store = self.tokens.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let token = Token::generate()?;
+    let hashed = hash_token(&token);
+    let entry = TokenEntry {
+        username,
+        issued_at: SystemTime::now(),
+    };
+
+    {
+        let mut store = self
+            .tokens
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // expired tokens are never used again: drop them here, so the map holds only live ones
-        store.retain(|_, entry| {
-            entry.issued_at.elapsed().is_ok_and(|age| age <= TOKEN_LIFETIME)
-        });
-        store.insert(hashed, TokenEntry {
-            username,
-            issued_at: SystemTime::now(),
-        });
-        Ok(token)
+        store.retain(|_, e| e.issued_at.elapsed().is_ok_and(|age| age <= TOKEN_LIFETIME));
+        store.insert(hashed, entry);
     }
+
+    Ok(token)
+}
     pub fn resolve_username(&self, token: &Token) -> Option<String> {
-        let hashed = hash_token(token);
-        let store = self.tokens.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = store.get(&hashed)?;
-        if entry.issued_at.elapsed().ok()? > TOKEN_LIFETIME {
-            return None;
-        }
-        Some(entry.username.clone())
+    let hashed = hash_token(token);
+
+    let (username, issued_at) = self
+        .tokens
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&hashed)
+        .map(|entry| (entry.username.clone(), entry.issued_at))?;
+
+    if issued_at.elapsed().ok()? > TOKEN_LIFETIME {
+        return None;
     }
+    Some(username)
+}
     pub fn revoke(&self, token: &Token) -> bool {
         let mut store = self.tokens.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         store.remove(&hash_token(token)).is_some()

@@ -2,6 +2,7 @@ use core_timing::timed;
 use simd_json::prelude::*;
 use simd_json::{OwnedValue, StaticNode, owned::Object};
 
+
 #[must_use]
 pub fn escape_json_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -12,7 +13,13 @@ pub fn escape_json_text(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if u32::from(c) < 0x20 => {
+                let code = u32::from(c);
+                out.push_str("\\u00");
+                for nibble in [code >> 4, code & 0xf] {
+                    out.push(char::from_digit(nibble, 16).unwrap_or('0'));
+                }
+            }
             c => out.push(c),
         }
     }

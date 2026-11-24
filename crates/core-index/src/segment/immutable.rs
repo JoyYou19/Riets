@@ -13,10 +13,12 @@ use crate::{
     types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
     wildcard::{WildcardPattern, capped_union},
 };
-
+fn len_u32(list: &PostingList) -> u32 {
+    u32::try_from(list.len()).unwrap_or(u32::MAX)
+}
 // In-memory (keep in mind) segment that is supposed to be a frozen MemTable
 //
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImmutableSegment {
     terms: BTreeMap<TermKey, PostingList>,
     doc_lengths: BTreeMap<(DocId, XPathId), u32>,
@@ -32,9 +34,10 @@ impl SearchIndex for ImmutableSegment {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup_or_empty(term, xpath)
     }
-    #[timed(search)]
+
+      #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
-        self.lookup(term, xpath).map_or(0, |list| list.len() as u32)
+        self.lookup(term, xpath).map_or(0, len_u32)
     }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.terms
@@ -43,14 +46,14 @@ impl SearchIndex for ImmutableSegment {
             .map(|(k, _)| k.term.clone())
             .collect()
     }
-    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+   fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
         let mut out = Vec::new();
         for (key, postings) in self.terms.range(TermKey::new(prefix, xpath)..) {
             if key.xpath != xpath || !key.term.starts_with(prefix) {
                 break;
             }
             if !postings.is_empty() {
-                out.push((key.term.clone(), postings.len() as u32));
+                out.push((key.term.clone(), len_u32(postings)));
             }
         }
         out
@@ -99,21 +102,21 @@ impl SearchIndex for ImmutableSegment {
     }
 
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
-        ImmutableSegment::lookup_prefix(self, prefix, xpath)
+        Self::lookup_prefix(self, prefix, xpath)
     }
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
-        ImmutableSegment::lookup_wildcard(self, pattern, xpath)
+        Self::lookup_wildcard(self, pattern, xpath)
     }
     fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
         // the inherent lookup borrows the list; the trait one would clone it
-        let list = ImmutableSegment::lookup(self, term, xpath)?;
+        let list = Self::lookup(self, term, xpath)?;
         if list.is_empty() {
             return None;
         }
         Some(TermCursorInfo {
             cursor: TermCursor::Slice(PostingCursor::new(list)),
-            doc_freq: u32::try_from(list.len()).unwrap_or(u32::MAX),
+            doc_freq: len_u32(list),
             max_weight: list.max_weight(),
         })
     }
@@ -190,23 +193,23 @@ impl ImmutableSegment {
             array_row_index,
         }
     }
-
-    pub fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
+    
+    pub const fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
     }
-    pub fn doc_range(&self) -> Option<(DocId, DocId)> {
+    pub const fn doc_range(&self) -> Option<(DocId, DocId)> {
         self.doc_id_range
     }
 
-    pub fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
+    pub const fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
         &self.bool_fields
     }
 
-    pub fn numeric_fields(&self) -> &NumericFields {
+    pub const fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
     }
 
-    pub fn array_row_index(&self) -> &ArrayRowIndex {
+    pub const fn array_row_index(&self) -> &ArrayRowIndex {
         &self.array_row_index
     }
 
@@ -214,7 +217,7 @@ impl ImmutableSegment {
         self.terms.get(&TermKey::new(term, xpath))
     }
 
-    pub fn terms(&self) -> &BTreeMap<TermKey, PostingList> {
+    pub const fn terms(&self) -> &BTreeMap<TermKey, PostingList> {
         &self.terms
     }
 

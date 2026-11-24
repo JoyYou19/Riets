@@ -9,17 +9,18 @@ pub struct ArrayRowAllocator {
 }
 
 impl ArrayRowAllocator {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             next: ArrayRowId(ARRAY_ROW_FLAG),
         }
     }
 
-    pub fn starting_at(next: ArrayRowId) -> Self {
+    pub const fn starting_at(next: ArrayRowId) -> Self {
         Self { next }
     }
 
-    pub fn alloc(&mut self) -> ArrayRowId {
+     #[allow(clippy::expect_used, reason = "2^63 array row ids cannot be exhausted in practice")]
+    pub const fn alloc(&mut self) -> ArrayRowId {
         let id = self.next;
         self.next = ArrayRowId(
             id.raw()
@@ -29,7 +30,7 @@ impl ArrayRowAllocator {
         id
     }
 
-    pub fn next(&self) -> ArrayRowId {
+    pub const fn next(&self) -> ArrayRowId {
         self.next
     }
 }
@@ -46,7 +47,7 @@ pub struct ArrayRowIndex {
 }
 
 impl ArrayRowIndex {
-    pub fn new(base: ArrayRowId) -> Self {
+    pub const fn new(base: ArrayRowId) -> Self {
         Self {
             base,
             row_to_doc: Vec::new(),
@@ -55,9 +56,12 @@ impl ArrayRowIndex {
         }
     }
 
+    fn slot(&self, array_row_id: ArrayRowId) -> Option<usize> {
+        usize::try_from(array_row_id.raw().checked_sub(self.base.raw())?).ok()
+    }
+
     pub fn parent_of(&self, array_row_id: ArrayRowId) -> Option<ArrayRowId> {
-        let idx = array_row_id.raw().checked_sub(self.base.raw())?;
-        let parent = *self.parent_row.get(idx as usize)?;
+        let parent = *self.parent_row.get(self.slot(array_row_id)?)?;
         (parent != NO_PARENT_ROW).then_some(parent)
     }
 
@@ -82,16 +86,14 @@ impl ArrayRowIndex {
     }
 
     pub fn element_index_of(&self, array_row_id: ArrayRowId) -> Option<u32> {
-        let idx = array_row_id.raw().checked_sub(self.base.raw())? as usize;
-        self.element_index.get(idx).copied()
+        self.element_index.get(self.slot(array_row_id)?).copied()
     }
 
     pub fn doc_of(&self, array_row_id: ArrayRowId) -> Option<DocId> {
-        let idx = array_row_id.raw().checked_sub(self.base.raw())? as usize;
-        self.row_to_doc.get(idx).copied()
+        self.row_to_doc.get(self.slot(array_row_id)?).copied()
     }
 
-    pub fn max_array_row(&self) -> Option<ArrayRowId> {
+    pub const fn max_array_row(&self) -> Option<ArrayRowId> {
         if self.is_empty() {
             None
         } else {
@@ -101,7 +103,7 @@ impl ArrayRowIndex {
         }
     }
 
-    pub fn merge_from(&mut self, other: &ArrayRowIndex) -> io::Result<()> {
+    pub fn merge_from(&mut self, other: &Self) -> io::Result<()> {
         if other.is_empty() {
             return Ok(());
         }
@@ -135,15 +137,15 @@ impl ArrayRowIndex {
         &self.parent_row
     }
 
-    pub fn base(&self) -> ArrayRowId {
+    pub const fn base(&self) -> ArrayRowId {
         self.base
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.row_to_doc.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.row_to_doc.is_empty()
     }
 }

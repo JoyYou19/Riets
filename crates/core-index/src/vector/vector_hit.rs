@@ -7,7 +7,7 @@ use crate::types::DocId;
 
 /// A filter matching fewer than rows / this many documents is cheaper to check document by
 /// document than to search the whole segment.
-const SELECTIVE_FILTER_RATIO: usize = 32;
+const SELECTIVE_FILTER_RATIO: u64 = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VectorHit {
@@ -25,7 +25,7 @@ pub struct VectorFilter<'a> {
 }
 
 impl<'a> VectorFilter<'a> {
-    pub fn new(deleted: &'a DeleteSet, allowed: Option<&'a RoaringTreemap>) -> Self {
+    pub const fn new(deleted: &'a DeleteSet, allowed: Option<&'a RoaringTreemap>) -> Self {
         Self { deleted, allowed }
     }
 
@@ -34,15 +34,16 @@ impl<'a> VectorFilter<'a> {
             && self.allowed.is_none_or(|allowed| allowed.contains(doc_id))
     }
 
-    pub fn allowed(&self) -> Option<&'a RoaringTreemap> {
+    pub const fn allowed(&self) -> Option<&'a RoaringTreemap> {
         self.allowed
     }
 
     /// True when the filter keeps so few of `rows` documents that checking them one by one
     /// beats searching the whole segment.
-    pub fn is_selective(&self, rows: usize) -> bool {
+       pub fn is_selective(&self, rows: usize) -> bool {
         self.allowed.is_some_and(|allowed| {
-            allowed.len().saturating_mul(SELECTIVE_FILTER_RATIO as u64) < rows as u64
+            allowed.len().saturating_mul(SELECTIVE_FILTER_RATIO)
+                < u64::try_from(rows).unwrap_or(u64::MAX)
         })
     }
 }
@@ -67,12 +68,17 @@ impl TopK {
         }
     }
 
-    pub(crate) fn offer(&mut self, doc_id: DocId, score: f32) {
+       pub(crate) fn offer(&mut self, doc_id: DocId, score: f32) {
         if self.k == 0 || score.is_nan() {
             return;
         }
         let hit = VectorHit { doc_id, score };
-        if self.hits.len() == self.k && hit_order(&hit, &self.hits[self.k - 1]) != Ordering::Less {
+        if self.hits.len() == self.k
+            && self
+                .hits
+                .last()
+                .is_some_and(|worst| hit_order(&hit, worst) != Ordering::Less)
+        {
             return;
         }
         let pos = self
@@ -81,8 +87,6 @@ impl TopK {
         self.hits.insert(pos, hit);
         self.hits.truncate(self.k);
     }
-    /// Score of the current k-th hit, once `k` hits are held; anything scoring below it
-    /// cannot enter. Lets callers skip work for candidates that cannot make the cut.
 
     pub(crate) fn into_sorted(self) -> Vec<VectorHit> {
         self.hits

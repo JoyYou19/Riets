@@ -1,8 +1,3 @@
-//! The dictionary files. `CorelamoDictionary.toml`, next to CorelamoSettings.toml, is the default
-//! every database can search with: short forms, formulas and the Roman numeral rules. Each
-//! database's `dictionary.toml` says whether it uses that default and adds its own synonyms and
-//! one-way entries.
-
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -125,7 +120,6 @@ impl fmt::Display for ConfigError {
 
 impl From<ConfigError> for core_protocol::errors::CorelamoError {
     fn from(err: ConfigError) -> Self {
-        use core_protocol::errors::CorelamoError;
         match err {
             ConfigError::Io { .. } => Self::Internal(err.to_string()),
             _ => Self::InvalidData(err.to_string()),
@@ -205,14 +199,11 @@ impl Default for RomanSection {
 }
 
 fn line_of(text: &str, offset: usize) -> usize {
-    text.as_bytes()[..offset.min(text.len())]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count()
-        + 1
+    let bytes = text.as_bytes();
+    bytecount::count(bytes.get(..offset).unwrap_or(bytes), b'\n') + 1
 }
 
-fn span_line(text: &str, span: Range<usize>) -> Option<usize> {
+fn span_line(text: &str, span: &Range<usize>) -> Option<usize> {
     (span.end > 0).then(|| line_of(text, span.start))
 }
 
@@ -307,7 +298,7 @@ impl<F: DeserializeOwned> Document<F> {
     /// Takes over another document's file (path and last-seen state). The name stays: errors
     /// in a dictionary sent over the API name the database, not a path on the server.
     fn bound_to(mut self, target: &Self) -> Self {
-        self.path = target.path.clone();
+        self.path.clone_from(&target.path);
         self.disk_fingerprint = target.disk_fingerprint;
         self
     }
@@ -316,10 +307,8 @@ impl<F: DeserializeOwned> Document<F> {
     fn save(&mut self) -> Result<(), ConfigError> {
         let path = self.require_path()?;
         check_unchanged(&path, self.disk_fingerprint)?;
-        write_atomic(&path, self.text.as_bytes()).map_err(|source| ConfigError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        write_atomic(&path, self.text.as_bytes())
+            .map_err(|source| ConfigError::Io { path, source })?;
         self.disk_fingerprint = Some(fingerprint(self.text.as_bytes()));
         Ok(())
     }
@@ -376,7 +365,7 @@ pub fn compile_default(
         if upper.is_empty() || !upper.chars().all(|c| "IVXLCDM".contains(c)) {
             return Err(ConfigError::Syntax {
                 source_name: doc.name.clone(),
-                line: span_line(&doc.text, item.span()),
+                line: span_line(&doc.text, &item.span()),
                 message: format!(
                     "[roman] denylist entry {:?} is not a Roman numeral",
                     item.get_ref()
@@ -431,7 +420,7 @@ fn add_sections(
             //line numbers are only worked out for an error: counting lines per group is O(n^2)
             let error = |source| ConfigError::Dictionary {
                 source_name: name.to_owned(),
-                line: span_line(text, group.span()),
+                line: span_line(text, &group.span()),
                 source,
             };
             let variants = group
@@ -621,6 +610,7 @@ impl SynonymManager {
         draft.save()?;
         self.store.replace(synonyms);
         *file = draft;
+        drop(file);
         Ok(())
     }
 
@@ -633,6 +623,7 @@ impl SynonymManager {
         let synonyms = self.synonyms(&fresh)?;
         self.store.replace(synonyms);
         *file = fresh;
+        drop(file);
         Ok(())
     }
 

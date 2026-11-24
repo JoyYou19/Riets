@@ -75,7 +75,7 @@ fn check_permission(
         .auth
         .read()
         .map_err(|_| CorelamoError::Internal("auth service unavailable".into()))?;
-    auth.check(principal, permission)
+    auth.check(principal, &permission)
 }
 fn auth_unavailable<T>(_:std::sync::PoisonError<T>) -> CorelamoError{
     CorelamoError::Internal("auth service unavailable".into())
@@ -238,7 +238,7 @@ pub(crate) async fn create_user_handler(
         let hash = hash_password(&req.password)?;
 
     let mut auth = auth.write().map_err(auth_unavailable)?;
-        auth.create_user(&principal, &req.username, hash, req.roles)
+        auth.create_user(&principal, &req.username, &hash, &req.roles)
     })
     .await;
 
@@ -310,7 +310,7 @@ pub(crate) async fn update_user_password_handler(
         // short: the write lock only covers the store update; update_user_password checks
         // the permission again, since it may have changed while hashing
            let mut auth = auth.write().map_err(auth_unavailable)?;
-        auth.update_user_password(&principal, &target, hash)
+        auth.update_user_password(&principal, &target, &hash)
     })
     .await;
 
@@ -360,7 +360,7 @@ pub(crate) async fn update_user_roles_handler(
         Ok(auth) => auth,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
-    match auth.update_user_roles(&principal, &username, req.roles) {
+    match auth.update_user_roles(&principal, &username, &req.roles) {
         Ok(()) => HttpOk::new(format!("roles updated for '{username}'"), &ctx).into_response(),
         Err(e) => HttpError::from_corelamo(e, &ctx).into_response(),
     }

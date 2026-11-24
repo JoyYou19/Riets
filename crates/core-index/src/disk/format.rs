@@ -47,7 +47,7 @@
 //! length           var u32 × position_count   end_byte - start_byte
 //! ```
 //!
-//! ## doc_lengths  
+//! ## `doc_lengths`  
 //!
 //! ```text
 //! count u32
@@ -73,7 +73,7 @@
 //! The FST assigns each term an ord; the fixed-width meta array, indexed by that
 //! ord, points into the `postings` section for that term.
 //!
-//! ## numeric_fields  (raw LE)
+//! ## `numeric_fields`  (raw LE)
 //!
 //! ```text
 //! xpath_count u32
@@ -89,7 +89,7 @@
 //! Used for range filters and sorting. A `Date` field stores its UTC epoch
 //! milliseconds here, so sort/order is a plain numeric comparison.
 //!
-//! ## array_row_index  (raw LE)
+//! ## `array_row_index`  (raw LE)
 //!
 //! ```text
 //! base u64
@@ -100,7 +100,7 @@
 //! Maps each array row id to the document (or parent row) that owns it, so a
 //! match inside a nested array element resolves back to its document.
 //!
-//! ## bool_fields  (raw LE)
+//! ## `bool_fields`  (raw LE)
 //!
 //! ```text
 //! field_count u32
@@ -145,10 +145,13 @@ pub const BLOCK_LEN:usize =128;
 pub const FOOTER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8 + 8;
 //skips entries for things in blocks
 pub const SKIP_ENTRY_LEN: usize = 8 + 8 + 4 + 4 + 4 + 4 + 4 + 2 + 1;
-
+//helpers 
 fn invalid(message:&'static str) -> io::Error{
         io::Error::new(io::ErrorKind::InvalidData, message)
     }
+pub(crate) fn array_at<const N: usize>(bytes: &[u8], at: usize) -> Option<[u8; N]> {
+    bytes.get(at..)?.first_chunk::<N>().copied()
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 //posting block entry for skipping the block
 pub struct SkipEntry{
@@ -181,38 +184,43 @@ impl SkipEntry{
         out.extend_from_slice(&self.max_weight.to_le_bytes());
         out.extend_from_slice(&self.len.to_le_bytes());
     }
-    pub fn read_at(table:&[u8], index:usize)-> io::Result<Self>{
-        let start=index.checked_mul(SKIP_ENTRY_LEN).ok_or_else(|| invalid("skip entry index overflow"))?;
-        let bytes=table.get(start..start+SKIP_ENTRY_LEN)
+    pub(crate) fn read_at(table: &[u8], index: usize) -> io::Result<Self> {
+    let start = index
+        .checked_mul(SKIP_ENTRY_LEN)
+        .ok_or_else(|| invalid("skip entry index overflow"))?;
+    let bytes = table
+        .get(start..)
+        .and_then(<[u8]>::first_chunk::<SKIP_ENTRY_LEN>)
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "skip entry past end"))?;
-        let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
-        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+    let short = || invalid("skip entry too short");
+    let u64_at = |at: usize| array_at(bytes, at).map(u64::from_le_bytes).ok_or_else(short);
+    let u32_at = |at: usize| array_at(bytes, at).map(u32::from_le_bytes).ok_or_else(short);
 
-        let entry = Self {
-            first_doc_id: u64_at(0),
-            last_doc_id: u64_at(8),
-            block_start_offset: u32_at(16),
-            positions_start_offset: u32_at(20),
-            offsets_start_offset: u32_at(24),
-            max_tf: u32_at(28),
-            min_doc_len: u32_at(32),
-            max_weight: u16::from_le_bytes([bytes[36], bytes[37]]),
-            len: bytes[38],
-        };
-        if entry.len ==0|| usize::from(entry.len) >BLOCK_LEN|| entry.last_doc_id<entry.first_doc_id{
-            return Err(invalid("corrupt skip entry"));
-        }
-        Ok(entry)
+    let entry = Self {
+        first_doc_id: u64_at(0)?,
+        last_doc_id: u64_at(8)?,
+        block_start_offset: u32_at(16)?,
+        positions_start_offset: u32_at(20)?,
+        offsets_start_offset: u32_at(24)?,
+        max_tf: u32_at(28)?,
+        min_doc_len: u32_at(32)?,
+        max_weight: u16::from_le_bytes([bytes[36], bytes[37]]),
+        len: bytes[38],
+    };
+    if entry.len == 0 || usize::from(entry.len) > BLOCK_LEN || entry.last_doc_id < entry.first_doc_id {
+        return Err(invalid("corrupt skip entry"));
     }
-    pub fn last_doc_at(table:&[u8], index:usize) -> io::Result<u64>{
-        let start =index 
+    Ok(entry)
+}
+   pub(crate) fn last_doc_at(table: &[u8], index: usize) -> io::Result<u64> {
+    let start = index
         .checked_mul(SKIP_ENTRY_LEN)
         .and_then(|at| at.checked_add(8))
         .ok_or_else(|| invalid("skip entry index overflow"))?;
-        let bytes=table.get(start..start+8)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "skip entry past end "))?;
-        Ok(u64::from_le_bytes(bytes.try_into().expect("8 bytes")))
-    }
+    array_at(table, start)
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "skip entry past end"))
+}
     
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,7 +230,7 @@ pub struct SegmentHeader {
 }
 
 impl SegmentHeader {
-    pub fn current() -> Self {
+    pub(crate) const fn current() -> Self {
         Self {
             magic: MAGIC,
             version: VERSION,

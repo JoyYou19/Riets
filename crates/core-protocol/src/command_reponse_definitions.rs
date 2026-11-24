@@ -308,8 +308,9 @@ pub enum QueryCorrection {
     /// The results are for the query as typed; this spelling is offered instead.
     Suggested(String),
 }
+type Docs =Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>;
 pub struct SearchResponse {
-    docs: Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>,
+    docs: Docs,
     strip_id: Option<String>,
     total_hits: TotalHits,
     corrected_query: Option<QueryCorrection>,
@@ -318,7 +319,7 @@ pub struct SearchResponse {
 impl SearchResponse {
     #[must_use]
     pub const fn new(
-        docs: Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>,
+        docs:Docs ,
         strip_id: Option<String>,
         total_hits: TotalHits,
         corrected_query: Option<QueryCorrection>,

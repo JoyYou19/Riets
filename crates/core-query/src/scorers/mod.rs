@@ -22,8 +22,8 @@ pub(crate) fn clause_scorer<'a, S: SearchStats>(
     for form in forms {
         let field = form.field;
         if let Some(term) = TermScorer::new(stats, form) {
-            built.push((field, Box::new(term) as BoxScorer<'a>));
+            built.push((field, Box::new(term)));
         }
     }
-    SynonymScorer::new(built).map(|synonym| Box::new(synonym) as BoxScorer<'a>)
+    SynonymScorer::new(built).map(|synonym| -> BoxScorer<'a> { Box::new(synonym) })
 }

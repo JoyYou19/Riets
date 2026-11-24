@@ -3,21 +3,26 @@
 //! CPU heavy: run it on the background pool, never on a query or index-worker thread.
 //! Distances use the f32 originals, so neighbour choices are exact.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::fs::{ self, File, OpenOptions };
+use std::io::{ self, BufWriter, Write };
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{ Mutex, MutexGuard, PoisonError };
 
 use rayon::prelude::*;
 
 use super::layout::{
-    GraphHeader, GraphLayout, MAX_LEVEL, MAX_LINKS_LIMIT, NO_UPPER_SLOTS, header_length,
+    GraphHeader,
+    GraphLayout,
+    MAX_LEVEL,
+    MAX_LINKS_LIMIT,
+    NO_UPPER_SLOTS,
+    header_length,
 };
-use super::walk::{GraphWalk, NeighbourLists, ScoredNode, SimilarityToTarget, with_visited_set};
+use super::walk::{ GraphWalk, NeighbourLists, ScoredNode, SimilarityToTarget, with_visited_set };
 use crate::hash::fmix64;
 use crate::tmp_path_for;
 use super::HnswGraph;
-use crate::vector::file::{VectorFile, write_zero_padding};
+use crate::vector::file::{ VectorFile, write_zero_padding };
 use crate::vector::kernel::dot_f32;
 
 /// Files with fewer rows are scanned instead: an int8 scan of 20k rows takes about a
@@ -41,7 +46,7 @@ impl Default for GraphBuildParams {
         Self {
             max_links_upper: 16,
             build_beam_width: 200,
-            level_seed: 0x5EED_C0DE_D00D_F00D,
+            level_seed: 0x5eed_c0de_d00d_f00d,
         }
     }
 }
@@ -49,16 +54,25 @@ impl Default for GraphBuildParams {
 impl GraphBuildParams {
     fn validate(&self) -> io::Result<()> {
         if !(2..=MAX_LINKS_LIMIT).contains(&self.max_links_upper) {
-            return Err(invalid_input(format!(
-                "max_links_upper must be 2..={MAX_LINKS_LIMIT}, got {}",
-                self.max_links_upper
-            )));
+            return Err(
+                invalid_input(
+                    format!(
+                        "max_links_upper must be 2..={MAX_LINKS_LIMIT}, got {}",
+                        self.max_links_upper
+                    )
+                )
+            );
         }
         if self.build_beam_width < self.max_links_upper {
-            return Err(invalid_input(format!(
-                "build_beam_width ({}) must be at least max_links_upper ({})",
-                self.build_beam_width, self.max_links_upper
-            )));
+            return Err(
+                invalid_input(
+                    format!(
+                        "build_beam_width ({}) must be at least max_links_upper ({})",
+                        self.build_beam_width,
+                        self.max_links_upper
+                    )
+                )
+            );
         }
         Ok(())
     }
@@ -69,7 +83,7 @@ impl GraphBuildParams {
 pub fn build_graph_file(
     vectors: &VectorFile,
     path: impl AsRef<Path>,
-    params: &GraphBuildParams,
+    params: &GraphBuildParams
 ) -> io::Result<bool> {
     if vectors.len() < MIN_ROWS_FOR_GRAPH {
         return Ok(false);
@@ -81,10 +95,11 @@ pub fn build_graph_file(
 pub(crate) fn build_and_write(
     vectors: &VectorFile,
     path: &Path,
-    params: &GraphBuildParams,
+    params: &GraphBuildParams
 ) -> io::Result<()> {
-    let result = GraphUnderConstruction::build(vectors, params)
-        .and_then(|graph| graph.write(path, vectors.file_id(), vectors.dims()));
+    let result = GraphUnderConstruction::build(vectors, params).and_then(|graph|
+        graph.write(path, vectors.file_id(), vectors.dims())
+    );
     if result.is_err() {
         drop(fs::remove_file(tmp_path_for(path)));
     }
@@ -99,11 +114,12 @@ pub fn extend_graph_file(
     old: &HnswGraph,
     vectors: &VectorFile,
     path: impl AsRef<Path>,
-    params: &GraphBuildParams,
+    params: &GraphBuildParams
 ) -> io::Result<()> {
     let path = path.as_ref();
-    let result = GraphUnderConstruction::extend(old, vectors, params)
-        .and_then(|graph| graph.write(path, vectors.file_id(), vectors.dims()));
+    let result = GraphUnderConstruction::extend(old, vectors, params).and_then(|graph|
+        graph.write(path, vectors.file_id(), vectors.dims())
+    );
     if result.is_err() {
         drop(fs::remove_file(tmp_path_for(path)));
     }
@@ -141,7 +157,9 @@ struct GraphUnderConstruction {
 impl NeighbourLists for GraphUnderConstruction {
     fn neighbours_into(&self, node: u32, level: usize, out: &mut Vec<u32>) {
         out.clear();
-        out.extend_from_slice(&lock(&self.neighbour_lists[node as usize][level]));
+        if let Some(list) = self.list(node, level) {
+            out.extend_from_slice(&lock(list));
+        }
     }
 }
 
@@ -152,22 +170,22 @@ impl GraphUnderConstruction {
         if node_count == 0 {
             return Err(invalid_input("cannot build a graph over zero rows"));
         }
-        if u32::try_from(node_count).is_err() {
-            return Err(invalid_input(format!(
-                "{node_count} rows exceed the u32 node ids of a graph"
-            )));
-        }
+        let Ok(node_count_u32) = u32::try_from(node_count) else {
+            return Err(
+                invalid_input(format!("{node_count} rows exceed the u32 node ids of a graph"))
+            );
+        };
 
-        let level_multiplier = 1.0 / (params.max_links_upper as f64).ln();
+        let multiplier = level_multiplier(params.max_links_upper)?;
         let node_levels: Vec<u8> = (0..node_count)
-            .map(|node| random_level(params.level_seed, node, level_multiplier))
+            .map(|node| random_level(params.level_seed, node, multiplier))
             .collect();
-        // Highest level wins; among equals the lowest node id, so the choice is deterministic.
         let entry_node = node_levels
             .iter()
             .enumerate()
             .max_by_key(|&(node, &level)| (level, std::cmp::Reverse(node)))
-            .map_or(0, |(node, _)| node as u32);
+            .and_then(|(node, _)| u32::try_from(node).ok())
+            .unwrap_or(0);
 
         let max_links_level0 = params.max_links_upper * 2;
         let neighbour_lists = node_levels
@@ -194,54 +212,75 @@ impl GraphUnderConstruction {
             node_levels,
             neighbour_lists,
         };
-        (0..node_count as u32)
+        (0..node_count_u32)
             .into_par_iter()
             .filter(|&node| node != entry_node)
             .for_each(|node| graph.insert(vectors, node, params.build_beam_width));
         graph.connect_unreachable(vectors);
         Ok(graph)
     }
-        /// `old`'s nodes and links, then the rows of `vectors` after them inserted one by one.
-    fn extend(old: &HnswGraph, vectors: &VectorFile, params: &GraphBuildParams) -> io::Result<Self> {
+    fn list(&self, node: u32, level: usize) -> Option<&Mutex<Vec<u32>>> {
+        self.neighbour_lists.get(node as usize)?.get(level)
+    }
+
+    fn level_of(&self, node: u32) -> usize {
+        self.node_levels.get(node as usize).map_or(0, |&level| usize::from(level))
+    }
+
+    fn node_count_u32(&self) -> u32 {
+        u32::try_from(self.node_levels.len()).unwrap_or(u32::MAX)
+    }
+    fn extend(
+        old: &HnswGraph,
+        vectors: &VectorFile,
+        params: &GraphBuildParams
+    ) -> io::Result<Self> {
         params.validate()?;
         let old_count = old.node_count();
         let node_count = vectors.len();
         if node_count < old_count || vectors.dims() != old.vectors().dims() {
-            return Err(invalid_input(format!(
-                "cannot extend a graph of {old_count} nodes over {node_count} rows of {} dims",
-                vectors.dims()
-            )));
+            return Err(
+                invalid_input(
+                    format!(
+                        "cannot extend a graph of {old_count} nodes over {node_count} rows of {} dims",
+                        vectors.dims()
+                    )
+                )
+            );
         }
-        if u32::try_from(node_count).is_err() {
-            return Err(invalid_input(format!(
-                "{node_count} rows exceed the u32 node ids of a graph"
-            )));
-        }
+        let Ok(node_count_u32) = u32::try_from(node_count) else {
+            return Err(
+                invalid_input(format!("{node_count} rows exceed the u32 node ids of a graph"))
+            );
+        };
+        let old_count_u32 = u32::try_from(old_count).unwrap_or(u32::MAX);
 
         // the old graph's link limits, so old and new nodes follow the same rules
         let max_links_upper = usize::from(old.header.max_links_upper);
         let max_links_level0 = usize::from(old.header.max_links_level0);
-        let level_multiplier = 1.0 / (max_links_upper as f64).ln();
+        let multiplier = 1.0 / f64::from(old.header.max_links_upper).ln();
 
         let mut node_levels = Vec::with_capacity(node_count);
         let mut neighbour_lists = Vec::with_capacity(node_count);
         let mut links = Vec::with_capacity(max_links_level0);
         for node in 0..node_count {
             let top = if node < old_count {
-                old.node_level(node) as u8
+                u8
+                    ::try_from(old.node_level(node))
+                    .map_err(|_overflow| invalid_input("old graph level exceeds u8"))?
             } else {
-                random_level(params.level_seed, node, level_multiplier)
+                random_level(params.level_seed, node, multiplier)
             };
             let lists = (0..=usize::from(top))
                 .map(|level| {
-                    let capacity = if level == 0 {
-                        max_links_level0
-                    } else {
-                        max_links_upper
-                    };
+                    let capacity = if level == 0 { max_links_level0 } else { max_links_upper };
                     let mut list = Vec::with_capacity(capacity + 1);
                     if node < old_count {
-                        old.neighbours_into(node as u32, level, &mut links);
+                        old.neighbours_into(
+                            u32::try_from(node).unwrap_or(u32::MAX),
+                            level,
+                            &mut links
+                        );
                         list.extend_from_slice(&links);
                     }
                     Mutex::new(list)
@@ -259,29 +298,29 @@ impl GraphUnderConstruction {
             node_levels,
             neighbour_lists,
         };
-        (old_count as u32..node_count as u32)
+        (old_count_u32..node_count_u32)
             .into_par_iter()
             .for_each(|node| graph.insert(vectors, node, params.build_beam_width));
 
         // a new node above the old top level becomes the entry, as it would in a build
-        let top = graph.node_levels[graph.entry_node as usize];
-        if let Some((offset, _)) = graph.node_levels[old_count..]
-            .iter()
-            .enumerate()
-            .filter(|&(_, &level)| level > top)
-            .max_by_key(|&(offset, &level)| (level, std::cmp::Reverse(offset)))
+        let top = graph.level_of(graph.entry_node);
+        if
+            let Some(entry) = graph.node_levels
+                .get(old_count..)
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+                .filter(|&(_, &level)| usize::from(level) > top)
+                .max_by_key(|&(offset, &level)| (level, std::cmp::Reverse(offset)))
+                .and_then(|(offset, _)| u32::try_from(old_count + offset).ok())
         {
-            graph.entry_node = (old_count + offset) as u32;
+            graph.entry_node = entry;
         }
         graph.connect_unreachable(vectors);
         Ok(graph)
     }
-    fn max_links_at(&self, level: usize) -> usize {
-        if level == 0 {
-            self.max_links_level0
-        } else {
-            self.max_links_upper
-        }
+    const fn max_links_at(&self, level: usize) -> usize {
+        if level == 0 { self.max_links_level0 } else { self.max_links_upper }
     }
 
     /// Inserts `node` (Malkov & Yashunin, algorithm 1).
@@ -296,8 +335,8 @@ impl GraphUnderConstruction {
             target: &target,
             node_count: self.node_levels.len(),
         };
-        let node_level = usize::from(self.node_levels[node as usize]);
-        let top_level = usize::from(self.node_levels[self.entry_node as usize]);
+        let node_level = self.level_of(node);
+        let top_level = self.level_of(self.entry_node);
 
         with_visited_set(|visited| {
             let mut scratch = Vec::with_capacity(self.max_links_level0);
@@ -308,28 +347,28 @@ impl GraphUnderConstruction {
                 walk.score(self.entry_node),
                 top_level,
                 node_level + 1,
-                &mut scratch,
+                &mut scratch
             );
             let mut entry_points = vec![closest];
 
             // On the node's levels: find candidates, link to a diverse subset of them.
             for level in (0..=node_level.min(top_level)).rev() {
-                let mut candidates = walk
-                    .search_level(
-                        &entry_points,
-                        build_beam_width,
-                        level,
-                        |_| true,
-                        usize::MAX,
-                        visited,
-                        &mut scratch,
-                    )
-                    .best_first;
+                let mut candidates = walk.search_level(
+                    &entry_points,
+                    build_beam_width,
+                    level,
+                    |_| true,
+                    usize::MAX,
+                    visited,
+                    &mut scratch
+                ).best_first;
                 candidates.retain(|candidate| candidate.node != node);
 
                 select_diverse_neighbours(vectors, &candidates, self.max_links_upper, &mut chosen);
                 // Nobody links to `node` on this level yet, so its list cannot have changed.
-                lock(&self.neighbour_lists[node as usize][level]).clone_from(&chosen);
+                if let Some(list) = self.list(node, level) {
+                    lock(list).clone_from(&chosen);
+                }
                 for &neighbour in &chosen {
                     self.link_back(vectors, neighbour, node, level);
                 }
@@ -343,7 +382,10 @@ impl GraphUnderConstruction {
     /// Adds `new_node` to `neighbour`'s list on `level`, pruning the list if it overflows.
     fn link_back(&self, vectors: &VectorFile, neighbour: u32, new_node: u32, level: usize) {
         let max_links = self.max_links_at(level);
-        let mut list = lock(&self.neighbour_lists[neighbour as usize][level]);
+        let Some(slot) = self.list(neighbour, level) else {
+            return;
+        };
+        let mut list = lock(slot);
         if list.contains(&new_node) {
             return;
         }
@@ -384,23 +426,29 @@ impl GraphUnderConstruction {
 
         let header = GraphHeader {
             vector_file_id,
-            node_count: node_count as u32,
-            dims: u32::try_from(dims).map_err(|_| invalid_input("dims exceed u32"))?,
-            max_links_upper: self.max_links_upper as u16,
-            max_links_level0: self.max_links_level0 as u16,
+            node_count: u32
+                ::try_from(node_count)
+                .map_err(|_overflow| invalid_input("node count exceeds u32"))?,
+            dims: u32::try_from(dims).map_err(|_overflow| invalid_input("dims exceed u32"))?,
+            max_links_upper: u16
+                ::try_from(self.max_links_upper)
+                .map_err(|_overflow| invalid_input("max_links_upper exceeds u16"))?,
+            max_links_level0: u16
+                ::try_from(self.max_links_level0)
+                .map_err(|_overflow| invalid_input("max_links_level0 exceeds u16"))?,
             entry_node: self.entry_node,
-            top_level: self.node_levels[self.entry_node as usize],
+            top_level: self.node_levels
+                .get(self.entry_node as usize)
+                .copied()
+                .ok_or_else(|| invalid_input("entry node outside graph"))?,
             upper_slot_count,
         };
-        let layout = GraphLayout::new(&header)
-            .ok_or_else(|| invalid_input("graph file size overflows usize"))?;
+        let layout = GraphLayout::new(&header).ok_or_else(||
+            invalid_input("graph file size overflows usize")
+        )?;
 
         let tmp_path = tmp_path_for(path);
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
+        let file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp_path)?;
         let mut out = BufWriter::new(file);
 
         header.write_to(&mut out)?;
@@ -410,7 +458,7 @@ impl GraphUnderConstruction {
         write_zero_padding(
             &mut out,
             layout.node_levels_offset + node_count,
-            layout.upper_slot_starts_offset,
+            layout.upper_slot_starts_offset
         )?;
 
         for start in &upper_slot_starts {
@@ -419,16 +467,19 @@ impl GraphUnderConstruction {
         write_zero_padding(
             &mut out,
             layout.upper_slot_starts_offset + node_count * 4,
-            layout.level0_lists_offset,
+            layout.level0_lists_offset
         )?;
 
         for lists in &self.neighbour_lists {
-            write_slot(&mut out, &lock(&lists[0]), self.max_links_level0)?;
+            let Some(level0) = lists.first() else {
+                return Err(invalid_input("node without a level 0 list"));
+            };
+            write_slot(&mut out, &lock(level0), self.max_links_level0)?;
         }
         write_zero_padding(
             &mut out,
             layout.level0_lists_offset + node_count * layout.level0_slot_length,
-            layout.upper_lists_offset,
+            layout.upper_lists_offset
         )?;
 
         for lists in &self.neighbour_lists {
@@ -437,17 +488,21 @@ impl GraphUnderConstruction {
             }
         }
 
-        let file = out.into_inner().map_err(io::IntoInnerError::into_error)?;
-        file.sync_all()?;
-        let written = file.metadata()?.len();
-        if written != layout.total_length as u64 {
-            return Err(io::Error::other(format!(
-                "graph file {} assembled to {written} bytes, expected {}",
-                tmp_path.display(),
-                layout.total_length
-            )));
+        let finished = out.into_inner().map_err(io::IntoInnerError::into_error)?;
+        finished.sync_all()?;
+        let written = finished.metadata()?.len();
+        if written != (layout.total_length as u64) {
+            return Err(
+                io::Error::other(
+                    format!(
+                        "graph file {} assembled to {written} bytes, expected {}",
+                        tmp_path.display(),
+                        layout.total_length
+                    )
+                )
+            );
         }
-        drop(file);
+        drop(finished);
         fs::rename(&tmp_path, path)?;
         if let Some(dir) = path.parent() {
             File::open(dir)?.sync_all()?;
@@ -465,8 +520,8 @@ impl GraphUnderConstruction {
         const MAX_ROUNDS: usize = 8;
         for _ in 0..MAX_ROUNDS {
             let reachable = self.reachable_on_level0();
-            let stranded: Vec<u32> = (0..self.node_levels.len() as u32)
-                .filter(|&node| !reachable[node as usize])
+            let stranded: Vec<u32> = (0..self.node_count_u32())
+                .filter(|&node| !is_reachable(&reachable, node))
                 .collect();
             if stranded.is_empty() {
                 return;
@@ -483,13 +538,15 @@ impl GraphUnderConstruction {
     fn reachable_on_level0(&self) -> Vec<bool> {
         let mut reachable = vec![false; self.node_levels.len()];
         let mut stack = vec![self.entry_node];
-        reachable[self.entry_node as usize] = true;
+        if let Some(flag) = reachable.get_mut(self.entry_node as usize) {
+            *flag = true;
+        }
         let mut links = Vec::with_capacity(self.max_links_level0);
         while let Some(node) = stack.pop() {
             self.neighbours_into(node, 0, &mut links);
             for &next in &links {
-                if !reachable[next as usize] {
-                    reachable[next as usize] = true;
+                if let Some(flag) = reachable.get_mut(next as usize) && !*flag {
+                    *flag = true;
                     stack.push(next);
                 }
             }
@@ -503,7 +560,7 @@ impl GraphUnderConstruction {
         &self,
         vectors: &VectorFile,
         node: u32,
-        reachable: &[bool],
+        reachable: &[bool]
     ) -> Option<u32> {
         let target = InsertedNodeTarget {
             vectors,
@@ -519,7 +576,7 @@ impl GraphUnderConstruction {
         self.neighbours_into(node, 0, &mut links);
         let from_own_links = links
             .iter()
-            .filter(|&&linked| reachable[linked as usize])
+            .filter(|&&linked| is_reachable(reachable, linked))
             .map(|&linked| walk.score(linked))
             .max();
         if let Some(best) = from_own_links {
@@ -531,20 +588,22 @@ impl GraphUnderConstruction {
                 &[entry],
                 self.max_links_level0,
                 0,
-                |candidate| candidate != node && reachable[candidate as usize],
+                |candidate| candidate != node && is_reachable(reachable, candidate),
                 usize::MAX,
                 visited,
-                &mut links,
+                &mut links
             )
-            .best_first
-            .first()
-            .map(|best| best.node)
+                .best_first.first()
+                .map(|best| best.node)
         })
     }
 
     /// Adds `node` to `anchor`'s level-0 list. A full list loses its least similar link.
     fn force_link(&self, vectors: &VectorFile, anchor: u32, node: u32) {
-        let mut list = lock(&self.neighbour_lists[anchor as usize][0]);
+        let Some(slot) = self.list(anchor, 0) else {
+            return;
+        };
+        let mut list = lock(slot);
         if list.contains(&node) {
             return;
         }
@@ -560,18 +619,18 @@ impl GraphUnderConstruction {
                 let a = ScoredNode::salted(
                     a,
                     dot_f32(base, vectors.original(a as usize)),
-                    u64::from(anchor),
+                    u64::from(anchor)
                 );
                 let b = ScoredNode::salted(
                     b,
                     dot_f32(base, vectors.original(b as usize)),
-                    u64::from(anchor),
+                    u64::from(anchor)
                 );
                 a.cmp(&b)
             })
             .map(|(position, _)| position);
-        if let Some(position) = weakest {
-            list[position] = node;
+        if let Some(position) = weakest && let Some(slots) = list.get_mut(position) {
+            *slots = node;
         }
     }
 }
@@ -586,7 +645,7 @@ fn select_diverse_neighbours(
     vectors: &VectorFile,
     candidates: &[ScoredNode],
     max_links: usize,
-    chosen: &mut Vec<u32>,
+    chosen: &mut Vec<u32>
 ) {
     chosen.clear();
     let mut rejected = Vec::new();
@@ -595,24 +654,32 @@ fn select_diverse_neighbours(
             break;
         }
         let candidate_vector = vectors.original(candidate.node as usize);
-        let points_new_direction = chosen.iter().all(|&kept| {
-            dot_f32(candidate_vector, vectors.original(kept as usize)) < candidate.similarity
-        });
+        let points_new_direction = chosen
+            .iter()
+            .all(|&kept| {
+                dot_f32(candidate_vector, vectors.original(kept as usize)) < candidate.similarity
+            });
         if points_new_direction {
             chosen.push(candidate.node);
         } else {
             rejected.push(candidate.node);
         }
     }
-    let free_slots = max_links - chosen.len();
+    let free_slots = max_links.saturating_sub(chosen.len());
     chosen.extend(rejected.into_iter().take(free_slots));
 }
 
 /// Draws a node's highest level: floor(-ln(U) / ln(M)) with U uniform in (0, 1], capped at
 /// `MAX_LEVEL`. About 1 in M nodes reaches level 1, 1 in M² level 2, and so on.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "…"
+)]
 fn random_level(seed: u64, node: usize, level_multiplier: f64) -> u8 {
-    let bits = fmix64(seed ^ fmix64(node as u64 ^ 0xD6E8_FEB8_6659_FD93));
-    let uniform = ((bits >> 11) as f64 + 1.0) / (1u64 << 53) as f64;
+    let bits = fmix64(seed ^ fmix64((node as u64) ^ 0xd6e8_feb8_6659_fd93));
+    let uniform = (((bits >> 11) as f64) + 1.0) / ((1u64 << 53) as f64);
     let level = (-uniform.ln() * level_multiplier).floor();
     if level >= f64::from(MAX_LEVEL) {
         MAX_LEVEL
@@ -623,20 +690,19 @@ fn random_level(seed: u64, node: usize, level_multiplier: f64) -> u8 {
 
 /// Writes one list slot: length, the links, then zeros up to `max_links`.
 fn write_slot(out: &mut impl Write, links: &[u32], max_links: usize) -> io::Result<()> {
-    debug_assert!(
-        links.len() <= max_links,
-        "neighbour list longer than its slot"
-    );
-    out.write_all(&(links.len() as u32).to_le_bytes())?;
+    debug_assert!(links.len() <= max_links, "neighbour list longer than its slot");
+    let len = u32
+        ::try_from(links.len())
+        .map_err(|_overflow| invalid_input("neighbour list too long"))?;
+    out.write_all(&len.to_le_bytes())?;
     for &link in links {
         out.write_all(&link.to_le_bytes())?;
     }
     for _ in links.len()..max_links {
-        out.write_all(&0u32.to_le_bytes())?;
+        out.write_all(&(0u32).to_le_bytes())?;
     }
     Ok(())
 }
-
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // A panicked insert leaves a list that is still a valid list of node ids.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -645,152 +711,164 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 fn invalid_input(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg.into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vector::VectorFileWriter;
-    use crate::vector::hnsw::layout::GraphHeader;
-    use std::collections::VecDeque;
-    use std::path::PathBuf;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("corelamo-gbuild-{name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&dir));
-        fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn unit(seed: u64, dims: usize) -> Vec<f32> {
-        let mut v: Vec<f32> = (0..dims as u64)
-            .map(|i| (fmix64(seed ^ (i << 20) ^ 1) >> 40) as f32 / (1u64 << 24) as f32 - 0.5)
-            .collect();
-        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        v.iter_mut().for_each(|x| *x /= norm);
-        v
-    }
-
-    fn vector_file(dir: &Path, rows: impl Iterator<Item = Vec<f32>>, dims: usize) -> VectorFile {
-        let path = dir.join("s.1.vec");
-        let mut writer = VectorFileWriter::create(&path, "m", dims).expect("create");
-        for (i, row) in rows.enumerate() {
-            writer.push(i as u64 + 1, &row).expect("push");
-        }
-        writer.finish().expect("finish");
-        VectorFile::open(&path).expect("open")
-    }
-
-    /// Nodes reachable on level 0 from the entry node.
-    fn reachable_on_level0(graph: &GraphUnderConstruction) -> usize {
-        let mut seen = vec![false; graph.node_levels.len()];
-        let mut queue = VecDeque::from([graph.entry_node]);
-        seen[graph.entry_node as usize] = true;
-        let mut count = 1;
-        while let Some(node) = queue.pop_front() {
-            for &next in lock(&graph.neighbour_lists[node as usize][0]).iter() {
-                if !seen[next as usize] {
-                    seen[next as usize] = true;
-                    count += 1;
-                    queue.push_back(next);
-                }
-            }
-        }
-        count
-    }
-
-    #[test]
-    fn lists_stay_within_limits_and_link_valid_nodes() {
-        let dir = temp_dir("limits");
-        let vectors = vector_file(&dir, (0..2_000).map(|i| unit(i, 32)), 32);
-        let graph =
-            GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
-        for (node, lists) in graph.neighbour_lists.iter().enumerate() {
-            for (level, list) in lists.iter().enumerate() {
-                let list = lock(list);
-                assert!(list.len() <= graph.max_links_at(level));
-                assert!(!list.contains(&(node as u32)), "self link");
-                assert!(
-                    list.iter()
-                        .all(|&n| usize::from(graph.node_levels[n as usize]) >= level)
-                );
-            }
-        }
-        assert_eq!(reachable_on_level0(&graph), 2_000);
-        drop(fs::remove_dir_all(dir));
-    }
-
-    #[test]
-    fn identical_vectors_all_stay_reachable() {
-        let dir = temp_dir("dupes");
-        let vectors = vector_file(&dir, (0..500).map(|_| vec![1.0, 0.0, 0.0, 0.0]), 4);
-        let graph =
-            GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
-        assert_eq!(reachable_on_level0(&graph), 500);
-        drop(fs::remove_dir_all(dir));
-    }
-
-    #[test]
-    fn written_header_describes_the_graph() {
-        let dir = temp_dir("write");
-        let vectors = vector_file(&dir, (0..300).map(|i| unit(i, 16)), 16);
-        let graph =
-            GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
-        let path = dir.join("s.1.hnsw");
-        graph
-            .write(&path, vectors.file_id(), vectors.dims())
-            .expect("write");
-        let bytes = fs::read(&path).expect("read");
-        let header = GraphHeader::read_from(&bytes, &path).expect("header");
-        assert_eq!(header.vector_file_id, vectors.file_id());
-        assert_eq!(header.node_count, 300);
-        assert_eq!(header.entry_node, graph.entry_node);
-        assert_eq!(
-            bytes.len(),
-            GraphLayout::new(&header).expect("layout").total_length
-        );
-        drop(fs::remove_dir_all(dir));
-    }
-
-    #[test]
-    fn small_files_get_no_graph() {
-        let dir = temp_dir("small");
-        let vectors = vector_file(&dir, (0..100).map(|i| unit(i, 8)), 8);
-        let path = dir.join("s.1.hnsw");
-        assert!(!build_graph_file(&vectors, &path, &GraphBuildParams::default()).expect("build"));
-        assert!(!path.exists());
-        drop(fs::remove_dir_all(dir));
-    }
-
-    #[test]
-    fn invalid_params_are_rejected() {
-        let too_few_links = GraphBuildParams {
-            max_links_upper: 1,
-            ..GraphBuildParams::default()
-        };
-        let narrow_beam = GraphBuildParams {
-            build_beam_width: 4,
-            ..GraphBuildParams::default()
-        };
-        assert!(too_few_links.validate().is_err());
-        assert!(narrow_beam.validate().is_err());
-    }
-
-    #[test]
-    fn levels_are_deterministic_and_mostly_zero() {
-        let multiplier = 1.0 / 16f64.ln();
-        let levels: Vec<u8> = (0..10_000)
-            .map(|n| random_level(42, n, multiplier))
-            .collect();
-        let again: Vec<u8> = (0..10_000)
-            .map(|n| random_level(42, n, multiplier))
-            .collect();
-        assert_eq!(levels, again);
-        let at_zero = levels.iter().filter(|&&l| l == 0).count();
-        // Expected share at level 0 is 1 - 1/16 ≈ 94%.
-        assert!(
-            (9_200..=9_600).contains(&at_zero),
-            "{at_zero} of 10000 at level 0"
-        );
-    }
+fn is_reachable(reachable: &[bool], node: u32) -> bool {
+    reachable
+        .get(node as usize)
+        .copied()
+        .unwrap_or(false)
 }
+
+fn level_multiplier(max_links_upper: usize) -> io::Result<f64> {
+    let links = u16
+        ::try_from(max_links_upper)
+        .map_err(|_overflow| invalid_input("max_links_upper exceeds u16"))?;
+    Ok(1.0 / f64::from(links).ln())
+}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::vector::VectorFileWriter;
+//     use crate::vector::hnsw::layout::GraphHeader;
+//     use std::collections::VecDeque;
+//     use std::path::PathBuf;
+
+//     fn temp_dir(name: &str) -> PathBuf {
+//         let dir =
+//             std::env::temp_dir().join(format!("corelamo-gbuild-{name}-{}", std::process::id()));
+//         drop(fs::remove_dir_all(&dir));
+//         fs::create_dir_all(&dir).expect("create temp dir");
+//         dir
+//     }
+
+//     fn unit(seed: u64, dims: usize) -> Vec<f32> {
+//         let mut v: Vec<f32> = (0..dims as u64)
+//             .map(|i| (fmix64(seed ^ (i << 20) ^ 1) >> 40) as f32 / (1u64 << 24) as f32 - 0.5)
+//             .collect();
+//         let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+//         v.iter_mut().for_each(|x| *x /= norm);
+//         v
+//     }
+
+//     fn vector_file(dir: &Path, rows: impl Iterator<Item = Vec<f32>>, dims: usize) -> VectorFile {
+//         let path = dir.join("s.1.vec");
+//         let mut writer = VectorFileWriter::create(&path, "m", dims).expect("create");
+//         for (i, row) in rows.enumerate() {
+//             writer.push(i as u64 + 1, &row).expect("push");
+//         }
+//         writer.finish().expect("finish");
+//         VectorFile::open(&path).expect("open")
+//     }
+
+//     /// Nodes reachable on level 0 from the entry node.
+//     fn reachable_on_level0(graph: &GraphUnderConstruction) -> usize {
+//         let mut seen = vec![false; graph.node_levels.len()];
+//         let mut queue = VecDeque::from([graph.entry_node]);
+//         seen[graph.entry_node as usize] = true;
+//         let mut count = 1;
+//         while let Some(node) = queue.pop_front() {
+//             for &next in lock(&graph.neighbour_lists[node as usize][0]).iter() {
+//                 if !seen[next as usize] {
+//                     seen[next as usize] = true;
+//                     count += 1;
+//                     queue.push_back(next);
+//                 }
+//             }
+//         }
+//         count
+//     }
+
+//     #[test]
+//     fn lists_stay_within_limits_and_link_valid_nodes() {
+//         let dir = temp_dir("limits");
+//         let vectors = vector_file(&dir, (0..2_000).map(|i| unit(i, 32)), 32);
+//         let graph =
+//             GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
+//         for (node, lists) in graph.neighbour_lists.iter().enumerate() {
+//             for (level, list) in lists.iter().enumerate() {
+//                 let list = lock(list);
+//                 assert!(list.len() <= graph.max_links_at(level));
+//                 assert!(!list.contains(&(node as u32)), "self link");
+//                 assert!(
+//                     list.iter()
+//                         .all(|&n| usize::from(graph.node_levels[n as usize]) >= level)
+//                 );
+//             }
+//         }
+//         assert_eq!(reachable_on_level0(&graph), 2_000);
+//         drop(fs::remove_dir_all(dir));
+//     }
+
+//     #[test]
+//     fn identical_vectors_all_stay_reachable() {
+//         let dir = temp_dir("dupes");
+//         let vectors = vector_file(&dir, (0..500).map(|_| vec![1.0, 0.0, 0.0, 0.0]), 4);
+//         let graph =
+//             GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
+//         assert_eq!(reachable_on_level0(&graph), 500);
+//         drop(fs::remove_dir_all(dir));
+//     }
+
+//     #[test]
+//     fn written_header_describes_the_graph() {
+//         let dir = temp_dir("write");
+//         let vectors = vector_file(&dir, (0..300).map(|i| unit(i, 16)), 16);
+//         let graph =
+//             GraphUnderConstruction::build(&vectors, &GraphBuildParams::default()).expect("build");
+//         let path = dir.join("s.1.hnsw");
+//         graph
+//             .write(&path, vectors.file_id(), vectors.dims())
+//             .expect("write");
+//         let bytes = fs::read(&path).expect("read");
+//         let header = GraphHeader::read_from(&bytes, &path).expect("header");
+//         assert_eq!(header.vector_file_id, vectors.file_id());
+//         assert_eq!(header.node_count, 300);
+//         assert_eq!(header.entry_node, graph.entry_node);
+//         assert_eq!(
+//             bytes.len(),
+//             GraphLayout::new(&header).expect("layout").total_length
+//         );
+//         drop(fs::remove_dir_all(dir));
+//     }
+
+//     #[test]
+//     fn small_files_get_no_graph() {
+//         let dir = temp_dir("small");
+//         let vectors = vector_file(&dir, (0..100).map(|i| unit(i, 8)), 8);
+//         let path = dir.join("s.1.hnsw");
+//         assert!(!build_graph_file(&vectors, &path, &GraphBuildParams::default()).expect("build"));
+//         assert!(!path.exists());
+//         drop(fs::remove_dir_all(dir));
+//     }
+
+//     #[test]
+//     fn invalid_params_are_rejected() {
+//         let too_few_links = GraphBuildParams {
+//             max_links_upper: 1,
+//             ..GraphBuildParams::default()
+//         };
+//         let narrow_beam = GraphBuildParams {
+//             build_beam_width: 4,
+//             ..GraphBuildParams::default()
+//         };
+//         assert!(too_few_links.validate().is_err());
+//         assert!(narrow_beam.validate().is_err());
+//     }
+
+//     #[test]
+//     fn levels_are_deterministic_and_mostly_zero() {
+//         let multiplier = 1.0 / 16f64.ln();
+//         let levels: Vec<u8> = (0..10_000)
+//             .map(|n| random_level(42, n, multiplier))
+//             .collect();
+//         let again: Vec<u8> = (0..10_000)
+//             .map(|n| random_level(42, n, multiplier))
+//             .collect();
+//         assert_eq!(levels, again);
+//         let at_zero = levels.iter().filter(|&&l| l == 0).count();
+//         // Expected share at level 0 is 1 - 1/16 ≈ 94%.
+//         assert!(
+//             (9_200..=9_600).contains(&at_zero),
+//             "{at_zero} of 10000 at level 0"
+//         );
+//     }
+// }

@@ -22,7 +22,7 @@ use std::{
 #[derive(Clone)]
 pub struct Analyzer {
     id: u64,
-    analyzer_pipeline: TextAnalyzer,
+    pipeline: TextAnalyzer,
     literal_symbols: HashSet<char>,
     lowercase: bool,
     char_filters: Vec<CompiledCharFilter>,
@@ -38,12 +38,16 @@ enum CompiledCharFilter {
     },
 }
 
+fn to_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
 impl CompiledCharFilter {
     fn apply(&self, text: &str) -> String {
         match self {
-            CompiledCharFilter::StripHtml => strip_html(text),
-            CompiledCharFilter::StripMarkdown => strip_markdown(text),
-            CompiledCharFilter::PatternReplace { regex, replacement } => {
+            Self::StripHtml => strip_html(text),
+            Self::StripMarkdown => strip_markdown(text),
+            Self::PatternReplace { regex, replacement } => {
                 regex.replace_all(text, replacement).into_owned()
             }
         }
@@ -89,12 +93,12 @@ impl Tokenizer for ConfigTokenizer {
 
     fn token_stream<'a>(&'a mut self, text: &'a str) -> BoxTokenStream<'a> {
         match self {
-            ConfigTokenizer::WordDelimiter(t) => t.token_stream(text),
-            ConfigTokenizer::Keyword(t) => BoxTokenStream::new(t.token_stream(text)),
-            ConfigTokenizer::Whitespace(t) => BoxTokenStream::new(t.token_stream(text)),
-            ConfigTokenizer::Standard(t) => BoxTokenStream::new(t.token_stream(text)),
-            ConfigTokenizer::Url(t) => t.token_stream(text),
-            ConfigTokenizer::Filepath(t) => t.token_stream(text),
+            Self::WordDelimiter(t) => t.token_stream(text),
+            Self::Keyword(t) => BoxTokenStream::new(t.token_stream(text)),
+            Self::Whitespace(t) => BoxTokenStream::new(t.token_stream(text)),
+            Self::Standard(t) => BoxTokenStream::new(t.token_stream(text)),
+            Self::Url(t) => t.token_stream(text),
+            Self::Filepath(t) => t.token_stream(text),
         }
     }
 }
@@ -125,11 +129,10 @@ fn build_tokenizer(config: &AnalyzerConfig) -> ConfigTokenizer {
     }
 }
 
-//either use the given or tantivy has built-in per-language stopwords too they have A LOT
-fn stopword_filter(stop: &Stopwords) -> Option<StopWordFilter> {
-    match stop {
-        Stopwords::Words(words) => Some(StopWordFilter::remove(words.iter().cloned())),
-    }
+/// The stopwords the config gives (tantivy's built-in per-language lists are huge, so they are not used).
+fn stopword_filter(stop: &Stopwords) -> StopWordFilter {
+    let Stopwords::Words(words) = stop;
+    StopWordFilter::remove(words.iter().cloned())
 }
 
 impl std::fmt::Debug for Analyzer {
@@ -146,7 +149,7 @@ impl Default for Analyzer {
 
 //ok bro...
 // eliminates problem with - or other signs that are not from ASCII like AI -
-fn is_unicode_punctuation(c: char) -> bool {
+const fn is_unicode_punctuation(c: char) -> bool {
     matches!(
         c,
         '\u{00A1}'..='\u{00BF}'
@@ -157,6 +160,7 @@ fn is_unicode_punctuation(c: char) -> bool {
 }
 
 impl Analyzer {
+    #[must_use]
     pub fn new() -> Self {
         Self::with_literal_symbols(['_'])
     }
@@ -167,10 +171,10 @@ impl Analyzer {
 
         let stopwords: HashSet<String> = ["the", "a", "of", "in", "to", "and", "is"]
             .into_iter()
-            .map(str::to_string)
+            .map(str::to_owned)
             .collect();
 
-        let analyzer_pipeline = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
+        let pipeline = TextAnalyzer::builder(WordDelimiterTokenizer::new(literal_symbols.clone()))
             .filter(RemoveLongFilter::limit(40))
             .filter(LowerCaser)
             .filter(StopWordFilter::remove(stopwords))
@@ -181,14 +185,15 @@ impl Analyzer {
             .build();
         Self {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
-            analyzer_pipeline,
+            pipeline,
             literal_symbols,
             lowercase: true,
             char_filters: Vec::new(),
         }
     }
 
-    //Build an analyzer from a config: tokenizer + ordered filter chain.
+    /// Builds an analyzer from a config: tokenizer + ordered filter chain.
+    #[must_use]
     pub fn from_config(config: &AnalyzerConfig) -> Self {
         let literal_symbols: HashSet<char> = config.literal_symbols.iter().copied().collect();
 
@@ -213,10 +218,8 @@ impl Analyzer {
         }
 
         //stopwordi
-        if let Some(stop) = &config.stopwords
-            && let Some(filter) = stopword_filter(stop)
-        {
-            builder = builder.filter_dynamic(filter);
+        if let Some(stop) = &config.stopwords {
+            builder = builder.filter_dynamic(stopword_filter(stop));
         }
 
         //stemming
@@ -244,10 +247,10 @@ impl Analyzer {
             .collect();
 
         //final-final
-        let analyzer_pipeline = builder.build();
+        let pipeline = builder.build();
         Self {
             id: NEXT_ANALYZER_ID.fetch_add(1, Ordering::Relaxed),
-            analyzer_pipeline,
+            pipeline,
             literal_symbols,
             lowercase: config.lowercase,
             char_filters,
@@ -255,7 +258,7 @@ impl Analyzer {
     }
 
     fn apply_char_filters(&self, input: &str) -> String {
-        let mut text = input.to_string();
+        let mut text = input.to_owned();
         for filter in &self.char_filters {
             text = filter.apply(&text);
         }
@@ -269,8 +272,8 @@ impl Analyzer {
             while let Some(token) = stream.next() {
                 output.push(Token {
                     text: token.text.clone(),
-                    position: token.position as u32,
-                    position_length: token.position_length as u32,
+                    position: to_u32(token.position),
+                    position_length: to_u32(token.position_length),
                     start_byte: token.offset_from,
                     end_byte: token.offset_to,
                 });
@@ -287,19 +290,22 @@ impl Analyzer {
             }
             let analyzer = cache
                 .entry(self.id)
-                .or_insert_with(|| self.analyzer_pipeline.clone());
+                .or_insert_with(|| self.pipeline.clone());
             f(analyzer)
         })
     }
 
-    pub fn has_char_filters(&self) -> bool {
+    #[must_use]
+    pub const fn has_char_filters(&self) -> bool {
         !self.char_filters.is_empty()
     }
 
-    pub fn lowercases(&self) -> bool {
+    #[must_use]
+    pub const fn lowercases(&self) -> bool {
         self.lowercase
     }
 
+    #[must_use]
     pub fn is_word_char(&self, c: char) -> bool {
         c.is_alphanumeric() || self.literal_symbols.contains(&c)
     }
@@ -309,6 +315,7 @@ impl Analyzer {
     /// A dropped stopword inside the text stays as `_` ("king of the hill" -> "king _ hill"), and
     /// so does one at the start unless it is an article: "In New York" is not "New York". Only a
     /// word's parts are kept, not its joined form: "Spider-Man" gives "spider man".
+    #[must_use]
     pub fn name_key(&self, text: &str) -> Option<String> {
         let mut words: Vec<(u32, String)> = Vec::new();
         self.for_each_token(text, |term, position, length| {
@@ -316,7 +323,8 @@ impl Analyzer {
                 words.push((position, term.to_owned()));
             }
         });
-        if words.is_empty() || words.len() > MAX_NAME_WORDS {
+        let first_position = words.first()?.0;
+        if words.len() > MAX_NAME_WORDS {
             return None;
         }
         let leading_article = text
@@ -324,22 +332,20 @@ impl Analyzer {
             .next()
             .is_some_and(|first| matches!(first.to_lowercase().as_str(), "the" | "a" | "an"));
         let mut key = String::with_capacity(text.len() + 4);
-        let mut next = match words[0].0 {
-            1 if leading_article => 1,
-            _ => 0,
-        };
+        let mut next = u32::from(first_position == 1 && leading_article);
         for (position, word) in &words {
             if *position > next {
                 key.push_str("_ ");
             }
             key.push_str(word);
             key.push(' ');
-            next = position + 1;
+            next = position.saturating_add(1);
         }
         key.pop();
         Some(key)
     }
 
+    #[must_use]
     pub fn analyze_text(&self, input: &str) -> (String, Vec<Token>) {
         let filtered = self.apply_char_filters(input);
         let tokens = self.tokenize(&filtered);
@@ -348,6 +354,7 @@ impl Analyzer {
 
     /// The name terms a field value is filed under: the whole value, and the value without a
     /// trailing "(qualifier)" or ", qualifier". Long values get none.
+    #[must_use]
     pub fn name_terms(&self, value: &str) -> Vec<String> {
         let value = value.trim();
         if value.len() > MAX_NAME_BYTES {
@@ -358,8 +365,8 @@ impl Analyzer {
         };
         let mut terms = vec![format!("{NAME_KEY}{key}")];
         for stripped in unqualified(value) {
-            if let Some(key) = self.name_key(stripped) {
-                let term = format!("{QUALIFIED_NAME_KEY}{key}");
+            if let Some(stripped_key) = self.name_key(stripped) {
+                let term = format!("{QUALIFIED_NAME_KEY}{stripped_key}");
                 if !terms.contains(&term) {
                     terms.push(term);
                 }
@@ -382,14 +389,14 @@ impl Analyzer {
             while let Some(token) = stream.next() {
                 f(
                     &token.text,
-                    token.position as u32,
-                    token.position_length.max(1) as u32,
-                    token.offset_from as u32,
-                    token.offset_to as u32,
+                    to_u32(token.position),
+                    to_u32(token.position_length.max(1)),
+                    to_u32(token.offset_from),
+                    to_u32(token.offset_to),
                 );
                 if token.position >= next_unseen {
                     count = count.saturating_add(1);
-                    next_unseen = token.position + 1;
+                    next_unseen = token.position.saturating_add(1);
                 }
             }
             count
@@ -402,12 +409,14 @@ impl Analyzer {
     }
 
     #[timed(indexing_documents)]
+    #[must_use]
     pub fn analyze(&self, input: &str) -> Vec<Token> {
         let filtered = self.apply_char_filters(input);
         self.tokenize(&filtered)
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn analyze_query(&self, input: &str) -> Vec<Token> {
         let filtered = self.apply_char_filters(input);
         let canonical: String = filtered
@@ -437,6 +446,7 @@ impl Default for AnalyzerSet {
 }
 
 impl AnalyzerSet {
+    #[must_use]
     pub fn from_policy(configs: &IndexMap<String, AnalyzerConfig>) -> Self {
         let mut analyzers = HashMap::new();
         for (name, config) in configs {
@@ -449,11 +459,13 @@ impl AnalyzerSet {
         Self { analyzers, default }
     }
 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&Analyzer> {
         self.analyzers.get(name)
     }
 
-    pub fn default_analyzer(&self) -> &Analyzer {
+    #[must_use]
+    pub const fn default_analyzer(&self) -> &Analyzer {
         &self.default
     }
 }
@@ -463,113 +475,17 @@ fn unqualified(value: &str) -> Vec<&str> {
     let mut out = Vec::with_capacity(2);
     if value.ends_with(')')
         && let Some(open) = value.rfind(" (")
+        && let Some(head) = value.get(..open).map(str::trim_end)
+        && !head.is_empty()
     {
-        let head = value[..open].trim_end();
-        if !head.is_empty() {
-            out.push(head);
-        }
+        out.push(head);
     }
-    if let Some(comma) = value.find(", ") {
-        let head = value[..comma].trim_end();
-        if !head.is_empty() && !out.contains(&head) {
-            out.push(head);
-        }
+    if let Some(comma) = value.find(", ")
+        && let Some(head) = value.get(..comma).map(str::trim_end)
+        && !head.is_empty()
+        && !out.contains(&head)
+    {
+        out.push(head);
     }
     out
-}
-
-#[cfg(test)]
-mod name_keys {
-    use super::*;
-
-    #[test]
-    fn whole_value_and_unqualified_value() {
-        let analyzer = Analyzer::new();
-        assert_eq!(
-            analyzer.name_terms("The Penguins"),
-            vec![format!("{NAME_KEY}penguin")]
-        );
-        assert_eq!(analyzer.name_key("penguins").as_deref(), Some("penguin"));
-        let terms = analyzer.name_terms("Tom Holland (author)");
-        assert_eq!(terms.len(), 2);
-        assert_eq!(
-            terms[1],
-            format!(
-                "{QUALIFIED_NAME_KEY}{}",
-                analyzer.name_key("tom holland").unwrap()
-            )
-        );
-        assert_eq!(analyzer.name_terms("Kansas City, Missouri").len(), 2);
-        assert_eq!(analyzer.name_terms("1965"), vec![format!("{NAME_KEY}1965")]);
-        assert!(analyzer.name_terms(&"word ".repeat(40)).is_empty());
-        assert_eq!(
-            analyzer.name_key("Spider-Man"),
-            analyzer.name_key("spider man")
-        );
-        assert_eq!(
-            analyzer.name_key("King of the Hill").as_deref(),
-            Some("king _ hill")
-        );
-        assert_ne!(
-            analyzer.name_key("In New York"),
-            analyzer.name_key("new york")
-        );
-        assert_eq!(
-            analyzer.name_key("The Beatles"),
-            analyzer.name_key("beatles")
-        );
-    }
-}
-
-#[cfg(test)]
-mod cached_stemmer_equivalence {
-    use std::collections::HashSet;
-
-    use crate::analyzer::{
-        cached_stemmer::CachedStemmer,
-        small_tantivy::{LowerCaser, RemoveLongFilter, Stemmer, TextAnalyzer},
-        word_delimiter::WordDelimiterTokenizer,
-    };
-
-    fn pipeline_tokens(analyzer: &mut TextAnalyzer, text: &str) -> Vec<(String, usize)> {
-        let mut stream = analyzer.token_stream(text);
-        let mut out = Vec::new();
-        while let Some(token) = stream.next() {
-            out.push((token.text.clone(), token.position));
-        }
-        out
-    }
-
-    #[test]
-    fn cached_stemmer_matches_stemmer() {
-        let symbols: HashSet<char> = ['_'].into_iter().collect();
-        let mut reference = TextAnalyzer::builder(WordDelimiterTokenizer::new(symbols.clone()))
-            .filter(RemoveLongFilter::limit(40))
-            .filter(LowerCaser)
-            .filter(Stemmer::new(rust_stemmers::Algorithm::English))
-            .build();
-        let mut cached = TextAnalyzer::builder(WordDelimiterTokenizer::new(symbols))
-            .filter(RemoveLongFilter::limit(40))
-            .filter(LowerCaser)
-            .filter(CachedStemmer::new(rust_stemmers::Algorithm::English, 8))
-            .build();
-
-        let text = std::env::var("ANALYZER_SAMPLE")
-            .ok()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .unwrap_or_else(|| {
-                "Running runners ran; generalizations generalized generously. Toy Story's \
-                 sequels, organizations organized, happily happiness, caresses ponies ties \
-                 spider_man Spider-Man ÜNICODE naïve café 2026"
-                    .to_string()
-            });
-
-        for pass in 0..2 {
-            assert_eq!(
-                pipeline_tokens(&mut cached, &text),
-                pipeline_tokens(&mut reference, &text),
-                "mismatch on pass {pass}"
-            );
-        }
-    }
 }

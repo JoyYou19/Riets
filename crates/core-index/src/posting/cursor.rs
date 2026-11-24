@@ -1,15 +1,15 @@
 use std::io;
 
 use crate::{
-    disk::{block_cursor::BlockCursor, format::SkipEntry},
-    posting::{DeleteSet, Posting, PostingList},
-    types::{DocId, position_start},
+    disk::{ block_cursor::BlockCursor, format::SkipEntry },
+    posting::{ DeleteSet, Posting, PostingList },
+    types::{ DocId, position_start },
 };
 #[allow(
     variant_size_differences,
     reason = "32 bytes in total; boxing `Slice` would add an allocation per term on the search hot path"
 )]
-pub enum TermCursor<'a>{
+pub enum TermCursor<'a> {
     Empty,
     //a list in memory
     Slice(PostingCursor<'a>),
@@ -18,8 +18,8 @@ pub enum TermCursor<'a>{
     /// Several sources merged by doc id, with deleted documents skipped.
     Union(Box<UnionCursor<'a>>),
 }
-impl  TermCursor<'_> {
-    pub fn is_exhausted(&self) -> bool{
+impl TermCursor<'_> {
+    pub fn is_exhausted(&self) -> bool {
         match self {
             Self::Slice(cursor) => cursor.is_exhausted(),
             Self::Block(cursor) => cursor.is_exhausted(),
@@ -38,15 +38,15 @@ impl  TermCursor<'_> {
 
     pub fn term_freq(&mut self) -> u32 {
         match self {
-            Self::Slice(cursor) => cursor.current().map_or(0, |posting| {
-                u32::try_from(posting.positions.len()).unwrap_or(u32::MAX)
-            }),
+            Self::Slice(cursor) =>
+                cursor
+                    .current()
+                    .map_or(0, |posting| {
+                        u32::try_from(posting.positions.len()).unwrap_or(u32::MAX)
+                    }),
             Self::Block(cursor) => cursor.term_freq(),
-            Self::Union(cursor) => cursor
-                .on_current_mut()
-                .map(TermCursor::term_freq)
-                .max()
-                .unwrap_or(0),
+            Self::Union(cursor) =>
+                cursor.on_current_mut().map(TermCursor::term_freq).max().unwrap_or(0),
             Self::Empty => 0,
         }
     }
@@ -55,11 +55,8 @@ impl  TermCursor<'_> {
         match self {
             Self::Slice(cursor) => cursor.current().map_or(0, |posting| posting.weight),
             Self::Block(cursor) => cursor.weight(),
-            Self::Union(cursor) => cursor
-                .on_current_mut()
-                .map(TermCursor::weight)
-                .max()
-                .unwrap_or(0),
+            Self::Union(cursor) =>
+                cursor.on_current_mut().map(TermCursor::weight).max().unwrap_or(0),
             Self::Empty => 0,
         }
     }
@@ -91,13 +88,12 @@ impl  TermCursor<'_> {
                 Ok(())
             }
             Self::Block(cursor) => cursor.positions_into(out),
-            Self::Union(cursor) => match cursor.on_current_mut().next() {
-                Some(child) => child.positions_into(out),
-                None => {
-                    out.clear();
-                    Ok(())
-                }
-            },
+            Self::Union(cursor) => if let Some(child) = cursor.on_current_mut().next() {
+                child.positions_into(out)
+            } else {
+                out.clear();
+                Ok(())
+            }
             Self::Empty => {
                 out.clear();
                 Ok(())
@@ -122,13 +118,12 @@ impl  TermCursor<'_> {
                 Ok(())
             }
             Self::Block(cursor) => cursor.offsets_into(out),
-            Self::Union(cursor) => match cursor.on_current_mut().next() {
-                Some(child) => child.offsets_into(out),
-                None => {
-                    out.clear();
-                    Ok(())
-                }
-            },
+            Self::Union(cursor) => if let Some(child) = cursor.on_current_mut().next() {
+                child.offsets_into(out)
+            } else {
+                out.clear();
+                Ok(())
+            }
             Self::Empty => {
                 out.clear();
                 Ok(())
@@ -171,9 +166,7 @@ impl<'a> UnionCursor<'a> {
 
     fn on_current_mut(&mut self) -> impl Iterator<Item = &mut TermCursor<'a>> {
         let current = self.current;
-        self.children
-            .iter_mut()
-            .filter(move |child| current.is_some() && child.doc_id() == current)
+        self.children.iter_mut().filter(move |child| current.is_some() && child.doc_id() == current)
     }
     /// Sets `current` to the smallest live doc id among the children.
     fn settle(&mut self) {
@@ -181,7 +174,9 @@ impl<'a> UnionCursor<'a> {
             self.current = self.children.iter().filter_map(TermCursor::doc_id).min();
             match self.current {
                 Some(doc) if self.deleted.contains(doc) => self.step_past(doc),
-                _ => return,
+                _ => {
+                    return;
+                }
             }
         }
     }
@@ -227,7 +222,7 @@ impl<'a> PostingCursor<'a> {
         }
     }
 
-    pub fn next(&mut self) {
+    pub const fn next(&mut self) {
         if !self.is_exhausted() {
             self.index += 1;
             self.position_index = 0;
@@ -235,7 +230,7 @@ impl<'a> PostingCursor<'a> {
     }
 
     // Returns whether the cursor has moved past the final posting
-    pub fn is_exhausted(&self) -> bool {
+    pub const fn is_exhausted(&self) -> bool {
         self.index >= self.postings.len()
     }
 
@@ -251,52 +246,35 @@ impl<'a> PostingCursor<'a> {
     }
 
     pub fn advance_to(&mut self, target: DocId) {
-        if self.is_exhausted() {
+        let Some(rest) = self.postings.get(self.index..) else {
+            return;
+        };
+        if rest.first().is_none_or(|posting| posting.doc_id >= target) {
             return;
         }
 
-        if self.postings[self.index].doc_id >= target {
-            return;
-        }
-
-        let start = self.index;
+        // grow the search range exponentially until we pass target or reach the end
         let mut bound = 1usize;
-
-        // grow the search range exponentially until we either pass target
-        // or reach the end of the postings
-        while start + bound < self.postings.len() && self.postings[start + bound].doc_id < target {
+        while rest.get(bound).is_some_and(|posting| posting.doc_id < target) {
             bound = bound.saturating_mul(2);
         }
 
-        // We now know tha tth efirst posting >= target if it exists it lies somewhere here
-        let mut left = start + bound / 2;
-        let mut right = (start + bound + 1).min(self.postings.len());
-
-        // find the first posting with doc_id >= target
-        while left < right {
-            let mid = left + (right - left) / 2;
-
-            if self.postings[mid].doc_id < target {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-
-        self.index = left;
+        // the first posting >= target lies in rest[bound / 2 ..= bound]
+        let window = rest.get(bound / 2..rest.len().min(bound + 1)).unwrap_or_default();
+        self.index += bound / 2 + window.partition_point(|posting| posting.doc_id < target);
         self.position_index = 0;
     }
     pub fn advance_to_position(&mut self, target: u32) -> bool {
         let Some(posting) = self.postings.get(self.index) else {
             return false;
         };
-        let positions = &posting.positions;
-        while self.position_index < positions.len()
-            && position_start(positions[self.position_index]) < target
-        {
+        while let Some(&position) = posting.positions.get(self.position_index) {
+            if position_start(position) >= target {
+                return true;
+            }
             self.position_index += 1;
         }
-        self.position_index < positions.len()
+        false
     }
 
     /// Returns the current position without advancing.

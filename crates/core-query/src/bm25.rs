@@ -29,7 +29,10 @@ fn idf(doc_frequency: u32, doc_count: u64) -> f64 {
     ((n - df + 0.5) / (df + 0.5)).ln_1p()
 }
 
-/// BM25's idf: how rare a term is among `doc_count` documents.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "idf is only used at f32 precision"
+)]
 pub(crate) fn bm25_idf(doc_frequency: u32, doc_count: u64) -> f32 {
     idf(doc_frequency, doc_count) as f32
 }
@@ -58,6 +61,11 @@ fn bm25_score(
 
 // I just put this function here so we automatically multiply, I can already see ways of me messing
 // this up in the future
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "float to int `as` saturates, and the score is never negative"
+)]
 pub(crate) fn bm25_score_scaled(
     tf: u32,
     weight: u16,
@@ -72,6 +80,11 @@ pub(crate) fn bm25_score_scaled(
 // A safe upper bound on the BM25 score this term can contribute to any document: the highest
 // weight, the term's idf, and the largest the tf part can get (k1 + 1). Uses the same `idf` as
 // the real score, so it can never fall below one.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "float to int `as` saturates, and the bound is never negative"
+)]
 pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
     if doc_count == 0 || doc_frequency == 0 || max_weight == 0 {
         return 0;
@@ -125,8 +138,8 @@ pub(crate) fn fuzzy_decay(edits: u8) -> f32 {
 }
 
 //Scales a score by a weight in thousandths.
-pub(crate) fn weighted(score: u64, weight: u16) -> u64 {
-    score.saturating_mul(u64::from(weight)) / 1000
+pub(crate) const fn weighted(score: u64, weight: u16) -> u64 {
+    score.saturating_mul(weight as u64) / 1000
 }
 
 //The best value of each field, added up over the fields (one field's values come together).

@@ -51,6 +51,10 @@ impl DailyLog {
     }
 }
 impl Write for DailyLog {
+    #[allow(
+        clippy::print_stderr,
+        reason = "the log file itself failed, stderr is the only place left to report it"
+    )]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.at_line_start {
             let today = Local::now().date_naive();
@@ -72,13 +76,15 @@ impl Write for DailyLog {
                         .map(|f| (part, 0, f))
                 };
                 match opened {
-                    Ok((part, written, file)) => {
+                    Ok((opened_part, opened_written, file)) => {
                         drop(self.file.flush());
                         self.file = file;
-                        self.part = part;
-                        self.written = written;
+                        self.part = opened_part;
+                        self.written = opened_written;
                     }
-                    Err(e) => eprintln!("cannot open the next log file: {e}; still writing to the previous one"),
+                    Err(e) => eprintln!(
+                        "cannot open the next log file: {e}; still writing to the previous one"
+                    ),
                 }
                 if date != self.date {
                     prune_old_logs(&self.dir, &self.name, date);
@@ -87,9 +93,11 @@ impl Write for DailyLog {
             }
         }
         let n = self.file.write(buf)?;
-        self.written += n as u64;
+        self.written = self
+            .written
+            .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         if n > 0 {
-            self.at_line_start = buf[..n].ends_with(b"\n");
+            self.at_line_start = buf.get(..n).is_some_and(|done| done.ends_with(b"\n"));
         }
         Ok(n)
     }
@@ -101,25 +109,34 @@ impl Write for DailyLog {
 fn timestamp(w: &mut dyn Write) -> io::Result<()> {
     write!(w, "{}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f%:z"))
 }
+#[allow(
+    clippy::print_stderr,
+    reason = "the log file failed to open, stderr is the only place left to report it"
+)]
 pub fn shard_logger(root: &Path, name: &str) -> Logger {
     match DailyLog::new(root.join("logs"), name) {
         Ok(file) => {
-            let drain = slog_term::CompactFormat
-                ::new(slog_term::PlainDecorator::new(file))
+            let drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(file))
                 .use_custom_timestamp(timestamp)
                 .build();
             Logger::root(std::sync::Mutex::new(drain).ignore_res(), o!())
         }
         Err(e) => {
-            eprintln!("cannot open log file in {}: {e}; logging to stderr", root.display());
-            let drain = slog_term::CompactFormat
-                ::new(slog_term::PlainDecorator::new(io::stderr()))
+            eprintln!("cannot open the log file for shard {name}: {e}; logging to stderr");
+            let drain = slog_term::CompactFormat::new(slog_term::PlainDecorator::new(io::stderr()))
                 .use_custom_timestamp(timestamp)
                 .build();
-            Logger::root(std::sync::Mutex::new(drain).ignore_res(), o!("shard" => name.to_owned()))
+            Logger::root(
+                std::sync::Mutex::new(drain).ignore_res(),
+                o!("shard" => name.to_owned()),
+            )
         }
     }
 }
+#[allow(
+    clippy::print_stderr,
+    reason = "the log file failed to open, stderr is the only place left to report it"
+)]
 pub fn program_logger(root: &Path) -> (Logger, slog_async::AsyncGuard) {
     let term_drain = slog_term::CompactFormat
         ::new(slog_term::TermDecorator::new().build())
@@ -160,7 +177,9 @@ fn prune_old_logs(dir: &Path, name: &str, today: NaiveDate) {
         let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else { continue };
         let Some(rest) = file_name.strip_prefix(&prefix) else { continue };
-        if !file_name.ends_with(".log") {
+        if !Path::new(file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("log")) {
             continue;
         }
         let day = rest.get(..10).and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());

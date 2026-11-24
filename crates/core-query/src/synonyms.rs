@@ -32,7 +32,8 @@ pub fn lookup_key(analyzer: &Analyzer, token: &str) -> String {
     analyzer
         .analyze(token)
         .into_iter()
-        .next().map_or_else(|| token.to_lowercase(), |token| token.text)
+        .next()
+        .map_or_else(|| token.to_lowercase(), |token| token.text)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,10 +125,10 @@ impl Variant {
 
     /// A short form: one word written with a capital or a digit (`CaP`, `WW2`, `~NaCl`).
     fn is_short_form(&self) -> bool {
-        self.tokens.len() == 1
-            && self.tokens[0]
-                .chars()
-                .any(|c| c.is_uppercase() || c.is_ascii_digit())
+        matches!(
+            self.tokens.as_slice(),
+            [token] if token.chars().any(|c| c.is_uppercase() || c.is_ascii_digit())
+        )
     }
 
     fn key(&self, analyzer: &Analyzer) -> Vec<String> {
@@ -181,7 +182,7 @@ impl QueryNode {
                     .enumerate()
                     .map(|(index, text)| PhraseTerm {
                         text,
-                        offset: index as u32,
+                        offset: u32::try_from(index).unwrap_or(u32::MAX),
                     })
                     .collect();
                 Self::Phrase(phrase_terms)
@@ -296,7 +297,7 @@ fn to_roman(mut value: u16) -> Option<String> {
     for &(unit, symbol) in &ROMAN_TABLE {
         while value >= unit {
             out.push_str(symbol);
-            value -= unit;
+            value = value.saturating_sub(unit);
         }
     }
     Some(out)
@@ -324,7 +325,7 @@ fn parse_roman(surface: &str) -> Option<u16> {
         if value < largest_seen {
             total = total.checked_sub(value)?;
         } else {
-            total += value;
+            total = total.saturating_add(value);
             largest_seen = value;
         }
     }
@@ -380,7 +381,17 @@ pub fn parse_variant(spec: &str) -> Result<Variant, DictionaryError> {
         None => Variant::new(spec),
     }
 }
-
+fn child_of(nodes: &mut Vec<TrieNode>, node: usize, key: String) -> usize {
+    if let Some(&next) = nodes.get(node).and_then(|n| n.children.get(&key)) {
+        return next;
+    }
+    let id = nodes.len();
+    nodes.push(TrieNode::default());
+    if let Some(parent) = nodes.get_mut(node) {
+        parent.children.insert(key, id);
+    }
+    id
+}
 impl DictionaryBuilder {
     pub fn roman(&mut self, config: RomanConfig) -> &mut Self {
         self.roman = config;
@@ -417,26 +428,19 @@ impl DictionaryBuilder {
     pub fn build(&self, analyzer: &Analyzer) -> SynonymDictionary {
         let mut nodes = vec![TrieNode::default()];
         for (group_index, group) in self.groups.iter().enumerate() {
-            let findable = if group.one_way {
-                &group.variants[..1]
-            } else {
-                &group.variants[..]
-            };
-            for (variant_index, variant) in findable.iter().enumerate() {
+            // a one-way entry is found by its first form only
+            let findable = if group.one_way { 1 } else { usize::MAX };
+            for (variant_index, variant) in group.variants.iter().enumerate().take(findable) {
                 let mut node = 0;
                 for key in variant.key(analyzer) {
-                    let existing = nodes[node].children.get(&key).copied();
-                    node = if let Some(next) = existing { next } else {
-                        let id = nodes.len();
-                        nodes.push(TrieNode::default());
-                        nodes[node].children.insert(key, id);
-                        id
-                    };
+                    node = child_of(&mut nodes, node, key);
                 }
-                nodes[node].terminals.push(VariantRef {
-                    group: group_index,
-                    variant: variant_index,
-                });
+                if let Some(end) = nodes.get_mut(node) {
+                    end.terminals.push(VariantRef {
+                        group: group_index,
+                        variant: variant_index,
+                    });
+                }
             }
         }
         SynonymDictionary {
@@ -464,6 +468,13 @@ impl SynonymDictionary {
     /// Longest match starting at the first word, whose length satisfies `accept_len` (e.g. "ends
     /// on a word boundary of the original query"). `surface` are the words as typed and `keys`
     /// their `lookup_key`s.
+    fn variant(&self, r: VariantRef) -> Option<&Variant> {
+        self.groups.get(r.group)?.variants.get(r.variant)
+    }
+
+    /// Longest match starting at the first word, whose length satisfies `accept_len` (e.g. "ends
+    /// on a word boundary of the original query"). `surface` are the words as typed and `keys`
+    /// their `lookup_key`s.
     pub fn match_at(
         &self,
         surface: &[&str],
@@ -473,19 +484,25 @@ impl SynonymDictionary {
         let mut node = 0;
         let mut best: Option<(usize, Vec<VariantRef>)> = None;
         for (depth, key) in keys.iter().take(MAX_PHRASE_TOKENS).enumerate() {
-            match self.nodes[node].children.get(key) {
-                Some(&next) => node = next,
-                None => break,
-            }
-            let len = depth + 1;
+            let Some(&next) = self.nodes.get(node).and_then(|n| n.children.get(key)) else {
+                break;
+            };
+            node = next;
+            let len = depth.saturating_add(1);
             if !accept_len(len) {
                 continue;
             }
-            let matched: Vec<VariantRef> = self.nodes[node]
-                .terminals
+            let Some(span) = surface.get(..len) else {
+                break;
+            };
+            let matched: Vec<VariantRef> = self
+                .nodes
+                .get(node)
+                .map(|n| n.terminals.as_slice())
+                .unwrap_or_default()
                 .iter()
                 .copied()
-                .filter(|r| self.groups[r.group].variants[r.variant].matches(&surface[..len]))
+                .filter(|&r| self.variant(r).is_some_and(|v| v.matches(span)))
                 .collect();
             if !matched.is_empty() {
                 best = Some((len, matched));
@@ -493,28 +510,33 @@ impl SynonymDictionary {
         }
 
         let (len, matched) = best?;
-        let typed_exact = matched.iter().find_map(|r| {
-            let variant = &self.groups[r.group].variants[r.variant];
+        let typed_exact = matched.iter().find_map(|&r| {
+            let variant = self.variant(r)?;
             (variant.case == CaseMode::Sensitive).then(|| variant.exact.clone())
         });
         let typed_short_form = matched
             .iter()
-            .any(|r| self.groups[r.group].variants[r.variant].is_short_form());
+            .any(|&r| self.variant(r).is_some_and(Variant::is_short_form));
         let mut groups: Vec<usize> = matched.iter().map(|r| r.group).collect();
         groups.sort_unstable();
         groups.dedup();
 
         let mut alternatives: Vec<Alternative> = Vec::new();
         for &group in &groups {
-            for variant in &self.groups[group].variants {
+            let Some(entry) = self.groups.get(group) else {
+                continue;
+            };
+            for variant in &entry.variants {
                 let node = variant.to_node();
                 let numeral = matches!(&node, QueryNode::Term(term) if is_number(term));
                 push_unique(&mut alternatives, Alternative { node, numeral });
             }
         }
         //an entry for a number ("eleven | 11") keeps its Roman form too
-        if len == 1 {
-            for alternative in self.expand_number(surface[0]).unwrap_or_default() {
+        if len == 1
+            && let Some(first) = surface.first()
+        {
+            for alternative in self.expand_number(first).unwrap_or_default() {
                 push_unique(&mut alternatives, alternative);
             }
         }
@@ -733,113 +755,181 @@ fn expand_children(
 
 /// Expands consecutive sibling words, in query order. `wrap` is the parent combinator, used to
 /// rebuild the typed words of a multi-word match as one form.
+/// The words of one run cut into the alphanumeric tokens the dictionary is looked up by.
+struct RunTokens<'a> {
+    surface: Vec<&'a str>,
+    keys: Vec<String>,
+    // the word each token came from
+    owner: Vec<usize>,
+    // word_start[i]..word_start[i + 1] are the tokens of word i
+    word_start: Vec<usize>,
+    // true at every token index where a word starts or the run ends
+    boundary: Vec<bool>,
+}
+
+impl<'a> RunTokens<'a> {
+    fn new(words: &'a [String], analyzer: &Analyzer) -> Self {
+        let mut surface: Vec<&str> = Vec::new();
+        let mut owner: Vec<usize> = Vec::new();
+        let mut word_start: Vec<usize> = Vec::with_capacity(words.len().saturating_add(1));
+        for (index, word) in words.iter().enumerate() {
+            word_start.push(surface.len());
+            for token in tokenize(word) {
+                surface.push(token);
+                owner.push(index);
+            }
+        }
+        word_start.push(surface.len());
+        let keys: Vec<String> = surface
+            .iter()
+            .map(|token| lookup_key(analyzer, token))
+            .collect();
+
+        let mut boundary = vec![false; surface.len().saturating_add(1)];
+        for &start in &word_start {
+            if let Some(flag) = boundary.get_mut(start) {
+                *flag = true;
+            }
+        }
+        Self {
+            surface,
+            keys,
+            owner,
+            word_start,
+            boundary,
+        }
+    }
+
+    /// The token range `start..end` of word `index`.
+    fn tokens_of(&self, index: usize) -> Option<(usize, usize)> {
+        let start = *self.word_start.get(index)?;
+        let end = *self.word_start.get(index.checked_add(1)?)?;
+        Some((start, end))
+    }
+}
+
+/// Expands consecutive sibling words, in query order. `wrap` is the parent combinator, used to
+/// rebuild the typed words of a multi-word match as one form.
 fn expand_run(
     words: Vec<String>,
     dictionary: &Synonyms,
     analyzer: &Analyzer,
     wrap: Combinator,
 ) -> Vec<Query> {
-    let mut surface: Vec<&str> = Vec::new();
-    let mut owner: Vec<usize> = Vec::new();
-    let mut word_start: Vec<usize> = Vec::with_capacity(words.len() + 1);
-    for (index, word) in words.iter().enumerate() {
-        word_start.push(surface.len());
-        for token in tokenize(word) {
-            surface.push(token);
-            owner.push(index);
-        }
-    }
-    word_start.push(surface.len());
-    let keys: Vec<String> = surface
-        .iter()
-        .map(|token| lookup_key(analyzer, token))
-        .collect();
-
-    let mut boundary = vec![false; surface.len() + 1];
-    for &start in &word_start {
-        boundary[start] = true;
-    }
-
+    let tokens = RunTokens::new(&words, analyzer);
     let mut out = Vec::with_capacity(words.len());
     let mut index = 0;
-    while index < words.len() {
-        let start = word_start[index];
-        let end = word_start[index + 1];
+    while let Some(word) = words.get(index) {
+        let Some((start, end)) = tokens.tokens_of(index) else {
+            break;
+        };
         if start == end {
             //pure punctuation: left to the analyzer exactly as before
-            out.push(Query::Term(words[index].clone()));
+            out.push(Query::Term(word.clone()));
             index += 1;
             continue;
         }
 
-        if let Some(found) = dictionary.match_at(&surface[start..], &keys[start..], |len| {
-            boundary[start + len]
-        }) {
-            let last = owner[start + found.len - 1];
-            let covered = &words[index..=last];
-            let several_words = covered.len() > 1 || found.len > 1;
-            //the typed words stay exactly what they are without the dictionary, so every document
-            //they find is still found and scores at least as much
-            let typed = original_form(covered, wrap);
-            let typed_words: Vec<String> = surface[start..start + found.len]
-                .iter()
-                .map(|token| token.to_lowercase())
-                .collect();
-            let short_form = !several_words && found.typed_short_form;
-            let alternatives: Vec<SynonymAlternative> = found
-                .alternatives
-                .into_iter()
-                .filter(|alternative| !is_typed_form(&alternative.node, &typed_words))
-                .map(|alternative| {
-                    //the form typed with its exact case (`CaP`) is the typed word, more precisely
-                    let typed_exact = matches!(
-                        (&alternative.node, &found.typed_exact),
-                        (QueryNode::Exact(text), Some(typed)) if text == typed
-                    );
-                    SynonymAlternative {
-                        weight: if typed_exact {
-                            FULL_WEIGHT
-                        } else {
-                            weight_of(&alternative, short_form, several_words)
-                        },
-                        query: to_query(alternative.node),
-                    }
-                })
-                .collect();
-            out.push(synonym(typed, alternatives));
-            index = last + 1;
-            continue;
-        }
-
-        if end - start == 1
-            && let Some(numbers) = dictionary.expand_number(surface[start])
+        if let Some((query, next)) = expand_matched(&words, index, start, &tokens, dictionary, wrap)
         {
-            let typed = Query::Term(words[index].clone());
-            let typed_words = vec![surface[start].to_lowercase()];
-            let alternatives: Vec<SynonymAlternative> = numbers
-                .into_iter()
-                .filter(|alternative| !is_typed_form(&alternative.node, &typed_words))
-                .map(|alternative| SynonymAlternative {
-                    weight: weight_of(&alternative, false, false),
-                    query: to_query(alternative.node),
-                })
-                .collect();
-            out.push(synonym(typed, alternatives));
+            out.push(query);
+            index = next;
+            continue;
+        }
+
+        if end.saturating_sub(start) == 1
+            && let Some(surface) = tokens.surface.get(start)
+            && let Some(query) = expand_numeral(word, surface, dictionary)
+        {
+            out.push(query);
             index += 1;
             continue;
         }
 
-        out.push(Query::Term(words[index].clone()));
+        out.push(Query::Term(word.clone()));
         index += 1;
     }
     out
 }
 
+/// The dictionary match starting at word `index` (token `start`): the query that replaces the
+/// words it covers, and the index of the first word after them.
+fn expand_matched(
+    words: &[String],
+    index: usize,
+    start: usize,
+    tokens: &RunTokens<'_>,
+    dictionary: &Synonyms,
+    wrap: Combinator,
+) -> Option<(Query, usize)> {
+    let found = dictionary.match_at(
+        tokens.surface.get(start..)?,
+        tokens.keys.get(start..)?,
+        |len| {
+            tokens
+                .boundary
+                .get(start.saturating_add(len))
+                .copied()
+                .unwrap_or(false)
+        },
+    )?;
+    let last_token = start.saturating_add(found.len).checked_sub(1)?;
+    let last = *tokens.owner.get(last_token)?;
+    let covered = words.get(index..=last)?;
+    let several_words = covered.len() > 1 || found.len > 1;
+    //the typed words stay exactly what they are without the dictionary, so every document
+    //they find is still found and scores at least as much
+    let typed = original_form(covered, wrap);
+    let typed_words: Vec<String> = tokens
+        .surface
+        .get(start..start.saturating_add(found.len))?
+        .iter()
+        .map(|token| token.to_lowercase())
+        .collect();
+    let short_form = !several_words && found.typed_short_form;
+    let alternatives: Vec<SynonymAlternative> = found
+        .alternatives
+        .into_iter()
+        .filter(|alternative| !is_typed_form(&alternative.node, &typed_words))
+        .map(|alternative| {
+            //the form typed with its exact case (`CaP`) is the typed word, more precisely
+            let is_typed_exact = matches!(
+                (&alternative.node, &found.typed_exact),
+                (QueryNode::Exact(text), Some(written)) if text == written
+            );
+            SynonymAlternative {
+                weight: if is_typed_exact {
+                    FULL_WEIGHT
+                } else {
+                    weight_of(&alternative, short_form, several_words)
+                },
+                query: to_query(alternative.node),
+            }
+        })
+        .collect();
+    Some((synonym(typed, alternatives), last.saturating_add(1)))
+}
+
+/// A single typed number or Roman numeral, with its other form.
+fn expand_numeral(word: &str, surface: &str, dictionary: &Synonyms) -> Option<Query> {
+    let numbers = dictionary.expand_number(surface)?;
+    let typed = Query::Term(word.to_owned());
+    let typed_words = [surface.to_lowercase()];
+    let alternatives: Vec<SynonymAlternative> = numbers
+        .into_iter()
+        .filter(|alternative| !is_typed_form(&alternative.node, &typed_words))
+        .map(|alternative| SynonymAlternative {
+            weight: weight_of(&alternative, false, false),
+            query: to_query(alternative.node),
+        })
+        .collect();
+    Some(synonym(typed, alternatives))
+}
 /// The dictionary's lowercase spelling of what was typed only finds what the typed words
 /// already find.
 fn is_typed_form(node: &QueryNode, typed_words: &[String]) -> bool {
     match node {
-        QueryNode::Term(term) => typed_words.len() == 1 && *term == typed_words[0],
+        QueryNode::Term(term) => matches!(typed_words, [only] if only == term),
         QueryNode::Phrase(phrase_terms) => {
             phrase_terms.len() == typed_words.len()
                 && phrase_terms
@@ -890,7 +980,7 @@ fn synonym(typed: Query, alternatives: Vec<SynonymAlternative>) -> Query {
     if alternatives.is_empty() {
         return typed;
     }
-    let mut forms = Vec::with_capacity(alternatives.len() + 1);
+    let mut forms = Vec::with_capacity(alternatives.len().saturating_add(1));
     forms.push(SynonymAlternative {
         query: typed,
         weight: FULL_WEIGHT,

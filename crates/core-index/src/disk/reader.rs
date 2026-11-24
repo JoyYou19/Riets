@@ -1,30 +1,39 @@
 //WARN: Valter, luudzu piedod es atvicaju es centos Kristianu aptureet - Normunds
 
-use std::{collections::BTreeMap, io, path::Path};
+use std::{ collections::BTreeMap, io, path::Path };
 
-use bitpacking::{BitPacker, BitPacker4x};
+use bitpacking::{ BitPacker, BitPacker4x };
 use core_timing::timed;
 use memmap2::Mmap;
 use roaring::RoaringTreemap;
 
 use crate::{
-    array_rows::{ArrayRowIndex, NO_PARENT_ROW},
+    array_rows::{ ArrayRowIndex, NO_PARENT_ROW },
     bkd::Bkd,
     disk::{
         block_cursor::BlockCursor,
-        codec::{DecodedBlock, decode_block, read_var_u32},
-        format::{FOOTER_LEN, MAGIC, SKIP_ENTRY_LEN, SegmentFooter, SkipEntry, VERSION},
+        codec::{ DecodedBlock, decode_block, read_var_u32 },
+        format::{
+            FOOTER_LEN,
+            HEADER_LEN,
+            MAGIC,
+            SKIP_ENTRY_LEN,
+            SegmentFooter,
+            SkipEntry,
+            VERSION,
+            array_at,
+        },
         writer::MergeSource,
     },
     document::indexed::BoolField,
     document_values::DocValues,
-    fuzzy::{FuzzyExpansion, FuzzyOptions},
-    numeric_values::{NumericBound, NumericField, NumericFields, NumericKind, NumericValue},
-    posting::{Positions, Posting, PostingList, cursor::TermCursor, item::Offsets},
-    search::{SearchIndex, SearchNumeric, SearchStats, TermCursorInfo, TermPostings},
+    fuzzy::{ FuzzyExpansion, FuzzyOptions },
+    numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue },
+    posting::{ Positions, Posting, PostingList, cursor::TermCursor, item::Offsets },
+    search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo, TermPostings },
     segment::build_field_stats,
-    term_dict::{TERM_META_LEN, TermDict, TermDictionary, TermMeta},
-    types::{ArrayRowId, DocId, FieldStats, TermKey, XPathId},
+    term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta },
+    types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId },
     wildcard::MAX_PATTERN_TERMS,
 };
 
@@ -65,7 +74,7 @@ impl SearchNumeric for DiskSegment {
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>,
+        hi: Option<NumericBound>
     ) -> RoaringTreemap {
         self.numeric_fields.range(xpath, lo, hi)
     }
@@ -78,7 +87,7 @@ impl SearchNumeric for DiskSegment {
         &self,
         xpath: XPathId,
         k: usize,
-        descending: bool,
+        descending: bool
     ) -> Vec<(DocId, NumericValue)> {
         self.numeric_fields.top(xpath, k, descending)
     }
@@ -128,22 +137,27 @@ impl DiskSegment {
         })
     }
 
-    pub fn doc_lengths(&self) -> &DocLengths {
+    #[must_use]
+    pub const fn doc_lengths(&self) -> &DocLengths {
         &self.doc_lengths
     }
-    pub fn doc_range(&self) -> Option<(DocId, DocId)> {
+    #[must_use]
+    pub const fn doc_range(&self) -> Option<(DocId, DocId)> {
         self.doc_id_range
     }
 
-    pub fn array_row_index(&self) -> &ArrayRowIndex {
+    #[must_use]
+    pub const fn array_row_index(&self) -> &ArrayRowIndex {
         &self.array_row_index
     }
 
-    pub fn numeric_fields(&self) -> &NumericFields {
+    #[must_use]
+    pub const fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
     }
 
-    pub fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
+    #[must_use]
+    pub const fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
         &self.bool_fields
     }
 
@@ -151,10 +165,12 @@ impl DiskSegment {
     pub(crate) fn iter_terms(&self) -> impl Iterator<Item = (TermKey, MergeSource<'_>)> + '_ {
         let this = self;
         self.dictionary.fields().flat_map(move |(xpath, dict)| {
-            dict.entries().into_iter().filter_map(move |(term, meta)| {
-                let bytes = this.term_bytes(meta)?;
-                Some((TermKey::new(term, xpath), MergeSource::Disk { bytes, meta }))
-            })
+            dict.entries()
+                .into_iter()
+                .filter_map(move |(term, meta)| {
+                    let bytes = this.term_bytes(meta)?;
+                    Some((TermKey::new(term, xpath), MergeSource::Disk { bytes, meta }))
+                })
         })
     }
     //Decodes the postings and offsets
@@ -191,23 +207,12 @@ fn read_posting_list_into(bytes: &[u8], meta: TermMeta, out: &mut Vec<Posting>) 
     let skip_len = block_count
         .checked_mul(SKIP_ENTRY_LEN)
         .ok_or_else(|| invalid("skip table size overflow"))?;
-    let blocks_end = skip_len
-        .checked_add(meta.block_len as usize)
-        .ok_or_else(|| invalid("blocks size overflow"))?;
-    let positions_end = blocks_end
-        .checked_add(meta.positions_len as usize)
-        .ok_or_else(|| invalid("positions size overflow"))?;
-    if positions_end > bytes.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "term region truncated",
-        ));
-    }
-
-    let skip_table = &bytes[..skip_len];
-    let blocks = &bytes[skip_len..blocks_end];
-    let positions = &bytes[blocks_end..positions_end];
-    let offsets = &bytes[positions_end..];
+    let truncated = || io::Error::new(io::ErrorKind::UnexpectedEof, "term region truncated");
+    let (skip_table, rest) = bytes.split_at_checked(skip_len).ok_or_else(truncated)?;
+    let (blocks, rest) = rest.split_at_checked(meta.block_len as usize).ok_or_else(truncated)?;
+    let (positions, offsets) = rest
+        .split_at_checked(meta.positions_len as usize)
+        .ok_or_else(truncated)?;
 
     let packer = BitPacker4x::new();
     let mut block = DecodedBlock::default();
@@ -222,10 +227,14 @@ fn read_posting_list_into(bytes: &[u8], meta: TermMeta, out: &mut Vec<Posting>) 
         let block_bytes = blocks
             .get(start..)
             .ok_or_else(|| invalid("block offset past blocks area"))?;
-        decode_block(&packer, block_bytes, &entry, &mut block)?;
+        decode_block(packer, block_bytes, &entry, &mut block)?;
 
-        for i in 0..block.len {
-            let tf = block.term_freq[i] as usize;
+        for ((&doc, &term_freq), &weight) in block.docs
+            .iter()
+            .zip(&block.term_freq)
+            .zip(&block.weights)
+            .take(block.len) {
+            let tf = term_freq as usize;
 
             let mut doc_positions = Positions::with_capacity(tf);
             let mut last_position = 0u32;
@@ -234,27 +243,25 @@ fn read_posting_list_into(bytes: &[u8], meta: TermMeta, out: &mut Vec<Posting>) 
                 doc_positions.push(last_position);
             }
 
-            let present = *offsets.get(offset_at).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::UnexpectedEof, "missing offsets flag")
-            })? != 0;
+            let present =
+                *offsets
+                    .get(offset_at)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::UnexpectedEof, "missing offsets flag")
+                    })? != 0;
             offset_at += 1;
 
             let mut doc_offsets = Offsets::new();
             if present {
                 doc_offsets.reserve(tf);
                 for _ in 0..tf {
-                    let start = read_var_u32(offsets, &mut offset_at)?;
+                    let start_at = read_var_u32(offsets, &mut offset_at)?;
                     let len = read_var_u32(offsets, &mut offset_at)?;
-                    doc_offsets.push((start, start + len));
+                    doc_offsets.push((start_at, start_at + len));
                 }
             }
 
-            out.push(Posting::with_weight_and_offsets(
-                block.docs[i],
-                doc_positions,
-                doc_offsets,
-                block.weights[i],
-            ));
+            out.push(Posting::with_weight_and_offsets(doc, doc_positions, doc_offsets, weight));
         }
     }
 
@@ -262,6 +269,20 @@ fn read_posting_list_into(bytes: &[u8], meta: TermMeta, out: &mut Vec<Posting>) 
 }
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+fn to_usize(value: u64) -> io::Result<usize> {
+    usize::try_from(value).map_err(|_overflow| invalid("offset does not fit in usize"))
+}
+
+fn section<'a>(bytes: &'a [u8], offset: u64, len: u64, what: &str) -> io::Result<&'a [u8]> {
+    let bad = ||
+        io::Error::new(io::ErrorKind::InvalidData, format!("{what} outside segment bounds"));
+    let start = to_usize(offset)?;
+    let end = start.checked_add(to_usize(len)?).ok_or_else(bad)?;
+    if end > bytes.len().saturating_sub(FOOTER_LEN) {
+        return Err(bad());
+    }
+    bytes.get(start..end).ok_or_else(bad)
 }
 // We need to search this segment for sure
 impl SearchIndex for DiskSegment {
@@ -333,9 +354,7 @@ impl SearchIndex for DiskSegment {
 
     #[timed(search)]
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
-        self.dictionary
-            .get(xpath, term)
-            .map_or(0, |meta| meta.doc_freq)
+        self.dictionary.get(xpath, term).map_or(0, |meta| meta.doc_freq)
     }
     fn terms(&self, xpath: XPathId) -> Vec<String> {
         self.dictionary
@@ -365,8 +384,9 @@ impl SearchIndex for DiskSegment {
 
         // choose the terms from the dictionary first, then read postings only for those
         let mut matches = dict.prefix(prefix);
-        matches
-            .sort_unstable_by(|a, b| b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0)));
+        matches.sort_unstable_by(|a, b|
+            b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0))
+        );
         matches.truncate(MAX_PATTERN_TERMS);
 
         let mut postings = Vec::new();
@@ -381,7 +401,7 @@ impl SearchIndex for DiskSegment {
     fn lookup_wildcard(
         &self,
         pattern: &crate::wildcard::WildcardPattern,
-        xpath: XPathId,
+        xpath: XPathId
     ) -> PostingList {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);
@@ -396,8 +416,9 @@ impl SearchIndex for DiskSegment {
             .into_iter()
             .filter(|(term, _)| pattern.matches(term))
             .collect();
-        matches
-            .sort_unstable_by(|a, b| b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0)));
+        matches.sort_unstable_by(|a, b|
+            b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0))
+        );
         matches.truncate(MAX_PATTERN_TERMS);
 
         let mut postings = Vec::new();
@@ -426,7 +447,7 @@ impl SearchIndex for DiskSegment {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions,
+        opts: FuzzyOptions
     ) -> Vec<FuzzyExpansion> {
         self.dictionary
             .field(xpath)
@@ -452,116 +473,34 @@ impl SearchIndex for DiskSegment {
 }
 
 fn validate_footer(bytes: &[u8], footer: &SegmentFooter) -> io::Result<()> {
-    let dictionary_start = footer.dictionary_offset as usize;
-    let dictionary_len = footer.dictionary_len as usize;
-
-    let Some(dictionary_end) = dictionary_start.checked_add(dictionary_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary offset overflow",
-        ));
-    };
-
-    if dictionary_start < crate::disk::format::HEADER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary starts before segment body",
-        ));
+    if to_usize(footer.dictionary_offset)? < HEADER_LEN {
+        return Err(invalid("dictionary starts before segment body"));
     }
-
-    if dictionary_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary outside segment bounds",
-        ));
+    if to_usize(footer.numeric_fields_offset)? < HEADER_LEN {
+        return Err(invalid("numeric fields start before segment body"));
     }
-
-    //numeric checks
-    let numeric_fields_start = footer.numeric_fields_offset as usize;
-    let numeric_fields_len = footer.numeric_fields_len as usize;
-
-    let Some(numeric_fields_end) = numeric_fields_start.checked_add(numeric_fields_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields offset overflow",
-        ));
-    };
-
-    if numeric_fields_start < crate::disk::format::HEADER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields start before segment body",
-        ));
-    }
-
-    if numeric_fields_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields outside segment bounds",
-        ));
-    }
-
-    let bool_start = footer.bool_fields_offset as usize;
-    let bool_len = footer.bool_fields_len as usize;
-    let Some(bool_end) = bool_start.checked_add(bool_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bool fields offset overflow",
-        ));
-    };
-    if bool_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bool fields outside segment bounds",
-        ));
-    }
-
-    let array_start = footer.array_row_index_offset as usize;
-    let array_len = footer.array_row_index_len as usize;
-    let Some(array_end) = array_start.checked_add(array_len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index offset overflow",
-        ));
-    };
-    if array_end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index outside segment bounds",
-        ));
-    }
-
+    section(bytes, footer.dictionary_offset, footer.dictionary_len, "dictionary")?;
+    section(bytes, footer.numeric_fields_offset, footer.numeric_fields_len, "numeric fields")?;
+    section(bytes, footer.bool_fields_offset, footer.bool_fields_len, "bool fields")?;
+    section(bytes, footer.array_row_index_offset, footer.array_row_index_len, "array row index")?;
     if footer.term_count == 0 && footer.dictionary_len != 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "empty dictionary has invalid length",
-        ));
+        return Err(invalid("empty dictionary has invalid length"));
     }
-
     Ok(())
 }
 
 fn validate_header(bytes: &[u8]) -> io::Result<()> {
     if bytes.len() < 12 + FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "segment too small",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "segment too small"));
     }
 
-    if bytes[0..8] != MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bad segment magic",
-        ));
+    if bytes.first_chunk::<8>() != Some(&MAGIC) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad segment magic"));
     }
 
-    let version = read_u32_at(bytes, 8);
+    let version = read_u32_at(bytes, 8)?;
     if version != VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unsupported segment version",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported segment version"));
     }
 
     Ok(())
@@ -571,19 +510,19 @@ fn read_footer(bytes: &[u8]) -> io::Result<SegmentFooter> {
     let start = bytes.len() - FOOTER_LEN;
 
     Ok(SegmentFooter {
-        doc_lengths_offset: read_u64_at(bytes, start),
-        doc_lengths_len: read_u64_at(bytes, start + 8),
-        dictionary_offset: read_u64_at(bytes, start + 16),
-        dictionary_len: read_u64_at(bytes, start + 24),
-        numeric_fields_offset: read_u64_at(bytes, start + 32),
-        numeric_fields_len: read_u64_at(bytes, start + 40),
-        term_count: read_u32_at(bytes, start + 48),
-        min_doc_id: read_u64_at(bytes, start + 52),
-        max_doc_id: read_u64_at(bytes, start + 60),
-        bool_fields_offset: read_u64_at(bytes, start + 84),
-        bool_fields_len: read_u64_at(bytes, start + 92),
-        array_row_index_offset: read_u64_at(bytes, start + 68),
-        array_row_index_len: read_u64_at(bytes, start + 76),
+        doc_lengths_offset: read_u64_at(bytes, start)?,
+        doc_lengths_len: read_u64_at(bytes, start + 8)?,
+        dictionary_offset: read_u64_at(bytes, start + 16)?,
+        dictionary_len: read_u64_at(bytes, start + 24)?,
+        numeric_fields_offset: read_u64_at(bytes, start + 32)?,
+        numeric_fields_len: read_u64_at(bytes, start + 40)?,
+        term_count: read_u32_at(bytes, start + 48)?,
+        min_doc_id: read_u64_at(bytes, start + 52)?,
+        max_doc_id: read_u64_at(bytes, start + 60)?,
+        bool_fields_offset: read_u64_at(bytes, start + 84)?,
+        bool_fields_len: read_u64_at(bytes, start + 92)?,
+        array_row_index_offset: read_u64_at(bytes, start + 68)?,
+        array_row_index_len: read_u64_at(bytes, start + 76)?,
     })
 }
 
@@ -597,7 +536,10 @@ pub struct DocLengths {
 
 enum FieldLengths {
     // `u32::MAX`: the document has no such field
-    Dense { first: DocId, lens: Vec<u32> },
+    Dense {
+        first: DocId,
+        lens: Vec<u32>,
+    },
     Sparse(BTreeMap<DocId, u32>),
 }
 
@@ -610,18 +552,33 @@ impl DocLengths {
         let fields = by_field
             .into_iter()
             .map(|(xpath, docs)| {
-                let first = docs.iter().map(|&(doc, _)| doc).min().unwrap_or(0);
-                let last = docs.iter().map(|&(doc, _)| doc).max().unwrap_or(0);
+                let first = docs
+                    .iter()
+                    .map(|&(doc, _)| doc)
+                    .min()
+                    .unwrap_or(0);
+                let last = docs
+                    .iter()
+                    .map(|&(doc, _)| doc)
+                    .max()
+                    .unwrap_or(0);
                 let span = last.saturating_sub(first).saturating_add(1);
                 // dense when at least a quarter of the span has the field
-                let lengths = if span <= (docs.len() as u64).saturating_mul(4) {
-                    let mut lens = vec![u32::MAX; span as usize];
-                    for (doc, len) in docs {
-                        lens[(doc - first) as usize] = len;
+                let lengths = match usize::try_from(span) {
+                    Ok(span_len) if span <= (docs.len() as u64).saturating_mul(4) => {
+                        let mut lens = vec![u32::MAX; span_len];
+                        for (doc, len) in docs {
+                            let slot = usize
+                                ::try_from(doc - first)
+                                .ok()
+                                .and_then(|index| lens.get_mut(index));
+                            if let Some(slot) = slot {
+                                *slot = len;
+                            }
+                        }
+                        FieldLengths::Dense { first, lens }
                     }
-                    FieldLengths::Dense { first, lens }
-                } else {
-                    FieldLengths::Sparse(docs.into_iter().collect())
+                    _ => FieldLengths::Sparse(docs.into_iter().collect()),
                 };
                 (xpath, lengths)
             })
@@ -634,7 +591,9 @@ impl DocLengths {
         match lengths {
             FieldLengths::Dense { first, lens } => {
                 let index = usize::try_from(doc_id.checked_sub(*first)?).ok()?;
-                lens.get(index).copied().filter(|&len| len != u32::MAX)
+                lens.get(index)
+                    .copied()
+                    .filter(|&len| len != u32::MAX)
             }
             FieldLengths::Sparse(map) => map.get(&doc_id).copied(),
         }
@@ -646,39 +605,29 @@ impl DocLengths {
             |(xpath, lengths)| -> Box<dyn Iterator<Item = ((DocId, XPathId), u32)> + '_> {
                 let xpath = *xpath;
                 match lengths {
-                    FieldLengths::Dense { first, lens } => Box::new(
-                        lens.iter()
-                            .enumerate()
-                            .filter(|&(_, &len)| len != u32::MAX)
-                            .map(move |(index, &len)| ((*first + (index as DocId), xpath), len)),
-                    ),
+                    FieldLengths::Dense { first, lens } =>
+                        Box::new(
+                            lens
+                                .iter()
+                                .enumerate()
+                                .filter(|&(_, &len)| len != u32::MAX)
+                                .map(move |(index, &len)| ((*first + (index as DocId), xpath), len))
+                        ),
                     FieldLengths::Sparse(map) => {
                         Box::new(map.iter().map(move |(&doc, &len)| ((doc, xpath), len)))
                     }
                 }
-            },
+            }
         )
     }
 }
 
 fn read_doc_lengths(bytes: &[u8], footer: &SegmentFooter) -> io::Result<DocLengths> {
-    let start = footer.doc_lengths_offset as usize;
-    let len = footer.doc_lengths_len as usize;
-    let end = start
-        .checked_add(len)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "doc lengths offset overflow"))?;
-
-    if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "doc lengths outside segment bounds",
-        ));
-    }
-
-    let mut cursor = Cursor::new(&bytes[start..end]);
+    let data = section(bytes, footer.doc_lengths_offset, footer.doc_lengths_len, "doc lengths")?;
+    let mut cursor = Cursor::new(data);
     let count = cursor.read_u32()? as usize;
     // each entry is 16 bytes: a bogus count in a corrupt file must not allocate gigabytes
-    let mut entries = Vec::with_capacity(count.min(len / 16));
+    let mut entries = Vec::with_capacity(count.min(data.len() / 16));
 
     for _ in 0..count {
         let doc_id = cursor.read_u64()?; // read doc_id
@@ -691,22 +640,8 @@ fn read_doc_lengths(bytes: &[u8], footer: &SegmentFooter) -> io::Result<DocLengt
 }
 
 fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<ArrayRowIndex> {
-    let start = footer.array_row_index_offset as usize;
-    let len = footer.array_row_index_len as usize;
-    let end = start.checked_add(len).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index offset overflow",
-        )
-    })?;
-    if end > bytes.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "array row index outside segment bounds",
-        ));
-    }
-
-    let mut cursor = Cursor::new(&bytes[start..end]);
+    let data = section(bytes, footer.array_row_index_offset, footer.array_row_index_len, "array row index")?;
+    let mut cursor = Cursor::new(data);
     let base = ArrayRowId::from_raw(cursor.read_u64()?);
     let count = cursor.read_u32()? as usize;
     let mut idx = ArrayRowIndex::new(base);
@@ -718,7 +653,7 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
             ArrayRowId::from_raw(base.raw() + (i as u64)),
             doc,
             (parent != NO_PARENT_ROW.raw()).then_some(ArrayRowId::from_raw(parent)),
-            element,
+            element
         );
     }
     Ok(idx)
@@ -729,32 +664,18 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
 // One field is [xpath][term_count][fst_len][fst bytes][TermMeta * term_count].
 // The FST maps term bytes to an ord, and that ord indexes the metas array.
 fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<TermDictionary> {
-    let start = footer.dictionary_offset as usize;
-    let len = footer.dictionary_len as usize;
-
-    let Some(end) = start.checked_add(len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary offset overflow",
-        ));
-    };
-
-    if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary outside segment bounds",
-        ));
-    }
-
-    let mut cursor = Cursor::new(&bytes[start..end]);
+   let data = section(bytes, footer.dictionary_offset, footer.dictionary_len, "dictionary")?;
+    let mut cursor = Cursor::new(data);
     let field_count = cursor.read_u32()? as usize;
 
     // Every field costs at least xpath + term_count + fst_len.
-    if field_count.saturating_mul(16) > len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary field count exceeds section size",
-        ));
+    if field_count.saturating_mul(16) > data.len() {
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "dictionary field count exceeds section size"
+            )
+        );
     }
 
     let mut dictionary = TermDictionary::new();
@@ -763,17 +684,19 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
     for _ in 0..field_count {
         let xpath = cursor.read_u32()?;
         let field_terms = cursor.read_u32()? as usize;
-        let fst_len = cursor.read_u64()? as usize;
+        let fst_len = to_usize(cursor.read_u64()?)?;
 
         let fst_bytes = cursor.take(fst_len)?.to_vec();
 
         // Check the metas actually fit before reserving, so a bogus count in a
         // corrupt file cannot make us allocate gigabytes.
         if field_terms.saturating_mul(TERM_META_LEN) > cursor.remaining() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "dictionary term count exceeds section size",
-            ));
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "dictionary term count exceeds section size"
+                )
+            );
         }
 
         let mut metas = Vec::with_capacity(field_terms);
@@ -795,34 +718,15 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
     }
 
     if term_count != (footer.term_count as usize) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dictionary term count mismatch",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "dictionary term count mismatch"));
     }
 
     Ok(dictionary)
 }
 
 fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<NumericFields> {
-    let start = footer.numeric_fields_offset as usize;
-    let len = footer.numeric_fields_len as usize;
-
-    let Some(end) = start.checked_add(len) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields offset overflow",
-        ));
-    };
-
-    if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "numeric fields outside segment bounds",
-        ));
-    }
-
-    let mut cursor = Cursor::new(&bytes[start..end]);
+    let data = section(bytes, footer.numeric_fields_offset, footer.numeric_fields_len, "numeric fields")?;
+    let mut cursor = Cursor::new(data);
     let xpath_count = cursor.read_u32()? as usize;
     let mut fields = NumericFields::default();
 
@@ -850,10 +754,12 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
             entries.push((doc_id, packed));
         }
 
-        let bkd = Bkd::from_packed(kind, bkd_points)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let doc_values = DocValues::from_packed(kind, entries)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let bkd = Bkd::from_packed(kind, bkd_points).map_err(|e|
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        )?;
+        let doc_values = DocValues::from_packed(kind, entries).map_err(|e|
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        )?;
         fields.insert_field(xpath, NumericField { bkd, doc_values });
     }
 
@@ -862,36 +768,22 @@ fn read_numeric_fields(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Numer
 
 fn read_bool_points(
     bytes: &[u8],
-    footer: &SegmentFooter,
+    footer: &SegmentFooter
 ) -> io::Result<BTreeMap<XPathId, BoolField>> {
-    let start = footer.bool_fields_offset as usize;
-    let len = footer.bool_fields_len as usize;
-    let end = start
-        .checked_add(len)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bool fields offset overflow"))?;
-    if end > bytes.len() - FOOTER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bool fields outside segment bounds",
-        ));
-    }
-
-    let mut cursor = Cursor::new(&bytes[start..end]);
+    let data = section(bytes, footer.bool_fields_offset, footer.bool_fields_len, "bool fields")?;
+    let mut cursor = Cursor::new(data);
     let count = cursor.read_u32()? as usize;
     let mut fields = BTreeMap::new();
     for _ in 0..count {
         let xpath = cursor.read_u32()?;
-        let true_len = cursor.read_u64()? as usize;
+        let true_len = to_usize(cursor.read_u64()?)?;
         let true_ids = RoaringTreemap::deserialize_from(cursor.take(true_len)?)?;
-        let false_len = cursor.read_u64()? as usize;
+        let false_len = to_usize(cursor.read_u64()?)?;
         let false_ids = RoaringTreemap::deserialize_from(cursor.take(false_len)?)?;
-        fields.insert(
-            xpath,
-            BoolField {
-                true_ids,
-                false_ids,
-            },
-        );
+        fields.insert(xpath, BoolField {
+            true_ids,
+            false_ids,
+        });
     }
     Ok(fields)
 }
@@ -902,18 +794,19 @@ fn read_posting_list(bytes: &[u8], meta: TermMeta) -> io::Result<PostingList> {
 
     read_posting_list_into(bytes, meta, &mut postings)?;
 
-    Ok(PostingList::from_sorted_with_max_weight(
-        postings,
-        meta.max_weight,
-    ))
+    Ok(PostingList::from_sorted_with_max_weight(postings, meta.max_weight))
 }
 
-fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+fn read_u32_at(bytes: &[u8], offset: usize) -> io::Result<u32> {
+    array_at(bytes, offset)
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| invalid("read past end of segment"))
 }
 
-fn read_u64_at(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+fn read_u64_at(bytes: &[u8], offset: usize) -> io::Result<u64> {
+    array_at(bytes, offset)
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| invalid("read past end of segment"))
 }
 
 // the most basic cursor for reading bytes, kind of hate it to be honest
@@ -923,7 +816,7 @@ struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
@@ -932,41 +825,38 @@ impl<'a> Cursor<'a> {
     //     Ok(value)
     // }
 
-    fn read_u8(&mut self) -> io::Result<u8> {
-        Ok(self.take(1)?[0])
-    }
+   fn read_array<const N: usize>(&mut self) -> io::Result<[u8; N]> {
+    let array = array_at(self.bytes, self.offset)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "unexpected eof"))?;
+    self.offset += N;
+    Ok(array)
+}
 
-    fn read_u16(&mut self) -> io::Result<u16> {
-        let value = u16::from_le_bytes(self.take(2)?.try_into().unwrap());
-        Ok(value)
-    }
+fn read_u8(&mut self) -> io::Result<u8> {
+    self.read_array().map(u8::from_le_bytes)
+}
 
-    fn read_u32(&mut self) -> io::Result<u32> {
-        let value = u32::from_le_bytes(self.take(4)?.try_into().unwrap());
-        Ok(value)
-    }
+fn read_u16(&mut self) -> io::Result<u16> {
+    self.read_array().map(u16::from_le_bytes)
+}
 
-    fn read_u64(&mut self) -> io::Result<u64> {
-        let value = u64::from_le_bytes(self.take(8)?.try_into().unwrap());
-        Ok(value)
-    }
+fn read_u32(&mut self) -> io::Result<u32> {
+    self.read_array().map(u32::from_le_bytes)
+}
 
-    fn take(&mut self, len: usize) -> io::Result<&'a [u8]> {
-        let end = self.offset + len;
+fn read_u64(&mut self) -> io::Result<u64> {
+    self.read_array().map(u64::from_le_bytes)
+}
 
-        if end > self.bytes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected eof",
-            ));
-        }
+fn take(&mut self, len: usize) -> io::Result<&'a [u8]> {
+    let eof = || io::Error::new(io::ErrorKind::UnexpectedEof, "unexpected eof");
+    let end = self.offset.checked_add(len).ok_or_else(eof)?;
+    let slice = self.bytes.get(self.offset..end).ok_or_else(eof)?;
+    self.offset = end;
+    Ok(slice)
+}
 
-        let slice = &self.bytes[self.offset..end];
-        self.offset = end;
-        Ok(slice)
-    }
-
-    fn remaining(&self) -> usize {
+    const fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.offset)
     }
 }

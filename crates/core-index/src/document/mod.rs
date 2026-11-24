@@ -4,7 +4,7 @@ pub mod policy;
 
 pub use indexed::{ArrayRow, BoolField, BoolPoint, DocumentPart, IndexedDocument, NumericPoint};
 pub use policy::WeightInterval;
-pub use policy::{FieldPolicy, IndexPolicy};
+pub use policy::IndexPolicy;
 //test
 pub mod analyzed;
 pub use analyzed::AnalyzedDocument;

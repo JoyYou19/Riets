@@ -18,7 +18,7 @@ pub fn fold(text: &str, output: &mut String) {
 // does not have a sensible ascii equivalent (e.g.: Kanjis like 馬,
 // this function returns `None`.
 #[allow(clippy::too_many_lines)]
-fn fold_non_ascii_char(c: char) -> Option<&'static str> {
+const fn fold_non_ascii_char(c: char) -> Option<&'static str> {
     match c {
         '\u{00C0}' | // À  [LATIN CAPITAL LETTER A WITH GRAVE]
         '\u{00C1}' | // Á  [LATIN CAPITAL LETTER A WITH ACUTE]

@@ -49,7 +49,12 @@ pub fn coverage(mask: u64, weights: &[f32]) -> f32 {
         .iter()
         .enumerate()
         .take(MAX_CLAUSES)
-        .filter(|(index, _)| (mask & (1u64 << index)) != 0)
+        .filter(|&(index, _)| {
+            u32::try_from(index)
+                .ok()
+                .and_then(|bit| mask.checked_shr(bit))
+                .is_some_and(|rest| rest & 1 != 0)
+        })
         .map(|(_, weight)| weight)
         .sum();
     (held / total).clamp(0.0, 1.0)
@@ -99,7 +104,7 @@ pub fn finalize(groups: Vec<RankedGroup>, k: usize) -> Vec<SearchHit> {
                 .map(|index| {
                     weighted
                         .iter()
-                        .map(|weights| weights[index])
+                        .filter_map(|weights| weights.get(index).copied())
                         .fold(f32::INFINITY, f32::min)
                 })
                 .collect(),

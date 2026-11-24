@@ -26,10 +26,10 @@ pub struct TermCursorInfo<'a> {
 // every type of segment either it is Immutable, Snapshot or in Memory
 pub trait SearchIndex {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList;
-    fn lookup_term(&self, term: &str, xpath: XPathId) -> TermPostings {
+       fn lookup_term(&self, term: &str, xpath: XPathId) -> TermPostings {
         let postings = self.lookup(term, xpath);
         TermPostings {
-            doc_freq: postings.len() as u32,
+            doc_freq: u32::try_from(postings.len()).unwrap_or(u32::MAX),
             max_weight: postings.max_weight(),
             postings,
         }
@@ -131,8 +131,8 @@ pub trait SearchIndex {
             .iter()
             .map(|p| p.doc_id)
             .collect::<Vec<_>>();
-        if let Ok(ids) = RoaringTreemap::from_sorted_iter(ids) {
-            *out |= ids;
+        if let Ok(set) = RoaringTreemap::from_sorted_iter(ids) {
+            *out |= set;
         }
     }
 }

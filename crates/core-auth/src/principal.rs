@@ -16,7 +16,7 @@ impl Principal {
             roles: HashSet::new(),
         }
     }
-
+    #[must_use] 
     pub fn with_role(mut self, role: impl Into<String>) -> Self {
         self.roles.insert(role.into());
         self

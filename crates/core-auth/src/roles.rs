@@ -37,10 +37,10 @@ impl PolicyStore {
             .is_some_and(|perms| perms.contains(permission))
     }
 
-    pub fn remove(&mut self, role: impl Into<String>, permission: Permission) {
+    pub fn remove(&mut self, role: impl Into<String>, permission: &Permission) {
         let role = role.into();
         if let Some(perms) = self.role_permissions.get_mut(&role) {
-            perms.remove(&permission);
+            perms.remove(permission);
         }
     }
 }

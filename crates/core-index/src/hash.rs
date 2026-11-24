@@ -15,7 +15,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
-pub fn fmix64(mut value: u64) -> u64 {
+pub const fn fmix64(mut value: u64) -> u64 {
     value ^= value >> 33;
     value = value.wrapping_mul(0xff51_afd7_ed55_8ccd);
     value ^= value >> 33;
