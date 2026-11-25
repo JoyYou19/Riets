@@ -13,12 +13,18 @@ pub enum BackupPhase {
 }
 
 impl BackupPhase {
-    fn from_u8(v: u8) -> Self {
-        match v {
-            1 => BackupPhase::Running,
-            2 => BackupPhase::Complete,
-            3 => BackupPhase::Failed,
-            _ => BackupPhase::Idle,
+    #[allow(clippy::as_conversions, reason = "fieldless #[repr(u8)] enum; lossless")]
+    const fn to_u8(self) -> u8 {
+        self as u8
+    }
+     /// Inverse of `to_u8`; `None` for a value that is not a phase.
+    const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Idle),
+            1 => Some(Self::Running),
+            2 => Some(Self::Complete),
+            3 => Some(Self::Failed),
+            _ => None,
         }
     }
 }
@@ -36,6 +42,7 @@ fn round2(x: f64) -> f64 {
 }
 
 impl BackupProgressSnapshot {
+    #[must_use]
     pub fn percent(&self) -> Option<f64> {
         if self.bytes_total == 0 {
             return None;
@@ -47,15 +54,18 @@ impl BackupProgressSnapshot {
         Some(f64::from(hundredths) / 100.0)
     }
 
+     #[must_use]
      pub fn mb_done(&self) -> f64 {
         round2(mib(self.bytes_done))
     }
 
+    #[must_use]
     pub fn mb_total(&self) -> f64 {
         round2(mib(self.bytes_total))
     }
 
     
+    #[must_use]
     pub fn eta_seconds(&self) -> Option<u64> {
         let elapsed_ms = self.elapsed_ms?;
         if elapsed_ms == 0 || self.bytes_done == 0 {
@@ -69,13 +79,14 @@ impl BackupProgressSnapshot {
     }
 }
 /// Bytes as MiB for display; the caller rounds it to two decimals.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "a display value: rounding a large byte count is harmless"
-    )]
-    fn mib(bytes: u64) -> f64 {
-        (bytes as f64) / MIB
-    }
+   #[allow(
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    reason = "a display value: rounding a large byte count is harmless"
+)]
+fn mib(bytes: u64) -> f64 {
+    (bytes as f64) / MIB
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackupStats {
     pub status: String,
@@ -87,7 +98,7 @@ pub struct BackupStats {
 
 impl From<BackupProgressSnapshot> for BackupStats {
     fn from(s: BackupProgressSnapshot) -> Self {
-        BackupStats {
+        Self {
             status: (
                 match s.phase {
                     BackupPhase::Idle => "idle",
@@ -95,7 +106,7 @@ impl From<BackupProgressSnapshot> for BackupStats {
                     BackupPhase::Complete => "complete",
                     BackupPhase::Failed => "failed",
                 }
-            ).to_string(),
+            ).to_owned(),
             progress_percent: s.percent(),
             mb_done: s.mb_done(),
             mb_total: s.mb_total(),
@@ -113,9 +124,10 @@ pub struct BackupProgress {
 }
 
 impl BackupProgress {
+    #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            phase: AtomicU8::new(BackupPhase::Idle as u8),
+            phase: AtomicU8::new(BackupPhase::Idle.to_u8()),
             bytes_total: AtomicU64::new(0),
             bytes_done: AtomicU64::new(0),
             started_at_ms: AtomicU64::new(0),
@@ -125,17 +137,17 @@ impl BackupProgress {
     pub fn try_begin(&self) -> bool {
         let won = self.phase
             .try_update(Relaxed, Relaxed, |current| {
-                if current == (BackupPhase::Running as u8) {
+                if current == (BackupPhase::Running.to_u8()) {
                     None
                 } else {
-                    Some(BackupPhase::Running as u8)
+                    Some(BackupPhase::Running.to_u8())
                 }
             })
             .is_ok();
         if won {
             self.bytes_total.store(0, Relaxed);
             self.bytes_done.store(0, Relaxed);
-            self.started_at_ms.store(chrono::Utc::now().timestamp_millis() as u64, Relaxed);
+            self.started_at_ms.store(chrono::Utc::now().timestamp_millis().cast_unsigned(), Relaxed);
         }
         won
     }
@@ -149,21 +161,19 @@ impl BackupProgress {
     }
 
     pub fn set_phase(&self, phase: BackupPhase) {
-        self.phase.store(phase as u8, Relaxed);
+        self.phase.store(phase.to_u8(), Relaxed);
     }
     pub fn is_running(&self) -> bool {
-        self.phase.load(Relaxed) == (BackupPhase::Running as u8)
+        self.phase.load(Relaxed) == (BackupPhase::Running.to_u8())
     }
 
     pub fn snapshot(&self) -> BackupProgressSnapshot {
-        let phase = BackupPhase::from_u8(self.phase.load(Relaxed));
-        let elapsed_ms = if phase == BackupPhase::Running {
+       let phase = BackupPhase::from_u8(self.phase.load(Relaxed)).unwrap_or(BackupPhase::Failed);
+        let elapsed_ms = (phase == BackupPhase::Running).then(|| {
             let started = self.started_at_ms.load(Relaxed);
-            let now = chrono::Utc::now().timestamp_millis() as u64;
-            Some(now.saturating_sub(started))
-        } else {
-            None
-        };
+            let now = chrono::Utc::now().timestamp_millis().cast_unsigned();
+            now.saturating_sub(started)
+        });
         BackupProgressSnapshot {
             phase,
             bytes_total: self.bytes_total.load(Relaxed),

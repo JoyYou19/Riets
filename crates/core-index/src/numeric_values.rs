@@ -160,7 +160,7 @@ impl NumericPoints {
         out
     }
 
-    pub fn merge(&mut self, other: NumericPoints) {
+    pub fn merge(&mut self, other: Self) {
         for (xpath, mut points) in other.points {
             let mine = self.points.entry(xpath).or_default();
             mine.append(&mut points);
@@ -180,7 +180,7 @@ impl NumericPoints {
     }
 }
 
-impl NumericPoints {}
+
 
 #[derive(Debug, Clone, Copy)]
 pub enum NumericValue {
@@ -189,17 +189,18 @@ pub enum NumericValue {
 }
 
 impl NumericValue {
-    pub fn as_f64(self) -> f64 {
+        #[allow(clippy::cast_precision_loss, reason = "lossy i64 to f64 is the documented behaviour of as_f64")]
+    pub const fn as_f64(self) -> f64 {
         match self {
-            NumericValue::Int(v) => v as f64,
-            NumericValue::Float(v) => v,
+            Self::Int(v) => v as f64,
+            Self::Float(v) => v,
         }
     }
 
-    pub fn kind(self) -> NumericKind {
+    pub const fn kind(self) -> NumericKind {
         match self {
-            NumericValue::Int(_) => NumericKind::Int,
-            NumericValue::Float(_) => NumericKind::Float,
+            Self::Int(_) => NumericKind::Int,
+            Self::Float(_) => NumericKind::Float,
         }
     }
 }
@@ -213,17 +214,17 @@ pub enum NumericKind {
 
 //helper for writing reading to disk
 impl NumericKind {
-    pub fn to_byte(self) -> u8 {
+    pub const fn to_byte(self) -> u8 {
         match self {
-            NumericKind::Int => 0,
-            NumericKind::Float => 1,
+            Self::Int => 0,
+            Self::Float => 1,
         }
     }
 
-    pub fn from_byte(byte: u8) -> Option<Self> {
+    pub const fn from_byte(byte: u8) -> Option<Self> {
         match byte {
-            0 => Some(NumericKind::Int),
-            1 => Some(NumericKind::Float),
+            0 => Some(Self::Int),
+            1 => Some(Self::Float),
             _ => None,
         }
     }
@@ -246,41 +247,45 @@ impl PartialOrd for NumericValue {
 impl Ord for NumericValue {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (NumericValue::Int(a), NumericValue::Int(b)) => a.cmp(b),
-            (NumericValue::Float(a), NumericValue::Float(b)) => a.total_cmp(b),
-            (NumericValue::Int(i), NumericValue::Float(f)) => cmp_int_float(*i, *f),
-            (NumericValue::Float(f), NumericValue::Int(i)) => cmp_int_float(*i, *f).reverse(),
+            (Self::Int(a), Self::Int(b)) => a.cmp(b),
+            (Self::Float(a), Self::Float(b)) => a.total_cmp(b),
+            (Self::Int(i), Self::Float(f)) => cmp_int_float(*i, *f),
+            (Self::Float(f), Self::Int(i)) => cmp_int_float(*i, *f).reverse(),
         }
     }
 }
 
 //smart funciton to get the exact total order between an integer and a float.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "casts are guarded: fractional floats are below 2^52, whole ones are range-checked first"
+)]
 fn cmp_int_float(i: i64, f: f64) -> Ordering {
+    const TWO_63: f64 = 9_223_372_036_854_776_000.0;
     // NaN sorts last (matches f64::total_cmp's convention)
     if f.is_nan() {
         return Ordering::Less;
     }
-    if f == f64::INFINITY {
-        return Ordering::Less; // i < +inf
+    if f.is_infinite() {
+        // i < +inf, i > -inf
+        return if f.is_sign_positive() {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
     }
-    if f == f64::NEG_INFINITY {
-        return Ordering::Greater; // i > -inf
-    }
-
-    // f is finite. A *fractional* f64 can only exist below 2^52, so an integer
-    // is either exactly representable there or far away — f64 comparison is exact.
+    // A fractional f64 only exists below 2^52, so f64 comparison is exact there.
     if f.fract() != 0.0 {
         return (i as f64).total_cmp(&f);
     }
-
     // f is a whole number: compare exactly as integers.
-    if f > i64::MAX as f64 {
+    if f >= TWO_63 {
         return Ordering::Less;
     }
-    if f < i64::MIN as f64 {
+    if f < -TWO_63 {
         return Ordering::Greater;
     }
-
     i.cmp(&(f as i64))
 }
 
@@ -324,16 +329,16 @@ pub fn parse_integer(raw: &str) -> Result<NumericValue, &'static str> {
 }
 
 // so that i64 sorts the same way that u64 does
-pub fn pack_int(value: i64) -> u64 {
-    (value as u64) ^ (1u64 << 63)
+pub const fn pack_int(value: i64) -> u64 {
+    value.cast_unsigned() ^ (1u64 << 63)
 }
 
-pub fn unpack_int(packed: u64) -> i64 {
-    (packed ^ (1u64 << 63)) as i64
+pub const fn unpack_int(packed: u64) -> i64 {
+    (packed ^ (1u64 << 63)).cast_signed()
 }
 
 //negative<positive
-pub fn pack_float(value: f64) -> u64 {
+pub const fn pack_float(value: f64) -> u64 {
     let bits = value.to_bits();
 
     if bits & (1u64 << 63) != 0 {
@@ -343,7 +348,7 @@ pub fn pack_float(value: f64) -> u64 {
     }
 }
 
-pub fn unpack_float(packed: u64) -> f64 {
+pub const fn unpack_float(packed: u64) -> f64 {
     let bits = if packed & (1u64 << 63) != 0 {
         packed ^ (1u64 << 63)
     } else {
@@ -353,14 +358,14 @@ pub fn unpack_float(packed: u64) -> f64 {
     f64::from_bits(bits)
 }
 
-pub fn pack(value: NumericValue) -> u64 {
+pub const fn pack(value: NumericValue) -> u64 {
     match value {
         NumericValue::Int(v) => pack_int(v),
         NumericValue::Float(v) => pack_float(v),
     }
 }
 
-pub fn unpack(packed: u64, kind: NumericKind) -> NumericValue {
+pub const fn unpack(packed: u64, kind: NumericKind) -> NumericValue {
     match kind {
         NumericKind::Int => NumericValue::Int(unpack_int(packed)),
         NumericKind::Float => NumericValue::Float(unpack_float(packed)),
@@ -369,7 +374,7 @@ pub fn unpack(packed: u64, kind: NumericKind) -> NumericValue {
 
 //jobani ar +- 0.00
 pub fn parse_float(raw: &str) -> Result<NumericValue, &'static str> {
-    let value: f64 = raw.trim().parse().map_err(|_| "not a number")?;
+    let value: f64 = raw.trim().parse().map_err(|_err| "not a number")?;
     if !value.is_finite() {
         return Err("out of f64 range");
     }

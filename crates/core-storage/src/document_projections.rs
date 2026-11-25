@@ -72,7 +72,7 @@ fn prune(
 
 fn join_path(parent: &str, key: &str) -> String {
     if parent.is_empty() {
-        key.to_string()
+        key.to_owned()
     } else {
         let mut out = String::with_capacity(parent.len() + 1 + key.len());
         out.push_str(parent);
@@ -124,6 +124,7 @@ fn policy_list(policy: &IndexPolicy, path: &str) -> Option<bool> {
     }
 }
 
+#[must_use]
 pub fn id_path_to_strip<'a>(
     id_field: Option<&'a str>,
     return_fields: Option<&IndexMap<String, bool>>,

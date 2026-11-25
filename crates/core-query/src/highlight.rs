@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::MatchedTerm;
 use ahash::{HashMap, HashMapExt};
 use core_index::analyzer::Analyzer;
@@ -10,6 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 //we need to re-analyze flattened arrays cause the position and offsets dont match in them
 #[timed(highlight)]
+#[must_use]
 pub fn highlight_field_array(
     texts: &[String],
     analyzer: &Analyzer,
@@ -26,6 +29,7 @@ pub fn highlight_field_array(
 //                                  this bs:
 //like ummm cast: {name, surname, aliases["", "", ""],}
 #[timed(highlight)]
+#[must_use]
 pub fn highlight_field_row_keyed_flattened(
     value: &OwnedValue,
     full_path: &str,
@@ -33,20 +37,8 @@ pub fn highlight_field_row_keyed_flattened(
     matched: &[&MatchedTerm],
     opts: &HighlightFieldOptions,
 ) -> Vec<String> {
-    let mut by_row: HashMap<Vec<u32>, HashMap<u32, f32>> = HashMap::new();
-    for m in matched {
-        let want = by_row.entry(m.row_path.clone()).or_default();
-        for &p in &m.positions {
-            let pos = position_start(p);
-            let cur = want.entry(pos).or_insert(m.weight);
-            if m.weight > *cur {
-                *cur = m.weight;
-            }
-        }
-    }
-
     let mut out = Vec::new();
-    for (row_path, want) in by_row {
+    for (row_path, want) in wants_by_row(matched) {
         let Some(OwnedValue::Array(items)) = value_for_row(value, full_path, &row_path) else {
             continue;
         };
@@ -70,6 +62,7 @@ pub fn highlight_field_row_keyed_flattened(
 //(char-filtered field, no offsets) re-analyzes and maps positions to spans on the
 //filtered text.
 #[timed(highlight)]
+#[must_use]
 pub fn highlight_field(
     text: &str,
     analyzer: &Analyzer,
@@ -143,14 +136,14 @@ fn highlight_flattened_texts(
         let mut ranges: Vec<Span> = Vec::new();
         let mut span = 0u32;
         for token in &tokens {
-            if let Some(&weight) = want.get(&(base + token.position)) {
+            if let Some(&weight) = want.get(&base.saturating_add(token.position)) {
                 ranges.push(Span {
                     start: token.start_byte,
                     end: token.end_byte,
                     weight,
                 });
             }
-            span = span.max(token.position + token.position_length.max(1));
+            span = span.max(token.position.saturating_add(token.position_length.max(1)));
         }
         if !ranges.is_empty() {
             let ranges = merge_ranges(ranges);
@@ -160,14 +153,15 @@ fn highlight_flattened_texts(
                 out.extend(fragments_by_chars(&filtered, &ranges, opts));
             }
         }
-        base += span + ARRAY_GAP;
+        base = base.saturating_add(span).saturating_add(ARRAY_GAP);
     }
     out
 }
 
 //rewalks the json to get the precise element from the [index] of the array
+//rewalks the json to get the precise element from the [index] of the array
 #[timed(highlight)]
-#[timed(highlight)]
+#[must_use]
 pub fn highlight_field_row_keyed(
     value: &OwnedValue,
     full_path: &str,
@@ -175,34 +169,22 @@ pub fn highlight_field_row_keyed(
     matched: &[&MatchedTerm],
     opts: &HighlightFieldOptions,
 ) -> Vec<String> {
-    let mut by_row: HashMap<Vec<u32>, HashMap<u32, f32>> = HashMap::new();
-    for m in matched {
-        let want = by_row.entry(m.row_path.clone()).or_default();
-        for &p in &m.positions {
-            let pos = position_start(p);
-            let cur = want.entry(pos).or_insert(m.weight);
-            if m.weight > *cur {
-                *cur = m.weight;
-            }
-        }
-    }
-
     let mut out = Vec::new();
-    for (row_path, want) in by_row {
+    for (row_path, want) in wants_by_row(matched) {
         let Some(OwnedValue::String(text)) = value_for_row(value, full_path, &row_path) else {
             continue;
         };
         let (filtered, tokens) = analyzer.analyze_text(text);
-        let mut ranges: Vec<Span> = Vec::new();
-        for token in &tokens {
-            if let Some(&weight) = want.get(&token.position) {
-                ranges.push(Span {
+        let ranges: Vec<Span> = tokens
+            .iter()
+            .filter_map(|token| {
+                want.get(&token.position).map(|&weight| Span {
                     start: token.start_byte,
                     end: token.end_byte,
                     weight,
-                });
-            }
-        }
+                })
+            })
+            .collect();
         if ranges.is_empty() {
             continue;
         }
@@ -224,12 +206,12 @@ fn value_for_row<'a>(
     path: &str,
     row_path: &[u32],
 ) -> Option<&'a OwnedValue> {
-    let segs: Vec<&str> = path.split('/').collect();
     let mut cur = value;
     let mut row_iter = row_path.iter();
-    for &seg in &segs {
+    for seg in path.split('/') {
         if let OwnedValue::Array(items) = cur {
-            cur = items.get(*row_iter.next()? as usize)?;
+            let idx = usize::try_from(*row_iter.next()?).ok()?;
+            cur = items.get(idx)?;
         }
         let OwnedValue::Object(obj) = cur else {
             return None;
@@ -252,15 +234,25 @@ struct Span {
 fn positions_with_weight(matched: &[&MatchedTerm]) -> HashMap<u32, f32> {
     let mut want: HashMap<u32, f32> = HashMap::new();
     for m in matched {
-        for &p in &m.positions {
-            let pos = position_start(p);
-            let cur = want.entry(pos).or_insert(m.weight);
-            if m.weight > *cur {
-                *cur = m.weight;
-            }
-        }
+        add_weights(&mut want, m);
     }
     want
+}
+
+//keeps the strongest weight per token start position
+fn add_weights(want: &mut HashMap<u32, f32>, m: &MatchedTerm) {
+    for &p in &m.positions {
+        let cur = want.entry(position_start(p)).or_insert(m.weight);
+        *cur = cur.max(m.weight);
+    }
+}
+
+fn wants_by_row(matched: &[&MatchedTerm]) -> BTreeMap<Vec<u32>, HashMap<u32, f32>> {
+    let mut by_row: BTreeMap<Vec<u32>, HashMap<u32, f32>> = BTreeMap::new();
+    for m in matched {
+        add_weights(by_row.entry(m.row_path.clone()).or_default(), m);
+    }
+    by_row
 }
 
 //if ranges overlap we merge them + add weight to one another
@@ -296,22 +288,20 @@ fn build_snippet(
     let mut out = String::new();
     let mut pos = ws;
     for span in ranges {
-        let rs = span.start;
-        let re = span.end;
-        if re <= ws || rs >= we {
+        if span.end <= ws || span.start >= we {
             continue;
         }
-        let s = rs.max(ws);
-        let e = re.min(we);
-        out.push_str(&text[pos..s]);
+        let s = span.start.max(ws);
+        let e = span.end.min(we);
+        out.push_str(text.get(pos..s).unwrap_or_default());
         out.push_str(pre);
-        out.push_str(&text[s..e]);
+        out.push_str(text.get(s..e).unwrap_or_default());
         out.push_str(post);
         pos = e;
     }
 
-    out.push_str(&text[pos..we]);
-    out.trim().to_string()
+    out.push_str(text.get(pos..we).unwrap_or_default());
+    out.trim().to_owned()
 }
 
 fn fragments_by_chars(text: &str, ranges: &[Span], opts: &HighlightFieldOptions) -> Vec<String> {
@@ -352,38 +342,45 @@ fn fragments_by_sentence(text: &str, ranges: &[Span], opts: &HighlightFieldOptio
         opts.number_of_fragments,
     );
     top.into_iter()
-        .map(|(start, end)| {
-            let (ws, we) = if end - start <= opts.fragment_size {
-                (start, end)
-            } else {
-                // long sentence: anchor at the sentence boundary and cut to
-                // fragment_size at a word boundary; slide only when the best
-                // match is further in than one fragment.
-                let best = ranges
-                    .iter()
-                    .filter(|span| span.start < end && span.end > start)
-                    .max_by(|a, b| {
-                        a.weight
-                            .total_cmp(&b.weight)
-                            .then_with(|| b.start.cmp(&a.start))
-                    })
-                    .unwrap();
-                let half = opts.fragment_size / 2;
-                let anchored_we = snap_up(text, (start + opts.fragment_size).min(end));
-                if best.start < anchored_we {
-                    (start, anchored_we)
-                } else {
-                    (
-                        snap_word_down(text, best.start.saturating_sub(half)),
-                        snap_word_up(text, (best.end + half).min(end)),
-                    )
-                }
-            };
-            build_snippet(text, ws, we, ranges, opts)
+        .filter_map(|(start, end)| {
+            let (ws, we) = sentence_window(text, ranges, start, end, opts)?;
+            Some(build_snippet(text, ws, we, ranges, opts))
         })
         .collect()
 }
 
+fn sentence_window(
+    text: &str,
+    ranges: &[Span],
+    start: usize,
+    end: usize,
+    opts: &HighlightFieldOptions,
+) -> Option<(usize, usize)> {
+    if end.saturating_sub(start) <= opts.fragment_size {
+        return Some((start, end));
+    }
+    // long sentence: anchor at the sentence boundary and cut to
+    // fragment_size at a word boundary; slide only when the best
+    // match is further in than one fragment.
+    let best = ranges
+        .iter()
+        .filter(|span| span.start < end && span.end > start)
+        .max_by(|a, b| {
+            a.weight
+                .total_cmp(&b.weight)
+                .then_with(|| b.start.cmp(&a.start))
+        })?;
+    let half = opts.fragment_size / 2;
+    let anchored_we = snap_up(text, start.saturating_add(opts.fragment_size).min(end));
+    if best.start < anchored_we {
+        Some((start, anchored_we))
+    } else {
+        Some((
+            snap_word_down(text, best.start.saturating_sub(half)),
+            snap_word_up(text, best.end.saturating_add(half).min(end)),
+        ))
+    }
+}
 fn split_sentences(text: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for (offset, sentence) in text.split_sentence_bound_indices() {
@@ -391,22 +388,22 @@ fn split_sentences(text: &str) -> Vec<(usize, usize)> {
         if trimmed.is_empty() {
             continue;
         }
-        let lead = sentence.len() - sentence.trim_start().len();
-        let start = offset + lead;
-        out.push((start, start + trimmed.len()));
+        let lead = sentence.len().saturating_sub(sentence.trim_start().len());
+        let start = offset.saturating_add(lead);
+        out.push((start, start.saturating_add(trimmed.len())));
     }
     out
 }
 
 //these two so that doesnt get cut off mid-word
-fn snap_down(text: &str, mut i: usize) -> usize {
+const fn snap_down(text: &str, mut i: usize) -> usize {
     while i > 0 && !text.is_char_boundary(i) {
         i -= 1;
     }
     i
 }
 
-fn snap_up(text: &str, mut i: usize) -> usize {
+const fn snap_up(text: &str, mut i: usize) -> usize {
     while i < text.len() && !text.is_char_boundary(i) {
         i += 1;
     }
@@ -415,22 +412,21 @@ fn snap_up(text: &str, mut i: usize) -> usize {
 
 fn snap_word_down(text: &str, i: usize) -> usize {
     let i = snap_down(text, i);
-    for (idx, c) in text[..i].char_indices().rev() {
-        if c.is_whitespace() {
-            return idx + c.len_utf8();
-        }
-    }
-    0
+    text.get(..i)
+        .unwrap_or_default()
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| c.is_whitespace())
+        .map_or(0, |(idx, c)| idx + c.len_utf8())
 }
 
 fn snap_word_up(text: &str, i: usize) -> usize {
     let i = snap_up(text, i);
-    for (idx, c) in text[i..].char_indices() {
-        if c.is_whitespace() {
-            return i + idx;
-        }
-    }
-    text.len()
+    text.get(i..)
+        .unwrap_or_default()
+        .char_indices()
+        .find(|&(_, c)| c.is_whitespace())
+        .map_or(text.len(), |(idx, _)| i + idx)
 }
 
 //stupid smart function that combines spans that are in the same window
@@ -451,6 +447,14 @@ fn fragment_windows(text: &str, spans: &[Span], fragment_size: usize) -> Vec<(us
     windows
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "byte lengths only feed a heuristic closeness score"
+)]
+fn ratio(num: usize, den: usize) -> f32 {
+    num as f32 / den.max(1) as f32
+}
+
 const DENSITY_BOOST: f32 = 0.5;
 //score for multiple spans in a single region
 fn region_score(spans: &[Span], start: usize, end: usize, fragment_size: usize) -> f32 {
@@ -468,8 +472,8 @@ fn region_score(spans: &[Span], start: usize, end: usize, fragment_size: usize) 
         return 0.0;
     }
     let extent = last.saturating_sub(first).max(1);
-    let closeness = 1.0 - (extent as f32 / fragment_size.max(1) as f32);
-    total * (1.0 + DENSITY_BOOST * closeness.max(0.0))
+    let closeness = 1.0 - ratio(extent, fragment_size);
+    total * DENSITY_BOOST.mul_add(closeness.max(0.0), 1.0)
 }
 
 fn top_regions(
@@ -493,6 +497,7 @@ fn top_regions(
         .collect()
 }
 
+#[must_use]
 pub fn field_texts(value: &OwnedValue, path: &str) -> Vec<String> {
     match walk_path(value, path) {
         Some(OwnedValue::String(s)) => vec![s.clone()],

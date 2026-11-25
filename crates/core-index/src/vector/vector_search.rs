@@ -34,7 +34,7 @@ pub struct SegmentVectors {
 
 impl SegmentVectors {
     /// Vectors without a graph; the graph is attached later, once built.
-    pub fn new(segment: PathBuf, xpath: XPathId, file: Arc<VectorFile>) -> Self {
+    pub const fn new(segment: PathBuf, xpath: XPathId, file: Arc<VectorFile>) -> Self {
         Self {
             segment,
             xpath,

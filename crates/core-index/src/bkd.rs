@@ -28,18 +28,13 @@ impl Bkd {
     }
 
     //top-k doc ids + values, in the requested order (lowest-first when ascending)
-    pub fn top(&self, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
-        let mut out = Vec::with_capacity(k.min(self.points.len()));
+        pub fn top(&self, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
+        let unpacked = |&(packed, doc_id): &(u64, DocId)| (doc_id, unpack(packed, self.kind));
         if descending {
-            for (packed, doc_id) in self.points.iter().rev().take(k) {
-                out.push((*doc_id, unpack(*packed, self.kind)));
-            }
+            self.points.iter().rev().take(k).map(unpacked).collect()
         } else {
-            for (packed, doc_id) in self.points.iter().take(k) {
-                out.push((*doc_id, unpack(*packed, self.kind)));
-            }
+            self.points.iter().take(k).map(unpacked).collect()
         }
-        out
     }
 
     pub fn from_packed(kind: NumericKind, points: Vec<(u64, DocId)>) -> Result<Self, &'static str> {
@@ -62,15 +57,15 @@ impl Bkd {
         )
     }
 
-    pub fn kind(&self) -> NumericKind {
+    pub const fn kind(&self) -> NumericKind {
         self.kind
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.points.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 
@@ -92,37 +87,33 @@ impl Bkd {
     }
 
     //Doc ids whose value lies inside the bounds, ascending and deduped.
-    pub fn range(&self, lo: Option<NumericBound>, hi: Option<NumericBound>) -> RoaringTreemap {
-        let start = match lo {
-            Some(lo) => {
-                let bound = pack(lo.value);
-                if lo.inclusive {
-                    self.points.partition_point(|point| point.0 < bound)
-                } else {
-                    self.points.partition_point(|point| point.0 <= bound)
-                }
+        pub fn range(&self, lo: Option<NumericBound>, hi: Option<NumericBound>) -> RoaringTreemap {
+        let start = lo.map_or(0, |lo| {
+            let bound = pack(lo.value);
+            if lo.inclusive {
+                self.points.partition_point(|point| point.0 < bound)
+            } else {
+                self.points.partition_point(|point| point.0 <= bound)
             }
-            None => 0,
-        };
+        });
 
-        let end = match hi {
-            Some(hi) => {
-                let bound = pack(hi.value);
-                if hi.inclusive {
-                    self.points.partition_point(|point| point.0 <= bound)
-                } else {
-                    self.points.partition_point(|point| point.0 < bound)
-                }
+        let end = hi.map_or(self.points.len(), |hi| {
+            let bound = pack(hi.value);
+            if hi.inclusive {
+                self.points.partition_point(|point| point.0 <= bound)
+            } else {
+                self.points.partition_point(|point| point.0 < bound)
             }
-            None => self.points.len(),
-        };
+        });
 
         if start >= end {
             return RoaringTreemap::new();
         }
 
         // docs are sorted here cuz the original array is sorted by value
-        self.points[start..end]
+        self.points
+            .get(start..end)
+            .unwrap_or_default()
             .iter()
             .map(|point| point.1)
             .collect()

@@ -12,8 +12,8 @@ use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
 use core_index::analyzer::text_analyzer::AnalyzerSet;
 use core_index::document::all_fields::AllFields;
-use core_index::document::policy::FieldKind;
-use core_index::document::{FieldPolicy, IndexPolicy};
+use core_index::document::policy::{FieldKind, FieldPolicy};
+use core_index::document::IndexPolicy;
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, select_expansions};
 use core_index::lsm::index_worker::Phase;
 use core_index::numeric_values::NumericValue;
@@ -202,7 +202,7 @@ impl ShardManager {
     ) -> Result<Self, CorelamoError> {
         if shard_count == 0 {
             return Err(CorelamoError::InvalidData(
-                "num_shards must be > 0".to_string(),
+                "num_shards must be > 0".to_owned(),
             ));
         }
 
@@ -630,7 +630,7 @@ impl ShardManager {
     pub async fn retrieve_one(&self, id: &str) -> Result<Option<StoredDocument>, CorelamoError> {
         let shard_idx = self.shard_index_for(id);
         let docs = self.shards[shard_idx]
-            .get_document_direct(&[id.to_string()])
+            .get_document_direct(&[id.to_owned()])
             .await?;
         Ok(docs.into_iter().next().and_then(|(_, doc)| doc))
     }
@@ -777,7 +777,7 @@ impl ShardManager {
         &self.root
     }
 
-    pub fn shard_count(&self) -> usize {
+    pub const fn shard_count(&self) -> usize {
         self.shards.len()
     }
 
@@ -918,7 +918,7 @@ impl ShardManager {
         self.update_all_fields_from_policy()?;
 
         Ok(changed
-            .then(|| "policy changed; reindex required to apply to existing documents".to_string()))
+            .then(|| "policy changed; reindex required to apply to existing documents".to_owned()))
     }
 
     #[timed(database_lifecycle)]
@@ -1835,7 +1835,7 @@ impl ShardManager {
         let mut set = JoinSet::new();
         for handle in &self.shards {
             let handle = handle.clone();
-            let value = value.to_string();
+            let value = value.to_owned();
             let xpaths = Arc::clone(&xpaths);
             let analyzers_map = analyzers_map.clone();
 
@@ -1990,13 +1990,13 @@ impl ShardManager {
         for piece in value.split_whitespace() {
             let Some(token) = analyzer.analyze_query(piece).into_iter().next() else {
                 //stopword: not searchable, keep it as typed.
-                pieces.push(piece.to_string());
+                pieces.push(piece.to_owned());
                 continue;
             };
 
             // `get`, not `remove`: a typo typed twice is corrected both times
             let Some(found) = by_word.get(&token.text) else {
-                pieces.push(piece.to_string());
+                pieces.push(piece.to_owned());
                 continue;
             };
 
@@ -2007,7 +2007,7 @@ impl ShardManager {
                     pieces.push(top.clone());
                 }
                 _ => {
-                    pieces.push(piece.to_string());
+                    pieces.push(piece.to_owned());
                     continue;
                 }
             }
@@ -2021,11 +2021,11 @@ impl ShardManager {
         let corrected = if changed {
             pieces.join(" ")
         } else {
-            value.to_string()
+            value.to_owned()
         };
 
         Ok(DidYouMeanReport {
-            original: value.to_string(),
+            original: value.to_owned(),
             corrected,
             words: reported,
             confident: changed && all_confident,
@@ -2508,12 +2508,12 @@ impl ShardManager {
                     continue;
                 }
                 let ok = if is_full {
-                    this.backup_full("System".to_string()).await.is_ok()
+                    this.backup_full("System".to_owned()).await.is_ok()
                 } else {
-                    match this.backup_incremental("System".to_string()).await {
+                    match this.backup_incremental("System".to_owned()).await {
                         Ok(_) => true,
                         // no base backup, or store compaction ran since: take a full one instead
-                        Err(_) => this.backup_full("System".to_string()).await.is_ok(),
+                        Err(_) => this.backup_full("System".to_owned()).await.is_ok(),
                     }
                 };
                 this.finish_backup(ok);
@@ -2729,7 +2729,7 @@ struct CompiledSearch {
 }
 
 impl CompiledSearch {
-    fn shard_request(&self) -> usize {
+    const fn shard_request(&self) -> usize {
         if self.sorts.is_some() {
             self.window
         } else {

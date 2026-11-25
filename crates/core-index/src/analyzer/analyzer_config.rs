@@ -37,77 +37,78 @@ pub enum Language {
 }
 
 impl Language {
-    pub fn name(self) -> &'static str {
-        use Language as L;
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        
         match self {
-            L::Arabic => "arabic",
-            L::Danish => "danish",
-            L::Dutch => "dutch",
-            L::English => "english",
-            L::Finnish => "finnish",
-            L::French => "french",
-            L::German => "german",
-            L::Greek => "greek",
-            L::Hungarian => "hungarian",
-            L::Italian => "italian",
-            L::Norwegian => "norwegian",
-            L::Portuguese => "portuguese",
-            L::Romanian => "romanian",
-            L::Russian => "russian",
-            L::Spanish => "spanish",
-            L::Swedish => "swedish",
-            L::Tamil => "tamil",
-            L::Turkish => "turkish",
+            Self::Arabic => "arabic",
+            Self::Danish => "danish",
+            Self::Dutch => "dutch",
+            Self::English => "english",
+            Self::Finnish => "finnish",
+            Self::French => "french",
+            Self::German => "german",
+            Self::Greek => "greek",
+            Self::Hungarian => "hungarian",
+            Self::Italian => "italian",
+            Self::Norwegian => "norwegian",
+            Self::Portuguese => "portuguese",
+            Self::Romanian => "romanian",
+            Self::Russian => "russian",
+            Self::Spanish => "spanish",
+            Self::Swedish => "swedish",
+            Self::Tamil => "tamil",
+            Self::Turkish => "turkish",
         }
     }
 
+    #[must_use]
     pub fn from_name(s: &str) -> Option<Self> {
-        use Language as L;
+        
         Some(match s.to_ascii_lowercase().as_str() {
-            "arabic" => L::Arabic,
-            "danish" => L::Danish,
-            "dutch" => L::Dutch,
-            "english" => L::English,
-            "finnish" => L::Finnish,
-            "french" => L::French,
-            "german" => L::German,
-            "greek" => L::Greek,
-            "hungarian" => L::Hungarian,
-            "italian" => L::Italian,
-            "norwegian" => L::Norwegian,
-            "portuguese" => L::Portuguese,
-            "romanian" => L::Romanian,
-            "russian" => L::Russian,
-            "spanish" => L::Spanish,
-            "swedish" => L::Swedish,
-            "tamil" => L::Tamil,
-            "turkish" => L::Turkish,
+            "arabic" => Self::Arabic,
+            "danish" =>Self::Danish,
+            "dutch" => Self::Dutch,
+            "english" => Self::English,
+            "finnish" => Self::Finnish,
+            "french" => Self::French,
+            "german" => Self::German,
+            "greek" => Self::Greek,
+            "hungarian" => Self::Hungarian,
+            "italian" => Self::Italian,
+            "norwegian" => Self::Norwegian,
+            "portuguese" => Self::Portuguese,
+            "romanian" => Self::Romanian,
+            "russian" => Self::Russian,
+            "spanish" => Self::Spanish,
+            "swedish" => Self::Swedish,
+            "tamil" => Self::Tamil,
+            "turkish" => Self::Turkish,
             _ => return None,
         })
     }
-
-    pub fn algorithm(self) -> rust_stemmers::Algorithm {
-        use Language as L;
+    #[must_use]
+    pub const fn algorithm(self) -> rust_stemmers::Algorithm {
         use rust_stemmers::Algorithm as A;
         match self {
-            L::Arabic => A::Arabic,
-            L::Danish => A::Danish,
-            L::Dutch => A::Dutch,
-            L::English => A::English,
-            L::Finnish => A::Finnish,
-            L::French => A::French,
-            L::German => A::German,
-            L::Greek => A::Greek,
-            L::Hungarian => A::Hungarian,
-            L::Italian => A::Italian,
-            L::Norwegian => A::Norwegian,
-            L::Portuguese => A::Portuguese,
-            L::Romanian => A::Romanian,
-            L::Russian => A::Russian,
-            L::Spanish => A::Spanish,
-            L::Swedish => A::Swedish,
-            L::Tamil => A::Tamil,
-            L::Turkish => A::Turkish,
+            Self::Arabic => A::Arabic,
+            Self::Danish => A::Danish,
+            Self::Dutch => A::Dutch,
+            Self::English => A::English,
+            Self::Finnish => A::Finnish,
+            Self::French => A::French,
+            Self::German => A::German,
+            Self::Greek => A::Greek,
+            Self::Hungarian => A::Hungarian,
+            Self::Italian => A::Italian,
+            Self::Norwegian => A::Norwegian,
+            Self::Portuguese => A::Portuguese,
+            Self::Romanian => A::Romanian,
+            Self::Russian => A::Russian,
+            Self::Spanish => A::Spanish,
+            Self::Swedish => A::Swedish,
+            Self::Tamil => A::Tamil,
+            Self::Turkish => A::Turkish,
         }
     }
 }
@@ -121,7 +122,7 @@ impl Serialize for Language {
 impl<'de> Deserialize<'de> for Language {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        Language::from_name(&s)
+        Self::from_name(&s)
             .ok_or_else(|| serde::de::Error::custom(format!("unknown language '{s}'")))
     }
 }
@@ -187,6 +188,7 @@ impl Default for AnalyzerConfig {
 
 impl AnalyzerConfig {
     //when a user removes $default we hardcode just in case
+    #[must_use]
     pub fn builtin_default() -> Self {
         Self {
             stemming: Some(Language::English),

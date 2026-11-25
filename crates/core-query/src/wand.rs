@@ -36,6 +36,7 @@ pub struct WandTerm<'a> {
 }
 
 impl<'a> WandTerm<'a> {
+    #[must_use]
     pub fn new(cursor: TermCursor<'a>, doc_freq: u32, max_weight: u16, doc_count: u64) -> Self {
         Self {
             cursor,
@@ -49,7 +50,87 @@ pub struct FieldTerms<'a> {
     pub xpath: XPathId,
     pub terms: Vec<TermRef<'a>>,
 }
+/// Per searched field: its xpath, document count and average document length.
+type FieldStat = (XPathId, u64, f64);
+/// The first term whose summed upper bounds can reach `threshold`.
+fn pivot_position(terms: &[MultiFieldTerm<'_>], threshold: u64) -> Option<usize> {
+    let mut accumulated = 0u64;
+    terms.iter().position(|term| {
+        accumulated = accumulated.saturating_add(term.upper_bound);
+        accumulated >= threshold && accumulated > 0
+    })
+}
 
+/// Block-max: if the blocks the first `on_pivot` terms are in cannot beat the threshold together,
+/// no doc up to the end of the shortest of them can either: the doc to jump to.
+fn block_skip_target(
+    terms: &[MultiFieldTerm<'_>],
+    on_pivot: usize,
+    pivot_doc: DocId,
+    threshold: u64,
+    field_stats: &[FieldStat],
+) -> Option<DocId> {
+    let mut block_bound = 0u64;
+    let mut skip_to = terms.get(on_pivot).and_then(|term| term.cursor.doc_id());
+    for term in terms.iter().take(on_pivot) {
+        // no block bound (memory lists, unions, unknown doc lengths): the term's
+        // whole-list bound, which holds for every doc and does not limit the skip
+        let Some(entry) = term.cursor.block_entry().filter(|e| e.min_doc_len > 0) else {
+            block_bound = block_bound.saturating_add(term.upper_bound);
+            continue;
+        };
+        let &(_, doc_count, avg_doc_len) = field_stats.get(term.field)?;
+        block_bound = block_bound.saturating_add(bm25_score_scaled(
+            entry.max_tf,
+            entry.max_weight,
+            Some(entry.min_doc_len),
+            avg_doc_len,
+            doc_count,
+            term.doc_freq,
+        ));
+        let after_block = entry.last_doc_id.saturating_add(1);
+        skip_to = Some(skip_to.map_or(after_block, |known| known.min(after_block)));
+    }
+    // `skip > pivot_doc`: a skip must move forward, or the loop would not end
+    skip_to.filter(|&skip| block_bound < threshold && skip > pivot_doc)
+}
+
+/// The summed score and the number of terms of the document the cursors are on.
+fn score_pivot<S: SearchStats>(
+    stats: &S,
+    terms: &mut [MultiFieldTerm<'_>],
+    field_stats: &[FieldStat],
+    doc_len_cache: &mut [Option<Option<u32>>],
+    pivot_doc: DocId,
+) -> (u64, usize) {
+    doc_len_cache.fill(None);
+    let mut score = 0u64;
+    let mut matched_terms = 0usize;
+    for term in terms {
+        if term.cursor.doc_id() != Some(pivot_doc) {
+            continue;
+        }
+        let Some(&(xpath, doc_count, avg_doc_len)) = field_stats.get(term.field) else {
+            continue;
+        };
+        let doc_len = match doc_len_cache.get_mut(term.field) {
+            Some(slot) => *slot.get_or_insert_with(|| stats.doc_len(pivot_doc, xpath)),
+            None => stats.doc_len(pivot_doc, xpath),
+        };
+        score = score.saturating_add(bm25_score_scaled(
+            term.cursor.term_freq(),
+            term.cursor.weight(),
+            doc_len,
+            avg_doc_len,
+            doc_count,
+            term.doc_freq,
+        ));
+        matched_terms += 1;
+    }
+    (score, matched_terms)
+}
+/// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
+/// Each pair is an independent WAND cursor scored with its own field's statistics.
 /// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
 /// Each pair is an independent WAND cursor scored with its own field's statistics.
 #[timed(search)]
@@ -63,7 +144,7 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
         return Vec::new();
     }
 
-    let field_stats: Vec<_> = fields
+    let field_stats: Vec<FieldStat> = fields
         .iter()
         .map(|field| {
             (
@@ -73,10 +154,10 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
             )
         })
         .collect();
-    let field_count = fields.len();
     let mut terms: Vec<MultiFieldTerm<'a>> = Vec::new();
-    for (field_index, field) in fields.into_iter().enumerate() {
-        let doc_count = field_stats[field_index].1;
+    for (field_index, (field, &(_, doc_count, _))) in
+        fields.into_iter().zip(&field_stats).enumerate()
+    {
         for term in field.terms {
             if term.cursor.is_exhausted() {
                 continue;
@@ -90,15 +171,15 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
         }
     }
 
-    let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
-    let mut doc_len_cache: Vec<Option<Option<u32>>> = vec![None; field_count];
+    let mut heap = BinaryHeap::<HeapHit>::with_capacity(k.saturating_add(1));
+    let mut doc_len_cache: Vec<Option<Option<u32>>> = vec![None; field_stats.len()];
 
     loop {
         terms.retain(|term| !term.cursor.is_exhausted());
         if terms.is_empty() {
             break;
         }
-        terms.sort_unstable_by_key(|term| term.cursor.doc_id().unwrap());
+        terms.sort_unstable_by_key(|term| term.cursor.doc_id());
 
         let threshold = if heap.len() < k {
             0
@@ -106,21 +187,15 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
             heap.peek().map_or(0, |hit| hit.score)
         };
 
-        let mut accumulated_upper_bound = 0u64;
-        let mut pivot_index = None;
-        for (index, term) in terms.iter().enumerate() {
-            accumulated_upper_bound = accumulated_upper_bound.saturating_add(term.upper_bound);
-            if accumulated_upper_bound >= threshold && accumulated_upper_bound > 0 {
-                pivot_index = Some(index);
-                break;
-            }
-        }
-        let Some(pivot_index) = pivot_index else {
+        let Some(pivot_index) = pivot_position(&terms, threshold) else {
             break;
         };
-
-        let mut pivot_doc = terms[pivot_index].cursor.doc_id().unwrap();
-        let smallest_doc = terms[0].cursor.doc_id().unwrap();
+        let (Some(mut pivot_doc), Some(smallest_doc)) = (
+            terms.get(pivot_index).and_then(|term| term.cursor.doc_id()),
+            terms.first().and_then(|term| term.cursor.doc_id()),
+        ) else {
+            break;
+        };
         if let Some(allowed) = restrict {
             let Some(next) = next_allowed(allowed, pivot_doc) else {
                 break;
@@ -135,70 +210,24 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                 .take_while(|term| term.cursor.doc_id() == Some(pivot_doc))
                 .count();
 
-            // block-max: if the blocks these terms are in cannot beat the threshold together,
-            // no doc up to the end of the shortest of them can either: jump past it
-            if threshold > 0 {
-                let mut block_bound = 0u64;
-                let mut skip_to = terms.get(on_pivot).and_then(|term| term.cursor.doc_id());
-                for term in &terms[..on_pivot] {
-                    // no block bound (memory lists, unions, unknown doc lengths): the term's
-                    // whole-list bound, which holds for every doc and does not limit the skip
-                    let Some(entry) = term.cursor.block_entry().filter(|e| e.min_doc_len > 0)
-                    else {
-                        block_bound = block_bound.saturating_add(term.upper_bound);
-                        continue;
-                    };
-                    let (_, doc_count, avg_doc_len) = field_stats[term.field];
-                    block_bound = block_bound.saturating_add(bm25_score_scaled(
-                        entry.max_tf,
-                        entry.max_weight,
-                        Some(entry.min_doc_len),
-                        avg_doc_len,
-                        doc_count,
-                        term.doc_freq,
-                    ));
-                    let after_block = entry.last_doc_id.saturating_add(1);
-                    skip_to = Some(skip_to.map_or(after_block, |known| known.min(after_block)));
+            if threshold > 0
+                && let Some(skip_to) =
+                    block_skip_target(&terms, on_pivot, pivot_doc, threshold, &field_stats)
+            {
+                for term in terms.iter_mut().take(on_pivot) {
+                    term.cursor.advance_to(skip_to);
                 }
-                // `skip_to > pivot_doc`: a skip must move forward, or the loop would not end
-                if block_bound < threshold
-                    && let Some(skip_to) = skip_to
-                    && skip_to > pivot_doc
-                {
-                    for term in &mut terms[..on_pivot] {
-                        term.cursor.advance_to(skip_to);
-                    }
-                    continue;
-                }
+                continue;
             }
 
-            if restrict
-                .as_ref()
-                .is_none_or(|docs| docs.contains(pivot_doc))
-            {
-                doc_len_cache.fill(None);
-                let mut score = 0u64;
-                let mut matched_terms = 0usize;
-
-                for term in &mut terms {
-                    if term.cursor.doc_id() != Some(pivot_doc) {
-                        continue;
-                    }
-                    let (xpath, doc_count, avg_doc_len) = field_stats[term.field];
-                    let doc_len = *doc_len_cache[term.field]
-                        .get_or_insert_with(|| stats.doc_len(pivot_doc, xpath));
-                   
-
-                    score = score.saturating_add(bm25_score_scaled(
-                        term.cursor.term_freq(),
-                        term.cursor.weight(),
-                        doc_len,
-                        avg_doc_len,
-                        doc_count,
-                        term.doc_freq,
-                    ));
-                    matched_terms += 1;
-                }
+            if restrict.is_none_or(|docs| docs.contains(pivot_doc)) {
+                let (score, matched_terms) = score_pivot(
+                    stats,
+                    &mut terms,
+                    &field_stats,
+                    &mut doc_len_cache,
+                    pivot_doc,
+                );
                 push_top_k(&mut heap, pivot_doc, score, score, matched_terms, k);
             }
 
@@ -266,9 +295,8 @@ impl<'a> FieldConjunction<'a> {
             let target = self
                 .terms
                 .iter()
-                .map(|term| term.cursor.doc_id().unwrap())
-                .max()
-                .unwrap();
+                .filter_map(|term| term.cursor.doc_id())
+                .max()?;
 
             for term in &mut self.terms {
                 term.cursor.advance_to(target);
@@ -329,10 +357,10 @@ pub fn conjunctive_top_k_multi_field<'a, S: SearchStats>(
         .map(FieldConjunction::next_match)
         .collect();
 
-    let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
+    let mut heap = BinaryHeap::<HeapHit>::with_capacity(k.saturating_add(1));
 
     while let Some(doc_id) = current.iter().flatten().min().copied() {
-        if restrict.as_ref().is_none_or(|docs| docs.contains(doc_id)) {
+        if restrict.is_none_or(|docs| docs.contains(doc_id)) {
             let mut score = 0u64;
             let mut matched_terms = 0usize;
 
@@ -420,9 +448,9 @@ pub fn wand_top_k_grouped_with_any<'a, S: SearchStats>(
 
 /// `wand_top_k_grouped_with_any` without the extra "any" list.
 #[timed(search)]
-pub fn wand_top_k_grouped<'a, S: SearchStats>(
+pub fn wand_top_k_grouped<S: SearchStats>(
     stats: &S,
-    fields: Vec<FieldClauses<'a>>,
+    fields: Vec<FieldClauses<'_>>,
     k: usize,
     coverage: Option<f32>,
     restrict: Option<&RoaringTreemap>,

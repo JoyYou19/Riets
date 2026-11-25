@@ -1,24 +1,20 @@
-use std::{
-    collections::BTreeMap,
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{ collections::BTreeMap, fs, io, path::{ Path, PathBuf } };
 
 use crate::{
     analyzer::{
         Analyzer,
         text_analyzer::AnalyzerSet,
-        analyzer_config::{AnalyzerConfig, CharFilter},
+        analyzer_config::{ AnalyzerConfig, CharFilter },
     },
     datetimes::validate_date_format,
-    numeric_values::{parse_float, parse_integer},
+    numeric_values::{ parse_float, parse_integer },
     types::XPathId,
     write_atomically,
 };
-use ahash::{HashMap, HashMapExt, HashSet};
+use ahash::{ HashMap, HashMapExt, HashSet };
 use core_timing::timed;
 use indexmap::IndexMap;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{ Deserialize, Deserializer, Serialize, Serializer };
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,9 +28,8 @@ impl WeightInterval {
     pub const TEXT: Self = Self { min: 1, max: 75 };
     pub const DEFAULT: Self = Self { min: 0, max: 100 };
 
-    pub fn new(min: u16, max: u16) -> Self {
-        assert!(min <= max, "weight interval min must be <= max");
-        Self { min, max }
+    pub fn new(min: u16, max: u16) -> Option<Self> {
+        (min <= max).then_some(Self { min, max })
     }
 }
 
@@ -50,7 +45,7 @@ pub struct FieldPolicy {
     pub weight: WeightInterval,
     pub exact: bool,
     pub repeated: bool, // array of strings nums/bools
-    pub subfields: Vec<FieldPolicy>,
+    pub subfields: Vec<Self>,
     pub full_path: String,
     pub analyzer: Option<String>,
     pub row_keyed: bool,
@@ -65,10 +60,12 @@ impl Serialize for FieldPolicy {
         if self.repeated {
             use serde::ser::SerializeSeq;
             let mut seq = s.serialize_seq(Some(1))?;
-            seq.serialize_element(&Self {
-                repeated: false,
-                ..self.clone()
-            })?;
+            seq.serialize_element(
+                &(Self {
+                    repeated: false,
+                    ..self.clone()
+                })
+            )?;
             seq.end()
         } else {
             use serde::ser::SerializeMap;
@@ -123,7 +120,7 @@ impl FieldPolicy {
     fn leaf(name: &str, kind: FieldKind) -> Self {
         let defaults = kind.defaults();
         Self {
-            name: name.to_string(),
+            name: name.to_owned(),
             kind,
             searchable: defaults.searchable,
             list: defaults.list,
@@ -132,18 +129,18 @@ impl FieldPolicy {
             exact: defaults.exact,
             repeated: false,
             subfields: Vec::new(),
-            full_path: name.to_string(),
+            full_path: name.to_owned(),
             row_keyed: false,
             depth: 0,
             vector: false,
-            date_format: defaults.date_format.map(str::to_string),
+            date_format: defaults.date_format.map(str::to_owned),
         }
     }
 
-    fn struct_with(name: &str, subfields: Vec<FieldPolicy>) -> Self {
+    fn struct_with(name: &str, subfields: Vec<Self>) -> Self {
         let defaults = FieldKind::Struct.defaults();
         Self {
-            name: name.to_string(),
+            name: name.to_owned(),
             kind: FieldKind::Struct,
             searchable: defaults.searchable,
             list: defaults.list,
@@ -152,7 +149,7 @@ impl FieldPolicy {
             exact: defaults.exact,
             repeated: false,
             subfields,
-            full_path: name.to_string(),
+            full_path: name.to_owned(),
             row_keyed: false,
             depth: 0,
             vector: false,
@@ -162,47 +159,54 @@ impl FieldPolicy {
 
     fn from_json(name: &str, value: &Value) -> Result<Self, String> {
         if name.is_empty() {
-            return Err("field name must not be empty".to_string());
+            return Err("field name must not be empty".to_owned());
         }
         if name.contains('/') {
             return Err(format!("field name '{name}' must not contain '/'"));
         }
         match value {
             Value::String(s) => {
-                let kind = kind_from_str(s)
-                    .ok_or_else(|| format!("field '{name}': unknown type '{s}'"))?;
+                let kind = kind_from_str(s).ok_or_else(||
+                    format!("field '{name}': unknown type '{s}'")
+                )?;
                 Ok(Self::leaf(name, kind))
             }
 
-            Value::Object(obj) => match obj.get("$type").and_then(Value::as_str) {
-                Some("struct") => Self::struct_from_obj(name, obj),
-                Some(t) => Self::leaf_from_obj(name, t, obj),
-                None => Self::struct_from_obj(name, obj),
-            },
+            Value::Object(obj) =>
+                match obj.get("$type").and_then(Value::as_str) {
+                    Some("struct") | None => Self::struct_from_obj(name, obj),
+                    Some(t) => Self::leaf_from_obj(name, t, obj),
+                }
 
             Value::Array(items) => {
                 if items.len() != 1 {
-                    return Err(format!(
-                        "repeated field '{name}' needs exactly one element, got {}",
-                        items.len()
-                    ));
+                    return Err(
+                        format!(
+                            "repeated field '{name}' needs exactly one element, got {}",
+                            items.len()
+                        )
+                    );
                 }
-                let mut f = Self::from_json(name, &items[0])?;
+                let first = items.first().ok_or_else(|| format!("field {name} has no items"))?;
+                let mut f = Self::from_json(name, first)?;
                 f.repeated = true;
                 Ok(f)
             }
 
-            other => Err(format!(
-                "field '{name}': expected a string, object or array, got {}",
-                json_kind_name(other)
-            )),
+            other =>
+                Err(
+                    format!(
+                        "field '{name}': expected a string, object or array, got {}",
+                        json_kind_name(other)
+                    )
+                ),
         }
     }
 
     fn leaf_from_obj(
         name: &str,
         type_str: &str,
-        obj: &serde_json::Map<String, Value>,
+        obj: &serde_json::Map<String, Value>
     ) -> Result<Self, String> {
         //for something like $is_big: true reject
         reject_unknown_setting(
@@ -217,16 +221,15 @@ impl FieldPolicy {
                 "$vector",
                 "$format",
             ],
-            name,
+            name
         )?;
 
-        let kind = kind_from_str(type_str)
-            .ok_or_else(|| format!("field '{name}': unknown type '{type_str}'"))?;
+        let kind = kind_from_str(type_str).ok_or_else(||
+            format!("field '{name}': unknown type '{type_str}'")
+        )?;
         let mut f = Self::leaf(name, kind);
         if let Some(e) = obj.get("$exact") {
-            f.exact = e
-                .as_bool()
-                .ok_or_else(|| format!("field '{name}': $exact must be a bool"))?;
+            f.exact = e.as_bool().ok_or_else(|| format!("field '{name}': $exact must be a bool"))?;
         }
         if let Some(b) = obj.get("$searchable") {
             f.searchable = b
@@ -234,16 +237,15 @@ impl FieldPolicy {
                 .ok_or_else(|| format!("field '{name}': $searchable must be a bool"))?;
         }
         if let Some(b) = obj.get("$list") {
-            f.list = b
-                .as_bool()
-                .ok_or_else(|| format!("field '{name}': $list must be a bool"))?;
+            f.list = b.as_bool().ok_or_else(|| format!("field '{name}': $list must be a bool"))?;
         }
 
         if let Some(a) = obj.get("$analyzer") {
             f.analyzer = Some(
-                a.as_str()
+                a
+                    .as_str()
                     .ok_or_else(|| format!("field '{name}': $analyzer must be a string"))?
-                    .to_string(),
+                    .to_owned()
             );
         }
 
@@ -260,18 +262,21 @@ impl FieldPolicy {
             let fmt = fmt
                 .as_str()
                 .ok_or_else(|| format!("field '{name}': $format must be a string"))?
-                .to_string();
+                .to_owned();
             if kind != FieldKind::DateTime {
-                return Err(format!(
-                    "field '{name}': $format is only valid on a date field (got {})",
-                    kind.label()
-                ));
+                return Err(
+                    format!(
+                        "field '{name}': $format is only valid on a date field (got {})",
+                        kind.label()
+                    )
+                );
             }
-            validate_date_format(&fmt)
-                .map_err(|e| format!("field '{name}': invalid $format: {e}"))?;
+            validate_date_format(&fmt).map_err(|e|
+                format!("field '{name}': invalid $format: {e}")
+            )?;
             f.date_format = Some(fmt);
         } else if kind == FieldKind::DateTime {
-            f.date_format = Some("YYYY-MM-DD".into())
+            f.date_format = Some("YYYY-MM-DD".into());
         }
 
         Ok(f)
@@ -299,36 +304,35 @@ impl FieldPolicy {
         Ok(f)
     }
 
+    #[allow(
+        clippy::panic,
+        reason = "invariant: IndexPolicy::resolve() registers every field's xpath; a miss is a bug"
+    )]
     pub fn xpath(&self, policy: &IndexPolicy) -> XPathId {
         policy
             .xpath_of(&self.full_path)
             .unwrap_or_else(|| panic!("field '{}' has no registered xpath", self.full_path))
     }
 
-    pub fn searchable(&self) -> bool {
+    pub const fn searchable(&self) -> bool {
         self.searchable
     }
 
     pub fn has_exact_index(&self) -> bool {
         //either text+exact or Id IdAuto
-        (self.kind == FieldKind::Text && self.exact)
-            || matches!(self.kind, FieldKind::Id | FieldKind::IdAuto)
+        (self.kind == FieldKind::Text && self.exact) ||
+            matches!(self.kind, FieldKind::Id | FieldKind::IdAuto)
     }
 
     pub fn exact_xpath(&self, policy: &IndexPolicy) -> Option<XPathId> {
         if !self.has_exact_index() {
             return None;
         }
-        Some(policy.exact_xpath_of(&self.full_path).unwrap_or_else(|| {
-            panic!(
-                "field '{}' has no exact xpath — IndexPolicy::resolve() should have registered it",
-                self.full_path
-            )
-        }))
+        policy.exact_xpath_of(&self.full_path)
     }
 
     // Yields the field itself if it's an indexed leaf, else recurses into Array subfields.
-    pub fn collect_leaves<'a>(&'a self, out: &mut Vec<&'a FieldPolicy>) {
+    pub fn collect_leaves<'a>(&'a self, out: &mut Vec<&'a Self>) {
         if self.kind == FieldKind::Struct {
             for sub in &self.subfields {
                 sub.collect_leaves(out);
@@ -353,8 +357,10 @@ impl Serialize for IndexPolicy {
         if !self.analyzers.is_empty() {
             m.serialize_entry("analyzers", &self.analyzers)?;
         }
-        let document: IndexMap<&str, &FieldPolicy> =
-            self.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+        let document: IndexMap<&str, &FieldPolicy> = self.fields
+            .iter()
+            .map(|f| (f.name.as_str(), f))
+            .collect();
         m.serialize_entry("document", &document)?;
         m.end()
     }
@@ -381,7 +387,7 @@ impl<'de> Deserialize<'de> for IndexPolicy {
         for (name, v) in doc_obj {
             fields.push(FieldPolicy::from_json(name, v).map_err(serde::de::Error::custom)?);
         }
-        Ok(IndexPolicy {
+        Ok(Self {
             analyzers,
             fields,
             registry: FieldRegistry::new(),
@@ -406,7 +412,10 @@ impl IndexPolicy {
         root.join(Self::REGISTRY_FILE_NAME)
     }
 
-    pub fn new(analyzers: IndexMap<String, AnalyzerConfig>, fields: Vec<FieldPolicy>) -> Self {
+    pub const fn new(
+        analyzers: IndexMap<String, AnalyzerConfig>,
+        fields: Vec<FieldPolicy>
+    ) -> Self {
         Self {
             fields,
             analyzers,
@@ -440,23 +449,26 @@ impl IndexPolicy {
 
         for field in &self.fields {
             if !names.insert(field.name.clone()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("duplicate field name '{}'", field.name),
-                ));
+                return Err(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("duplicate field name '{}'", field.name)
+                    )
+                );
             }
         }
 
-        let id_count = self
-            .fields
+        let id_count = self.fields
             .iter()
             .filter(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
             .count();
         if id_count != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("policy must have exactly one id field, found {id_count}"),
-            ));
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("policy must have exactly one id field, found {id_count}")
+                )
+            );
         }
 
         for field in &self.fields {
@@ -464,51 +476,50 @@ impl IndexPolicy {
         }
 
         for field in self.indexed_fields() {
-            if let Some(name) = &field.analyzer
-                && !self.analyzers.contains_key(name)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "field '{}' references unknown analyzer '{name}'",
-                        field.name
-                    ),
-                ));
+            if let Some(name) = &field.analyzer && !self.analyzers.contains_key(name) {
+                return Err(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("field '{}' references unknown analyzer '{name}'", field.name)
+                    )
+                );
             }
         }
 
         for (name, cfg) in &self.analyzers {
-            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length)
-                && min > max
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("analyzer '{name}': min_length {min} > max_length {max}"),
-                ));
+            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length) && min > max {
+                return Err(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("analyzer '{name}': min_length {min} > max_length {max}")
+                    )
+                );
             }
         }
 
         for (name, cfg) in &self.analyzers {
-            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length)
-                && min > max
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("analyzer '{name}': min_length {min} > max_length {max}"),
-                ));
+            if let (Some(min), Some(max)) = (cfg.min_length, cfg.max_length) && min > max {
+                return Err(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("analyzer '{name}': min_length {min} > max_length {max}")
+                    )
+                );
             }
 
             for filter in &cfg.char_filters {
                 if let CharFilter::PatternReplace { pattern_replace } = filter {
-                    regex::Regex::new(&pattern_replace.pattern).map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "analyzer '{name}': invalid pattern_replace pattern '{}': {e}",
-                                pattern_replace.pattern
-                            ),
-                        )
-                    })?;
+                    regex::Regex
+                        ::new(&pattern_replace.pattern)
+                        .map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "analyzer '{name}': invalid pattern_replace pattern '{}': {e}",
+                                    pattern_replace.pattern
+                                )
+                            )
+                        })?;
                 }
             }
         }
@@ -518,8 +529,7 @@ impl IndexPolicy {
     pub fn field_analyzers(&self, analyzers: &AnalyzerSet) -> HashMap<XPathId, Analyzer> {
         let mut map = HashMap::new();
         for field in self.searchable_fields() {
-            let analyzer = field
-                .analyzer
+            let analyzer = field.analyzer
                 .as_deref()
                 .and_then(|name| analyzers.get(name))
                 .unwrap_or_else(|| analyzers.default_analyzer())
@@ -531,7 +541,7 @@ impl IndexPolicy {
 
     pub fn default_document() -> Self {
         let mut analyzers = IndexMap::new();
-        analyzers.insert("$default".to_string(), AnalyzerConfig::builtin_default());
+        analyzers.insert("$default".to_owned(), AnalyzerConfig::builtin_default());
 
         Self::new(
             analyzers,
@@ -541,34 +551,25 @@ impl IndexPolicy {
                     weight: WeightInterval::TITLE,
                     ..FieldPolicy::new("title", FieldKind::Text)
                 },
-                FieldPolicy {
-                    ..FieldPolicy::new("body", FieldKind::Text)
-                },
+                FieldPolicy::new("body", FieldKind::Text),
                 FieldPolicy {
                     searchable: true,
                     ..FieldPolicy::new("year", FieldKind::Integer)
-                },
-            ],
+                }
+            ]
         )
     }
     pub fn id_field(&self) -> Option<&FieldPolicy> {
-        self.fields
-            .iter()
-            .find(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
+        self.fields.iter().find(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
     }
 
     pub fn analyzer_for(&self, field: &FieldPolicy) -> AnalyzerConfig {
-        if let Some(name) = &field.analyzer
-            && let Some(cfg) = self.analyzers.get(name)
-        {
+        if let Some(name) = &field.analyzer && let Some(cfg) = self.analyzers.get(name) {
             return cfg.clone();
         }
 
         //either user defined $default or the hardcoded
-        self.analyzers
-            .get("$default")
-            .cloned()
-            .unwrap_or_else(AnalyzerConfig::builtin_default)
+        self.analyzers.get("$default").cloned().unwrap_or_else(AnalyzerConfig::builtin_default)
     }
 
     pub fn indexed_fields(&self) -> Vec<&FieldPolicy> {
@@ -580,7 +581,9 @@ impl IndexPolicy {
     }
 
     pub fn has_hidden_fields(&self) -> bool {
-        self.indexed_fields().into_iter().any(|f| !f.list)
+        self.indexed_fields()
+            .into_iter()
+            .any(|f| !f.list)
     }
 
     pub fn xpath_of(&self, name: &str) -> Option<XPathId> {
@@ -636,7 +639,8 @@ impl IndexPolicy {
     }
 
     fn write_full(&self, root: impl AsRef<Path>) -> io::Result<()> {
-        let full = serde_json::to_string_pretty(&Full(self))
+        let full = serde_json
+            ::to_string_pretty(&Full(self))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomically(&Self::full_path(root.as_ref()), full.as_bytes())
     }
@@ -645,7 +649,8 @@ impl IndexPolicy {
     pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
         let root = root.as_ref();
         let contents = fs::read_to_string(Self::policy_path(root))?;
-        let mut policy: Self = serde_json::from_str(&contents)
+        let mut policy: Self = serde_json
+            ::from_str(&contents)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         policy.validate()?;
         policy.resolve(root)?;
@@ -659,9 +664,7 @@ impl IndexPolicy {
                 if f.full_path == path {
                     return Some(f);
                 }
-                if f.kind == FieldKind::Struct
-                    && let Some(hit) = find(&f.subfields, path)
-                {
+                if f.kind == FieldKind::Struct && let Some(hit) = find(&f.subfields, path) {
                     return Some(hit);
                 }
             }
@@ -678,12 +681,14 @@ impl IndexPolicy {
 
         // full resolved (defaults + stamps) first: the loader reads policy.json, so it must be
         // the last file to change
-        let full = serde_json::to_string_pretty(&Full(self))
+        let full = serde_json
+            ::to_string_pretty(&Full(self))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomically(&Self::full_path(root), full.as_bytes())?;
 
         // minimal (hide defaults) -> policy.json
-        let minimal = serde_json::to_string_pretty(self)
+        let minimal = serde_json
+            ::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomically(&Self::policy_path(root), minimal.as_bytes())
     }
@@ -711,8 +716,9 @@ impl Serialize for FieldKind {
 impl<'de> Deserialize<'de> for FieldKind {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        kind_from_str(&s)
-            .ok_or_else(|| serde::de::Error::custom(format!("unknown field type '{s}'")))
+        kind_from_str(&s).ok_or_else(||
+            serde::de::Error::custom(format!("unknown field type '{s}'"))
+        )
     }
 }
 
@@ -727,98 +733,83 @@ struct FieldDefaults {
 
 // reasonable default for each type of field based on my intuition
 impl FieldKind {
-    fn defaults(self) -> FieldDefaults {
+    const fn defaults(self) -> FieldDefaults {
         match self {
-            FieldKind::Text => FieldDefaults {
-                searchable: true,
-                list: true,
-                weight: WeightInterval::TEXT,
-                exact: false,
-                date_format: None,
-            },
-            FieldKind::Id => FieldDefaults {
-                searchable: true,
-                list: true,
-                weight: WeightInterval::DEFAULT,
-                exact: true,
-                date_format: None,
-            },
-            FieldKind::IdAuto => FieldDefaults {
-                searchable: false,
-                list: true,
-                weight: WeightInterval::DEFAULT,
-                exact: true,
-                date_format: None,
-            },
-            FieldKind::Integer | FieldKind::Float => FieldDefaults {
-                searchable: false,
-                list: true,
-                weight: WeightInterval::DEFAULT,
-                exact: true,
-                date_format: None,
-            },
-            FieldKind::DateTime => FieldDefaults {
-                searchable: false,
-                list: true,
-                weight: WeightInterval::DEFAULT,
-                exact: true,
-                date_format: Some("YYYY-MM-DD"),
-            },
-            FieldKind::Struct => FieldDefaults {
-                searchable: false,
-                list: true,
-                weight: WeightInterval::DEFAULT,
-                exact: false,
-                date_format: None,
-            },
-            FieldKind::Bool => FieldDefaults {
-                searchable: false,
-                list: true,
-                weight: WeightInterval::DEFAULT,
-                exact: true,
-                date_format: None,
-            },
-            FieldKind::None => FieldDefaults {
-                searchable: false,
-                list: true,
-                weight: WeightInterval::DEFAULT,
-                exact: false,
-                date_format: None,
-            },
+            Self::Text =>
+                FieldDefaults {
+                    searchable: true,
+                    list: true,
+                    weight: WeightInterval::TEXT,
+                    exact: false,
+                    date_format: None,
+                },
+            Self::Id =>
+                FieldDefaults {
+                    searchable: true,
+                    list: true,
+                    weight: WeightInterval::DEFAULT,
+                    exact: true,
+                    date_format: None,
+                },
+            Self::IdAuto | Self::Integer | Self::Float | Self::Bool =>
+                FieldDefaults {
+                    searchable: false,
+                    list: true,
+                    weight: WeightInterval::DEFAULT,
+                    exact: true,
+                    date_format: None,
+                },
+            Self::DateTime =>
+                FieldDefaults {
+                    searchable: false,
+                    list: true,
+                    weight: WeightInterval::DEFAULT,
+                    exact: true,
+                    date_format: Some("YYYY-MM-DD"),
+                },
+            Self::Struct | Self::None =>
+                FieldDefaults {
+                    searchable: false,
+                    list: true,
+                    weight: WeightInterval::DEFAULT,
+                    exact: false,
+                    date_format: None,
+                },
         }
     }
 
-    pub fn is_numeric(self) -> bool {
-        matches!(self, FieldKind::Integer | FieldKind::Float)
+    pub const fn is_numeric(self) -> bool {
+        matches!(self, Self::Integer | Self::Float)
     }
 
-    pub fn is_bool(self) -> bool {
-        matches!(self, FieldKind::Bool)
+    pub const fn is_bool(self) -> bool {
+        matches!(self, Self::Bool)
     }
 
-    pub fn is_date(self) -> bool {
-        matches!(self, FieldKind::DateTime)
+    pub const fn is_date(self) -> bool {
+        matches!(self, Self::DateTime)
     }
 
-    pub fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
-            FieldKind::None => "none",
-            FieldKind::Text => "text",
-            FieldKind::Integer => "int",
-            FieldKind::Float => "float",
-            FieldKind::DateTime => "date",
-            FieldKind::Id => "id",
-            FieldKind::IdAuto => "id_auto",
-            FieldKind::Struct => "struct",
-            FieldKind::Bool => "bool",
+            Self::None => "none",
+            Self::Text => "text",
+            Self::Integer => "int",
+            Self::Float => "float",
+            Self::DateTime => "date",
+            Self::Id => "id",
+            Self::IdAuto => "id_auto",
+            Self::Struct => "struct",
+            Self::Bool => "bool",
         }
     }
 
     pub fn validate_value(self, raw: &str) -> Result<(), String> {
         let valid = match self {
-            FieldKind::Integer => parse_integer(raw).is_ok(),
-            FieldKind::Float => parse_float(raw).is_ok(),
-            FieldKind::Bool => matches!(raw.trim(), "true" | "false"),
+            Self::Integer => parse_integer(raw).is_ok(),
+            Self::Float => parse_float(raw).is_ok(),
+            Self::Bool => matches!(raw.trim(), "true" | "false"),
             _ => true,
         };
         if valid {
@@ -848,7 +839,7 @@ fn parse_weight(v: &Value) -> Result<WeightInterval, String> {
     serde_json::from_value(v.clone()).map_err(|e| e.to_string())
 }
 
-fn json_kind_name(v: &Value) -> &'static str {
+const fn json_kind_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
         Value::Bool(_) => "bool",
@@ -871,58 +862,63 @@ const MAX_ARRAY_DEPTH: u32 = 3;
 // arrays should have one subfield + max 3 + numbers cant be exact=false
 fn validate_field(field: &FieldPolicy, array_depth: u32) -> io::Result<()> {
     if field.weight.min > field.weight.max {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid weight range for '{}'", field.full_path),
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid weight range for '{}'", field.full_path)
+            )
+        );
     }
     if field.kind == FieldKind::Struct {
-        let depth = if field.repeated {
-            array_depth + 1
-        } else {
-            array_depth
-        };
+        let depth = if field.repeated { array_depth + 1 } else { array_depth };
         if field.subfields.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Struct '{}' must declare at least one subfield", field.name),
-            ));
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Struct '{}' must declare at least one subfield", field.name)
+                )
+            );
         }
         if depth > MAX_ARRAY_DEPTH {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "field '{}' nests deeper than {MAX_ARRAY_DEPTH} array levels",
-                    field.name
-                ),
-            ));
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "field '{}' nests deeper than {MAX_ARRAY_DEPTH} array levels",
+                        field.name
+                    )
+                )
+            );
         }
         for sub in &field.subfields {
             validate_field(sub, depth)?;
         }
     } else if field.vector && field.kind != FieldKind::Text {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "field '{}' has $vector = true, but only text fields can be vector-indexed",
-                field.name
-            ),
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "field '{}' has $vector = true, but only text fields can be vector-indexed",
+                    field.name
+                )
+            )
+        );
     } else if field.kind.is_numeric() && !field.exact {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "numeric field '{}' must have exact = true (or omit it)",
-                field.name
-            ),
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("numeric field '{}' must have exact = true (or omit it)", field.name)
+            )
+        );
     }
 
     if field.kind == FieldKind::DateTime && field.date_format.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("date field '{}' requires a $format", field.full_path),
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("date field '{}' requires a $format", field.full_path)
+            )
+        );
     }
 
     Ok(())
@@ -932,22 +928,18 @@ fn stamp_field(
     field: &mut FieldPolicy,
     prefix: &str,
     array_depth: u32,
-    registry: &mut FieldRegistry,
+    registry: &mut FieldRegistry
 ) {
     let full = if prefix.is_empty() {
         field.name.clone()
     } else {
         format!("{prefix}/{}", field.name)
     };
-    field.full_path = full.clone();
+    field.full_path.clone_from(&full);
 
     if field.kind == FieldKind::Struct {
         //bug fix
-        let d = if field.repeated {
-            array_depth + 1
-        } else {
-            array_depth
-        };
+        let d = if field.repeated { array_depth + 1 } else { array_depth };
         field.depth = d;
         for sub in &mut field.subfields {
             stamp_field(sub, &full, d, registry);
@@ -955,12 +947,10 @@ fn stamp_field(
     } else {
         //INFO: flat repeated TEXT arrays get flattened docID + gap
         //repeated numeric/bool arrays stay row-keyed for sort/filter
-        field.row_keyed = array_depth > 0
-            || (field.repeated
-                && !matches!(
-                    field.kind,
-                    FieldKind::Text | FieldKind::Id | FieldKind::IdAuto
-                ));
+        field.row_keyed =
+            array_depth > 0 ||
+            (field.repeated &&
+                !matches!(field.kind, FieldKind::Text | FieldKind::Id | FieldKind::IdAuto));
         field.depth = if field.repeated { 1 } else { array_depth };
         registry.resolve(&full);
         if field.has_exact_index() {
@@ -978,7 +968,7 @@ struct FieldRegistry {
 }
 
 impl FieldRegistry {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             next_id: 1,
             ids: BTreeMap::new(),
@@ -992,7 +982,8 @@ impl FieldRegistry {
             return Ok(Self::new());
         }
         let contents = fs::read_to_string(path)?;
-        let mut registry: Self = serde_json::from_str(&contents)
+        let mut registry: Self = serde_json
+            ::from_str(&contents)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let max_assigned = registry.ids.values().copied().max().unwrap_or(0);
@@ -1008,18 +999,18 @@ impl FieldRegistry {
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.exact_ids.insert(name.to_string(), id);
+        self.exact_ids.insert(name.to_owned(), id);
         id
     }
 
     fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
         let path = path.as_ref();
-        let contents = serde_json::to_string_pretty(self)
+        let contents = serde_json
+            ::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let tmp_path = path.with_file_name(format!(
-            "{}.tmp",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        ));
+        let tmp_path = path.with_file_name(
+            format!("{}.tmp", path.file_name().unwrap_or_default().to_string_lossy())
+        );
         fs::write(&tmp_path, contents)?;
         fs::rename(&tmp_path, path)?;
         Ok(())
@@ -1031,7 +1022,7 @@ impl FieldRegistry {
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.ids.insert(name.to_string(), id);
+        self.ids.insert(name.to_owned(), id);
         id
     }
 
@@ -1063,9 +1054,7 @@ impl Serialize for Full<'_> {
         if !self.0.analyzers.is_empty() {
             m.serialize_entry("analyzers", &self.0.analyzers)?;
         }
-        let document: BTreeMap<&str, FullField<'_>> = self
-            .0
-            .fields
+        let document: BTreeMap<&str, FullField<'_>> = self.0.fields
             .iter()
             .map(|f| (f.name.as_str(), FullField(f)))
             .collect();
@@ -1106,14 +1095,13 @@ impl Serialize for FullField<'_> {
 fn reject_unknown_setting(
     obj: &serde_json::Map<String, Value>,
     allowed: &[&str],
-    field: &str,
+    field: &str
 ) -> Result<(), String> {
     for key in obj.keys() {
         if key.starts_with('$') && !allowed.contains(&key.as_str()) {
-            return Err(format!(
-                "field '{field}': unknown option '{key}' (valid: {})",
-                allowed.join(", ")
-            ));
+            return Err(
+                format!("field '{field}': unknown option '{key}' (valid: {})", allowed.join(", "))
+            );
         }
     }
     Ok(())

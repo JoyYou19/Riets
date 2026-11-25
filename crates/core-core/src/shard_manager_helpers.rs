@@ -12,7 +12,13 @@ use core_storage::search_database::{DeleteReport, InsertReport, ReplaceReport};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
-
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a normalised 0..1 sort component: f32 precision is plenty"
+)]
+const fn narrow(value: f64) -> f32 {
+    value as f32
+}
 #[derive(Debug)]
 pub struct SortField {
     pub xpath: XPathId,
@@ -136,7 +142,7 @@ fn cmp_asc(a: Option<NumericValue>, b: Option<NumericValue>) -> Ordering {
 fn apply_modifier(v: f64, m: SortModifier) -> f64 {
     match m {
         SortModifier::None => v,
-        SortModifier::Log1p => (v + 1.0).ln(),
+        SortModifier::Log1p => v.ln_1p(),
         SortModifier::Sqrt => v.sqrt(),
     }
 }
@@ -171,12 +177,12 @@ pub fn fold_sort_bounds(
         .collect();
 
     for shard_bounds in per_shard {
-        for (i, (min, max)) in shard_bounds.into_iter().enumerate() {
-            if fields[i].is_bool {
+        for ((field, slot), (min, max)) in fields.iter().zip(bounds.iter_mut()).zip(shard_bounds) {
+            if field.is_bool {
                 continue;
             }
-            bounds[i].0 = fold_min(bounds[i].0, min);
-            bounds[i].1 = fold_max(bounds[i].1, max);
+            slot.0 = fold_min(slot.0, min);
+            slot.1 = fold_max(slot.1, max);
         }
     }
 
@@ -192,7 +198,7 @@ pub fn order_blended(
         return;
     }
 
-    let total_ratio: f32 = specs
+    let total_ratio = specs
         .iter()
         .map(|s| f32::from(s.ratio))
         .sum::<f32>()
@@ -233,13 +239,13 @@ pub fn order_blended(
             for (index, spec) in specs.iter().enumerate() {
                 let component = match keys.get(index).copied().flatten() {
                     None => 0.0,
-                    Some(v) => match bounds[index] {
-                        (Some(min), Some(max)) => {
+                    Some(v) => match bounds.get(index).copied() {
+                        Some((Some(min), Some(max))) => {
                             let min = apply_modifier(min.as_f64(), spec.modifier);
                             let max = apply_modifier(max.as_f64(), spec.modifier);
                             let v = apply_modifier(v.as_f64(), spec.modifier);
                             if max > min {
-                                let norm = ((v - min) / (max - min)) as f32;
+                                let norm = narrow((v - min) / (max - min));
                                 match spec.order {
                                     SortOrderRequest::Asc => 1.0 - norm,
                                     SortOrderRequest::Desc => norm,
@@ -251,28 +257,25 @@ pub fn order_blended(
                         _ => 1.0,
                     },
                 };
-                field += f32::from(spec.ratio) * component;
+                field = f32::mul_add(f32::from(spec.ratio), component, field);
             }
             relevance + field
         })
         .collect();
 
-    let mut order: Vec<usize> = (0..items.len()).collect();
-    order.sort_unstable_by(|&a, &b| {
-        blends[b]
-            .total_cmp(&blends[a])
-            .then_with(|| items[a].0.doc_id.cmp(&items[b].0.doc_id))
+    let mut scored: Vec<_> = blends.into_iter().zip(items.drain(..)).collect();
+    scored.sort_unstable_by(|(a_blend, (a, _)), (b_blend, (b, _))| {
+        b_blend
+            .total_cmp(a_blend)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
     });
-
-    let reordered: Vec<(SearchHit, Vec<Option<NumericValue>>)> = order
+    *items = scored
         .into_iter()
-        .map(|index| {
-            let (mut hit, keys) = items[index].clone();
-            hit.score = blends[index];
+        .map(|(blend, (mut hit, keys))| {
+            hit.score = blend;
             (hit, keys)
         })
         .collect();
-    *items = reordered;
 }
 
 pub fn compile_filters(
@@ -325,7 +328,7 @@ pub fn resolve_sorts(
                 let r = match spec.ratio {
                     Some(r) => r,
                     None if field_count == 1 => 40,
-                    None => (100 / (field_count + 1)) as u8,
+                    None => u8::try_from(100 / field_count.saturating_add(1)).unwrap_or(100),
                 };
                 if r > 100 {
                     return Err(CorelamoError::InvalidData(format!(
@@ -335,8 +338,7 @@ pub fn resolve_sorts(
                 total_ratio += u32::from(r);
                 if total_ratio > 100 {
                     return Err(CorelamoError::InvalidData(
-                        "sort ratios must add up to at most 100 (the rest is relevance)"
-                            .to_string(),
+                        "sort ratios must add up to at most 100 (the rest is relevance)".to_owned(),
                     ));
                 }
                 r
@@ -358,7 +360,7 @@ pub fn resolve_sorts(
 }
 
 //strict: apply fields in declaration order, relevance is the final tiebreak.
-pub fn order_strict(items: &mut Vec<(SearchHit, Vec<Option<NumericValue>>)>, specs: &[SortField]) {
+pub fn order_strict(items: &mut [(SearchHit, Vec<Option<NumericValue>>)], specs: &[SortField]) {
     items.sort_unstable_by(|(a, a_keys), (b, b_keys)| {
         if a.tier != b.tier {
             return a.tier.cmp(&b.tier);

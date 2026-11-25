@@ -7,7 +7,10 @@ use core_index::{
 };
 
 use crate::{
-    bm25::{bm25_idf, bm25_score_scaled, bm25_upper_bound, weighted}, executor::phrase_matches, scorer::Scorer, wand::FormRef,
+    bm25::{bm25_idf, bm25_score_scaled, bm25_upper_bound, weighted},
+    executor::phrase_matches,
+    scorer::Scorer,
+    wand::FormRef,
 };
 
 /// One query form in one field, walked as a single cursor.
@@ -67,6 +70,7 @@ impl<'a> TermScorer<'a> {
     }
 
     /// Moves to the form's next document (any-form: min, all-form: first doc every list is on).
+    /// Moves to the form's next document (any-form: min, all-form: first doc every list is on).
     fn align(&mut self) {
         if self.any {
             self.doc = self.cursors.iter().filter_map(TermCursor::doc_id).min();
@@ -108,7 +112,9 @@ impl<'a> TermScorer<'a> {
                     self.doc = Some(target);
                     return;
                 }
-                self.cursors[0].next();
+                if let Some(first) = self.cursors.first_mut() {
+                    first.next();
+                }
             }
         }
     }
@@ -122,8 +128,8 @@ impl<'a> TermScorer<'a> {
                         cursor.next();
                     }
                 }
-            } else {
-                self.cursors[0].next();
+            } else if let Some(first) = self.cursors.first_mut() {
+                first.next();
             }
             self.align();
         }

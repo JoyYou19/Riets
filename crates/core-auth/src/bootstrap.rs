@@ -3,6 +3,7 @@ use crate::{
     PolicyStore,
 };
 
+#[must_use]
 pub fn default_policy() -> PolicyStore {
     let mut policy = PolicyStore::new();
 

@@ -24,7 +24,7 @@ struct TimedArgs {
 impl Parse for TimedArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(TimedArgs {
+            return Ok(Self {
                 category: None,
                 label: None,
             });
@@ -36,7 +36,7 @@ impl Parse for TimedArgs {
         } else {
             None
         };
-        Ok(TimedArgs {
+        Ok(Self {
             category: Some(category),
             label,
         })
@@ -108,7 +108,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let category = args
         .category
-        .map_or_else(|| "uncategorized".to_string(), |ident| ident.to_string());
+        .map_or_else(|| "uncategorized".to_owned(), |ident| ident.to_string());
     let label = args.label.map_or(fn_name, |lit| lit.value());
 
     // The body is emitted once and unchanged, behind a guard that records

@@ -1,9 +1,6 @@
 use core_timing::timed;
 
-use crate::{
-    posting::{Positions, Posting, item::Offsets},
-    types::{DocId, Position},
-};
+use crate::{ posting::{ Positions, Posting, item::Offsets }, types::{ DocId, Position } };
 
 /*
  * A Posting List, this is needed so we can sord by doc_id and merge duplicate docs
@@ -19,7 +16,7 @@ pub struct PostingList {
 }
 
 impl PostingList {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             items: Vec::new(),
             max_weight: 0,
@@ -30,7 +27,7 @@ impl PostingList {
         positions: &mut Positions,
         offsets: &mut Offsets,
         extra_positions: &[Position],
-        extra_offsets: &[(u32, u32)],
+        extra_offsets: &[(u32, u32)]
     ) {
         debug_assert!(extra_offsets.is_empty() || extra_offsets.len() == extra_positions.len());
         debug_assert!(offsets.is_empty() || offsets.len() == positions.len());
@@ -44,9 +41,10 @@ impl PostingList {
         }
 
         // Fast path: strictly appended, no overlap.
-        if extra_positions
-            .first()
-            .is_none_or(|first| positions.last().is_some_and(|last| last < first))
+        if
+            extra_positions
+                .first()
+                .is_none_or(|first| positions.last().is_some_and(|last| last < first))
         {
             positions.extend_from_slice(extra_positions);
             offsets.extend_from_slice(extra_offsets);
@@ -58,12 +56,7 @@ impl PostingList {
             .iter()
             .copied()
             .zip(offsets.iter().copied())
-            .chain(
-                extra_positions
-                    .iter()
-                    .copied()
-                    .zip(extra_offsets.iter().copied()),
-            )
+            .chain(extra_positions.iter().copied().zip(extra_offsets.iter().copied()))
             .collect();
         zipped.sort_unstable_by_key(|(p, _)| *p);
         zipped.dedup_by_key(|(p, _)| *p);
@@ -76,7 +69,9 @@ impl PostingList {
     }
 
     pub fn from_sorted(items: Vec<Posting>) -> Self {
-        let has_duplicates = items.windows(2).any(|w| w[0].doc_id == w[1].doc_id);
+        let has_duplicates = items
+            .windows(2)
+            .any(|pair| matches!(pair, [first, second] if first.doc_id == second.doc_id));
 
         if !has_duplicates {
             let max_weight = items
@@ -90,21 +85,19 @@ impl PostingList {
 
         let mut merged: Vec<Posting> = Vec::with_capacity(items.len());
         for item in items {
-            if let Some(last) = merged.last_mut() {
-                if last.doc_id == item.doc_id {
-                    Self::merge_occurrences(
-                        &mut last.positions,
-                        &mut last.offsets,
-                        &item.positions,
-                        &item.offsets,
-                    );
-                    last.weight = last.weight.max(item.weight);
-                    continue;
-                }
+            if let Some(last) = merged.last_mut() && last.doc_id == item.doc_id {
+                Self::merge_occurrences(
+                    &mut last.positions,
+                    &mut last.offsets,
+                    &item.positions,
+                    &item.offsets
+                );
+                last.weight = last.weight.max(item.weight);
+                continue;
             }
             merged.push(item);
         }
-    
+
         let max_weight = merged
             .iter()
             .map(|posting| posting.weight)
@@ -121,7 +114,7 @@ impl PostingList {
     // meta
     //
     // Intended for the disk decoder where postings are decoded
-    pub(crate) fn from_sorted_with_max_weight(items: Vec<Posting>, max_weight: u16) -> Self {
+    pub(crate) const fn from_sorted_with_max_weight(items: Vec<Posting>, max_weight: u16) -> Self {
         Self { items, max_weight }
     }
 
@@ -144,21 +137,21 @@ impl PostingList {
             }
 
             if last.doc_id < doc_id {
-                self.items
-                    .push(Posting::with_weight(doc_id, vec![position], weight));
+                self.items.push(Posting::with_weight(doc_id, vec![position], weight));
                 return;
             }
         }
 
         match self.items.binary_search_by_key(&doc_id, |p| p.doc_id) {
             Ok(index) => {
-                self.items[index].positions.push(position);
-                self.items[index].weight = self.items[index].weight.max(weight);
+                if let Some(posting) = self.items.get_mut(index) {
+                    posting.positions.push(position);
+                    posting.weight = posting.weight.max(weight);
+                }
             }
 
             Err(index) => {
-                self.items
-                    .insert(index, Posting::with_weight(doc_id, vec![position], weight));
+                self.items.insert(index, Posting::with_weight(doc_id, vec![position], weight));
             }
         }
     }
@@ -170,9 +163,9 @@ impl PostingList {
     pub fn insert_posting(
         &mut self,
         doc_id: DocId,
-        positions: Vec<Position>,
-        offsets: Vec<(u32, u32)>,
-        weight: u16,
+        positions: &[Position],
+        offsets: &[(u32, u32)],
+        weight: u16
     ) {
         if positions.is_empty() {
             return;
@@ -181,7 +174,7 @@ impl PostingList {
         // Normalize the incoming batch (sort + dedup, keeping offsets aligned).
         let mut pos: Positions = Positions::new();
         let mut off: Offsets = Offsets::new();
-        Self::merge_occurrences(&mut pos, &mut off, &positions, &offsets);
+        Self::merge_occurrences(&mut pos, &mut off, positions, offsets);
 
         // max_weight can only stay the same or increase on insertion
         self.max_weight = self.max_weight.max(weight);
@@ -193,22 +186,27 @@ impl PostingList {
             }
 
             if last.doc_id < doc_id {
-                self.items
-                    .push(Posting::with_weight_and_offsets(doc_id, pos, off, weight));
+                self.items.push(Posting::with_weight_and_offsets(doc_id, pos, off, weight));
                 return;
             }
         }
 
         match self.items.binary_search_by_key(&doc_id, |p| p.doc_id) {
             Ok(index) => {
-                let posting = &mut self.items[index];
-                Self::merge_occurrences(&mut posting.positions, &mut posting.offsets, &pos, &off);
-                posting.weight = posting.weight.max(weight);
+                if let Some(posting) = self.items.get_mut(index) {
+                    Self::merge_occurrences(
+                        &mut posting.positions,
+                        &mut posting.offsets,
+                        &pos,
+                        &off
+                    );
+                    posting.weight = posting.weight.max(weight);
+                }
             }
             Err(index) => {
                 self.items.insert(
                     index,
-                    Posting::with_weight_and_offsets(doc_id, pos, off, weight),
+                    Posting::with_weight_and_offsets(doc_id, pos, off, weight)
                 );
             }
         }
@@ -223,17 +221,17 @@ impl PostingList {
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.items.len()
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     #[inline]
-    pub fn max_weight(&self) -> u16 {
+    pub const fn max_weight(&self) -> u16 {
         self.max_weight
     }
 
@@ -244,7 +242,7 @@ impl PostingList {
         }
     }
     //TEST
-    pub fn append(&mut self, other: PostingList) {
+    pub fn append(&mut self, other: Self) {
         if other.items.is_empty() {
             return;
         }
@@ -253,8 +251,12 @@ impl PostingList {
             return;
         }
 
-        let last = self.items.last().unwrap().doc_id;
-        let first = other.items.first().unwrap().doc_id;
+        let (Some(last), Some(first)) = (
+            self.items.last().map(|posting| posting.doc_id),
+            other.items.first().map(|posting| posting.doc_id),
+        ) else {
+            return;
+        };
 
         if last < first {
             self.max_weight = self.max_weight.max(other.max_weight);
@@ -262,7 +264,7 @@ impl PostingList {
         } else {
             let mut items = std::mem::take(&mut self.items);
             items.extend(other.items);
-            *self = PostingList::from_items(items);
+            *self = Self::from_items(items);
         }
     }
 }

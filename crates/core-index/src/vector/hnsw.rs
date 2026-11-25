@@ -10,19 +10,26 @@ mod graph_builder;
 mod layout;
 mod walk;
 
-pub use graph_builder::{GraphBuildParams, MIN_ROWS_FOR_GRAPH, build_graph_file, extend_graph_file};use layout::{GraphHeader, GraphLayout, NO_UPPER_SLOTS, read_u32};
-use walk::{GraphWalk, NeighbourLists, SimilarityToTarget, with_visited_set};
+pub use graph_builder::{
+    GraphBuildParams,
+    MIN_ROWS_FOR_GRAPH,
+    build_graph_file,
+    extend_graph_file,
+};
+use layout::{ GraphHeader, GraphLayout, NO_UPPER_SLOTS };
+use walk::{ GraphWalk, NeighbourLists, SimilarityToTarget, with_visited_set };
 
 use std::fs::File;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{ Path, PathBuf };
 use std::sync::Arc;
 
 use memmap2::Mmap;
 
 use super::file::VectorFile;
-use super::kernel::{dot_f32, dot_i8, quantize_query};
-use super::vector_hit::{TopK, VectorFilter, VectorHit};
+use super::kernel::{ dot_f32, dot_i8, quantize_query };
+use super::vector_hit::{ TopK, VectorFilter, VectorHit };
+use crate::disk::format::array_at;
 use crate::types::XPathId;
 
 /// Smallest beam for a search; raised to `k * RESCORE_OVERSAMPLING` for larger `k`.
@@ -55,6 +62,9 @@ pub struct HnswGraph {
 impl HnswGraph {
     /// Opens the graph at `path` for `vectors`. `InvalidData` means the file is corrupt or
     /// belongs to another vector file: delete it and rebuild.
+    fn u32_at(&self, at: usize) -> Option<u32> {
+        array_at(&self.mmap, at).map(u32::from_le_bytes)
+    }
     pub fn open(path: impl AsRef<Path>, vectors: Arc<VectorFile>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = File::open(&path)?;
@@ -66,25 +76,28 @@ impl HnswGraph {
         if header.vector_file_id != vectors.file_id() {
             return Err(corrupt(&path, "built from a different vector file"));
         }
-        if header.node_count as usize != vectors.len() || header.dims as usize != vectors.dims() {
-            return Err(corrupt(
-                &path,
-                format!(
-                    "{} nodes of {} dims, vector file has {} rows of {} dims",
-                    header.node_count,
-                    header.dims,
-                    vectors.len(),
-                    vectors.dims()
-                ),
-            ));
+        if
+            (header.node_count as usize) != vectors.len() ||
+            (header.dims as usize) != vectors.dims()
+        {
+            return Err(
+                corrupt(
+                    &path,
+                    format!(
+                        "{} nodes of {} dims, vector file has {} rows of {} dims",
+                        header.node_count,
+                        header.dims,
+                        vectors.len(),
+                        vectors.dims()
+                    )
+                )
+            );
         }
-        let layout =
-            GraphLayout::new(&header).ok_or_else(|| corrupt(&path, "size overflows usize"))?;
+        let layout = GraphLayout::new(&header).ok_or_else(||
+            corrupt(&path, "size overflows usize")
+        )?;
         if layout.total_length != mmap.len() {
-            return Err(corrupt(
-                &path,
-                format!("length {} does not match its header", mmap.len()),
-            ));
+            return Err(corrupt(&path, format!("length {} does not match its header", mmap.len())));
         }
         if !(mmap.as_ptr() as usize).is_multiple_of(4) {
             return Err(corrupt(&path, "mapping is not aligned"));
@@ -114,25 +127,20 @@ impl HnswGraph {
         for node in 0..node_count {
             let level = self.node_level(node);
             if level > top_level {
-                return Err(corrupt(
-                    &self.path,
-                    format!("node {node} above the top level"),
-                ));
+                return Err(corrupt(&self.path, format!("node {node} above the top level")));
             }
             let slot_start = self.upper_slot_start(node);
             if level == 0 {
                 if slot_start != NO_UPPER_SLOTS {
-                    return Err(corrupt(
-                        &self.path,
-                        format!("level-0 node {node} owns upper slots"),
-                    ));
+                    return Err(
+                        corrupt(&self.path, format!("level-0 node {node} owns upper slots"))
+                    );
                 }
             } else {
-                if slot_start as usize != next_upper_slot {
-                    return Err(corrupt(
-                        &self.path,
-                        format!("bad upper slot start for node {node}"),
-                    ));
+                if (slot_start as usize) != next_upper_slot {
+                    return Err(
+                        corrupt(&self.path, format!("bad upper slot start for node {node}"))
+                    );
                 }
                 next_upper_slot += level;
             }
@@ -140,34 +148,33 @@ impl HnswGraph {
             for list_level in 0..=level {
                 let max_links = self.max_links_at(list_level);
                 let offset = self.layout.slot_offset(node, list_level, slot_start);
-                let length = read_u32(&self.mmap, offset) as usize;
-                if length > max_links {
-                    return Err(corrupt(
-                        &self.path,
-                        format!("node {node} has {length} links"),
-                    ));
+                let Some(length) = self.u32_at(offset) else {
+                    return Err(corrupt(&self.path, "list slot outside the file"));
+                };
+                if (length as usize) > max_links {
+                    return Err(corrupt(&self.path, format!("node {node} has {length} links")));
                 }
                 for &linked in self.neighbour_list(node, list_level) {
                     let linked = linked as usize;
-                    if linked >= node_count
-                        || linked == node
-                        || self.node_level(linked) < list_level
+                    if
+                        linked >= node_count ||
+                        linked == node ||
+                        self.node_level(linked) < list_level
                     {
-                        return Err(corrupt(
-                            &self.path,
-                            format!(
-                                "node {node} links to invalid node {linked} on level {list_level}"
-                            ),
-                        ));
+                        return Err(
+                            corrupt(
+                                &self.path,
+                                format!(
+                                    "node {node} links to invalid node {linked} on level {list_level}"
+                                )
+                            )
+                        );
                     }
                 }
             }
         }
-        if next_upper_slot != self.header.upper_slot_count as usize {
-            return Err(corrupt(
-                &self.path,
-                "upper slot count does not match node levels",
-            ));
+        if next_upper_slot != (self.header.upper_slot_count as usize) {
+            return Err(corrupt(&self.path, "upper slot count does not match node levels"));
         }
         Ok(())
     }
@@ -177,20 +184,20 @@ impl HnswGraph {
     }
 
     /// The vector file this graph indexes.
-    pub fn vectors(&self) -> &Arc<VectorFile> {
+    pub const fn vectors(&self) -> &Arc<VectorFile> {
         &self.vectors
     }
 
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.header.node_count as usize
     }
 
     fn node_level(&self, node: usize) -> usize {
-        usize::from(self.mmap[self.layout.node_levels_offset + node])
+        self.mmap.get(self.layout.node_levels_offset + node).map_or(0, |&level| usize::from(level))
     }
 
     fn upper_slot_start(&self, node: usize) -> u32 {
-        read_u32(&self.mmap, self.layout.upper_slot_starts_offset + node * 4)
+        self.u32_at(self.layout.upper_slot_starts_offset + node * 4).unwrap_or(NO_UPPER_SLOTS)
     }
 
     fn max_links_at(&self, level: usize) -> usize {
@@ -204,11 +211,15 @@ impl HnswGraph {
     /// `node`'s links on `level`, read in place. `node` must be on `level`, and the length
     /// must have been checked (always true after `open`).
     fn neighbour_list(&self, node: usize, level: usize) -> &[u32] {
-        let offset = self
-            .layout
-            .slot_offset(node, level, self.upper_slot_start(node));
-        let length = (read_u32(&self.mmap, offset) as usize).min(self.max_links_at(level));
-        let bytes = &self.mmap[offset + 4..offset + 4 + length * 4];
+        let offset = self.layout.slot_offset(node, level, self.upper_slot_start(node));
+        let length = self
+            .u32_at(offset)
+            .map_or(0, |len| len as usize)
+            .min(self.max_links_at(level));
+        let Some(bytes) = self.mmap.get(offset + 4..offset + 4 + length * 4) else {
+            return &[];
+        };
+        
         // SAFETY: every section starts on a 64-byte boundary of a mapping checked to be 4-byte
         // aligned at open, and slots are whole multiples of 4 bytes, so `bytes` is 4-byte
         // aligned. It holds `length` little-endian u32s (little-endian host enforced in
@@ -228,7 +239,7 @@ impl HnswGraph {
         &self,
         query: &[f32],
         k: usize,
-        filter: &VectorFilter<'_>,
+        filter: &VectorFilter<'_>
     ) -> Option<Vec<VectorHit>> {
         if k == 0 {
             return Some(Vec::new());
@@ -248,24 +259,21 @@ impl HnswGraph {
             node_count: self.node_count(),
         };
         let beam_width = DEFAULT_SEARCH_BEAM_WIDTH.max(k.saturating_mul(RESCORE_OVERSAMPLING));
-        let budget = (self.node_count() / BUDGET_FRACTION_OF_NODES)
-            .max(beam_width.saturating_mul(MIN_COMPUTATIONS_PER_BEAM_SLOT));
+        let budget = (self.node_count() / BUDGET_FRACTION_OF_NODES).max(
+            beam_width.saturating_mul(MIN_COMPUTATIONS_PER_BEAM_SLOT)
+        );
         let accept = |node: u32| filter.accepts(self.vectors.doc_id(node as usize));
 
         let level0 = with_visited_set(|visited| {
             let mut scratch = Vec::with_capacity(usize::from(self.header.max_links_level0));
             let start = walk.score(self.header.entry_node);
-            let closest =
-                walk.greedy_descend(start, usize::from(self.header.top_level), 1, &mut scratch);
-            walk.search_level(
-                &[closest],
-                beam_width,
-                0,
-                accept,
-                budget,
-                visited,
-                &mut scratch,
-            )
+            let closest = walk.greedy_descend(
+                start,
+                usize::from(self.header.top_level),
+                1,
+                &mut scratch
+            );
+            walk.search_level(&[closest], beam_width, 0, accept, budget, visited, &mut scratch)
         });
 
         if level0.stopped_by_budget || level0.best_first.len() < k.min(self.node_count()) {
@@ -275,10 +283,7 @@ impl HnswGraph {
         let mut top = TopK::new(k);
         for candidate in &level0.best_first {
             let row = candidate.node as usize;
-            top.offer(
-                self.vectors.doc_id(row),
-                dot_f32(self.vectors.original(row), query),
-            );
+            top.offer(self.vectors.doc_id(row), dot_f32(self.vectors.original(row), query));
         }
         Some(top.into_sorted())
     }
@@ -305,9 +310,5 @@ impl SimilarityToTarget for QueryCodesTarget<'_> {
 }
 
 fn corrupt(path: &Path, msg: impl std::fmt::Display) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("hnsw file {}: {msg}", path.display()),
-    )
+    io::Error::new(io::ErrorKind::InvalidData, format!("hnsw file {}: {msg}", path.display()))
 }
-

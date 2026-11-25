@@ -36,7 +36,7 @@ impl Scorer for OrScorer<'_> {
     /// Move past the current document on every child that holds it.
     fn next(&mut self) {
         if let Some(doc) = self.doc() {
-            for child in self.children.iter_mut() {
+            for child in &mut self.children {
                 if child.doc() == Some(doc) {
                     child.next();
                 }
@@ -46,7 +46,7 @@ impl Scorer for OrScorer<'_> {
 
     /// Move every child that is behind `target` forward to it.
     fn advance_to(&mut self, target: DocId) {
-        for child in self.children.iter_mut() {
+        for child in &mut self.children {
             if child.doc().is_some_and(|doc| doc < target) {
                 child.advance_to(target);
             }

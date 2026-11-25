@@ -26,7 +26,9 @@ impl LatencyHistogram {
     pub fn record(&self, elapsed: Duration) {
         let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX).max(1);
         let bucket = micros.ilog2() as usize;
-        self.buckets[bucket.min(LATENCY_BUCKETS - 1)].fetch_add(1, Relaxed);
+        if let Some(slot) = self.buckets.get(bucket.min(LATENCY_BUCKETS.saturating_sub(1))) {
+            slot.fetch_add(1, Relaxed);
+        }
     }
 
     pub fn counts(&self) -> Vec<u64> {
@@ -38,12 +40,14 @@ impl LatencyHistogram {
 }
 
 /// Upper bound of bucket `i`.
+#[must_use]
 pub fn bucket_upper_bound(i: usize) -> Duration {
     Duration::from_micros(1u64 << (i + 1).min(63))
 }
 
 /// The duration below which `permille`/1000 of the recorded values fall (500 = median,
 /// 990 = p99), rounded up to a bucket bound; `None` when nothing was recorded.
+#[must_use]
 pub fn latency_quantile(counts: &[u64], permille: u16) -> Option<Duration> {
     let total: u64 = counts.iter().sum();
     if total == 0 {
@@ -89,7 +93,7 @@ pub enum BackgroundActivity {
 }
 
 impl BackgroundActivity {
-    fn from_u8(value: u8) -> Self {
+    const fn from_u8(value: u8) -> Self {
         match value {
             1 => Self::Compacting,
             2 => Self::Embedding,
@@ -116,7 +120,8 @@ pub enum EmbeddingStatus {
 }
 
 impl EmbeddingStatus {
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
             Self::Waiting => "waiting",
@@ -127,7 +132,7 @@ impl EmbeddingStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingStats {
     pub status: EmbeddingStatus,
     pub progress: u8,
@@ -139,7 +144,7 @@ pub struct EmbeddingStats {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq,Eq)]
 pub struct BackgroundStats {
     pub shards_compacting: usize,
     pub shards_embedding: usize,
@@ -151,7 +156,9 @@ pub struct BackgroundStats {
     pub last_compaction_ms: Option<u64>,
     pub embedding: EmbeddingStats,
 }
-
+fn nanos_u64(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+}
 #[derive(Debug)]
 pub struct DbStats {
     counters: Counters,
@@ -227,17 +234,21 @@ pub struct ShardStatsHandle {
 }
 
 impl DatabaseMetrics {
+     #[must_use]
      pub fn average_search_time(&self) -> Option<Duration> {
         average(self.search_total_time, self.search_requests)
     }
 
+    #[must_use]
     pub fn average_indexing_time(&self) -> Option<Duration> {
         average(self.indexing_total_time, self.indexing_requests)
     }
+    #[must_use]
     pub fn search_percentile(&self, q:u16) -> Option<Duration> {
         latency_quantile(&self.search_latency, q)
     }
 
+    #[must_use]
     pub fn indexing_percentile(&self, q: u16) -> Option<Duration> {
         latency_quantile(&self.indexing_latency, q)
     }
@@ -250,6 +261,7 @@ fn average(total: Duration, count: u64) -> Option<Duration> {
     Some(Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)))
 }
 impl DbStats {
+    #[must_use]
     pub fn new(shard_count: usize) -> Arc<Self> {
         Arc::new(Self {
             counters: Counters::default(),
@@ -284,11 +296,11 @@ impl DbStats {
         self.backup.set_phase(if ok { BackupPhase::Complete } else { BackupPhase::Failed });
     }
 
-    pub fn backup_progress(&self) -> &Arc<BackupProgress> {
+    pub const fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.backup
     }
 
-    pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
+    pub const fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.reindex
     }
     pub fn reindex_running(&self) -> bool {
@@ -302,7 +314,7 @@ impl DbStats {
     pub fn record_search(&self, failed: bool, elapsed: Duration) {
         let c = &self.counters;
         c.search_requests.fetch_add(1, Relaxed);
-        c.search_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
+       c.search_nanos.fetch_add(nanos_u64(elapsed), Relaxed);
         c.search_latency.record(elapsed);
         if failed {
             c.search_errors.fetch_add(1, Relaxed);
@@ -314,7 +326,7 @@ impl DbStats {
     pub fn record_indexing(&self, failed: bool, elapsed: Duration) {
         let c = &self.counters;
         c.indexing_requests.fetch_add(1, Relaxed);
-        c.indexing_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.indexing_nanos.fetch_add(nanos_u64(elapsed), Relaxed);
         c.indexing_latency.record(elapsed);
         if failed {
             c.indexing_errors.fetch_add(1, Relaxed);
@@ -346,7 +358,7 @@ impl DbStats {
     /// The last shard to finish settles the phase for the database.
     pub fn finish_shard_reindex(&self, ok: bool, elapsed: Duration) {
         let c = &self.counters;
-        c.reindex_nanos.fetch_add(elapsed.as_nanos() as u64, Relaxed);
+        c.reindex_nanos.fetch_add(nanos_u64(elapsed), Relaxed);
         if !ok {
             c.reindex_errors.fetch_add(1, Relaxed);
             self.reindex_failed.store(true, Relaxed);
@@ -434,12 +446,12 @@ impl DbStats {
         let mut error: Option<String> = None;
         let mut all_measured = true;
         for g in &self.shards {
-            let doc_gauge = g.documents.load(Relaxed) as u64;
+            
             let doc_indexed = g.documents_indexed.load(Relaxed);
             if g.embedding_enabled.load(Relaxed) && !g.vectors_measured.load(Relaxed) {
                 all_measured = false;
             } 
-            documents += doc_gauge as usize;
+            documents += g.documents.load(Relaxed);
             segments += g.segments.load(Relaxed);
             terms += g.memtable_terms.load(Relaxed);
             compaction |= g.compaction_enabled.load(Relaxed);
@@ -609,22 +621,32 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ShardStatsHandle {
+    fn gauges(&self) -> Option<&ShardGauges> {
+        self.stats.shards.get(self.index)
+    }
+
+    #[must_use]
     pub fn reindex_progress(&self) -> &Arc<ReindexProgress> {
         &self.stats.reindex
     }
 
+    #[must_use]
     pub fn backup_progress(&self) -> &Arc<BackupProgress> {
         &self.stats.backup
     }
 
     pub fn add_documents_indexed(&self, n: u64) {
-        self.stats.shards[self.index].documents_indexed.fetch_add(n, Relaxed);
+        if let Some(g) = self.gauges() {
+            g.documents_indexed.fetch_add(n, Relaxed);
+        }
     }
 
     /// Levels, so publish after anything that changes the index. The shard
     /// thread pays for reading these so the HTTP reader never has to.
     pub fn publish(&self, document_count: usize, stats: &IndexingStats) {
-        let g = &self.stats.shards[self.index];
+        let Some(g) = self.gauges() else {
+            return;
+        };
         g.documents.store(document_count, Relaxed);
         g.segments.store(stats.segment_count, Relaxed);
         g.memtable_terms.store(stats.memtable_term_count, Relaxed);
@@ -635,31 +657,42 @@ impl ShardStatsHandle {
     }
 
     pub fn set_compaction_enabled(&self, on: bool) {
-        self.stats.shards[self.index].compaction_enabled.store(on, Relaxed);
+        if let Some(g) = self.gauges() {
+            g.compaction_enabled.store(on, Relaxed);
+        }
     }
 
     pub fn set_activity(&self, activity: BackgroundActivity) {
-        self.stats.shards[self.index].activity.store(activity as u8, Relaxed);
+        if let Some(g) = self.gauges() {
+            g.activity.store(activity as u8, Relaxed);
+        }
     }
 
     pub fn record_compaction(&self, ok: bool, elapsed: Duration) {
-        let g = &self.stats.shards[self.index];
+        let Some(g) = self.gauges() else {
+            return;
+        };
         if ok {
-            g.last_compaction_ms.store(elapsed.as_millis() as u64, Relaxed);
+            let millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+            g.last_compaction_ms.store(millis, Relaxed);
         } else {
             g.compaction_failures.fetch_add(1, Relaxed);
         }
     }
 
     pub fn set_embedding_enabled(&self, on: bool) {
-        let g = &self.stats.shards[self.index];
+        let Some(g) = self.gauges() else {
+            return;
+        };
         g.embedding_enabled.store(on, Relaxed);
         // a (re)started worker must measure again before its figures count
         g.vectors_measured.store(false, Relaxed);
     }
 
     pub fn set_vector_progress(&self, total: u64, done: u64) {
-        let g = &self.stats.shards[self.index];
+        let Some(g) = self.gauges() else {
+            return;
+        };
         g.vectors_total.store(total, Relaxed);
         g.vectors_done.store(done, Relaxed);
         g.vectors_measured.store(true, Relaxed);
@@ -676,7 +709,9 @@ impl ShardStatsHandle {
         {
             let mut anchor = lock(&self.stats.embedding_rate);
             if anchor.is_none() {
-                let embedded_before = self.stats.shards
+                let embedded_before = self
+                    .stats
+                    .shards
                     .iter()
                     .map(|g| g.embedded.load(Relaxed))
                     .sum();
@@ -686,22 +721,27 @@ impl ShardStatsHandle {
                 });
             }
         }
-        let g = &self.stats.shards[self.index];
+        let Some(g) = self.gauges() else {
+            return;
+        };
         g.embedded.fetch_add(count, Relaxed);
         *lock(&g.embedding_error) = None;
     }
 
     /// Whether this shard waits for a bulk load to end before embedding.
     pub fn set_embedding_waiting(&self, waiting: bool) {
-        self.stats.shards[self.index].embedding_waiting.store(waiting, Relaxed);
+        if let Some(g) = self.gauges() {
+            g.embedding_waiting.store(waiting, Relaxed);
+        }
     }
 
     /// The latest embedding failure of this shard, or None once embedding works again.
     pub fn set_embedding_error(&self, error: Option<String>) {
-        *lock(&self.stats.shards[self.index].embedding_error) = error;
+        if let Some(g) = self.gauges() {
+            *lock(&g.embedding_error) = error;
+        }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

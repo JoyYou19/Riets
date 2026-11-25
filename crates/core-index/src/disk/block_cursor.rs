@@ -11,6 +11,37 @@ use crate::{
     types::{ DocId, position_start },
 };
 
+fn invalid(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// `(term frequency of slot, sum of the term frequencies before it)`; `None` if `slot` is out of range.
+fn freq_and_before(term_freq: &[u32], slot: usize) -> Option<(u32, usize)> {
+    let freq = *term_freq.get(slot)?;
+    let before = term_freq.get(..slot)?.iter().fold(0usize, |acc, &t| {
+        acc.saturating_add(usize::try_from(t).unwrap_or(usize::MAX))
+    });
+    Some((freq, before))
+}
+
+fn decode_positions(
+    positions: &[u8],
+    start: usize,
+    before: usize,
+    freq: u32,
+    out: &mut Vec<u32>
+) -> io::Result<()> {
+    let mut at = start;
+    skip_varints(positions, &mut at, before)?;
+    let mut position = 0u32;
+    for _ in 0..freq {
+        let delta = read_var_u32(positions, &mut at)?;
+        position = position.checked_add(delta).ok_or_else(|| invalid("position overflow"))?;
+        out.push(position);
+    }
+    Ok(())
+}
+
 /// One term's postings region, split into its four parts.
 pub(crate) struct TermRegion<'a> {
     pub skip_table: &'a [u8],
@@ -23,29 +54,20 @@ pub(crate) struct TermRegion<'a> {
 impl<'a> TermRegion<'a> {
     /// Splits `[skip table][blocks][positions][offsets]` using the lengths in `meta`.
     pub(crate) fn split(bytes: &'a [u8], meta: TermMeta) -> io::Result<Self> {
-        let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+        let truncated = || io::Error::new(io::ErrorKind::UnexpectedEof, "term region truncated");
 
-        let block_count = meta.block_count as usize;
+        let block_count = usize::try_from(meta.block_count).map_err(invalid)?;
         let skip_len = block_count
             .checked_mul(SKIP_ENTRY_LEN)
             .ok_or_else(|| invalid("skip table size overflow"))?;
-        let blocks_end = skip_len
-            .checked_add(meta.block_len as usize)
-            .ok_or_else(|| invalid("blocks size overflow"))?;
-        let positions_end = blocks_end
-            .checked_add(meta.positions_len as usize)
-            .ok_or_else(|| invalid("positions size overflow"))?;
-        if positions_end > bytes.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "term region truncated"));
-        }
+        let blocks_len = usize::try_from(meta.block_len).map_err(invalid)?;
+        let positions_len = usize::try_from(meta.positions_len).map_err(invalid)?;
 
-        Ok(Self {
-            skip_table: &bytes[..skip_len],
-            blocks: &bytes[skip_len..blocks_end],
-            positions: &bytes[blocks_end..positions_end],
-            offsets: &bytes[positions_end..],
-            block_count,
-        })
+        let (skip_table, rest) = bytes.split_at_checked(skip_len).ok_or_else(truncated)?;
+        let (blocks, rest) = rest.split_at_checked(blocks_len).ok_or_else(truncated)?;
+        let (positions, offsets) = rest.split_at_checked(positions_len).ok_or_else(truncated)?;
+
+        Ok(Self { skip_table, blocks, positions, offsets, block_count })
     }
 }
 
@@ -89,6 +111,18 @@ impl<'a> BlockCursor<'a> {
         })
     }
 
+    fn doc_at_slot(&self) -> Option<DocId> {
+        self.block.as_ref()?.docs.get(self.slot).copied()
+    }
+
+    fn freq_at_slot(&self) -> Option<u32> {
+        self.block.as_ref()?.term_freq.get(self.slot).copied()
+    }
+
+    fn weight_at_slot(&self) -> Option<u16> {
+        self.block.as_ref()?.weights.get(self.slot).copied()
+    }
+
     /// Decodes block `index` and puts the cursor on its first document. Exhausts the cursor when
     /// there is no such block or it fails to decode.
     fn load_block(&mut self, index: usize) -> bool {
@@ -105,13 +139,12 @@ impl<'a> BlockCursor<'a> {
         self.position_index = 0;
 
         let entry = SkipEntry::read_at(self.region.skip_table, index)?;
+        let start = usize::try_from(entry.block_start_offset).map_err(invalid)?;
         let bytes = self.region.blocks
-            .get(entry.block_start_offset as usize..)
-            .ok_or_else(||
-                io::Error::new(io::ErrorKind::InvalidData, "block offset past blocks area")
-            )?;
+            .get(start..)
+            .ok_or_else(|| invalid("block offset past blocks area"))?;
         let block = self.block.get_or_insert_with(Box::default);
-        decode_block(&self.packer, bytes, &entry, block)?;
+        decode_block(self.packer, bytes, &entry, block)?;
         self.entry = entry;
         self.block_index = index;
         self.slot = 0;
@@ -120,18 +153,20 @@ impl<'a> BlockCursor<'a> {
     }
 
     #[inline]
-    pub fn is_exhausted(&self) -> bool {
+    #[must_use]
+    pub const fn is_exhausted(&self) -> bool {
         self.exhausted
     }
 
     #[inline]
+    #[must_use]
     pub fn doc_id(&self) -> Option<DocId> {
         if self.exhausted {
             None
         } else if !self.loaded {
             Some(self.entry.first_doc_id) // the cursor is on block 0's first document
         } else {
-            self.block.as_ref().map(|b| b.docs[self.slot])
+            self.doc_at_slot()
         }
     }
 
@@ -139,10 +174,9 @@ impl<'a> BlockCursor<'a> {
     pub fn term_freq(&mut self) -> u32 {
         self.ensure_loaded();
         if self.exhausted {
-            0
-        } else {
-            self.block.as_ref().map_or(0, |b| b.term_freq[self.slot])
+            return 0;
         }
+        self.freq_at_slot().unwrap_or(0)
     }
 
     /// Weight of the current document; 0 when exhausted.
@@ -150,17 +184,18 @@ impl<'a> BlockCursor<'a> {
     pub fn weight(&mut self) -> u16 {
         self.ensure_loaded();
         if self.exhausted {
-            0
-        } else {
-            self.block.as_ref().map_or(0, |b| b.weights[self.slot])
+            return 0;
         }
+        self.weight_at_slot().unwrap_or(0)
     }
 
     /// The skip entry of the block the cursor is in (block bounds for block-max WAND).
     #[inline]
-    pub fn block_entry(&self) -> &SkipEntry {
+    #[must_use]
+    pub const fn block_entry(&self) -> &SkipEntry {
         &self.entry
     }
+
     #[inline]
     fn ensure_loaded(&mut self) {
         if !self.loaded && !self.exhausted {
@@ -176,8 +211,8 @@ impl<'a> BlockCursor<'a> {
         self.slot += 1;
         self.position_cache.clear();
         self.position_index = 0;
-        if self.slot >= self.block.as_ref().unwrap().len {
-            //unwrap safe
+        let block_len = self.block.as_ref().map_or(0, |b| b.len);
+        if self.slot >= block_len {
             self.load_block(self.block_index + 1);
         }
     }
@@ -193,7 +228,11 @@ impl<'a> BlockCursor<'a> {
         }
         let current_last = self.entry.last_doc_id;
         let current_doc = if self.loaded {
-            self.block.as_ref().unwrap().docs[self.slot]
+            let Some(doc) = self.doc_at_slot() else {
+                self.exhausted = true;
+                return;
+            };
+            doc
         } else {
             self.entry.first_doc_id
         };
@@ -230,8 +269,14 @@ impl<'a> BlockCursor<'a> {
             }
         }
 
-        let block = self.block.as_ref().unwrap(); // loaded on every path above
-        let remaining = &block.docs[self.slot..block.len];
+        let Some(block) = self.block.as_ref() else {
+            self.exhausted = true;
+            return;
+        };
+        let Some(remaining) = block.docs.get(self.slot..block.len) else {
+            self.exhausted = true;
+            return;
+        };
         self.slot += remaining.partition_point(|&doc| doc < target);
         let past_end = self.slot >= block.len;
         self.position_cache.clear();
@@ -244,17 +289,18 @@ impl<'a> BlockCursor<'a> {
 
     /// Positions of the current document, appended to `out` (which is cleared first).
     pub fn positions_into(&mut self, out: &mut Vec<u32>) -> io::Result<()> {
-    self.ensure_loaded();
-    self.decode_current_positions(out)
-}
+        self.ensure_loaded();
+        self.decode_current_positions(out)
+    }
+
     pub fn advance_to_position(&mut self, target: u32) -> io::Result<bool> {
         if self.exhausted {
             return Ok(false);
         }
         self.ensure_positions_decoded()?;
-        while
-            self.position_index < self.position_cache.len() &&
-            position_start(self.position_cache[self.position_index]) < target
+        while self.position_cache
+            .get(self.position_index)
+            .is_some_and(|&p| position_start(p) < target)
         {
             self.position_index += 1;
         }
@@ -262,85 +308,81 @@ impl<'a> BlockCursor<'a> {
     }
 
     /// The position `advance_to_position` is currently on, if any.
+    #[must_use]
     pub fn current_position(&self) -> Option<u32> {
         self.position_cache.get(self.position_index).copied()
     }
 
     fn ensure_positions_decoded(&mut self) -> io::Result<()> {
-    if !self.position_cache.is_empty() || self.term_freq() == 0 {
-        return Ok(()); // term_freq() also loads the block
+        if !self.position_cache.is_empty() || self.term_freq() == 0 || self.exhausted {
+            return Ok(()); // term_freq() also loads the block
+        }
+        let Some((freq, before)) = self.block
+            .as_ref()
+            .and_then(|b| freq_and_before(&b.term_freq, self.slot)) else {
+            return Ok(());
+        };
+        let start = usize::try_from(self.entry.positions_start_offset).map_err(invalid)?;
+        decode_positions(self.region.positions, start, before, freq, &mut self.position_cache)
     }
-    if self.exhausted {
-        return Ok(());
-    }
-    let block = self.block.as_ref().unwrap(); // loaded by term_freq()
-    let tf = block.term_freq[self.slot];
-    let before: usize = block.term_freq[..self.slot].iter().map(|&t| t as usize).sum();
-
-    let mut at = self.entry.positions_start_offset as usize;
-    skip_varints(self.region.positions, &mut at, before)?;
-
-    let mut position = 0u32;
-    for _ in 0..tf {
-        position += read_var_u32(self.region.positions, &mut at)?;
-        self.position_cache.push(position);
-    }
-    Ok(())
-}
 
     fn decode_current_positions(&self, out: &mut Vec<u32>) -> io::Result<()> {
-    out.clear();
-    let Some(block) = self.block.as_ref().filter(|_| !self.exhausted && self.loaded) else {
-        return Ok(());
-    };
-    let tf = block.term_freq[self.slot];
-    let before: usize = block.term_freq[..self.slot].iter().map(|&t| t as usize).sum();
-
-    let mut at = self.entry.positions_start_offset as usize;
-    skip_varints(self.region.positions, &mut at, before)?;
-
-    let mut position = 0u32;
-    for _ in 0..tf {
-        position += read_var_u32(self.region.positions, &mut at)?;
-        out.push(position);
+        out.clear();
+        let Some(block) = self.block.as_ref().filter(|_| !self.exhausted && self.loaded) else {
+            return Ok(());
+        };
+        let Some((freq, before)) = freq_and_before(&block.term_freq, self.slot) else {
+            return Ok(());
+        };
+        let start = usize::try_from(self.entry.positions_start_offset).map_err(invalid)?;
+        decode_positions(self.region.positions, start, before, freq, out)
     }
-    Ok(())
-}
+
     /// Highlight offsets of the current document, appended to `out` (cleared first). Empty when
     /// the document was indexed without offsets.
     pub fn offsets_into(&mut self, out: &mut Vec<(u32, u32)>) -> io::Result<()> {
-    out.clear();
-    self.ensure_loaded();
-    let Some(block) = self.block.as_ref().filter(|_| !self.exhausted) else {
-        return Ok(());
-    };
-    let offsets = self.region.offsets;
-    let mut at = self.entry.offsets_start_offset as usize;
+        out.clear();
+        self.ensure_loaded();
+        let Some(block) = self.block.as_ref().filter(|_| !self.exhausted) else {
+            return Ok(());
+        };
+        let offsets = self.region.offsets;
+        let mut at = usize::try_from(self.entry.offsets_start_offset).map_err(invalid)?;
 
-    let present_at = |at: usize| -> io::Result<bool> {
-        offsets
-            .get(at)
-            .map(|&flag| flag != 0)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "missing offsets flag"))
-    };
+        let present_at = |index: usize| -> io::Result<bool> {
+            offsets
+                .get(index)
+                .map(|&flag| flag != 0)
+                .ok_or_else(||
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "missing offsets flag")
+                )
+        };
 
-    for &tf in &block.term_freq[..self.slot] {
-        let present = present_at(at)?;
-        at += 1;
-        if present {
-            skip_varints(offsets, &mut at, 2 * (tf as usize))?;
+        let (Some(earlier), Some(&current_freq)) = (
+            block.term_freq.get(..self.slot),
+            block.term_freq.get(self.slot),
+        ) else {
+            return Err(invalid("slot outside block"));
+        };
+
+        for &tf in earlier {
+            let present = present_at(at)?;
+            at += 1;
+            if present {
+                let varints = usize::try_from(tf).map_err(invalid)?.saturating_mul(2);
+                skip_varints(offsets, &mut at, varints)?;
+            }
         }
-    }
 
-    let present = present_at(at)?;
-    at += 1;
-    if present {
-        for _ in 0..block.term_freq[self.slot] {
-            let start = read_var_u32(offsets, &mut at)?;
-            let len = read_var_u32(offsets, &mut at)?;
-            out.push((start, start + len));
+        if present_at(at)? {
+            at += 1;
+            for _ in 0..current_freq {
+                let start = read_var_u32(offsets, &mut at)?;
+                let len = read_var_u32(offsets, &mut at)?;
+                let end = start.checked_add(len).ok_or_else(|| invalid("offset overflow"))?;
+                out.push((start, end));
+            }
         }
+        Ok(())
     }
-    Ok(())
-}
 }

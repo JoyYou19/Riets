@@ -50,7 +50,7 @@ impl Scorer for SynonymScorer<'_> {
 
     fn next(&mut self) {
         if let Some(doc) = self.doc() {
-            for (_, form) in self.forms.iter_mut() {
+            for (_, form) in &mut self.forms {
                 if form.doc() == Some(doc) {
                     form.next();
                 }
@@ -59,7 +59,7 @@ impl Scorer for SynonymScorer<'_> {
     }
 
     fn advance_to(&mut self, target: DocId) {
-        for (_, form) in self.forms.iter_mut() {
+        for (_, form) in &mut self.forms {
             form.advance_to(target);
         }
     }

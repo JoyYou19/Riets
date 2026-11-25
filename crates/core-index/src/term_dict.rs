@@ -40,13 +40,14 @@ pub struct TermMeta {
 }
 
 //to io:Error simplest one yer
-fn fst_err(err: fst::Error) -> io::Error {
+fn fst_err(err: &fst::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
+#[allow(clippy::indexing_slicing, reason = "k is clamped to 0..=3 and the array has 4 slots")]
 fn builder(max_edits: u8) -> &'static LevenshteinAutomatonBuilder {
     static BUILDERS: [OnceLock<LevenshteinAutomatonBuilder>; 4] = [const { OnceLock::new() }; 4];
     let k = max_edits.min(3);
-    BUILDERS[k as usize].get_or_init(|| LevenshteinAutomatonBuilder::new(k, true))
+    BUILDERS[usize::from(k)].get_or_init(|| LevenshteinAutomatonBuilder::new(k, true))
 }
 
 #[derive(Default)]
@@ -61,19 +62,22 @@ impl fmt::Debug for TermDict {
         f.debug_struct("TermDict")
             .field("terms", &self.metas.len())
             .field("fst_bytes", &self.fst_bytes().len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl TermDict {
-    pub fn empty() -> Self {
+    fn meta_for(&self, ord: u64) -> Option<TermMeta> {
+        self.metas.get(usize::try_from(ord).ok()?).copied()
+    }
+    pub const fn empty() -> Self {
         Self {
             map: None,
             metas: Vec::new(),
         }
     }
 
-    pub fn build<K, I>(terms: I) -> io::Result<Self>
+     pub fn build<K, I>(terms: I) -> io::Result<Self>
     where
         K: AsRef<[u8]>,
         I: IntoIterator<Item = (K, TermMeta)>,
@@ -83,9 +87,12 @@ impl TermDict {
 
         for (term, meta) in terms {
             // The ord is simply the position in sorted term order.
+            let ord = u64::try_from(metas.len()).map_err(|_overflow| {
+                io::Error::new(io::ErrorKind::InvalidData, "term count exceeds u64")
+            })?;
             builder
-                .insert(term.as_ref(), metas.len() as u64)
-                .map_err(fst_err)?;
+                .insert(term.as_ref(), ord)
+                .map_err(|err: fst::Error| fst_err(&err))?;
             metas.push(meta);
         }
 
@@ -93,8 +100,8 @@ impl TermDict {
             return Ok(Self::empty());
         }
 
-        let bytes = builder.into_inner().map_err(fst_err)?;
-        let map = Map::new(bytes).map_err(fst_err)?;
+        let bytes = builder.into_inner().map_err(|err: fst::Error| fst_err(&err))?;
+        let map = Map::new(bytes).map_err(|err: fst::Error| fst_err(&err))?;
 
         Ok(Self {
             map: Some(map),
@@ -108,7 +115,7 @@ impl TermDict {
             return Ok(Self::empty());
         }
 
-        let map = Map::new(bytes).map_err(fst_err)?;
+        let map = Map::new(bytes).map_err(|err: fst::Error| fst_err(&err))?;
 
         Ok(Self {
             map: Some(map),
@@ -117,37 +124,35 @@ impl TermDict {
     }
 
     //The raw FST bytes
-    pub fn fst_bytes(&self) -> &[u8] {
-        match &self.map {
-            Some(map) => map.as_fst().as_bytes(),
-            None => &[],
-        }
+     pub fn fst_bytes(&self) -> &[u8] {
+        self.map
+            .as_ref()
+            .map_or_else(<&[u8]>::default, |map| map.as_fst().as_bytes())
     }
 
     pub fn metas(&self) -> &[TermMeta] {
         &self.metas
     }
 
-    pub fn get(&self, term: &str) -> Option<TermMeta> {
+     pub fn get(&self, term: &str) -> Option<TermMeta> {
         let map = self.map.as_ref()?;
-        let ord = map.get(term)?;
-        self.metas.get(ord as usize).copied()
+        self.meta_for(map.get(term)?)
     }
 
     pub fn contains(&self, term: &str) -> bool {
         self.get(term).is_some()
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.metas.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.metas.is_empty()
     }
 
     //Every term in this field, ascending, as owned strings.
-    pub fn entries(&self) -> Vec<(String, TermMeta)> {
+     pub fn entries(&self) -> Vec<(String, TermMeta)> {
         let Some(map) = self.map.as_ref() else {
             return Vec::new();
         };
@@ -156,7 +161,7 @@ impl TermDict {
         let mut stream = map.stream();
 
         while let Some((term, ord)) = stream.next() {
-            let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+            let meta = self.meta_for(ord).unwrap_or_default();
             out.push((String::from_utf8_lossy(term).into_owned(), meta));
         }
 
@@ -177,7 +182,7 @@ impl TermDict {
                 break;
             }
 
-            let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
+            let meta = self.meta_for(ord).unwrap_or_default();
             out.push((String::from_utf8_lossy(term).into_owned(), meta));
         }
 
@@ -203,61 +208,67 @@ impl TermDict {
     /// NOTE: an exact hit is always included (distance 0 is within any distance).
     /// Callers that also look the term up exactly can rely on the posting merge
     /// to dedupe.
-    pub fn fuzzy_expansions(
-     &self,
-     term: &str,
-     opts: FuzzyOptions,
- ) -> Vec<(FuzzyExpansion, TermMeta)> {
-     let Some(map) = self.map.as_ref() else {
-         return Vec::new();
-     };
+        pub fn fuzzy_expansions(
+        &self,
+        term: &str,
+        opts: FuzzyOptions,
+    ) -> Vec<(FuzzyExpansion, TermMeta)> {
+        const MAX_CANDIDATES: usize = 2_048; // well above select_expansions' usual 3-50
+        let Some(map) = self.map.as_ref() else {
+            return Vec::new();
+        };
 
-     let exact = |edits: u8| -> Vec<(FuzzyExpansion, TermMeta)> {
-         self.get(term)
-             .map(|meta| vec![(FuzzyExpansion::new(term, edits, meta.doc_freq), meta)])
-             .unwrap_or_default()
-     };
+        let exact = |edits: u8| -> Vec<(FuzzyExpansion, TermMeta)> {
+            self.get(term)
+                .map(|meta| vec![(FuzzyExpansion::new(term, edits, meta.doc_freq), meta)])
+                .unwrap_or_default()
+        };
 
-     if opts.max_edits == 0 {
-         return exact(0);
-     }
+        if opts.max_edits == 0 {
+            return exact(0);
+        }
 
-     let (prefix, suffix) = split_prefix(term, opts.prefix_length);
-     if suffix.is_empty() {
-         return exact(0);
-     }
+        let (prefix, suffix) = split_prefix(term, opts.prefix_length);
+        if suffix.is_empty() {
+            return exact(0);
+        }
 
-     let dfa = builder(opts.max_edits).build_dfa(suffix);
-     let mut out = Vec::new();
-     const MAX_CANDIDATES: usize = 2_048; // well above select_expansions' usual 3-50
+        let dfa = builder(opts.max_edits).build_dfa(suffix);
+        let mut out = Vec::new();
 
-     if prefix.is_empty() {
-         let mut stream = map.search_with_state(&dfa).into_stream();
-         while let Some((t, ord, state)) = stream.next() {
-             if out.len() >= MAX_CANDIDATES {
-                 break;
-             }
-             let Distance::Exact(edits) = dfa.distance(state) else { continue };
-             let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
-             let term = String::from_utf8_lossy(t).into_owned();
-             out.push((FuzzyExpansion::new(term, edits, meta.doc_freq), meta));
-         }
-     } else {
-         let mut stream = map.range().ge(prefix.as_bytes()).into_stream();
-         while let Some((t, ord)) = stream.next() {
-             if out.len() >= MAX_CANDIDATES {
-                 break;
-             }
-             let Ok(t) = std::str::from_utf8(t) else { break };
-             let Some(rest) = t.strip_prefix(prefix) else { break };
-             if let Distance::Exact(edits) = dfa.eval(rest) {
-                 let meta = self.metas.get(ord as usize).copied().unwrap_or_default();
-                 out.push((FuzzyExpansion::new(t, edits, meta.doc_freq), meta));
-             }
-         }
-     }
-     out
- }
+        if prefix.is_empty() {
+            let mut stream = map.search_with_state(&dfa).into_stream();
+            while let Some((key, ord, state)) = stream.next() {
+                if out.len() >= MAX_CANDIDATES {
+                    break;
+                }
+                let Distance::Exact(edits) = dfa.distance(state) else {
+                    continue;
+                };
+                let meta = self.meta_for(ord).unwrap_or_default();
+                let word = String::from_utf8_lossy(key).into_owned();
+                out.push((FuzzyExpansion::new(word, edits, meta.doc_freq), meta));
+            }
+        } else {
+            let mut stream = map.range().ge(prefix.as_bytes()).into_stream();
+            while let Some((key, ord)) = stream.next() {
+                if out.len() >= MAX_CANDIDATES {
+                    break;
+                }
+                let Ok(text) = std::str::from_utf8(key) else {
+                    break;
+                };
+                let Some(rest) = text.strip_prefix(prefix) else {
+                    break;
+                };
+                if let Distance::Exact(edits) = dfa.eval(rest) {
+                    let meta = self.meta_for(ord).unwrap_or_default();
+                    out.push((FuzzyExpansion::new(text, edits, meta.doc_freq), meta));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Every field's term dictionary in one segment.

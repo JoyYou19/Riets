@@ -48,60 +48,63 @@ pub enum CorelamoError {
 
 //INFO: helpers to get all needed info from an error to http response
 impl CorelamoError {
-    pub fn code(&self) -> &'static str {
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
         match self {
-            CorelamoError::NotFound(_) => "not_found",
-            CorelamoError::AlreadyExists(_) => "already_exists",
-            CorelamoError::InvalidData(_) => "invalid_data",
-            CorelamoError::Internal(_) => "internal_error",
-            CorelamoError::Unauthorized(_) => "unauthorized",
-            CorelamoError::PermissionDenied(_) => "permission_denied",
-            CorelamoError::UnsupportedFormat(_) => "unsupported_format",
-            CorelamoError::Conflict(_) => "conflict",
-            CorelamoError::UnknownRole(_) => "unknown_role",
-            CorelamoError::DatabaseNotRunning(_) => "database_not_started",
-            CorelamoError::PathNotIndexed(_) => "path_not_indexed",
-            CorelamoError::DatabaseAlreadyRunning(_) => "database_already_started",
-            CorelamoError::Busy(_) => "busy", //mosk janomaina
-            CorelamoError::FailedToEx(_) => "execution_failed",
+            Self::NotFound(_) => "not_found",
+            Self::AlreadyExists(_) => "already_exists",
+            Self::InvalidData(_) => "invalid_data",
+            Self::Internal(_) => "internal_error",
+            Self::Unauthorized(_) => "unauthorized",
+            Self::PermissionDenied(_) => "permission_denied",
+            Self::UnsupportedFormat(_) => "unsupported_format",
+            Self::Conflict(_) => "conflict",
+            Self::UnknownRole(_) => "unknown_role",
+            Self::DatabaseNotRunning(_) => "database_not_started",
+            Self::PathNotIndexed(_) => "path_not_indexed",
+            Self::DatabaseAlreadyRunning(_) => "database_already_started",
+            Self::Busy(_) => "busy", //mosk janomaina
+            Self::FailedToEx(_) => "execution_failed",
         }
     }
 
-    pub fn title(&self) -> &'static str {
+    #[must_use]
+    pub const fn title(&self) -> &'static str {
         match self {
-            CorelamoError::NotFound(_) => "Not Found",
-            CorelamoError::AlreadyExists(_) => "Already Exists",
-            CorelamoError::InvalidData(_) => "Invalid Data",
-            CorelamoError::Internal(_) => "Internal Error",
-            CorelamoError::Unauthorized(_) => "Unauthorized",
-            CorelamoError::PermissionDenied(_) => "Permission Denied",
-            CorelamoError::UnsupportedFormat(_) => "Unsupported Format",
-            CorelamoError::Conflict(_) => "Conflict",
-            CorelamoError::UnknownRole(_) => "Role Error",
-            CorelamoError::DatabaseNotRunning(_) => "Database Not Running",
-            CorelamoError::PathNotIndexed(_) => "Path Not Indexed",
-            CorelamoError::DatabaseAlreadyRunning(_) => "Database Already Running",
-            CorelamoError::Busy(_) => "Service Unavailable",
-            CorelamoError::FailedToEx(_) => "Execution failed",
+            Self::NotFound(_) => "Not Found",
+            Self::AlreadyExists(_) => "Already Exists",
+            Self::InvalidData(_) => "Invalid Data",
+            Self::Internal(_) => "Internal Error",
+            Self::Unauthorized(_) => "Unauthorized",
+            Self::PermissionDenied(_) => "Permission Denied",
+            Self::UnsupportedFormat(_) => "Unsupported Format",
+            Self::Conflict(_) => "Conflict",
+            Self::UnknownRole(_) => "Role Error",
+            Self::DatabaseNotRunning(_) => "Database Not Running",
+            Self::PathNotIndexed(_) => "Path Not Indexed",
+            Self::DatabaseAlreadyRunning(_) => "Database Already Running",
+            Self::Busy(_) => "Service Unavailable",
+            Self::FailedToEx(_) => "Execution failed",
         }
     }
 
+    #[must_use]
     pub fn message(&self) -> String {
         match self {
-            CorelamoError::NotFound(msg)
-            | CorelamoError::AlreadyExists(msg)
-            | CorelamoError::InvalidData(msg)
-            | CorelamoError::Internal(msg)
-            | CorelamoError::Unauthorized(msg)
-            | CorelamoError::PermissionDenied(msg)
-            | CorelamoError::UnsupportedFormat(msg)
-            | CorelamoError::Conflict(msg)
-            | CorelamoError::DatabaseNotRunning(msg)
-            | CorelamoError::DatabaseAlreadyRunning(msg)
-            | CorelamoError::PathNotIndexed(msg)
-            | CorelamoError::UnknownRole(msg)
-            | CorelamoError::Busy(msg)
-            | CorelamoError::FailedToEx(msg) => msg.clone(),
+            Self::NotFound(msg)
+            | Self::AlreadyExists(msg)
+            | Self::InvalidData(msg)
+            | Self::Internal(msg)
+            | Self::Unauthorized(msg)
+            | Self::PermissionDenied(msg)
+            | Self::UnsupportedFormat(msg)
+            | Self::Conflict(msg)
+            | Self::DatabaseNotRunning(msg)
+            | Self::DatabaseAlreadyRunning(msg)
+            | Self::PathNotIndexed(msg)
+            | Self::UnknownRole(msg)
+            | Self::Busy(msg)
+            | Self::FailedToEx(msg) => msg.clone(),
         }
     }
 }
@@ -109,31 +112,31 @@ impl CorelamoError {
 //more helpers to convert io/serde/toml
 impl From<std::io::Error> for CorelamoError {
     fn from(e: std::io::Error) -> Self {
-        CorelamoError::Internal(e.to_string())
+        Self::Internal(e.to_string())
     }
 }
 
 impl From<simd_json::Error> for CorelamoError {
     fn from(e: simd_json::Error) -> Self {
-        CorelamoError::InvalidData(e.to_string())
+        Self::InvalidData(e.to_string())
     }
 }
 
 impl From<serde_json::Error> for CorelamoError {
     fn from(e: serde_json::Error) -> Self {
-        CorelamoError::InvalidData(e.to_string())
+        Self::InvalidData(e.to_string())
     }
 }
 
 impl From<toml::de::Error> for CorelamoError {
     fn from(e: toml::de::Error) -> Self {
-        CorelamoError::InvalidData(e.message().to_string())
+        Self::InvalidData(e.message().to_owned())
     }
 }
 
 impl From<toml::ser::Error> for CorelamoError {
     fn from(e: toml::ser::Error) -> Self {
-        CorelamoError::Internal(e.to_string())
+        Self::Internal(e.to_string())
     }
 }
 
@@ -167,27 +170,26 @@ pub enum FailReason {
 }
 
 impl FailReason {
-    pub fn code(&self) -> &'static str {
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
         match self {
-            FailReason::InvalidJson(_) => "invalid_json",
-            FailReason::MissingId { .. } => "missing_id",
-            FailReason::NoIdField => "no_id_field",
-            FailReason::DuplicatePrimaryId => "duplicate_primary_id",
-            FailReason::NotFound => "not_found",
-            FailReason::Internal { .. } => "internal_error",
-            FailReason::InvalidField { .. } => "invalid_field",
+            Self::InvalidJson(_) => "invalid_json",
+            Self::MissingId { .. } => "missing_id",
+            Self::NoIdField => "no_id_field",
+            Self::DuplicatePrimaryId => "duplicate_primary_id",
+            Self::NotFound => "not_found",
+            Self::Internal { .. } => "internal_error",
+            Self::InvalidField { .. } => "invalid_field",
         }
     }
 
-    pub fn status(&self) -> u16 {
+    #[must_use]
+    pub const fn status(&self) -> u16 {
         match self {
-            FailReason::InvalidJson(_) => 400,
-            FailReason::MissingId { .. } => 400,
-            FailReason::InvalidField { .. } => 400,
-            FailReason::NoIdField => 400,
-            FailReason::DuplicatePrimaryId => 409,
-            FailReason::NotFound => 404,
-            FailReason::Internal { .. } => 500,
+            Self::InvalidJson(_) | Self::MissingId { .. } | Self::InvalidField { .. } | Self::NoIdField => 400,
+            Self::DuplicatePrimaryId => 409,
+            Self::NotFound => 404,
+            Self::Internal { .. } => 500,
         }
     }
 }
@@ -200,10 +202,12 @@ pub struct DocFailure {
 }
 
 impl DocFailure {
-    pub fn new(index: Option<usize>, id: Option<String>, reason: FailReason) -> Self {
+    #[must_use]
+    pub const fn new(index: Option<usize>, id: Option<String>, reason: FailReason) -> Self {
         Self { index, id, reason }
     }
 
+    #[must_use]
     pub fn at(index: usize, reason: FailReason) -> Self {
         Self {
             index: index.into(),

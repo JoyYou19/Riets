@@ -324,7 +324,7 @@ fn skip_string(buf: &[u8], i: usize) -> Result<usize, CorelamoError> {
     Err(CorelamoError::InvalidData("unterminated string".into()))
 }
 
-fn skip_scalar(buf: &[u8], i: usize) -> Result<usize, CorelamoError> {
+const fn skip_scalar(buf: &[u8], i: usize) -> Result<usize, CorelamoError> {
     let mut j = i;
     while j < buf.len() && !is_json_delimiter(buf[j]) {
         j += 1;

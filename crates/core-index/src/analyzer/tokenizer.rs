@@ -7,6 +7,7 @@ use crate::analyzer::token::RawToken;
 pub struct SimpleTokenizer;
 
 impl SimpleTokenizer {
+    #[must_use]
     pub fn tokenize(&self, input: &str) -> Vec<RawToken> {
         let mut tokens = Vec::new();
         let mut start = None;

@@ -39,6 +39,7 @@ pub struct RankedGroup {
 }
 
 /// Share of `weights` held by the clauses set in `mask`, 0..=1; 1 when nothing has weight.
+#[must_use]
 pub fn coverage(mask: u64, weights: &[f32]) -> f32 {
     let total: f32 = weights.iter().sum();
     if total.is_nan() || total <= 0.0 {
@@ -48,18 +49,24 @@ pub fn coverage(mask: u64, weights: &[f32]) -> f32 {
         .iter()
         .enumerate()
         .take(MAX_CLAUSES)
-        .filter(|(index, _)| (mask & (1u64 << index)) != 0)
+        .filter(|&(index, _)| {
+            u32::try_from(index)
+                .ok()
+                .and_then(|bit| mask.checked_shr(bit))
+                .is_some_and(|rest| rest & 1 != 0)
+        })
         .map(|(_, weight)| weight)
         .sum();
     (held / total).clamp(0.0, 1.0)
 }
 
 /// The final score of a hit with the given coverage.
+#[must_use]
 pub fn final_score(hit: &SearchHit, coverage: f32) -> f32 {
     let score = hit.base
-        * coverage.powf(COVERAGE_POWER)
-        * (1.0 + DENSITY_BOOST * hit.distance_factor)
-        * (1.0 + NAME_BONUS * hit.name_share);
+        * coverage.powi(2)
+        * DENSITY_BOOST.mul_add(hit.distance_factor, 1.0)
+        * NAME_BONUS.mul_add(hit.name_share, 1.0);
     if score.is_finite() {
         score.max(0.0)
     } else {
@@ -97,7 +104,7 @@ pub fn finalize(groups: Vec<RankedGroup>, k: usize) -> Vec<SearchHit> {
                 .map(|index| {
                     weighted
                         .iter()
-                        .map(|weights| weights[index])
+                        .filter_map(|weights| weights.get(index).copied())
                         .fold(f32::INFINITY, f32::min)
                 })
                 .collect(),

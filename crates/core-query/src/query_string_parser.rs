@@ -25,15 +25,15 @@ fn classify_word(word: &str, default: fn(Vec<Query>) -> Query, wildcard_enabled:
     }
     if !wildcard_enabled {
         //wildcards disabled
-        return Query::Term(word.to_string());
+        return Query::Term(word.to_owned());
     }
     let pattern = WildcardPattern::parse(word);
     if pattern.is_prefix_only() {
-        Query::Prefix(pattern.prefix().to_string())
+        Query::Prefix(pattern.prefix().to_owned())
     } else if has_wildcard(word) {
-        Query::Wildcard(word.to_string())
+        Query::Wildcard(word.to_owned())
     } else {
-        Query::Term(word.to_string())
+        Query::Term(word.to_owned())
     }
 }
 
@@ -160,21 +160,17 @@ fn analyze_phrase(words: &[String], analyzer: &Analyzer) -> Option<Query> {
     let text = words.join(" ");
     let tokens = analyzer.analyze_query(&text);
     let base = tokens.first()?.position;
-    let phrase_terms: Vec<PhraseTerm> = tokens
+    let mut phrase_terms: Vec<PhraseTerm> = tokens
         .into_iter()
         .map(|token| PhraseTerm {
             text: token.text,
-            offset: token.position - base,
+            offset: token.position.saturating_sub(base),
         })
         .collect();
-    match phrase_terms.len() {
-        0 => None,
-        1 => {
-            let term = phrase_terms.into_iter().next().unwrap();
-            Some(Query::Term(term.text))
-        }
-        _ => Some(Query::Phrase(phrase_terms)),
+    if phrase_terms.len() > 1 {
+        return Some(Query::Phrase(phrase_terms));
     }
+    phrase_terms.pop().map(|term| Query::Term(term.text))
 }
 
 //main entry point for parsing yeye
@@ -196,10 +192,10 @@ pub fn parse_json_query(
                 return combinator(inner, Query::Wand, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("term") {
-                return leaf(inner, Leaf::Term, default, wildcard_enabled);
+                return leaf(inner, &Leaf::Term, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("exact") {
-                return leaf(inner, Leaf::Exact, default, wildcard_enabled);
+                return leaf(inner, &Leaf::Exact, default, wildcard_enabled);
             }
             if let Some(inner) = obj.get("phrase") {
                 return phrase(inner);
@@ -285,7 +281,7 @@ fn not(inner: &OwnedValue, wildcard_enabled: bool) -> Result<Query, CorelamoErro
 
 fn leaf(
     inner: &OwnedValue,
-    kind: Leaf,
+    kind: &Leaf,
     default: fn(Vec<Query>) -> Query,
     wildcard_enabled: bool,
 ) -> Result<Query, CorelamoError> {
@@ -294,7 +290,7 @@ fn leaf(
         .ok_or_else(|| CorelamoError::InvalidData("leaf value must be a string".into()))?;
     Ok(match kind {
         //exact allows multiple words too
-        Leaf::Exact => Query::Exact(s.to_string()),
+        Leaf::Exact => Query::Exact(s.to_owned()),
         Leaf::Term => {
             if s.split_whitespace().count() > 1 {
                 return Err(CorelamoError::InvalidData(
@@ -309,7 +305,7 @@ fn leaf(
 fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
     let words: Vec<String> = match inner {
         OwnedValue::String(s) => {
-            let words: Vec<String> = s.split_whitespace().map(str::to_string).collect();
+            let words: Vec<String> = s.split_whitespace().map(str::to_owned).collect();
             if words.is_empty() {
                 return Err(CorelamoError::InvalidData(
                     "'phrase' must not be empty".into(),
@@ -328,7 +324,7 @@ fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
                         "'phrase' elements must be single words".into(),
                     ));
                 }
-                words.push(s.to_string());
+                words.push(s.to_owned());
             }
             words
         }
@@ -344,7 +340,7 @@ fn phrase(inner: &OwnedValue) -> Result<Query, CorelamoError> {
         .enumerate()
         .map(|(index, text)| PhraseTerm {
             text,
-            offset: index as u32,
+            offset: u32::try_from(index).unwrap_or(u32::MAX),
         })
         .collect();
     Ok(Query::Phrase(phrase_terms))
@@ -355,7 +351,7 @@ fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
     //fuzzy ALSO allows multiple words now
     if let Some(s) = inner.as_str() {
         return Ok(Query::Fuzzy(
-            s.to_string(),
+            s.to_owned(),
             Fuzziness::Auto,
             FuzzySpec {
                 prefix_length: DEFAULT_PREFIX_LENGTH,
@@ -373,23 +369,24 @@ fn fuzzy(inner: &OwnedValue) -> Result<Query, CorelamoError> {
         .get("value")
         .and_then(OwnedValue::as_str)
         .ok_or_else(|| CorelamoError::InvalidData("'fuzzy' requires a string 'value'".into()))?
-        .to_string();
+        .to_owned();
+    let fuzziness = obj
+        .get("fuzziness")
+        .map(Fuzziness::from_owned)
+        .transpose()
+        .map_err(CorelamoError::InvalidData)?
+        .unwrap_or(Fuzziness::Auto);
+    let limit = |key: &str, default: usize| {
+        obj.get(key)
+            .and_then(OwnedValue::as_u64)
+            .map_or(default, |n| usize::try_from(n).unwrap_or(usize::MAX))
+    };
     Ok(Query::Fuzzy(
         value,
-        obj.get("fuzziness")
-            .map(Fuzziness::from_owned)
-            .transpose()
-            .map_err(CorelamoError::InvalidData)?
-            .unwrap_or(Fuzziness::Auto),
+        fuzziness,
         FuzzySpec {
-            prefix_length: obj
-                .get("prefix_length")
-                .and_then(OwnedValue::as_u64)
-                .map_or(DEFAULT_PREFIX_LENGTH, |n| n as usize),
-            max_expansions: obj
-                .get("max_expansions")
-                .and_then(OwnedValue::as_u64)
-                .map_or(DEFAULT_MAX_EXPANSIONS, |n| n as usize),
+            prefix_length: limit("prefix_length", DEFAULT_PREFIX_LENGTH),
+            max_expansions: limit("max_expansions", DEFAULT_MAX_EXPANSIONS),
         },
     ))
 }

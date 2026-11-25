@@ -26,18 +26,18 @@ impl<'a> AndScorer<'a> {
     //The next document every child is on, after `after`.
     fn next_common(&mut self, after: Option<DocId>) -> Option<DocId> {
         if after.is_some() {
-            for child in self.children.iter_mut() {
+            for child in &mut self.children {
                 child.next();
             }
         }
         loop {
             let mut target = None;
-            for child in self.children.iter() {
+            for child in &self.children {
                 let doc = child.doc()?;
                 target = Some(target.map_or(doc, |known: DocId| known.max(doc)));
             }
             let target = target?;
-            for child in self.children.iter_mut() {
+            for child in &mut self.children {
                 child.advance_to(target);
             }
             if self
@@ -64,7 +64,7 @@ impl Scorer for AndScorer<'_> {
     //Move forward to the first common document >= `target`.
     fn advance_to(&mut self, target: DocId) {
         if self.current.is_some_and(|doc| doc < target) {
-            for child in self.children.iter_mut() {
+            for child in &mut self.children {
                 child.advance_to(target);
             }
             self.current = self.next_common(None);

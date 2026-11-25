@@ -127,11 +127,11 @@ pub struct SearchCommand {
     pub semantic: Option<bool>,
 }
 
-fn wildcard_default() -> bool {
+const fn wildcard_default() -> bool {
     true
 }
 
-fn blank_query() -> OwnedValue {
+const fn blank_query() -> OwnedValue {
     OwnedValue::String(String::new())
 }
 
@@ -163,18 +163,18 @@ pub struct HighlightFieldOptions {
     pub sentence: bool,
 }
 
-fn default_fragment_size() -> usize {
+const fn default_fragment_size() -> usize {
     150
 }
-fn default_number_of_fragments() -> usize {
+const fn default_number_of_fragments() -> usize {
     3
 }
 
 fn default_pre_tags() -> Vec<String> {
-    vec!["<em>".to_string()]
+    vec!["<em>".to_owned()]
 }
 fn default_post_tags() -> Vec<String> {
-    vec!["</em>".to_string()]
+    vec!["</em>".to_owned()]
 }
 
 // fn default_pre_tags() -> Vec<String> {
@@ -208,6 +208,7 @@ pub struct SortCommand {
 }
 
 impl SortCommand {
+    #[must_use]
     pub fn sort_fields(&self) -> &IndexMap<String, SortSpec> {
         self.fields.as_ref().unwrap_or(&self.flat)
     }
@@ -222,21 +223,22 @@ pub enum Fuzziness {
 }
 
 impl Fuzziness {
+    #[must_use]
     pub fn resolve(self, term: &str) -> u8 {
         match self {
-            Fuzziness::Zero => 0,
-            Fuzziness::One => 1,
-            Fuzziness::Two => 2,
-            Fuzziness::Auto => default_max_edits(term),
+            Self::Zero => 0,
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Auto => default_max_edits(term),
         }
     }
 
     pub fn from_owned(v: &OwnedValue) -> Result<Self, String> {
         if let Some(n) = v.as_u64() {
             return match n {
-                0 => Ok(Fuzziness::Zero),
-                1 => Ok(Fuzziness::One),
-                2 => Ok(Fuzziness::Two),
+                0 => Ok(Self::Zero),
+                1 => Ok(Self::One),
+                2 => Ok(Self::Two),
                 other => Err(format!(
                     "fuzziness must be 0, 1, 2 or \"auto\" (got {other})"
                 )),
@@ -244,11 +246,11 @@ impl Fuzziness {
         }
         if let Some(s) = v.as_str() {
             if s.eq_ignore_ascii_case("auto") {
-                return Ok(Fuzziness::Auto);
+                return Ok(Self::Auto);
             }
             return Err(format!("fuzziness must be 0, 1, 2 or \"auto\" (got '{s}')"));
         }
-        Err("fuzziness must be 0, 1, 2 or \"auto\"".to_string())
+        Err("fuzziness must be 0, 1, 2 or \"auto\"".to_owned())
     }
 }
 
@@ -306,16 +308,18 @@ pub enum QueryCorrection {
     /// The results are for the query as typed; this spelling is offered instead.
     Suggested(String),
 }
+type Docs =Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>;
 pub struct SearchResponse {
-    docs: Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>,
+    docs: Docs,
     strip_id: Option<String>,
     total_hits: TotalHits,
     corrected_query: Option<QueryCorrection>,
 }
 
 impl SearchResponse {
-    pub fn new(
-        docs: Vec<(String, f32, DocumentOut, IndexMap<String, Vec<String>>)>,
+    #[must_use]
+    pub const fn new(
+        docs:Docs ,
         strip_id: Option<String>,
         total_hits: TotalHits,
         corrected_query: Option<QueryCorrection>,
@@ -385,15 +389,15 @@ impl ResponseData for SearchResponse {
 
     fn extra_fields(&self) -> Vec<(String, OwnedValue)> {
         let mut fields = vec![(
-            "total_hits".to_string(),
+            "total_hits".to_owned(),
             json!({ "value": self.total_hits.value, "more": self.total_hits.more }),
         )];
         match &self.corrected_query {
             Some(QueryCorrection::Applied(text)) => {
-                fields.push(("corrected_query".to_string(), json!(text)));
+                fields.push(("corrected_query".to_owned(), json!(text)));
             }
             Some(QueryCorrection::Suggested(text)) => {
-                fields.push(("suggested_query".to_string(), json!(text)));
+                fields.push(("suggested_query".to_owned(), json!(text)));
             }
             None => {}
         }
@@ -414,7 +418,7 @@ pub struct AnalyzeOptions {
     pub full: bool,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -433,7 +437,8 @@ pub struct RetrieveResponse {
 }
 
 impl RetrieveResponse {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         documents: Vec<(String, Vec<u8>)>,
         not_found: Vec<String>,
         skipped: Vec<String>,
@@ -498,7 +503,8 @@ pub struct LookupResponse {
 }
 
 impl LookupResponse {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         docs: Vec<(String, DocumentOut)>,
         not_found: Vec<String>,
         id_field: Option<String>,

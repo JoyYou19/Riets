@@ -37,22 +37,23 @@ pub enum TierKind {
 
 impl TierKind {
     /// The order used when the config names none: the cascade as it has always been.
-    /// Kinds that feed the one relevance tier instead of being a tier of their own.
-    pub fn is_relevance_source(self) -> bool {
-        !matches!(self, TierKind::Name | TierKind::Exact)
-    }
-
-    pub const DEFAULT_ORDER: [TierKind; 7] = [
-        TierKind::Name,
-        TierKind::Exact,
-        TierKind::Phrase,
-        TierKind::Fuzzy,
-        TierKind::All,
-        TierKind::AllButOne,
-        TierKind::Any,
+    pub const DEFAULT_ORDER: [Self; 7] = [
+        Self::Name,
+        Self::Exact,
+        Self::Phrase,
+        Self::Fuzzy,
+        Self::All,
+        Self::AllButOne,
+        Self::Any,
     ];
+
+    /// Kinds that feed the one relevance tier instead of being a tier of their own.
+    #[must_use]
+    pub const fn is_relevance_source(self) -> bool {
+        !matches!(self, Self::Name | Self::Exact)
+    }
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tier {
     /// A name field (a field with `$exact`) whose whole value is the query or one of its
     /// dictionary forms: the article itself, before the ones that only mention it. exact sentance basically
@@ -91,6 +92,7 @@ impl Default for TierRanks {
 }
 
 impl TierRanks {
+    #[must_use]
     pub fn from_order(order: &[TierKind]) -> Self {
         // a kind missing from the order gets the last possible place
         let rank = |position: Option<usize>| {
@@ -105,7 +107,7 @@ impl TierRanks {
         }
     }
 }
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RankPlan {
     pub tiers: Vec<Tier>,
     pub stop_after: usize,
@@ -121,6 +123,7 @@ pub struct RankPlan {
 }
 impl RankPlan {
     /// The same plan without its fuzzy tier.
+    #[must_use]
     pub fn without_fuzzy(&self) -> Self {
         Self {
             tiers: self
@@ -138,7 +141,8 @@ impl RankPlan {
         }
     }
 
-    pub fn stopping_after(mut self, results: usize) -> Self {
+    #[must_use]
+    pub const fn stopping_after(mut self, results: usize) -> Self {
         self.stop_after = results;
         self
     }
@@ -152,6 +156,7 @@ impl RankPlan {
 
     /// `raw` is the text as typed; `resolved` is it after synonym expansion and analysis.
     #[timed(search)]
+    #[must_use]
     pub fn cascade(
         raw: &str,
         resolved: Query,
@@ -193,7 +198,7 @@ impl RankPlan {
                     }
                 }
                 TierKind::Fuzzy => tiers.push(Tier::Fuzzy(Query::Fuzzy(
-                    raw.trim().to_string(),
+                    raw.trim().to_owned(),
                     Fuzziness::Auto,
                     FuzzySpec {
                         prefix_length: DEFAULT_PREFIX_LENGTH,
@@ -217,7 +222,9 @@ impl RankPlan {
             (Vec::new(), Vec::new())
         };
         let clauses = match resolved {
-            Query::And(parts) | Query::Wand(parts) | Query::Or(parts) => parts,
+            Query::And(query_parts) | Query::Wand(query_parts) | Query::Or(query_parts) => {
+                query_parts
+            }
             Query::Term(_) | Query::Phrase(_) | Query::Synonym(_) | Query::Exact(_) => {
                 vec![resolved]
             }
@@ -237,6 +244,7 @@ impl RankPlan {
     /// Hits numbered below this come from the tiers that match the query as typed, as a whole
     /// value or exact text (the name and exact tiers): what the query names. Semantic fusion
     /// keeps them first.
+    #[must_use]
     pub fn named_tier_limit(&self) -> u8 {
         let named_first = self.tiers.iter().all(|tier| match tier {
             Tier::Name { .. } => self.ranks.name < self.ranks.relevance,
@@ -284,13 +292,12 @@ fn written_forms(query: &Query) -> Vec<String> {
                 }
                 key.push_str(&term.text);
                 key.push(' ');
-                next = term.offset + 1;
+                next = term.offset.saturating_add(1);
             }
             key.pop();
             vec![key]
         }
         // the case-preserving copy of a typed form, already covered by that form
-        Query::Exact(_) => Vec::new(),
         Query::Synonym(forms) => {
             let mut out: Vec<String> = Vec::new();
             for form in forms {
@@ -312,7 +319,7 @@ fn written_forms(query: &Query) -> Vec<String> {
                 if forms.is_empty() {
                     return Vec::new();
                 }
-                let mut next = Vec::with_capacity(out.len() * forms.len());
+                let mut next = Vec::with_capacity(out.len().saturating_mul(forms.len()));
                 for head in &out {
                     for form in &forms {
                         if next.len() >= MAX_NAME_KEYS {
@@ -344,11 +351,16 @@ fn named_runs(raw: &str, analyzer: &Analyzer) -> (Vec<String>, Vec<String>) {
     let mut keys: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for start in 0..typed.len() {
-        for end in start + 1..=typed.len().min(start + MAX_NAME_WORDS) {
-            if let Some(key) = analyzer.name_key(&typed[start..end].join(" "))
-                && seen.insert(key.clone()) {
-                    keys.push(key);
-                }
+        let limit = typed.len().min(start.saturating_add(MAX_NAME_WORDS));
+        for end in start.saturating_add(1)..=limit {
+            let Some(run) = typed.get(start..end) else {
+                continue;
+            };
+            if let Some(key) = analyzer.name_key(&run.join(" "))
+                && seen.insert(key.clone())
+            {
+                keys.push(key);
+            }
         }
     }
     // the words name_key keeps: one per position, a hyphenated word's parts but not its joined form
@@ -361,7 +373,6 @@ fn named_runs(raw: &str, analyzer: &Analyzer) -> (Vec<String>, Vec<String>) {
     (keys, words.into_iter().map(|(_, word)| word).collect())
 }
 
-/// Builds the terms from the typed text, once, when the plan is made
 fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
     let tokens = analyzer.analyze_query(raw);
     let Some(base) = tokens.first().map(|token| token.position) else {
@@ -370,7 +381,7 @@ fn terms_from_text(raw: &str, analyzer: &Analyzer) -> Vec<PhraseTerm> {
     tokens
         .into_iter()
         .map(|token| PhraseTerm {
-            offset: token.position - base,
+            offset: token.position.saturating_sub(base),
             text: token.text,
         })
         .collect()

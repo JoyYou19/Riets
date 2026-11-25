@@ -72,7 +72,8 @@ pub struct PreparedShardSearch {
 
 impl PreparedShardSearch {
     /// What this shard adds to the statistics every shard scores the query with.
-    pub fn stats(&self) -> &CorpusStats {
+    #[must_use]
+    pub const fn stats(&self) -> &CorpusStats {
         &self.stats
     }
 }
@@ -201,6 +202,7 @@ pub struct ShardHandle {
 }
 
 impl ShardHandle {
+    #[must_use]
     pub fn shard_root(&self) -> &std::path::Path {
         &self.shared.root
     }
@@ -226,26 +228,32 @@ impl ShardHandle {
         Ok(())
     }
 
-    pub fn id(&self) -> ShardId {
+    #[must_use]
+    pub const fn id(&self) -> ShardId {
         self.id
     }
 
+    #[must_use]
     pub fn is_restoring(&self) -> bool {
         self.shared.is_restoring.load(Ordering::Acquire)
     }
 
-    pub fn progress(&self) -> &Arc<ReindexProgress> {
+    #[must_use]
+    pub const fn progress(&self) -> &Arc<ReindexProgress> {
         &self.progress
     }
 
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.shared.is_running.load(Ordering::Acquire)
     }
 
+    #[must_use]
     pub fn is_clearing(&self) -> bool {
         self.shared.is_clearing.load(Ordering::Acquire)
     }
 
+    #[must_use]
     pub fn word_missing(&self, word: &str, xpaths: &[XPathId]) -> bool {
         let snapshot = self.shared.snapshot.get();
         xpaths
@@ -255,6 +263,7 @@ impl ShardHandle {
 
     /// For each candidate, the documents of this shard holding it together with every context
     /// word, each word in any of `xpaths`. No context: the documents holding the candidate.
+    #[must_use]
     pub fn co_occurrence_fuzzy(
         &self,
         candidates: &[String],
@@ -791,6 +800,7 @@ impl ShardHandle {
 
     //reusing the cached snapshots so no index reads for the final document highlights
     #[timed(highlight)]
+    #[must_use]
     pub fn matched_terms_for(
         &self,
         hits: &[SearchHit],
@@ -1053,7 +1063,7 @@ impl ShardHandle {
         backup_id: &str,
         user: String,
     ) -> Result<(), CorelamoError> {
-        let backup_id = backup_id.to_string();
+        let backup_id = backup_id.to_owned();
         self.call(move |resp| ShardCmd::PrepareRestore {
             user,
             backup_id,
@@ -1064,7 +1074,7 @@ impl ShardHandle {
 
     #[timed(restore)]
     pub async fn commit_restore(&self, backup_id: &str) -> Result<(), CorelamoError> {
-        let backup_id = backup_id.to_string();
+        let backup_id = backup_id.to_owned();
         self.call(move |resp| ShardCmd::CommitRestore { backup_id, resp })
             .await?
     }
@@ -1103,7 +1113,7 @@ pub fn spawn(
     let (tx, rx) = bounded(queue_depth.max(1));
     shard.set_command_sender(tx.clone());
     let (boot_tx, boot_rx) = bounded(1);
-    let alive_worker = alive.clone();
+    let alive_worker = alive;
     let shared_worker = shared.clone();
     let join = thread::Builder::new()
         .name(format!("shard-{id}"))

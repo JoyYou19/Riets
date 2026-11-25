@@ -13,8 +13,14 @@ pub struct DocValues {
     //this is split into blocks so that we can already binary search a 256 item list not a million
     block_first_doc: Vec<DocId>,
 }
-
+   fn first_doc_of_each_block(entries: &[(DocId, u64)]) -> Vec<DocId> {
+    entries
+        .chunks(BLOCK_SIZE)
+        .filter_map(|chunk| chunk.first().map(|entry| entry.0))
+        .collect()
+}
 impl DocValues {
+ 
     pub fn from_points(points: Vec<(DocId, NumericValue)>) -> Self {
         let kind = points
             .first()
@@ -35,7 +41,7 @@ impl DocValues {
 
         entries.sort_unstable_by_key(|entry| entry.0);
 
-        let block_first_doc = entries.chunks(BLOCK_SIZE).map(|chunk| chunk[0].0).collect();
+    let block_first_doc = first_doc_of_each_block(&entries);
 
         Self {
             kind,
@@ -44,15 +50,15 @@ impl DocValues {
         }
     }
 
-    pub fn kind(&self) -> NumericKind {
+    pub const fn kind(&self) -> NumericKind {
         self.kind
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
@@ -77,7 +83,7 @@ impl DocValues {
             return Err("doc values must be sorted by doc id");
         }
 
-        let block_first_doc = entries.chunks(BLOCK_SIZE).map(|chunk| chunk[0].0).collect();
+        let block_first_doc = first_doc_of_each_block(&entries);
         Ok(Self {
             kind,
             entries,
@@ -85,7 +91,7 @@ impl DocValues {
         })
     }
 
-    pub fn get(&self, doc_id: DocId) -> Option<NumericValue> {
+        pub fn get(&self, doc_id: DocId) -> Option<NumericValue> {
         //fast exit
         if doc_id < self.first_doc()? || doc_id > self.last_doc()? {
             return None;
@@ -100,9 +106,8 @@ impl DocValues {
         let start = block * BLOCK_SIZE;
         let end = (start + BLOCK_SIZE).min(self.entries.len());
 
-        self.entries[start..end]
-            .binary_search_by_key(&doc_id, |entry| entry.0)
-            .ok()
-            .map(|offset| unpack(self.entries[start + offset].1, self.kind))
+        let in_block = self.entries.get(start..end)?;
+        let offset = in_block.binary_search_by_key(&doc_id, |entry| entry.0).ok()?;
+        in_block.get(offset).map(|entry| unpack(entry.1, self.kind))
     }
 }

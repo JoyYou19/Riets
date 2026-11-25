@@ -49,7 +49,7 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    pub fn new(
+    pub const fn new(
         policy: PolicyStore,
         tokens: TokenStore,
         users: UserDatabase<BinaryDocumentStore>
@@ -60,17 +60,18 @@ impl AuthService {
             users,
         }
     }
-    pub fn bootstrap(
-        mut users: UserDatabase<BinaryDocumentStore>
+     pub fn bootstrap(
+        mut users: UserDatabase<BinaryDocumentStore>,
     ) -> Result<(Self, Option<String>), CorelamoError> {
-        let mut created = None;
-        if users.is_empty() {
+        let created = if users.is_empty() {
             let password = generate_password()?;
             users
-                .add_user(SUPERUSER, hash_password(&password)?, vec!["admin".to_string()])
+                .add_user(SUPERUSER, &hash_password(&password)?, &["admin".to_owned()])
                 .map_err(|e| CorelamoError::Internal(format!("creating '{SUPERUSER}': {e}")))?;
-            created = Some(password);
-        }
+            Some(password)}
+            else{
+                None
+        };
         Ok((Self::new(default_policy(), TokenStore::new(), users), created))
     }
     pub fn set_initial_password(&mut self, password: &str) -> Result<(), CorelamoError> {
@@ -80,7 +81,7 @@ impl AuthService {
                 _ => CorelamoError::Internal(e.to_string()),
             }
         })?;
-        if self.users.update_password(SUPERUSER, hash) {
+        if self.users.update_password(SUPERUSER, &hash) {
             Ok(())
         } else {
             Err(CorelamoError::Internal(format!("could not set the password of '{SUPERUSER}'")))
@@ -90,10 +91,10 @@ impl AuthService {
         &mut self,
         requester: &Principal,
         username: &str,
-        password_hash: String,
-        roles: Vec<String>
+        password_hash: &String,
+        roles: &[String]
     ) -> Result<(), CorelamoError> {
-        self.check(requester, Permission::CreateUser)?;
+        self.check(requester, &Permission::CreateUser)?;
 
         if self.users.user_exists(username) {
             return Err(CorelamoError::AlreadyExists(format!("user '{username}' already exists")));
@@ -114,9 +115,9 @@ impl AuthService {
         requester: &Principal,
         username: &str
     ) -> Result<(), CorelamoError> {
-        self.check(requester, Permission::DeleteUser)?;
+        self.check(requester, &Permission::DeleteUser)?;
         if username == SUPERUSER {
-            Err(CorelamoError::NotFound("superuser cannot be deleted".to_string()))
+            Err(CorelamoError::NotFound("superuser cannot be deleted".to_owned()))
         } else if self.users.remove_user(username) && username != SUPERUSER {
             self.tokens.revoke_user(username);
             Ok(())
@@ -128,11 +129,11 @@ impl AuthService {
         &mut self,
         requester: &Principal,
         username: &str,
-        new_hashed: String
+        new_hashed: &String
     ) -> Result<(), CorelamoError> {
         let is_self = requester.id.0 == username;
         if !is_self {
-            self.check(requester, Permission::UpdatePwd)?;
+            self.check(requester, &Permission::UpdatePwd)?;
         }
         if self.users.update_password(username, new_hashed) {
             self.tokens.revoke_user(username);
@@ -145,9 +146,9 @@ impl AuthService {
         &mut self,
         requester: &Principal,
         username: &str,
-        new_roles: Vec<String>
+        new_roles: &[String]
     ) -> Result<(), CorelamoError> {
-        self.check(requester, Permission::UpdateRole)?;
+        self.check(requester, &Permission::UpdateRole)?;
         if self.users.update_roles(username, new_roles) {
             self.tokens.revoke_user(username);
             Ok(())
@@ -161,7 +162,7 @@ impl AuthService {
         if self.users.verify(username, password).is_none() {
             return Ok(None);
         }
-        self.tokens.issue(username.to_string()).map(Some)
+        self.tokens.issue(username.to_owned()).map(Some)
     }
     pub fn logout(&self, token: &Token) -> bool {
         self.tokens.revoke(token)
@@ -174,11 +175,11 @@ impl AuthService {
     pub fn check(
         &self,
         principal: &Principal,
-        permission: Permission
+        permission: &Permission
     ) -> Result<(), CorelamoError> {
         let allowed = principal.roles
             .iter()
-            .any(|role| self.policy.role_has_permission(role, &permission));
+            .any(|role| self.policy.role_has_permission(role, permission));
 
         if allowed {
             Ok(())

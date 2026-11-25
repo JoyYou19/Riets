@@ -51,7 +51,7 @@ pub(super) struct BackgroundConfig {
 }
 pub struct BackgroundWorker {
     stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<io::Result<()>>>,
+    handle: Option<JoinHandle<()>>,
     reindex_tx: crossbeam_channel::Sender<ReindexTask>,
     current: Arc<Mutex<Option<Arc<ReindexProgress>>>>,
 }
@@ -75,7 +75,7 @@ impl BackgroundWorker {
         };
         let stop_thread = Arc::clone(&stop);
         let handle = thread::Builder::new()
-            .name("shard-background".to_string())
+            .name("shard-background".to_owned())
             .spawn(move || looped.run(&stop_thread))?;
         Ok(Self {
             stop,
@@ -89,7 +89,7 @@ impl BackgroundWorker {
     pub fn submit_reindex(&self, task: ReindexTask) -> Result<(), CorelamoError> {
         self.reindex_tx
             .send(task)
-            .map_err(|_| CorelamoError::Internal("background worker is not running".into()))
+            .map_err(|_closed| CorelamoError::Internal("background worker is not running".into()))
     }
     fn signal_stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -98,12 +98,12 @@ impl BackgroundWorker {
         }
     }
     /// Stops after the current step and waits for the thread.
-    pub fn stop(mut self) -> io::Result<()> {
+     pub fn stop(mut self) -> io::Result<()> {
         self.signal_stop();
         if let Some(handle) = self.handle.take() {
             handle
                 .join()
-                .map_err(|_| io::Error::other("shard background worker panicked"))??;
+                .map_err(|_panic| io::Error::other("shard background worker panicked"))?;
         }
         Ok(())
     }
@@ -129,17 +129,16 @@ struct BackgroundLoop {
     store_wait: Duration,
 }
 impl BackgroundLoop {
-    fn run(mut self, stop: &AtomicBool) -> io::Result<()> {
-        let result = self.run_loop(stop);
-       
+        fn run(mut self, stop: &AtomicBool) {
+        self.run_loop(stop);
+
         while let Ok(task) = self.reindex_rx.try_recv() {
             drop(std::fs::remove_dir_all(task.params.shard_root.join("index.new")));
             task.stats.finish_shard_reindex(false, Duration::ZERO);
         }
-        result
     }
 
-    fn run_loop(&mut self, stop: &AtomicBool) -> io::Result<()> {
+    fn run_loop(&mut self, stop: &AtomicBool) {
         while !stop.load(Ordering::Relaxed) {
             // 1. a reindex: runs alone; the step that was running has already finished
             if let Ok(task) = self.reindex_rx.try_recv() {
@@ -148,38 +147,33 @@ impl BackgroundLoop {
             }
             // 2. index compaction, until nothing is due
             match self.compact_once(stop) {
-                Ok(true) => {
-                    continue;
-                }
+                Ok(true) => continue,
                 Ok(false) => {}
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    return Ok(());
-                }
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return,
                 Err(_) => {
                     self.wait_for_work(stop, self.config.interval);
                     continue;
                 }
             }
-            // 3. embedding, one round, then re-check 1 and 2
             // 3. fold one full tail into its main file, then re-check 1 and 2
             match self.fold_once(stop) {
                 Ok(true) => continue,
                 Ok(false) => {}
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return,
                 Err(e) => warn!(self.config.log, "vector fold step failed"; "error" => %e),
             }
             // 4. one HNSW graph for a main file without one (merged segments, failed builds)
             match self.graph_once(stop) {
                 Ok(true) => continue,
                 Ok(false) => {}
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return,
                 Err(e) => warn!(self.config.log, "vector graph step failed"; "error" => %e),
             }
             // 5. embedding, one round, then re-check 1 to 4
             match self.embed_once(stop) {
                 Ok(true) => continue,
                 Ok(false) => {}
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return,
                 Err(e) => warn!(self.config.log, "embedding round failed"; "error" => %e),
             }
             // 6. idle: document-store compaction, rarely
@@ -189,21 +183,20 @@ impl BackgroundLoop {
             }
             self.wait_for_work(stop, self.config.interval);
         }
-        Ok(())
     }
 
-    fn wait_for_work(&mut self, stop: &AtomicBool, total: Duration) {
+    fn wait_for_work(&self, stop: &AtomicBool, total: Duration) {
         let deadline = Instant::now() + total;
         while !stop.load(Ordering::Relaxed) {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() || !self.reindex_rx.is_empty() {
                 return;
             }
-            let _ = crossbeam_channel::after(STOP_POLL.min(left)).recv();
+            drop(crossbeam_channel::after(STOP_POLL.min(left)).recv());
         }
     }
 
-    fn compact_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
+    fn compact_once(&self, stop: &AtomicBool) -> io::Result<bool> {
         let Some(config) = self.config.compaction else {
             return Ok(false);
         };
@@ -240,24 +233,19 @@ impl BackgroundLoop {
         }
     }
   
-    fn send_to_shard(&self, stop: &AtomicBool, cmd: ShardCmd) -> bool {
-        let mut pending = cmd;
+    fn send_to_shard(&self, stop: &AtomicBool, mut pending: ShardCmd) -> bool {
         loop {
             match self.config.shard_tx.send_timeout(pending, STOP_POLL) {
-                Ok(()) => {
-                    return true;
+                Ok(()) => return true,
+                Err(SendTimeoutError::Timeout(returned)) if !stop.load(Ordering::Relaxed) => {
+                    pending = returned;
                 }
-                Err(SendTimeoutError::Timeout(cmd)) if !stop.load(Ordering::Relaxed) => {
-                    pending = cmd;
-                }
-                Err(_) => {
-                    return false;
-                }
+                Err(_) => return false,
             }
         }
     }
 
-    fn run_reindex(&mut self, task: ReindexTask, stop: &AtomicBool) {
+    fn run_reindex(&self, task: ReindexTask, stop: &AtomicBool) {
         let ReindexTask {
             params,
             store,
@@ -338,15 +326,15 @@ impl BackgroundLoop {
         self.config.stats.set_activity(BackgroundActivity::Idle);
         match completed {
             Ok(completed) => {
-                let (ack, rx) = bounded(1);
+                let (ack, ack_rx) = bounded(1);
                 drop(self.ask_shard(
                     stop,
                     ShardCmd::InstallSegmentCompaction {
                         completed,
                         ack: Some(ack),
                     },
-                    &rx,
-                ))
+                    &ack_rx,
+                ));
             }
             Err(e) => warn!(self.config.log, "store compaction failed"; "error" => %e),
         }
@@ -355,11 +343,11 @@ impl BackgroundLoop {
         self.next_store_check = Instant::now() + self.store_wait;
     }
     
-    fn embed_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
+        fn embed_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
         if self.config.embedding.is_none() {
             return Ok(false);
         }
-       
+
         let vector_id = self.config.models.default_vector_id();
         let dims = self.config.models.default_model().dims;
         if self
@@ -376,7 +364,7 @@ impl BackgroundLoop {
         let Some(embedder) = self.embedder() else {
             return Ok(false);
         };
-        
+
         let Some(mut lease) = embedder.try_lease()? else {
             return Ok(false);
         };
@@ -385,12 +373,10 @@ impl BackgroundLoop {
         self.config
             .stats
             .set_activity(BackgroundActivity::Embedding);
-        let result = self
-            .config
-            .embedding
-            .as_mut()
-            .expect("checked above")
-            .step(&mut lease, stop);
+        let result = match self.config.embedding.as_mut() {
+            Some(job) => job.step(&mut lease, stop),
+            None => Ok(None),
+        };
         drop(lease);
         if stop.load(Ordering::Relaxed) {
             return Ok(false);
@@ -420,7 +406,7 @@ impl BackgroundLoop {
     /// Builds the graph of one complete vector file (see `EmbeddingJob::next_graph`).
     /// Runs only when embedding had nothing to do this pass, so a file is not graphed and then
     /// rewritten by the next round. Returns true when it built or tried a graph.
-    fn graph_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
+        fn graph_once(&mut self, stop: &AtomicBool) -> io::Result<bool> {
         if self.config.embedding.is_none() || stop.load(Ordering::Relaxed) {
             return Ok(false);
         }
@@ -434,19 +420,20 @@ impl BackgroundLoop {
             .config
             .embedding
             .as_mut()
-            .expect("checked above")
-            .next_graph(&vector_id, dims)?
+            .map(|job| job.next_graph(&vector_id, dims))
+            .transpose()?
+            .flatten()
         else {
             return Ok(false);
         };
 
         let path = hnsw_file_path(&task.segment, task.xpath);
         let started = Instant::now();
-       
+
         self.config
             .stats
             .set_activity(BackgroundActivity::Embedding);
-        
+
         let built = background_pool()
             .install(|| build_graph_file(&task.file, &path, &GraphBuildParams::default()));
         self.config.stats.set_activity(BackgroundActivity::Idle);
@@ -460,7 +447,6 @@ impl BackgroundLoop {
                         "rows" => task.file.len(),
                         "elapsed_ms" => started.elapsed().as_millis());
                 }
-              
                 Ok(true)
             }
             Ok(false) => {
@@ -493,8 +479,7 @@ impl BackgroundLoop {
             .config
             .embedding
             .as_ref()
-            .expect("checked above")
-            .next_fold(&vector_id, dims)
+            .and_then(|job| job.next_fold(&vector_id, dims))
         else {
             return Ok(false);
         };
@@ -532,7 +517,7 @@ impl BackgroundLoop {
     }
 
   
-    fn waiting_for_load(&self) -> io::Result<bool> {
+        fn waiting_for_load(&self) -> io::Result<bool> {
         let (Some(compaction), Some(job)) =
             (self.config.compaction, self.config.embedding.as_ref())
         else {
@@ -554,8 +539,8 @@ impl BackgroundLoop {
                 config: compaction,
                 reply,
             })
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped"))?;
-        rx.recv().map_err(|_| {
+            .map_err(|_stopped| io::Error::new(io::ErrorKind::BrokenPipe, "index worker stopped"))?;
+        rx.recv().map_err(|_dropped| {
             io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "index worker dropped settling reply",
@@ -564,11 +549,9 @@ impl BackgroundLoop {
     }
 
     fn measure(&mut self, vector_id: &str, dims: usize) {
-         let job = self
-            .config
-            .embedding
-            .as_mut()
-            .expect("measure is only called with a job");
+        let Some(job) = self.config.embedding.as_mut() else {
+            return;
+        };
         match job.measure(vector_id, dims) {
             Ok((total, done)) => {
                 self.measured = Some((total, done));
@@ -578,6 +561,8 @@ impl BackgroundLoop {
         }
         self.last_measure = Some(Instant::now());
     }
+
+   
 
     fn embedder(&mut self) -> Option<Arc<Embedder>> {
         if let Some(embedder) = &self.embedder {

@@ -1,80 +1,81 @@
 use crate::{
     array_rows::ArrayRowIndex,
     background::background_pool,
-    disk::{
-        reader::DiskSegment,
-        writer::{MergeSource, write_merged_segment},
-    },
+    disk::{ reader::DiskSegment, writer::{ MergeSource, write_merged_segment } },
     document::indexed::BoolField,
     lsm::index_worker::IndexCommand,
-    numeric_values::{NumericFields, NumericPoints, unpack},
+    numeric_values::{ NumericFields, NumericPoints, unpack },
     posting::DeleteSet,
-    segment::{ImmutableSegment, SegmentHandle},
-    types::{DocId, TermKey, XPathId},
-    vector::{SegmentVectors, VectorFile, merge_vector_files, vector_file_path},
+    segment::{ ImmutableSegment, SegmentHandle },
+    types::{ DocId, TermKey, XPathId },
+    vector::{ SegmentVectors, VectorFile, merge_vector_files, vector_file_path },
 };
 use core_timing::timed;
-use serde::{Deserialize, Serialize};
+use serde::{ Deserialize, Serialize };
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, BinaryHeap},
-    fs, io,
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::Sender,
-    },
+    collections::{ BTreeMap, BinaryHeap },
+    fs,
+    io,
+    path::{ Path, PathBuf },
+    sync::{ Arc, atomic::{ AtomicBool, Ordering }, mpsc::Sender },
     thread,
-    time::{Duration, Instant},
+    time::{ Duration, Instant },
 };
 
 type TermIter<'a> = Box<dyn Iterator<Item = (TermKey, MergeSource<'a>)> + 'a>;
 
 enum OpenSegment {
-    Disk(DiskSegment),
+    Disk(Box<DiskSegment>),
     Memory(Arc<ImmutableSegment>),
 }
 const STOP_POLL: Duration = Duration::from_millis(100);
 impl OpenSegment {
     fn doc_lengths(&self) -> Box<dyn Iterator<Item = ((DocId, XPathId), u32)> + '_> {
         match self {
-            OpenSegment::Disk(d) => Box::new(d.doc_lengths().iter()),
-            OpenSegment::Memory(m) => {
-                Box::new(m.doc_lengths().iter().map(|(&key, &len)| (key, len)))
+            Self::Disk(d) => Box::new(d.doc_lengths().iter()),
+            Self::Memory(m) => {
+                Box::new(
+                    m
+                        .doc_lengths()
+                        .iter()
+                        .map(|(&key, &len)| (key, len))
+                )
             }
         }
     }
 
     fn numeric_fields(&self) -> &NumericFields {
         match self {
-            OpenSegment::Disk(d) => d.numeric_fields(),
-            OpenSegment::Memory(m) => m.numeric_fields(),
+            Self::Disk(d) => d.numeric_fields(),
+            Self::Memory(m) => m.numeric_fields(),
         }
     }
 
     fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
         match self {
-            OpenSegment::Disk(d) => d.bool_fields(),
-            OpenSegment::Memory(m) => m.bool_fields(),
+            Self::Disk(d) => d.bool_fields(),
+            Self::Memory(m) => m.bool_fields(),
         }
     }
 
     fn iter_terms(&self) -> TermIter<'_> {
         match self {
-            OpenSegment::Disk(d) => Box::new(d.iter_terms()),
-            OpenSegment::Memory(m) => Box::new(
-                m.terms()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), MergeSource::Memory(v))),
-            ),
+            Self::Disk(d) => Box::new(d.iter_terms()),
+            Self::Memory(m) =>
+                Box::new(
+                    m
+                        .terms()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), MergeSource::Memory(v)))
+                ),
         }
     }
 
     fn array_row_index(&self) -> &ArrayRowIndex {
         match self {
-            OpenSegment::Disk(d) => d.array_row_index(),
-            OpenSegment::Memory(m) => m.array_row_index(),
+            Self::Disk(d) => d.array_row_index(),
+            Self::Memory(m) => m.array_row_index(),
         }
     }
 }
@@ -91,9 +92,9 @@ impl<'a> MergedTerms<'a> {
         let mut heap = BinaryHeap::with_capacity(sources.len());
         for (index, source) in sources.iter_mut().enumerate() {
             match source.next() {
-                Some((key, head)) => {
+                Some((key, source_head)) => {
                     heap.push(Reverse((key, index)));
-                    heads.push(Some(head));
+                    heads.push(Some(source_head));
                 }
                 None => heads.push(None),
             }
@@ -107,10 +108,11 @@ impl<'a> MergedTerms<'a> {
 
     /// Takes the current source of `index` and loads its next term.
     fn advance(&mut self, index: usize) -> Option<MergeSource<'a>> {
-        let head = self.heads[index].take();
-        if let Some((key, next)) = self.sources[index].next() {
+        let slot = self.heads.get_mut(index)?;
+        let head = slot.take();
+        if let Some((key, next)) = self.sources.get_mut(index)?.next() {
             self.heap.push(Reverse((key, index)));
-            self.heads[index] = Some(next);
+            *slot = Some(next);
         }
         head
     }
@@ -183,13 +185,13 @@ pub fn compact_segments_streaming(
     handles: &[SegmentHandle],
     deleted: &DeleteSet,
     output_path: &Path,
-    stop:&AtomicBool
+    stop: &AtomicBool
 ) -> io::Result<()> {
     let mut opened = Vec::with_capacity(handles.len());
     for handle in handles {
         opened.push(match handle {
-            SegmentHandle::Disk(path) => OpenSegment::Disk(DiskSegment::open(path)?),
-            SegmentHandle::Memory(segment) => OpenSegment::Memory(segment.clone()),
+            SegmentHandle::Disk(path) => OpenSegment::Disk(Box::new(DiskSegment::open(path)?)),
+            SegmentHandle::Memory(segment) => OpenSegment::Memory(Arc::clone(segment)),
         });
     }
 
@@ -240,7 +242,7 @@ pub fn compact_segments_streaming(
         merged_array_rows.merge_from(segment.array_row_index())?;
     }
 
-    let sources: Vec<TermIter<'_>> = opened.iter().map(|s| s.iter_terms()).collect();
+    let sources: Vec<TermIter<'_>> = opened.iter().map(OpenSegment::iter_terms).collect();
     let merged_terms = MergedTerms::new(sources).take_while(|_| !stop.load(Ordering::Relaxed));
 
     write_merged_segment(
@@ -250,10 +252,10 @@ pub fn compact_segments_streaming(
         &merged_doc_lengths,
         &merged_points.build(),
         &merged_array_rows,
-        &merged_bool_fields,
+        &merged_bool_fields
     )?;
-    if stop.load(Ordering::Relaxed){
-        return Err(interrupted())
+    if stop.load(Ordering::Relaxed) {
+        return Err(interrupted());
     }
     Ok(())
 }
@@ -264,15 +266,18 @@ pub fn compact_segments_streaming(
 pub fn compact_vectors(
     vectors: &[SegmentVectors],
     deleted: &DeleteSet,
-    output_path: &Path,
+    output_path: &Path
 ) -> Vec<XPathId> {
-    let mut xpaths: Vec<XPathId> = vectors.iter().map(|entry| entry.xpath).collect();
+    let mut xpaths: Vec<XPathId> = vectors
+        .iter()
+        .map(|entry| entry.xpath)
+        .collect();
     xpaths.sort_unstable();
     xpaths.dedup();
 
     let mut produced = Vec::with_capacity(xpaths.len());
     for xpath in xpaths {
-           let inputs: Vec<&VectorFile> = vectors
+        let inputs: Vec<&VectorFile> = vectors
             .iter()
             .filter(|entry| entry.xpath == xpath)
             .flat_map(|entry| std::iter::once(entry.file.as_ref()).chain(entry.tail.as_deref()))
@@ -293,39 +298,36 @@ pub fn compact_vectors(
 pub fn run_compaction_cycle(
     sender: &Sender<IndexCommand>,
     config: CompactionConfig,
-    stop:&AtomicBool,
-    log: &slog::Logger,
+    stop: &AtomicBool,
+    log: &slog::Logger
 ) -> io::Result<bool> {
     let (reply, plan_rx) = std::sync::mpsc::channel();
     sender
         .send(IndexCommand::PlanCompaction { config, reply })
-        .map_err(|_| broken_pipe("index worker stopped"))?;
+        .map_err(|_err| broken_pipe("index worker stopped"))?;
 
     let Some(job) = plan_rx
         .recv()
-        .map_err(|_| broken_pipe("index worker dropped compaction plan reply"))??
-    else {
+        .map_err(|_err| broken_pipe("index worker dropped compaction plan reply"))?? else {
         return Ok(false);
     };
-    if stop.load(Ordering::Relaxed){
+    if stop.load(Ordering::Relaxed) {
         return Err(interrupted());
     }
     // slet shard_log=slog::Logger;
     let output_path = job.output_path.clone();
-    let completed = match background_pool().install(|| run_compaction_job(job,stop)) {
+    let completed = match background_pool().install(|| run_compaction_job(job, stop)) {
         Ok(completed) => completed,
         Err(err) => {
-            if let Err(remove_err) = fs::remove_file(&output_path)
-                && remove_err.kind() != io::ErrorKind::NotFound
+            if
+                let Err(remove_err) = fs::remove_file(&output_path) &&
+                remove_err.kind() != io::ErrorKind::NotFound
             {
                 slog::warn!(log, "failed to remove partial compaction output";
                         "path" => %output_path.display(),
                         "error" => %remove_err);
             }
-            return Err(io::Error::new(
-                err.kind(),
-                format!("{}: {}", output_path.display(), err),
-            ));
+            return Err(io::Error::new(err.kind(), format!("{}: {}", output_path.display(), err)));
         }
     };
 
@@ -335,10 +337,10 @@ pub fn run_compaction_cycle(
             completed,
             ack: Some(ack),
         })
-        .map_err(|_| broken_pipe("index worker stopped"))?;
+        .map_err(|_err| broken_pipe("index worker stopped"))?;
     let () = install_rx
         .recv()
-        .map_err(|_| broken_pipe("index worker dropped install acknowledgement"))??;
+        .map_err(|_err| broken_pipe("index worker dropped install acknowledgement"))??;
 
     Ok(true)
 }
@@ -357,13 +359,13 @@ pub fn sleep_unless_stopped(stop: &AtomicBool, total: Duration) {
 fn broken_pipe(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, message)
 }
-fn interrupted() -> io::Error{
+fn interrupted() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "compaction stopped")
 }
 
 #[timed(compaction)]
 fn run_compaction_job(job: CompactionJob, stop: &AtomicBool) -> io::Result<CompletedCompaction> {
-    compact_segments_streaming(&job.selected, &job.deleted, &job.output_path,stop)?;
+    compact_segments_streaming(&job.selected, &job.deleted, &job.output_path, stop)?;
     let vector_xpaths = compact_vectors(&job.vectors, &job.deleted, &job.output_path);
     Ok(CompletedCompaction {
         job_id: job.job_id,

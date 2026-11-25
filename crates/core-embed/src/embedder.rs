@@ -63,12 +63,12 @@ impl Embedder {
         })
     }
 
-    pub fn spec(&self) -> &'static ModelSpec {
+    pub const fn spec(&self) -> &'static ModelSpec {
         self.spec
     }
 
     /// Where the bulk model copies run.
-    pub fn device(&self) -> Device {
+    pub const fn device(&self) -> Device {
         self.device
     }
 
@@ -83,7 +83,7 @@ impl Embedder {
         &self.vector_id
     }
 
-    pub fn instances(&self) -> usize {
+    pub const fn instances(&self) -> usize {
         self.bulk.len()
     }
 
@@ -177,10 +177,12 @@ impl Embedder {
 }
 
 impl EmbedLease<'_> {
-    pub fn spec(&self) -> &'static ModelSpec {
+    #[must_use]
+    pub const fn spec(&self) -> &'static ModelSpec {
         self.owner.spec
     }
 
+    #[must_use]
     pub fn vector_id(&self) -> &str {
         &self.owner.vector_id
     }

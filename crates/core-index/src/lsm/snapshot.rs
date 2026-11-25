@@ -27,21 +27,22 @@ use crate::{
 #[derive(Default, Clone)]
 pub struct IndexSnapshot {
     mem: Arc<MemIndex>,
-    segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
+    segments: Arc<[Arc<dyn SearchReader + Send + Sync>]>,
     deleted: Arc<DeleteSet>,
+    #[allow(clippy::rc_buffer, reason = "shared with LsmIndex, which mutates it via Arc::make_mut")]
     vectors: Arc<Vec<SegmentVectors>>,
 }
 
 impl SearchIndex for IndexSnapshot {
     fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
-        IndexSnapshot::lookup(self, term, xpath)
+        Self::lookup(self, term, xpath)
     }
     fn term_cursor(&self, term: &str, xpath: XPathId) -> Option<TermCursorInfo<'_>> {
-        IndexSnapshot::term_cursor(self, term, xpath)
+        Self::term_cursor(self, term, xpath)
     }
 
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
-        IndexSnapshot::lookup_prefix(self, prefix, xpath)
+        Self::lookup_prefix(self, prefix, xpath)
     }
 
     fn terms(&self, xpath: XPathId) -> Vec<String> {
@@ -130,11 +131,11 @@ impl SearchIndex for IndexSnapshot {
     }
 
     fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
-        IndexSnapshot::lookup_wildcard(self, pattern, xpath)
+        Self::lookup_wildcard(self, pattern, xpath)
     }
 
     fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
-        IndexSnapshot::lookup_fuzzy(self, term, xpath, opts)
+        Self::lookup_fuzzy(self, term, xpath, opts)
     }
 
     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
@@ -353,7 +354,7 @@ impl SearchStats for IndexSnapshot {
 impl IndexSnapshot {
     pub fn new(
         mem: Arc<MemIndex>,
-        segments: Arc<Vec<Arc<dyn SearchReader + Send + Sync>>>,
+      segments: Arc<[Arc<dyn SearchReader + Send + Sync>]>,
         deleted: Arc<DeleteSet>,
     ) -> Self {
         Self {

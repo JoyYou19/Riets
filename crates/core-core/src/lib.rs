@@ -25,6 +25,7 @@ pub mod shard_manager_helpers;
 /// Bucket: jump consistent hash (Lamping & Veach, 2014). It is as uniform as `%`, and if
 /// the shard count ever grows from n to n + 1, only about 1/(n + 1) of the documents move.
 #[timed(shard_manager)]
+#[must_use]
 pub fn shard_for(external_id: &str, num_shards: u16) -> u16 {
     shard_for_untimed(external_id, num_shards)
 }
@@ -41,6 +42,11 @@ pub(crate) fn shard_for_untimed(external_id: &str, num_shards: u16) -> u16 {
 /// Lamping & Veach, "A Fast, Minimal Memory, Consistent Hash Algorithm" (2014).
 /// Only IEEE-754 operations with defined rounding are used, so the result is the same on
 /// every platform Rust supports. `num_buckets` must be at least 1.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "the float steps are the published algorithm: the result is pinned by golden tests"
+)]
 fn jump_consistent_hash(mut key: u64, num_buckets: u16) -> u16 {
     let mut bucket: i64 = -1;
     let mut next: i64 = 0;
@@ -49,5 +55,6 @@ fn jump_consistent_hash(mut key: u64, num_buckets: u16) -> u16 {
         key = key.wrapping_mul(2_862_933_555_777_941_757).wrapping_add(1);
         next = (((bucket + 1) as f64) * ((1u64 << 31) as f64 / (((key >> 33) + 1) as f64))) as i64;
     }
-    bucket as u16
+    // the loop ran at least once and `bucket < num_buckets`, so this never falls back
+    u16::try_from(bucket).unwrap_or(0)
 }

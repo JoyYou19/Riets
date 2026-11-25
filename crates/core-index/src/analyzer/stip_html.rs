@@ -1,4 +1,5 @@
 // "<b>Hello</b>" -> "  Hello  "
+#[must_use]
 pub fn strip_html(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_tag = false;

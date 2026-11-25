@@ -22,8 +22,8 @@ pub struct Token {
 }
 
 impl Default for Token {
-    fn default() -> Token {
-        Token {
+    fn default() -> Self {
+        Self {
             offset_from: 0,
             offset_to: 0,
             position: usize::MAX,
@@ -54,11 +54,7 @@ pub trait TokenStream {
     fn token_mut(&mut self) -> &mut Token;
 
     fn next(&mut self) -> Option<&Token> {
-        if self.advance() {
-            Some(self.token())
-        } else {
-            None
-        }
+        self.advance().then(|| self.token())
     }
 
     fn process(&mut self, sink: &mut dyn FnMut(&Token)) {
@@ -88,7 +84,7 @@ impl TokenStream for BoxTokenStream<'_> {
 }
 
 impl<'a> BoxTokenStream<'a> {
-    pub fn new<T: TokenStream + 'a>(token_stream: T) -> BoxTokenStream<'a> {
+    pub fn new<T: TokenStream + 'a>(token_stream: T) -> Self {
         BoxTokenStream(Box::new(token_stream))
     }
 }
@@ -156,12 +152,12 @@ pub struct TextAnalyzer {
 
 impl<T: Tokenizer> From<T> for TextAnalyzer {
     fn from(tokenizer: T) -> Self {
-        TextAnalyzer::builder(tokenizer).build()
+        Self::builder(tokenizer).build()
     }
 }
 
 impl TextAnalyzer {
-    pub fn builder<T: Tokenizer>(tokenizer: T) -> TextAnalyzerBuilder<T> {
+    pub const fn builder<T: Tokenizer>(tokenizer: T) -> TextAnalyzerBuilder<T> {
         TextAnalyzerBuilder { tokenizer }
     }
 
@@ -277,8 +273,9 @@ pub struct RemoveLongFilter {
 }
 
 impl RemoveLongFilter {
-    pub fn limit(length_limit: usize) -> RemoveLongFilter {
-        RemoveLongFilter { length_limit }
+    #[must_use]
+    pub const fn limit(length_limit: usize) -> Self {
+        Self { length_limit }
     }
 }
 
@@ -340,8 +337,8 @@ pub struct StopWordFilter {
 }
 
 impl StopWordFilter {
-    pub fn remove<W: IntoIterator<Item = String>>(words: W) -> StopWordFilter {
-        StopWordFilter {
+    pub fn remove<W: IntoIterator<Item = String>>(words: W) -> Self {
+        Self {
             words: Arc::new(words.into_iter().collect()),
         }
     }
@@ -367,7 +364,7 @@ impl<T: Tokenizer> Tokenizer for StopWordFilterWrapper<T> {
     type TokenStream<'a> = StopWordFilterStream<T::TokenStream<'a>>;
     fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
         StopWordFilterStream {
-            words: self.words.clone(),
+            words: Arc::clone(&self.words),
             tail: self.inner.token_stream(text),
         }
     }
@@ -562,7 +559,8 @@ pub struct Stemmer {
 }
 
 impl Stemmer {
-    pub fn new(algorithm: rust_stemmers::Algorithm) -> Self {
+    #[must_use]
+    pub const fn new(algorithm: rust_stemmers::Algorithm) -> Self {
         Self { algorithm }
     }
 }

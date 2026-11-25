@@ -27,7 +27,8 @@ pub struct ArrayRow {
 }
 
 impl ArrayRow {
-    pub fn new(array_row_id: ArrayRowId, parent: Option<ArrayRowId>, element_index: u32) -> Self {
+    #[must_use]
+    pub const fn new(array_row_id: ArrayRowId, parent: Option<ArrayRowId>, element_index: u32) -> Self {
         Self {
             array_row_id,
             parent,
@@ -51,14 +52,15 @@ pub struct BoolPoint {
     pub value: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoolField {
     pub true_ids: RoaringTreemap,
     pub false_ids: RoaringTreemap,
 }
 
 impl IndexedDocument {
-    pub fn new(doc_id: DocId) -> Self {
+    #[must_use]
+    pub const fn new(doc_id: DocId) -> Self {
         Self {
             doc_id,
             parts: Vec::new(),
@@ -84,7 +86,8 @@ pub struct DocumentPart {
 }
 
 impl DocumentPart {
-    pub fn flattened(
+    #[must_use]
+    pub const fn flattened(
         xpath: XPathId,
         segments: Vec<String>,
         weight: WeightInterval,
@@ -103,18 +106,20 @@ impl DocumentPart {
         }
     }
 
+    #[must_use]
     pub fn with_analyzer(mut self, analyzer: Option<String>) -> Self {
         self.analyzer = analyzer;
         self
     }
 
     /// Marks the values as names (see `names`).
-    pub fn with_names(mut self, names: bool) -> Self {
+    #[must_use]
+    pub const fn with_names(mut self, names: bool) -> Self {
         self.names = names;
         self
     }
-
-    pub fn is_flattened(&self) -> bool {
+#[must_use]
+    pub const fn is_flattened(&self) -> bool {
         !self.segments.is_empty()
     }
 }

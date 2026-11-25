@@ -21,7 +21,7 @@ use std::io::{ self, BufReader, BufWriter, Read, Seek, SeekFrom, Write };
 use std::path::{ Path, PathBuf };
 use std::sync::atomic::{ AtomicU64, Ordering };
 use std::time::{ SystemTime, UNIX_EPOCH };
-
+use crate::disk::format::array_at;
 use memmap2::Mmap;
 
 use super::kernel::QuantRange;
@@ -62,7 +62,9 @@ pub fn find_vector_files(segment_path: &Path) -> io::Result<Vec<(XPathId, PathBu
         let Some(rest) = name.to_str().and_then(|n| n.strip_prefix(&prefix)) else {
             continue;
         };
-        if rest.ends_with(".tmp") {
+        if Path::new(rest)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")) {
             drop(fs::remove_file(entry.path()));
             continue;
         }
@@ -89,6 +91,10 @@ pub(crate) fn invalid_input(msg: impl Into<String>) -> io::Error {
 
 fn corrupt(path: &Path, msg: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("vector file {}: {msg}", path.display()))
+}
+
+fn header_field<const N: usize>(data: &[u8], at: usize, path: &Path) -> io::Result<[u8; N]> {
+    array_at(data, at).ok_or_else(|| corrupt(path, "shorter than its header"))
 }
 //round a positon up to the next multiple of 64
 fn round_up_to_section(value: usize) -> Option<usize> {
@@ -130,7 +136,7 @@ fn new_file_id(path: &Path) -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH) //maybe needs to be universal
-        .map_or(0, |d| d.as_nanos() as u64);
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
     let process = u64::from(std::process::id());
     fmix64(
@@ -196,7 +202,7 @@ impl VectorFileWriter {
             originals_path,
             ids: Some(ids),
             originals: Some(originals),
-            model_id: model_id.to_string(),
+            model_id: model_id.to_owned(),
             dims,
             count: 0,
             sample: Vec::with_capacity(sample_rows_cap.saturating_mul(dims).min(SAMPLE_COMPONENTS)),
@@ -205,7 +211,7 @@ impl VectorFileWriter {
         })
     }
     /// Appends one L2-normalized vector. Doc ids must be strictly increasing.
-    pub fn push(&mut self, doc_id: DocId, vector: &[f32]) -> io::Result<()> {
+        pub fn push(&mut self, doc_id: DocId, vector: &[f32]) -> io::Result<()> {
         if vector.len() != self.dims {
             return Err(
                 invalid_input(
@@ -226,9 +232,10 @@ impl VectorFileWriter {
             );
         }
 
-        let ids = self.ids.as_mut().expect("present until finish");
+        let (Some(ids), Some(originals)) = (self.ids.as_mut(), self.originals.as_mut()) else {
+            return Err(io::Error::other("vector file writer already finished"));
+        };
         ids.write_all(&doc_id.to_le_bytes())?;
-        let originals = self.originals.as_mut().expect("present until finish");
         for value in vector {
             originals.write_all(&value.to_le_bytes())?;
         }
@@ -239,7 +246,7 @@ impl VectorFileWriter {
 
     /// Reservoir sampling over rows (Algorithm R), so the range reflects the whole file at
     /// fixed memory. Deterministic per file.
-    fn sample_row(&mut self, vector: &[f32]) {
+        fn sample_row(&mut self, vector: &[f32]) {
         let held = self.sample.len() / self.dims;
         if held < self.sample_rows_cap {
             self.sample.extend_from_slice(vector);
@@ -249,45 +256,54 @@ impl VectorFileWriter {
         let slot = fmix64(self.seed ^ seen) % seen;
         if let Ok(slot) = usize::try_from(slot) && slot < self.sample_rows_cap {
             let start = slot * self.dims;
-            self.sample[start..start + self.dims].copy_from_slice(vector);
+            if let Some(row) = self.sample.get_mut(start..start + self.dims) {
+                row.copy_from_slice(vector);
+            }
         }
     }
 
-    pub fn len(&self) -> u64 {
+    pub const fn len(&self) -> u64 {
         self.count
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Measures the range, assembles header, ids, codes and originals into `<path>.tmp`,
     /// fsyncs and atomically moves it into place. Returns the number of rows written.
-    pub fn finish(mut self) -> io::Result<u64> {
-        let mut ids = flush_to_file(self.ids.take().expect("present until finish"))?;
-        let mut originals = flush_to_file(self.originals.take().expect("present until finish"))?;
-        let count = usize::try_from(self.count).map_err(|_| invalid_input("too many rows"))?;
+        pub fn finish(mut self) -> io::Result<u64> {
+        let (Some(ids_writer), Some(originals_writer)) = (self.ids.take(), self.originals.take())
+        else {
+            return Err(io::Error::other("vector file writer already finished"));
+        };
+        let mut ids = flush_to_file(ids_writer)?;
+        let mut originals = flush_to_file(originals_writer)?;
+        let count = usize::try_from(self.count).map_err(|_overflow| invalid_input("too many rows"))?;
         let layout = Layout::new(self.dims, self.model_id.len(), count).ok_or_else(||
             invalid_input("vector file size overflows usize")
         )?;
         ids.seek(SeekFrom::Start(0))?;
         let mut id_bytes = Vec::with_capacity(count * 8);
-        ids.read_to_end(&mut id_bytes)?;
+        (&mut ids).take(self.count * 8).read_to_end(&mut id_bytes)?;
         let lookup = sorted_lookup(&id_bytes)?;
         let range = QuantRange::learn(&mut self.sample);
         let file_id = new_file_id(&self.final_path);
+        let dims = u32::try_from(self.dims).map_err(|_overflow| invalid_input("dims exceed u32"))?;
+        let model_id_len = u16::try_from(self.model_id.len())
+            .map_err(|_overflow| invalid_input("model id too long"))?;
 
         let tmp_path = tmp_path_for(&self.final_path);
-        let file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp_path)?;
-        let mut out = BufWriter::new(file);
+        let tmp_file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp_path)?;
+        let mut out = BufWriter::new(tmp_file);
 
         out.write_all(&MAGIC)?;
         out.write_all(&VERSION.to_le_bytes())?;
         out.write_all(&(0u32).to_le_bytes())?;
         out.write_all(&file_id.to_le_bytes())?;
-        out.write_all(&(self.dims as u32).to_le_bytes())?;
+        out.write_all(&dims.to_le_bytes())?;
         out.write_all(&[ORIGINAL_F32, QUANT_INT8])?;
-        out.write_all(&(self.model_id.len() as u16).to_le_bytes())?;
+        out.write_all(&model_id_len.to_le_bytes())?;
         out.write_all(&range.absmax().to_le_bytes())?;
         out.write_all(&(0u32).to_le_bytes())?;
         out.write_all(&self.count.to_le_bytes())?;
@@ -304,8 +320,9 @@ impl VectorFileWriter {
         let mut codes = Vec::with_capacity(self.dims);
         for _ in 0..count {
             reader.read_exact(&mut row_bytes)?;
-            for (value, bytes) in row.iter_mut().zip(row_bytes.chunks_exact(4)) {
-                *value = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let (chunks, _) = row_bytes.as_chunks::<4>();
+            for (value, bytes) in row.iter_mut().zip(chunks) {
+                *value = f32::from_le_bytes(*bytes);
             }
             range.encode(&row, &mut codes);
             out.write_all(&codes)?;
@@ -316,12 +333,12 @@ impl VectorFileWriter {
         originals.seek(SeekFrom::Start(0))?;
         io::copy(&mut originals, &mut out)?;
         write_zero_padding(&mut out, layout.originals + count * self.dims * 4, layout.lookup)?;
-        for row in &lookup {
-            out.write_all(&row.to_le_bytes())?;
+        for lookup_row in &lookup {
+            out.write_all(&lookup_row.to_le_bytes())?;
         }
-        let file = out.into_inner().map_err(io::IntoInnerError::into_error)?;
-        file.sync_all()?;
-        let written = file.metadata()?.len();
+        let finished = out.into_inner().map_err(io::IntoInnerError::into_error)?;
+        finished.sync_all()?;
+        let written = finished.metadata()?.len();
         if written != (layout.total as u64) {
             return Err(
                 io::Error::other(
@@ -333,7 +350,7 @@ impl VectorFileWriter {
                 )
             );
         }
-        drop(file);
+        drop(finished);
         fs::rename(&tmp_path, &self.final_path)?;
         if let Some(dir) = self.final_path.parent() {
             File::open(dir)?.sync_all()?;
@@ -357,30 +374,29 @@ fn flush_to_file(writer: BufWriter<File>) -> io::Result<File> {
 }
 /// Row indices ordered by doc id. Fails naming the first doc id that appears twice.
 fn sorted_lookup(id_bytes: &[u8]) -> io::Result<Vec<u32>> {
-    let ids: Vec<DocId> = id_bytes
-        .chunks_exact(8)
-        .map(|bytes| DocId::from_le_bytes(bytes.try_into().expect("chunks of 8 bytes")))
-        .collect();
-    let rows = u32::try_from(ids.len()).map_err(|_| invalid_input("too many rows"))?;
-    let mut lookup: Vec<u32> = (0..rows).collect();
-    lookup.sort_unstable_by_key(|&row| ids[row as usize]);
-    if
-        let Some(pair) = lookup
-            .windows(2)
-            .find(|pair| ids[pair[0] as usize] == ids[pair[1] as usize])
-    {
-        return Err(invalid_input(format!("doc id {} is written twice", ids[pair[0] as usize])));
+    let (chunks, _) = id_bytes.as_chunks::<8>();
+    let ids: Vec<DocId> = chunks.iter().map(|bytes| DocId::from_le_bytes(*bytes)).collect();
+    let rows = u32::try_from(ids.len()).map_err(|_overflow| invalid_input("too many rows"))?;
+    // each row travels with its doc id, so nothing is looked up by index
+    let mut keyed: Vec<(DocId, u32)> = ids.iter().copied().zip(0..rows).collect();
+    keyed.sort_unstable();
+    let duplicate = keyed.windows(2).find_map(|pair| match pair {
+        [first, second] if first.0 == second.0 => Some(first.0),
+        _ => None,
+    });
+    if let Some(doc_id) = duplicate {
+        return Err(invalid_input(format!("doc id {doc_id} is written twice")));
     }
-    Ok(lookup)
+    Ok(keyed.into_iter().map(|(_, row)| row).collect())
 }
 //write zeros to fill the gap up to the next section so sections start at the same positon
 pub(crate) fn write_zero_padding(out: &mut impl Write, from: usize, to: usize) -> io::Result<()> {
     const ZEROS: [u8; SECTION_ALIGNMENT] = [0; SECTION_ALIGNMENT];
-    debug_assert!(
-        to >= from && to - from < SECTION_ALIGNMENT,
-        "write_zero_paddingding outside one alignment step"
-    );
-    out.write_all(&ZEROS[..to - from])
+    let padding = to
+        .checked_sub(from)
+        .and_then(|len| ZEROS.get(..len))
+        .ok_or_else(|| invalid_input("padding outside one alignment step"))?;
+    out.write_all(padding)
 }
 
 /// Read-only, memory-mapped vector file.
@@ -397,7 +413,7 @@ pub struct VectorFile {
 }
 
 impl VectorFile {
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = File::open(&path)?;
         // SAFETY: vector files are never modified after the rename in `finish`, and a
@@ -408,36 +424,37 @@ impl VectorFile {
         if data.len() < HEADER_FIXED_LEN {
             return Err(corrupt(&path, "shorter than its header"));
         }
-        if data[0..8] != MAGIC {
+        if data.first_chunk::<8>() != Some(&MAGIC) {
             return Err(corrupt(&path, "bad magic"));
         }
-        let version = read_u32(data, 8);
+        let version = u32::from_le_bytes(header_field(data, 8, &path)?);
         if version != VERSION {
             return Err(corrupt(&path, format!("unsupported version {version}")));
         }
-        let file_id = read_u64(data, 16);
-        let dims = read_u32(data, 24) as usize;
+        let file_id = u64::from_le_bytes(header_field(data, 16, &path)?);
+        let dims = u32::from_le_bytes(header_field(data, 24, &path)?) as usize;
         if dims == 0 {
             return Err(corrupt(&path, "zero dimensions"));
         }
-        if data[28] != ORIGINAL_F32 || data[29] != QUANT_INT8 {
-            return Err(corrupt(&path, format!("unsupported encoding {}/{}", data[28], data[29])));
+        let [original_kind, quant_kind] = header_field::<2>(data, 28, &path)?;
+        if original_kind != ORIGINAL_F32 || quant_kind != QUANT_INT8 {
+            return Err(
+                corrupt(&path, format!("unsupported encoding {original_kind}/{quant_kind}"))
+            );
         }
-        let id_len = usize::from(u16::from_le_bytes([data[30], data[31]]));
-        let range = QuantRange::from_absmax(
-            f32::from_le_bytes([data[32], data[33], data[34], data[35]])
-        ).ok_or_else(|| corrupt(&path, "invalid quantization range"))?;
-        let count = usize
-            ::try_from(read_u64(data, 40))
-            .map_err(|_| corrupt(&path, "record count does not fit in memory"))?;
+        let id_len = usize::from(u16::from_le_bytes(header_field(data, 30, &path)?));
+        let range = QuantRange::from_absmax(f32::from_le_bytes(header_field(data, 32, &path)?))
+            .ok_or_else(|| corrupt(&path, "invalid quantization range"))?;
+        let count = usize::try_from(u64::from_le_bytes(header_field(data, 40, &path)?))
+            .map_err(|_overflow| corrupt(&path, "record count does not fit in memory"))?;
         let id_end = HEADER_FIXED_LEN + id_len;
-        if data.len() < id_end {
-            return Err(corrupt(&path, "truncated header"));
-        }
+        let model_id_bytes = data
+            .get(HEADER_FIXED_LEN..id_end)
+            .ok_or_else(|| corrupt(&path, "truncated header"))?;
         let model_id = std::str
-            ::from_utf8(&data[HEADER_FIXED_LEN..id_end])
+            ::from_utf8(model_id_bytes)
             .map_err(|e| corrupt(&path, format!("model id is not UTF-8: {e}")))?
-            .to_string();
+            .to_owned();
         let layout = Layout::new(dims, id_len, count).ok_or_else(||
             corrupt(&path, "size overflows usize")
         )?;
@@ -449,11 +466,11 @@ impl VectorFile {
                 )
             );
         }
-        if !(mmap.as_ptr() as usize).is_multiple_of(SECTION_ALIGNMENT) {
+        if !mmap.as_ptr().addr().is_multiple_of(SECTION_ALIGNMENT) {
             return Err(corrupt(&path, "mapping is not aligned"));
         }
 
-               let file = Self {
+        let opened = Self {
             mmap,
             path,
             file_id,
@@ -463,17 +480,19 @@ impl VectorFile {
             count,
             layout
         };
-        let ids = file.doc_ids();
-        let lookup = file.lookup();
-        if lookup.iter().any(|&row| row as usize >= file.count) {
-            return Err(corrupt(&file.path, "lookup row out of range"));
-        }
         // strictly increasing ids through the lookup also proves every row is listed once
-        if lookup.windows(2).any(|pair| ids[pair[0] as usize] >= ids[pair[1] as usize]) {
-            return Err(corrupt(&file.path, "lookup is not ordered by doc id"));
+        let ids = opened.doc_ids();
+        let mut previous: Option<DocId> = None;
+        for &row in opened.lookup() {
+            let Some(&id) = ids.get(row as usize) else {
+                return Err(corrupt(&opened.path, "lookup row out of range"));
+            };
+            if previous.is_some_and(|before| before >= id) {
+                return Err(corrupt(&opened.path, "lookup is not ordered by doc id"));
+            }
+            previous = Some(id);
         }
-        Ok(file)
-    
+        Ok(opened)
     }
 
     pub fn path(&self) -> &Path {
@@ -481,7 +500,7 @@ impl VectorFile {
     }
 
     /// Random id of this written file; a graph built from it stores the same id.
-    pub fn file_id(&self) -> u64 {
+    pub const fn file_id(&self) -> u64 {
         self.file_id
     }
 
@@ -489,19 +508,19 @@ impl VectorFile {
         &self.model_id
     }
 
-    pub fn dims(&self) -> usize {
+    pub const fn dims(&self) -> usize {
         self.dims
     }
 
-    pub(crate) fn range(&self) -> QuantRange {
+    pub(crate) const fn range(&self) -> QuantRange {
         self.range
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.count
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
@@ -511,27 +530,28 @@ impl VectorFile {
     }
 
     /// All doc ids, strictly increasing; row `i` belongs to `doc_ids()[i]`.
-    pub fn doc_ids(&self) -> &[DocId] {
-        let bytes = &self.mmap[self.layout.ids..self.layout.ids + self.count * 8];
-        // SAFETY: the section starts on a 64-byte boundary of a mapping checked to be 64-byte
-        // aligned at open, holds exactly `count` little-endian u64s (length checked at open,
-        // little-endian host enforced at compile time), and every bit pattern is a valid u64.
+        pub fn doc_ids(&self) -> &[DocId] {
+        let Some(bytes) = self.mmap.get(self.layout.ids..self.layout.ids + self.count * 8) else {
+            return &[];
+        };
+        // SAFETY: (keep your existing comment)
         #[allow(clippy::cast_ptr_alignment, reason = "alignment checked at open")]
         unsafe {
             std::slice::from_raw_parts(bytes.as_ptr().cast::<DocId>(), self.count)
         }
     }
 
+    #[allow(clippy::indexing_slicing, reason = "rows come from this file's own lookup; an out of range row is a caller bug, as in `original`")]
     pub fn doc_id(&self, index: usize) -> DocId {
         self.doc_ids()[index]
     }
 
-    /// Rows ordered by doc id, or `None` for a version 2 file, whose rows already are.
     fn lookup(&self) -> &[u32] {
-        let bytes = &self.mmap[self.layout.lookup..self.layout.lookup + self.count * 4];
-        // SAFETY: the section starts on a 64-byte boundary of a mapping checked to be 64-byte
-        // aligned at open, holds exactly `count` little-endian u32s (length checked at open,
-        // little-endian host enforced at compile time), and every bit pattern is a valid u32.
+        let Some(bytes) = self.mmap.get(self.layout.lookup..self.layout.lookup + self.count * 4)
+        else {
+            return &[];
+        };
+        // SAFETY: (keep your existing comment)
         #[allow(clippy::cast_ptr_alignment, reason = "alignment checked at open")]
         unsafe {
             std::slice::from_raw_parts(bytes.as_ptr().cast::<u32>(), self.count)
@@ -542,10 +562,12 @@ impl VectorFile {
     pub fn position(&self, doc_id: DocId) -> Option<usize> {
         let ids = self.doc_ids();
         let lookup = self.lookup();
-        lookup
-            .binary_search_by_key(&doc_id, |&row| ids[row as usize])
-            .ok()
-            .map(|rank| lookup[rank] as usize)
+        let rank = lookup
+            .binary_search_by_key(&doc_id, |&row| {
+                ids.get(row as usize).copied().unwrap_or(DocId::MAX)
+            })
+            .ok()?;
+        lookup.get(rank).map(|&row| row as usize)
     }
 
     /// Row holding the `rank`-th smallest doc id, for walking a file in doc-id order.
@@ -560,17 +582,16 @@ impl VectorFile {
     /// Int8 codes of row `index`, as bytes.
     pub(crate) fn codes(&self, index: usize) -> &[u8] {
         let start = self.layout.codes + index * self.dims;
-        &self.mmap[start..start + self.dims]
+        self.mmap.get(start..start + self.dims).unwrap_or_default()
     }
-    /// Original f32 vector of row `index`.
+
     pub fn original(&self, index: usize) -> &[f32] {
         assert!(index < self.count, "row {index} out of {} rows", self.count);
         let start = self.layout.originals + index * self.dims * 4;
-        let bytes = &self.mmap[start..start + self.dims * 4];
-        // SAFETY: the section starts on a 64-byte boundary of a mapping checked to be 64-byte
-        // aligned at open, so `bytes` is 4-byte aligned. `index < count` is asserted above, so it
-        // holds exactly `dims` little-endian f32s (length checked at open, little-endian host
-        // enforced at compile time), and every bit pattern is a valid f32.
+        let Some(bytes) = self.mmap.get(start..start + self.dims * 4) else {
+            return &[];
+        };
+        // SAFETY: (keep your existing comment)
         #[allow(clippy::cast_ptr_alignment, reason = "alignment checked at open")]
         unsafe {
             std::slice::from_raw_parts(bytes.as_ptr().cast::<f32>(), self.dims)
@@ -578,15 +599,7 @@ impl VectorFile {
     }
 }
 
-fn read_u32(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
-}
 
-fn read_u64(data: &[u8], at: usize) -> u64 {
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&data[at..at + 8]);
-    u64::from_le_bytes(bytes)
-}
 
 
 pub fn merge_vector_files(
@@ -626,15 +639,17 @@ pub fn merge_vector_files(
         };
 
         let mut source = None;
-        for (n, file) in inputs.iter().enumerate() {
-            if let Some(row) = file.row_by_rank(cursors[n]) && file.doc_id(row) == doc {
-                source = Some((n, row));
-                cursors[n] += 1;
+        for (file, cursor) in inputs.iter().zip(cursors.iter_mut()) {
+            if let Some(row) = file.row_by_rank(*cursor) && file.doc_id(row) == doc {
+                source = Some((file, row));
+                *cursor += 1;
             }
         }
-        let (n, row) = source.expect("at least one input holds the selected doc id");
+        let Some((file, row)) = source else {
+            return Err(io::Error::other("selected doc id vanished from its input"));
+        };
         if !deleted.contains(doc) {
-            writer.push(doc, inputs[n].original(row))?;
+            writer.push(doc, file.original(row))?;
         }
     }
     writer.finish()

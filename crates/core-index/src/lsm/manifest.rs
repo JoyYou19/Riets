@@ -43,7 +43,9 @@ pub(super) fn remove_leftovers(root: &Path, live: &[PathBuf]) -> io::Result<Vec<
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         let orphan = segment_id_of(name).is_some_and(|id| !live_ids.contains(&id));
-        if name.ends_with(".tmp") || orphan {
+        if Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")) || orphan {
             fs::remove_file(entry.path())?;
             removed.push(entry.path());
         }
@@ -65,7 +67,7 @@ pub(super) fn read_manifest(root: &Path) -> io::Result<Vec<PathBuf>> {
         if let Some(removed) = line.strip_suffix(".del") {
             live.retain(|name| name != removed);
         } else {
-            live.push(line.to_string());
+            live.push(line.to_owned());
         }
     }
 

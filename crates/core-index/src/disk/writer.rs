@@ -2,51 +2,50 @@ use core_timing::timed;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::SeekFrom;
-use bitpacking::{BitPacker, BitPacker4x};
-use std::{
-    fs::File,
-    io::{self, BufWriter, Seek, Write},
-    path::Path,
-};
+use bitpacking::{ BitPacker, BitPacker4x };
+use std::{ fs::File, io::{ self, BufWriter, Seek, Write }, path::Path };
 
-use crate::{array_rows::ArrayRowIndex, disk::{block_cursor::{BlockCursor, TermRegion}, format::{BLOCK_LEN, SkipEntry}}, posting::{DeleteSet, PostingCursor, cursor::TermCursor}};
+use crate::{
+    array_rows::ArrayRowIndex,
+    disk::{ block_cursor::{ BlockCursor, TermRegion }, format::{ BLOCK_LEN, SkipEntry } },
+    posting::{ DeleteSet, PostingCursor, cursor::TermCursor },
+};
 use crate::document::indexed::BoolField;
 use crate::tmp_path_for;
 use crate::{
-    disk::{
-        codec::{encode_block, push_var_u32},
-
-        format::{SegmentFooter, SegmentHeader},
-    },
+    disk::{ codec::{ encode_block, push_var_u32 }, format::{ SegmentFooter, SegmentHeader } },
     numeric_values::NumericFields,
     posting::PostingList,
     segment::ImmutableSegment,
     segment::compute_doc_id_range,
-    term_dict::{TermDict, TermMeta},
-    types::{DocId, TermKey, XPathId},
+    term_dict::{ TermDict, TermMeta },
+    types::{ DocId, TermKey, XPathId },
 };
 
 /// One input's postings for one term: a disk region (copied undecoded when possible) or a
 /// list in memory.
 pub(crate) enum MergeSource<'a> {
-    Disk { bytes: &'a [u8], meta: TermMeta },
+    Disk {
+        bytes: &'a [u8],
+        meta: TermMeta,
+    },
     Memory(&'a PostingList),
 }
 struct BlockWriter {
-    packer:BitPacker4x,
+    packer: BitPacker4x,
     // the block being built
     docs: [u64; 128],
-    doc_count:u32,
+    doc_count: u32,
     term_frequency: [u32; 128],
     weights: [u16; 128],
-    max_weight:u16,
+    max_weight: u16,
     slots: usize,
 
     // per-block stats, reset in flush()
     block_max_tf: u32,
     block_max_weight: u16,
 
-    block_min_doc_len: u32,    // for the block-max WAND bound
+    block_min_doc_len: u32, // for the block-max WAND bound
     block_positions_start: u32,
     block_offsets_start: u32,
 
@@ -55,7 +54,7 @@ struct BlockWriter {
     blocks_packed: Vec<u8>,
     positions: Vec<u8>,
     offsets: Vec<u8>,
-    block_count:u32,
+    block_count: u32,
     last_doc_id: u64,
 }
 impl BlockWriter {
@@ -63,10 +62,10 @@ impl BlockWriter {
         Self {
             packer: BitPacker4x::new(),
             docs: [0; BLOCK_LEN],
-            doc_count:0,
+            doc_count: 0,
             term_frequency: [0; BLOCK_LEN],
             weights: [0; BLOCK_LEN],
-            max_weight:0,
+            max_weight: 0,
             slots: 0,
             block_max_tf: 0,
             block_max_weight: 0,
@@ -82,7 +81,7 @@ impl BlockWriter {
         }
     }
 
-        /// Encodes one term from its sources into this writer's buffers, replacing the previous
+    /// Encodes one term from its sources into this writer's buffers, replacing the previous
     /// term. A disk source is copied as raw bytes when nothing is deleted and the sources follow
     /// each other; otherwise the sources are merged through cursors, dropping deleted docs.
     #[timed(writing_files)]
@@ -90,7 +89,7 @@ impl BlockWriter {
         &mut self,
         sources: &[MergeSource<'_>],
         deleted: &DeleteSet,
-        doc_len: impl Fn(DocId) -> Option<u32>,
+        doc_len: impl Fn(DocId) -> Option<u32>
     ) -> io::Result<()> {
         self.skip_table.clear();
         self.blocks_packed.clear();
@@ -113,16 +112,19 @@ impl BlockWriter {
                         None
                     } else {
                         let first = SkipEntry::read_at(region.skip_table, 0)?.first_doc_id;
-                        let last = SkipEntry::read_at(region.skip_table, region.block_count - 1)?
-                            .last_doc_id;
+                        let last = SkipEntry::read_at(
+                            region.skip_table,
+                            region.block_count - 1
+                        )?.last_doc_id;
                         Some((first, last))
                     }
                 }
-                MergeSource::Memory(list) => list
-                    .items()
-                    .first()
-                    .zip(list.items().last())
-                    .map(|(first, last)| (first.doc_id, last.doc_id)),
+                MergeSource::Memory(list) =>
+                    list
+                        .items()
+                        .first()
+                        .zip(list.items().last())
+                        .map(|(first, last)| (first.doc_id, last.doc_id)),
             });
         }
         let ordered = ranges
@@ -133,7 +135,10 @@ impl BlockWriter {
 
         // ordered: each source on its own; overlapping: all of them merged together
         let groups: Vec<Vec<&MergeSource<'_>>> = if ordered {
-            sources.iter().map(|source| vec![source]).collect()
+            sources
+                .iter()
+                .map(|source| vec![source])
+                .collect()
         } else {
             vec![sources.iter().collect()]
         };
@@ -145,27 +150,29 @@ impl BlockWriter {
 
         for group in groups {
             // raw copy: blocks and streams as they are, skip entries shifted
-            if let [MergeSource::Disk { bytes, meta }] = group.as_slice()
-                && deleted.is_empty()
-            {
+            if let [MergeSource::Disk { bytes, meta }] = group.as_slice() && deleted.is_empty() {
                 let region = TermRegion::split(bytes, *meta)?;
                 if region.block_count == 0 {
                     continue;
                 }
-                self.flush_block();
-                let blocks_base = stream_offset(&self.blocks_packed);
-                let positions_base = stream_offset(&self.positions);
-                let offsets_base = stream_offset(&self.offsets);
+                self.flush_block()?;
+                let blocks_base = stream_offset(&self.blocks_packed)?;
+                let positions_base = stream_offset(&self.positions)?;
+                let offsets_base = stream_offset(&self.offsets)?;
                 let shift = |value: u32, by: u32| {
-                    value.checked_add(by).ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidData, "term postings exceed 4 GiB")
-                    })
+                    value
+                        .checked_add(by)
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "term postings exceed 4 GiB")
+                        })
                 };
                 for index in 0..region.block_count {
                     let mut entry = SkipEntry::read_at(region.skip_table, index)?;
                     entry.block_start_offset = shift(entry.block_start_offset, blocks_base)?;
-                    entry.positions_start_offset =
-                        shift(entry.positions_start_offset, positions_base)?;
+                    entry.positions_start_offset = shift(
+                        entry.positions_start_offset,
+                        positions_base
+                    )?;
                     entry.offsets_start_offset = shift(entry.offsets_start_offset, offsets_base)?;
                     self.last_doc_id = entry.last_doc_id;
                     entry.write_to(&mut self.skip_table);
@@ -193,8 +200,11 @@ impl BlockWriter {
             while let Some(doc) = cursors.iter().filter_map(TermCursor::doc_id).min() {
                 if !deleted.contains(doc) {
                     let mut weight = 0u16;
-                    let mut found = 0usize;
-                    for cursor in cursors.iter_mut().filter(|cursor| cursor.doc_id() == Some(doc)) {
+                   
+                    for (found, cursor) in cursors
+                        .iter_mut()
+                        .filter(|cursor| cursor.doc_id() == Some(doc))
+                        .enumerate() {
                         weight = weight.max(cursor.weight());
                         if found == 0 {
                             cursor.positions_into(&mut positions)?;
@@ -203,8 +213,9 @@ impl BlockWriter {
                             // the same doc in several sources: merge, as `from_sorted` did
                             cursor.positions_into(&mut more_positions)?;
                             cursor.offsets_into(&mut more_offsets)?;
-                            let with_offsets = offsets.len() == positions.len()
-                                && more_offsets.len() == more_positions.len();
+                            let with_offsets =
+                                offsets.len() == positions.len() &&
+                                more_offsets.len() == more_positions.len();
                             let pad = std::iter::repeat((0, 0));
                             let mut both: Vec<(u32, (u32, u32))> = positions
                                 .iter()
@@ -214,22 +225,27 @@ impl BlockWriter {
                                     more_positions
                                         .iter()
                                         .copied()
-                                        .zip(more_offsets.iter().copied().chain(pad)),
+                                        .zip(more_offsets.iter().copied().chain(pad))
                                 )
                                 .collect();
                             both.sort_unstable_by_key(|(position, _)| *position);
                             both.dedup_by_key(|(position, _)| *position);
-                            positions = both.iter().map(|(position, _)| *position).collect();
+                            positions = both
+                                .iter()
+                                .map(|(position, _)| *position)
+                                .collect();
                             offsets = if with_offsets {
-                                both.iter().map(|(_, offset)| *offset).collect()
+                                both.iter()
+                                    .map(|(_, offset)| *offset)
+                                    .collect()
                             } else {
                                 Vec::new()
                             };
                         }
-                        found += 1;
+                       
                     }
                     if !positions.is_empty() {
-                        self.push(doc, &positions, &offsets, weight, doc_len(doc));
+                        self.push(doc, &positions, &offsets, weight, doc_len(doc))?;
                     }
                 }
                 for cursor in &mut cursors {
@@ -240,37 +256,44 @@ impl BlockWriter {
             }
         }
 
-        self.flush_block();
+        self.flush_block()?;
         Ok(())
     }
 
-        fn push(
+    fn push(
         &mut self,
         doc_id: DocId,
         positions: &[u32],
         offsets: &[(u32, u32)],
         weight: u16,
-        doc_len: Option<u32>,
-    ) {
+        doc_len: Option<u32>
+    ) -> io::Result<()> {
         self.doc_count += 1;
         self.max_weight = self.max_weight.max(weight);
 
         // a gap that does not fit u32 (the jump to array-row ids) starts a new block, whose
         // first doc is stored absolutely in its skip entry
         if self.slots > 0 && doc_id - self.last_doc_id > u64::from(u32::MAX) {
-            self.flush_block();
+            self.flush_block()?;
         }
 
         if self.slots == 0 {
-            self.block_positions_start = stream_offset(&self.positions);
-            self.block_offsets_start = stream_offset(&self.offsets);
+            self.block_positions_start = stream_offset(&self.positions)?;
+            self.block_offsets_start = stream_offset(&self.offsets)?;
         }
 
-        let tf = u32::try_from(positions.len()).expect("term frequency fits u32");
+        let tf = to_u32(positions.len(), "term frequency exceeds u32")?;
         let slot = self.slots;
-        self.docs[slot] = doc_id;
-        self.term_frequency[slot] = tf;
-        self.weights[slot] = weight;
+        let (Some(doc_slot), Some(freq_slot), Some(weight_slot)) = (
+            self.docs.get_mut(slot),
+            self.term_frequency.get_mut(slot),
+            self.weights.get_mut(slot),
+        ) else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "block slot out of range"));
+        };
+        *doc_slot = doc_id;
+        *freq_slot = tf;
+        *weight_slot = weight;
 
         self.block_max_tf = self.block_max_tf.max(tf);
         self.block_max_weight = self.block_max_weight.max(weight);
@@ -297,63 +320,73 @@ impl BlockWriter {
         self.last_doc_id = doc_id;
 
         if self.slots == BLOCK_LEN {
-            self.flush_block();
+            self.flush_block()?;
         }
+        Ok(())
     }
 
-    fn flush_block(&mut self) {
+    fn flush_block(&mut self) -> io::Result<()> {
         if self.slots == 0 {
-            return;
+            return Ok(());
         }
         let len = self.slots;
-        let block_start = stream_offset(&self.blocks_packed);
+        let block_start = stream_offset(&self.blocks_packed)?;
+        let bad = || io::Error::new(io::ErrorKind::InvalidData, "block slots out of range");
+        let (Some(docs), Some(freqs), Some(weights)) = (
+            self.docs.get(..len),
+            self.term_frequency.get(..len),
+            self.weights.get(..len),
+        ) else {
+            return Err(bad());
+        };
+        let (Some(&first_doc_id), Some(&last_doc_id)) = (docs.first(), docs.last()) else {
+            return Err(bad());
+        };
 
-        encode_block(
-            &self.packer,
-            &self.docs[..len],
-            &self.term_frequency[..len],
-            &self.weights[..len],
-            &mut self.blocks_packed,
-        );
+        encode_block(self.packer, docs, freqs, weights, &mut self.blocks_packed)?;
 
-        SkipEntry {
-            first_doc_id: self.docs[0],
-            last_doc_id: self.docs[len - 1],
-            block_start_offset:block_start,
+        (SkipEntry {
+            first_doc_id,
+            last_doc_id,
+            block_start_offset: block_start,
             positions_start_offset: self.block_positions_start,
             offsets_start_offset: self.block_offsets_start,
             max_tf: self.block_max_tf,
             min_doc_len: self.block_min_doc_len,
             max_weight: self.block_max_weight,
-            len: u8::try_from(len).expect("block length is at most 128"),
-        }
-        .write_to(&mut self.skip_table);
+            len: u8::try_from(len).map_err(|_overflow| bad())?,
+        }).write_to(&mut self.skip_table);
 
         self.block_count += 1;
         self.slots = 0;
         self.reset_block_stats();
+        Ok(())
     }
 
-    fn reset_block_stats(&mut self) {
+    const fn reset_block_stats(&mut self) {
         self.block_max_tf = 0;
         self.block_max_weight = 0;
         self.block_min_doc_len = u32::MAX;
     }
 
-    fn total_len(&self) -> usize {
+    const fn total_len(&self) -> usize {
         self.skip_table.len() + self.blocks_packed.len() + self.positions.len() + self.offsets.len()
     }
 }
 
-fn stream_offset(buffer: &[u8]) -> u32 {
-    u32::try_from(buffer.len()).expect("one term's postings stream exceeds 4 GiB")
+fn to_u32(len: usize, what: &'static str) -> io::Result<u32> {
+    u32::try_from(len).map_err(|_overflow| io::Error::new(io::ErrorKind::InvalidData, what))
+}
+
+fn stream_offset(buffer: &[u8]) -> io::Result<u32> {
+    to_u32(buffer.len(), "one term's postings stream exceeds 4 GiB")
 }
 struct PositionWriter<W> {
     inner: W,
     pos: u64,
 }
 impl<W: Write> PositionWriter<W> {
-    fn new(inner: W) -> Self {
+    const fn new(inner: W) -> Self {
         Self { inner, pos: 0 }
     }
 
@@ -376,10 +409,13 @@ impl<W: Write> Seek for PositionWriter<W> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match pos {
             SeekFrom::Current(0) => Ok(self.pos),
-            _ => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "PositionWriter only reports its position",
-            )),
+            _ =>
+                Err(
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "PositionWriter only reports its position"
+                    )
+                ),
         }
     }
 
@@ -393,7 +429,7 @@ struct FieldWriter<K> {
     fields: Vec<(XPathId, TermDict)>,
     current: Option<XPathId>,
     entries: Vec<(K, TermMeta)>,
-    blocks:BlockWriter,
+    blocks: BlockWriter,
     term_count: u32,
 }
 
@@ -410,14 +446,14 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
 
     // Encodes one term's postings at the current position and records where they
     // landed, closing the previous field's FST when the xpath changes.
-     fn push<W: Write + Seek>(
+    fn push<W: Write + Seek>(
         &mut self,
         out: &mut W,
         xpath: XPathId,
         term: K,
         sources: &[MergeSource<'_>],
         deleted: &DeleteSet,
-        doc_len: impl Fn(DocId) -> Option<u32>,
+        doc_len: impl Fn(DocId) -> Option<u32>
     ) -> io::Result<()> {
         self.blocks.write_term(sources, deleted, doc_len)?;
         // every doc deleted: the term is not written at all
@@ -430,7 +466,6 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
             self.current = Some(xpath);
         }
         let postings_offset = out.stream_position()?;
- 
 
         let blocks = &self.blocks;
         out.write_all(&blocks.skip_table)?;
@@ -438,22 +473,18 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
         out.write_all(&blocks.positions)?;
         out.write_all(&blocks.offsets)?;
 
-        let to_u32 = |len: usize| {
-            u32::try_from(len).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "term postings exceed 4 GiB")
-            })
-        };
+        
 
         self.entries.push((
             term,
             TermMeta {
                 postings_offset,
-                postings_len: to_u32(blocks.total_len())?,
+                postings_len: to_u32(blocks.total_len(), "term postings exceed 4 GiB")?,
                 doc_freq: blocks.doc_count,
                 max_weight: blocks.max_weight,
                 block_count: blocks.block_count,
-                block_len: to_u32(blocks.blocks_packed.len())?,
-                positions_len: to_u32(blocks.positions.len())?,
+                block_len: to_u32(blocks.blocks_packed.len(), "term postings exceed 4 GiB")?,
+                positions_len: to_u32(blocks.positions.len(), "term postings exceed 4 GiB")?,
             },
         ));
 
@@ -464,8 +495,7 @@ impl<K: AsRef<[u8]>> FieldWriter<K> {
     // Builds the FST for the field we were accumulating, if any.
     fn close_field(&mut self) -> io::Result<()> {
         if let Some(xpath) = self.current.take() {
-            self.fields
-                .push((xpath, TermDict::build(self.entries.drain(..))?));
+            self.fields.push((xpath, TermDict::build(self.entries.drain(..))?));
         }
 
         Ok(())
@@ -516,11 +546,11 @@ fn write_footer(out: &mut impl Write, footer: &SegmentFooter) -> io::Result<()> 
 }
 
 fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io::Result<()> {
-    write_u32(out, fields.len() as u32)?;
+    write_u32(out, to_u32(fields.len(), "field count exceeds u32")?)?;
 
     for (xpath, dict) in fields {
         write_u32(out, *xpath)?;
-        write_u32(out, dict.len() as u32)?;
+        write_u32(out, to_u32(dict.len(), "term count exeeds u32")?)?;
 
         let fst = dict.fst_bytes();
         write_u64(out, fst.len() as u64)?;
@@ -541,7 +571,7 @@ fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io:
 }
 
 fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Result<()> {
-    write_u32(out, fields.iter().count() as u32)?;
+   write_u32(out, to_u32(fields.iter().count(), "numeric fields exceed u32")?)?;
 
     for (xpath, field) in fields.iter() {
         write_u32(out, xpath)?;
@@ -549,14 +579,14 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
         write_u8(out, field.bkd.kind().to_byte())?;
 
         // BKD: sorted by packed value (range queries).
-        write_u32(out, field.bkd.len() as u32)?;
+        write_u32(out, to_u32(field.bkd.len(),"BKD exceeds u32")?)?;
         for &(packed, doc_id) in field.bkd.points() {
             write_u64(out, packed)?;
             write_u64(out, doc_id)?;
         }
 
         // DocValues: sorted by doc_id (point lookups).
-        write_u32(out, field.doc_values.len() as u32)?;
+        write_u32(out, to_u32(field.doc_values.len(), "doc_values exceed u32")?)?;
         for &(doc_id, packed) in field.doc_values.entries() {
             write_u64(out, doc_id)?;
             write_u64(out, packed)?;
@@ -568,9 +598,9 @@ fn write_numeric_fields(out: &mut impl Write, fields: &NumericFields) -> io::Res
 
 fn write_bool_fields(
     out: &mut impl Write,
-    fields: &BTreeMap<XPathId, BoolField>,
+    fields: &BTreeMap<XPathId, BoolField>
 ) -> io::Result<()> {
-    write_u32(out, fields.len() as u32)?;
+    write_u32(out, to_u32(fields.len(),"boolean fields count exceeds u32")?)?;
     for (xpath, field) in fields {
         write_u32(out, *xpath)?;
         let mut buf = Vec::new();
@@ -603,7 +633,7 @@ pub fn write_segment(path: impl AsRef<Path>, segment: &ImmutableSegment) -> io::
 #[timed(writing_files)]
 pub fn write_segment_to<W: Write + Seek>(
     out: &mut W,
-    segment: &ImmutableSegment,
+    segment: &ImmutableSegment
 ) -> io::Result<()> {
     write_header(out)?;
 
@@ -619,7 +649,7 @@ pub fn write_segment_to<W: Write + Seek>(
             key.term.as_str(),
             &[MergeSource::Memory(postings)],
             &no_deletes,
-            |doc| doc_lengths.get(&(doc, xpath)).copied(),
+            |doc| doc_lengths.get(&(doc, xpath)).copied()
         )?;
     }
 
@@ -672,9 +702,9 @@ pub fn write_segment_to<W: Write + Seek>(
 #[timed(writing_files)]
 fn write_doc_lengths(
     out: &mut impl Write,
-    doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
+    doc_lengths: &BTreeMap<(DocId, XPathId), u32>
 ) -> io::Result<()> {
-    write_u32(out, doc_lengths.len() as u32)?;
+    write_u32(out, to_u32(doc_lengths.len(),"doc length exceeds u32")?)?;
 
     for (&(doc_id, xpath), &len) in doc_lengths {
         //maybe change to DocId
@@ -688,13 +718,12 @@ fn write_doc_lengths(
 
 fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Result<()> {
     write_u64(out, idx.base().raw())?;
-    write_u32(out, idx.len() as u32)?;
+    write_u32(out, to_u32(idx.len(),"array row count exceeds u32")?)?;
     for ((&doc, &parent), &element) in idx
         .row_to_doc()
         .iter()
         .zip(idx.parent_rows().iter())
-        .zip(idx.element_indices().iter())
-    {
+        .zip(idx.element_indices().iter()) {
         write_u64(out, doc)?;
         write_u64(out, parent.raw())?;
         write_u32(out, element)?;
@@ -702,16 +731,15 @@ fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Resul
     Ok(())
 }
 
-
 #[timed(writing_files)]
- pub(crate) fn write_merged_segment<'s>(
+pub(crate) fn write_merged_segment<'s>(
     path: impl AsRef<Path>,
     terms: impl Iterator<Item = (TermKey, Vec<MergeSource<'s>>)>,
     deleted: &DeleteSet,
     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
     array_row_index: &ArrayRowIndex,
-    bool_fields: &BTreeMap<XPathId, BoolField>,
+    bool_fields: &BTreeMap<XPathId, BoolField>
 ) -> io::Result<()> {
     let path = path.as_ref();
     let tmp = tmp_path_for(path);
@@ -724,7 +752,7 @@ fn write_array_row_index(out: &mut impl Write, idx: &ArrayRowIndex) -> io::Resul
             doc_lengths,
             numeric_fields,
             array_row_index,
-            bool_fields,
+            bool_fields
         )?;
         finish_file(out, &tmp, path)
     });
@@ -741,7 +769,7 @@ pub(crate) fn write_merged_segment_to<'s, W: Write + Seek>(
     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
     array_row_index: &ArrayRowIndex,
-    bool_fields: &BTreeMap<XPathId, BoolField>,
+    bool_fields: &BTreeMap<XPathId, BoolField>
 ) -> io::Result<()> {
     write_header(out)?;
 

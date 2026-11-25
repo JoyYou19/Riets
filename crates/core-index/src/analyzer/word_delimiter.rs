@@ -10,7 +10,7 @@
 //!
 //! # Where a chunk is split
 //!   1. delimiters   — any non-alphanumeric char NOT in `literal_symbols`
-//!                     (default literal symbol is `_`, so `_` stays whole)
+//!      (default literal symbol is `_`, so `_` stays whole)
 //!   2. case change  — camelCase boundaries (only when `split_case`)
 //!   3. digit change — letter ↔ digit (only when `split_numerics`)
 //!
@@ -43,48 +43,45 @@
 
 use std::collections::HashSet;
 
-use crate::analyzer::small_tantivy::{BoxTokenStream, Token, TokenStream, Tokenizer};
+use crate::analyzer::small_tantivy::{ BoxTokenStream, Token, TokenStream, Tokenizer };
 
 fn split_where(
     segment: &str,
-    boundary: impl Fn(char, char, Option<char>) -> bool,
+    boundary: impl Fn(char, char, Option<char>) -> bool
 ) -> Vec<(usize, usize)> {
     let chars: Vec<(usize, char)> = segment.char_indices().collect();
     if chars.len() < 2 {
         return vec![(0, segment.len())];
     }
 
+    let nexts = chars
+        .iter()
+        .skip(2)
+        .map(|&(_, c)| Some(c))
+        .chain(std::iter::once(None));
+
     let mut bounds = vec![0usize];
-    for i in 1..chars.len() {
-        let prev = chars[i - 1].1;
-        let curr = chars[i].1;
-        let next = chars.get(i + 1).map(|&(_, c)| c);
+    for ((&(_, prev), &(offset, curr)), next) in chars.iter().zip(chars.iter().skip(1)).zip(nexts) {
         if boundary(prev, curr, next) {
-            bounds.push(chars[i].0);
+            bounds.push(offset);
         }
     }
 
-    let mut out = Vec::with_capacity(bounds.len());
-    for w in bounds.windows(2) {
-        out.push((w[0], w[1]));
-    }
-    out.push((*bounds.last().unwrap(), segment.len()));
-    out
+    let ends = bounds.iter().skip(1).copied().chain(std::iter::once(segment.len()));
+    bounds.iter().copied().zip(ends).collect()
 }
 
 //getHTTPResponse -> get HTTP Response getHTTPResponse
 fn split_on_case(segment: &str) -> Vec<(usize, usize)> {
     split_where(segment, |prev, curr, next| {
-        (prev.is_lowercase() && curr.is_uppercase())
-            || (prev.is_uppercase() && curr.is_uppercase() && next.is_some_and(char::is_lowercase))
+        (prev.is_lowercase() && curr.is_uppercase()) ||
+            (prev.is_uppercase() && curr.is_uppercase() && next.is_some_and(char::is_lowercase))
     })
 }
 
 //utf8 -> utf8 utf 8
 fn split_on_numerics(segment: &str) -> Vec<(usize, usize)> {
-    split_where(segment, |prev, curr, _| {
-        prev.is_alphabetic() != curr.is_alphabetic()
-    })
+    split_where(segment, |prev, curr, _| { prev.is_alphabetic() != curr.is_alphabetic() })
 }
 
 fn split_on_delims(chunk: &str, is_delim: impl Fn(char) -> bool) -> Vec<(usize, usize)> {
@@ -109,7 +106,7 @@ fn split_forms(
     chunk: &str,
     literal_symbols: &HashSet<char>,
     split_case: bool,
-    split_numerics: bool,
+    split_numerics: bool
 ) -> (String, Vec<(String, usize, usize)>, String) {
     let is_delim = |c: char| !c.is_alphanumeric() && !literal_symbols.contains(&c);
 
@@ -142,8 +139,11 @@ fn split_forms(
         }
     }
 
-    let joined: String = parts.iter().map(|(p, _, _)| p.as_str()).collect();
-    (chunk.to_string(), parts, joined)
+    let joined: String = parts
+        .iter()
+        .map(|(p, _, _)| p.as_str())
+        .collect();
+    (chunk.to_owned(), parts, joined)
 }
 
 // pub fn expand_word_delimiters(
@@ -184,7 +184,7 @@ impl WordDelimiterTokenizer {
         literal_symbols: impl IntoIterator<Item = char>,
         split_case: bool,
         split_numerics: bool,
-        preserve_original: bool,
+        preserve_original: bool
     ) -> Self {
         Self {
             literal_symbols: literal_symbols.into_iter().collect(),
@@ -200,42 +200,48 @@ impl WordDelimiterTokenizer {
         from: usize,
         to: usize,
         position: &mut usize,
-        tokens: &mut Vec<Token>,
+        tokens: &mut Vec<Token>
     ) {
         let (original, parts, joined) = split_forms(
             chunk,
             &self.literal_symbols,
             self.split_case,
-            self.split_numerics,
+            self.split_numerics
         );
 
-        let parts_to_emit: Vec<&(String, usize, usize)> =
-            if parts.len() > 1 || !self.preserve_original {
-                parts.iter().collect()
-            } else {
-                Vec::new()
-            };
+        let parts_to_emit: &[(String, usize, usize)] = if
+            parts.len() > 1 ||
+            !self.preserve_original
+        {
+            &parts
+        } else {
+            &[]
+        };
         let span = parts_to_emit.len().max(1);
         let start = *position;
 
-        let mut push =
-            |text: &str, from: usize, to: usize, position: usize, position_length: usize| {
-                tokens.push(Token {
-                    offset_from: from,
-                    offset_to: to,
-                    position,
-                    text: text.to_string(),
-                    position_length,
-                });
-            };
-
+        let mut push = |
+            text: &str,
+            offset_from: usize,
+            offset_to: usize,
+            token_position: usize,
+            position_length: usize
+        | {
+            tokens.push(Token {
+                offset_from,
+                offset_to,
+                position: token_position,
+                text: text.to_owned(),
+                position_length,
+            });
+        };
         if self.preserve_original {
             push(&original, from, to, start, span);
         }
 
         if !joined.is_empty() && joined != original {
-            let j_from = from + parts.first().map(|(_, s, _)| *s).unwrap_or(0);
-            let j_to = from + parts.last().map(|(_, _, e)| *e).unwrap_or(0);
+            let j_from = from + parts.first().map_or(0, |(_, s, _)| *s);
+            let j_to = from + parts.last().map_or(0, |(_, _, e)| *e);
             push(&joined, j_from, j_to, start, span);
         }
 
@@ -289,11 +295,13 @@ impl TokenStream for VecTokenStream {
     }
 
     // current token
+    #[allow(clippy::indexing_slicing)]
     fn token(&self) -> &Token {
         &self.tokens[self.idx - 1]
     }
 
     // current token (mutable)
+    #[allow(clippy::indexing_slicing)]
     fn token_mut(&mut self) -> &mut Token {
         &mut self.tokens[self.idx - 1]
     }
@@ -307,18 +315,11 @@ mod tests {
         s.iter().copied().collect()
     }
 
-   
-
-   
-
     #[test]
     fn split_forms_offsets_delimiter() {
         let syms = syms(&['_']);
         let (_orig, parts, _joined) = split_forms("spider-man", &syms, false, false);
-        assert_eq!(
-            parts,
-            vec![("spider".to_string(), 0, 6), ("man".to_string(), 7, 10),]
-        );
+        assert_eq!(parts, vec![("spider".to_owned(), 0, 6), ("man".to_owned(), 7, 10)]);
     }
 
     #[test]
@@ -328,9 +329,9 @@ mod tests {
         assert_eq!(
             parts,
             vec![
-                ("get".to_string(), 0, 3),
-                ("HTTP".to_string(), 3, 7),
-                ("Response".to_string(), 7, 15),
+                ("get".to_owned(), 0, 3),
+                ("HTTP".to_owned(), 3, 7),
+                ("Response".to_owned(), 7, 15)
             ]
         );
     }
@@ -340,9 +341,6 @@ mod tests {
         let syms = syms(&['_']);
         // 'ģ' is 2 UTF-8 bytes, so "ģimene" is bytes 0..7, not 0..6.
         let (_orig, parts, _joined) = split_forms("ģimene-ozols", &syms, false, false);
-        assert_eq!(
-            parts,
-            vec![("ģimene".to_string(), 0, 7), ("ozols".to_string(), 8, 13),]
-        );
+        assert_eq!(parts, vec![("ģimene".to_owned(), 0, 7), ("ozols".to_owned(), 8, 13)]);
     }
 }

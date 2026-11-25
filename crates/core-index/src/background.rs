@@ -8,6 +8,7 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 static POOL: OnceLock<ThreadPool> = OnceLock::new();
 
 /// The shared background pool, one thread per core.
+#[allow(clippy::expect_used, reason = "no background pool means no compaction or segment writes; startup cannot continue")]
 pub fn background_pool() -> &'static ThreadPool {
     POOL.get_or_init(|| {
         let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);

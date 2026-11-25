@@ -1,14 +1,21 @@
 //! The top-k collector: walks a set of scorers and keeps the k best documents.
 use std::{cmp::Ordering, collections::BinaryHeap};
 
-use core_index::{search::SearchStats, types::DocId};
+use core_index::{num::u64_to_f64, search::SearchStats, types::DocId};
 use roaring::RoaringTreemap;
 
 use crate::{
     ranking::COVERAGE_POWER,
     scorer::{BoxScorer, Scorer},
 };
-
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "float to int `as` saturates, and the factor is in 0..=1"
+)]
+fn scale_score(score: u64, factor: f64) -> u64 {
+    (u64_to_f64(score) * factor) as u64
+}
 //Top `k` documents by summed scorer score (WAND), plus the top `any_k` documents holding
 // any scorer by plain score. Returns `(main, any)`.
 pub(crate) fn top_k_with_any<'a>(
@@ -51,7 +58,7 @@ pub(crate) fn top_k_with_any<'a>(
         let raw = score;
         if covered && coverage.is_some() && total_weight > 0.0 {
             let share = f64::from((matched_weight / total_weight).min(1.0));
-            score = ((score as f64) * share.powf(f64::from(COVERAGE_POWER))) as u64;
+            score = scale_score(score, share.powf(f64::from(COVERAGE_POWER)));
         }
         Some((score, raw, matched_terms, covered))
     };
@@ -71,7 +78,9 @@ pub(crate) fn top_k_with_any<'a>(
         };
 
     // A small allow-list: visit each allowed document directly (the cursors gallop).
-    if let Some(docs) = restrict.filter(|docs| docs.len() <= DIRECT_RESTRICT_MAX as u64) {
+    if let Some(docs) = restrict
+        .filter(|docs| usize::try_from(docs.len()).is_ok_and(|len| len <= DIRECT_RESTRICT_MAX))
+    {
         let mut targets: Vec<DocId> = docs.iter().collect();
         targets.sort_unstable();
         for doc in targets {
@@ -90,7 +99,8 @@ pub(crate) fn top_k_with_any<'a>(
         if scorers.is_empty() {
             break;
         }
-        scorers.sort_unstable_by_key(|scorer| scorer.doc().unwrap());
+        // every scorer left has a document, so this orders by it
+        scorers.sort_unstable_by_key(|scorer| scorer.doc());
 
         // The score a document must beat: the worse of the two lists' k-th best.
         let pool_threshold = if k == 0 {
@@ -126,8 +136,12 @@ pub(crate) fn top_k_with_any<'a>(
             break;
         };
 
-        let mut pivot_doc = scorers[pivot].doc().unwrap();
-        let smallest_doc = scorers[0].doc().unwrap();
+        let (Some(mut pivot_doc), Some(smallest_doc)) = (
+            scorers.get(pivot).and_then(|scorer| scorer.doc()),
+            scorers.first().and_then(|scorer| scorer.doc()),
+        ) else {
+            break;
+        };
 
         // A filter: jump to the next allowed document at or after the pivot.
         if let Some(allowed) = restrict {
@@ -164,9 +178,9 @@ pub(crate) fn top_k_with_any<'a>(
 }
 
 /// Exact top-k for a conjunction: every scorer in a group must be on the document.
-pub(crate) fn conjunctive_top_k<'a>(
+pub(crate) fn conjunctive_top_k(
     stats: &dyn SearchStats,
-    groups: &mut Vec<Vec<BoxScorer<'a>>>,
+    groups: &mut [Vec<BoxScorer<'_>>],
     k: usize,
     restrict: Option<&RoaringTreemap>,
 ) -> Vec<WandHit> {
@@ -182,7 +196,7 @@ pub(crate) fn conjunctive_top_k<'a>(
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k + 1);
 
     while let Some(doc_id) = current.iter().flatten().min().copied() {
-        if restrict.as_ref().is_none_or(|docs| docs.contains(doc_id)) {
+        if restrict.is_none_or(|docs| docs.contains(doc_id)) {
             let mut score = 0u64;
             let mut matched_terms = 0usize;
             for (group, at) in groups.iter_mut().zip(&current) {
@@ -207,10 +221,7 @@ pub(crate) fn conjunctive_top_k<'a>(
 }
 
 /// The next document every scorer in the group is on, after `after`.
-pub(crate) fn next_common<'a>(
-    scorers: &mut [BoxScorer<'a>],
-    after: Option<DocId>,
-) -> Option<DocId> {
+pub(crate) fn next_common(scorers: &mut [BoxScorer<'_>], after: Option<DocId>) -> Option<DocId> {
     if after.is_some() {
         for scorer in scorers.iter_mut() {
             scorer.next();

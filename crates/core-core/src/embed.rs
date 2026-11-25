@@ -176,7 +176,8 @@ impl EmbeddingJob {
     }
 
     /// Whether embedding waits while documents are loaded in bulk (`wait_for_load`).
-    pub fn waits_for_load(&self) -> bool {
+    #[must_use]
+    pub const fn waits_for_load(&self) -> bool {
         self.config.wait_for_load
     }
 
@@ -187,18 +188,18 @@ impl EmbeddingJob {
         lease: &mut EmbedLease<'_>,
         stop: &AtomicBool,
     ) -> io::Result<Option<usize>> {
-        let vector_id = lease.vector_id().to_string();
+        let vector_id = lease.vector_id().to_owned();
         let dims = lease.spec().dims;
         let Some(task) = self.next_task(&vector_id, dims)? else {
             return Ok(None);
         };
-        self.embed_task(lease, task, stop).map(Some)
+       self.embed_task(lease, &task, stop).map(Some)
     }
 
         /// (documents that need a vector, documents that have one) across the live segments,
     /// ignoring deleted documents. Skipped documents count as done: they cannot be embedded.
     /// Costs a binary search per deleted or skipped document, not a pass over every document.
-    pub fn measure(&mut self, vector_id: &str, dims: usize) -> io::Result<(u64, u64)> {
+        pub fn measure(&mut self, vector_id: &str, dims: usize) -> io::Result<(u64, u64)> {
         let snapshot = self.shared.snapshot.get();
         let segments = disk_segments(&self.sender)?;
         self.forget_removed_segments(&segments);
@@ -224,10 +225,11 @@ impl EmbeddingJob {
                     }
                 }
                 // documents past the cursor that are done only because they were skipped
+                let after_start: &[DocId] = ids.get(start..).unwrap_or_default();
                 let skipped_after_start = skipped
                     .iter()
                     .filter(|doc_id| {
-                        !snapshot.is_deleted(**doc_id) && ids[start..].binary_search(doc_id).is_ok()
+                        !snapshot.is_deleted(**doc_id) && after_start.binary_search(doc_id).is_ok()
                     })
                     .count() as u64;
                 total += ids.len() as u64 - gone;
@@ -263,6 +265,7 @@ impl EmbeddingJob {
     pub fn graph_failed(&mut self, file_id: u64) {
         self.graph_failed.insert(file_id);
     }
+    #[must_use]
     pub fn next_fold(&self, vector_id: &str, dims: usize) -> Option<FoldTask> {
         let snapshot = self.shared.snapshot.get();
         snapshot
@@ -288,7 +291,7 @@ impl EmbeddingJob {
         self.fold_failed.insert(tail_file_id);
     }
   
-     fn next_task(&mut self, vector_id: &str, dims: usize) -> io::Result<Option<Task>> {
+         fn next_task(&mut self, vector_id: &str, dims: usize) -> io::Result<Option<Task>> {
         let snapshot = self.shared.snapshot.get();
         let mut segments = disk_segments(&self.sender)?;
         self.forget_removed_segments(&segments);
@@ -297,19 +300,21 @@ impl EmbeddingJob {
         });
 
         for segment in segments {
-             let docs = match self.segment_docs(&segment) {
+            let docs = match self.segment_docs(&segment) {
                 Ok(docs) => docs,
                 // merged away since `disk_segments` answered
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e),
             };
             for (xpath, ids) in docs.iter() {
-                 let Some(field) = self.fields.iter().find(|f| f.xpath == *xpath).cloned() else {
+                let Some(field) = self.fields.iter().find(|f| f.xpath == *xpath).cloned() else {
                     continue;
                 };
                 let existing = existing_file(&snapshot, &segment, *xpath, vector_id, dims);
                 let start = self.cursor_index(&snapshot, &segment, *xpath, vector_id, dims, ids);
-                let missing: Vec<DocId> = ids[start..]
+                let missing: Vec<DocId> = ids
+                    .get(start..)
+                    .unwrap_or_default()
                     .iter()
                     .copied()
                     .filter(|doc_id| {
@@ -329,10 +334,10 @@ impl EmbeddingJob {
 
                 return Ok(Some(Task {
                     segment,
-                    field: field.clone(),
+                    field,
                     existing,
                     missing,
-                    vector_id: vector_id.to_string(),
+                    vector_id: vector_id.to_owned(),
                     dims,
                 }));
             }
@@ -340,10 +345,10 @@ impl EmbeddingJob {
         Ok(None)
     }
 
-    fn embed_task(
+      fn embed_task(
         &mut self,
         lease: &mut EmbedLease<'_>,
-        task: Task,
+        task: &Task,
         stop: &AtomicBool,
     ) -> io::Result<usize> {
         let started = Instant::now();
@@ -490,7 +495,7 @@ impl EmbeddingJob {
     }
         /// Index in `ids` where work resumes. The first time a segment's field is seen (after a
     /// restart or a model change) it scans once from the start to rebuild the cursor.
-    fn cursor_index(
+      fn cursor_index(
         &mut self,
         snapshot: &IndexSnapshot,
         segment: &Path,
@@ -515,8 +520,8 @@ impl EmbeddingJob {
                     || existing.as_ref().is_some_and(|file| file.contains(doc_id))
             })
             .count();
-        if handled > 0 {
-            self.advance(segment, xpath, vector_id, dims, ids[handled - 1]);
+        if let Some(&last) = handled.checked_sub(1).and_then(|index| ids.get(index)) {
+            self.advance(segment, xpath, vector_id, dims, last);
         }
         handled
     }
@@ -525,11 +530,11 @@ impl EmbeddingJob {
         let cursor = self
             .cursors
             .entry((segment.to_path_buf(), xpath))
-            .or_insert_with(|| Cursor { vector_id: vector_id.to_string(), dims, done_through });
+            .or_insert_with(|| Cursor { vector_id: vector_id.to_owned(), dims, done_through });
         if cursor.vector_id == vector_id && cursor.dims == dims {
             cursor.done_through = cursor.done_through.max(done_through);
         } else {
-            *cursor = Cursor { vector_id: vector_id.to_string(), dims, done_through };
+            *cursor = Cursor { vector_id: vector_id.to_owned(), dims, done_through };
         }
     }
     /// Drops cached segments that compaction removed.
@@ -570,18 +575,18 @@ where
             if embed(&[PROBE_TEXT]).is_err() {
                 return Err(error);
             }
-            failed.push((ids[0], error));
+            if let Some(&doc_id) = ids.first() {
+                failed.push((doc_id, error));
+            }
             Ok(Vec::new())
         }
         Err(_) => {
             let middle = texts.len() / 2;
-            let mut rows = embed_isolating(&ids[..middle], &texts[..middle], embed, failed)?;
-            rows.extend(embed_isolating(
-                &ids[middle..],
-                &texts[middle..],
-                embed,
-                failed,
-            )?);
+            // `middle` is within both slices, so the fallback is never taken
+            let (left_ids, right_ids) = ids.split_at_checked(middle).unwrap_or_default();
+            let (left_texts, right_texts) = texts.split_at_checked(middle).unwrap_or_default();
+            let mut rows = embed_isolating(left_ids, left_texts, embed, failed)?;
+            rows.extend(embed_isolating(right_ids, right_texts, embed, failed)?);
             Ok(rows)
         }
     }
@@ -652,29 +657,38 @@ pub fn write_fold(task: &FoldTask, log: &Logger) -> io::Result<()> {
 }
 
 /// Installs a fold written by `write_fold`; false when the segment was merged away meanwhile.
+/// Sends the command `make` builds and waits for the index worker's reply.
+fn ask<T>(
+    sender: &Sender<IndexCommand>,
+    make: impl FnOnce(Sender<io::Result<T>>) -> IndexCommand,
+    dropped_reply: &'static str,
+) -> io::Result<T> {
+    let (reply, rx) = mpsc::channel();
+    sender
+        .send(make(reply))
+        .map_err(|_stopped| broken_pipe("index worker stopped"))?;
+    rx.recv().map_err(|_dropped| broken_pipe(dropped_reply))?
+}
+
+/// Installs a fold written by `write_fold`; false when the segment was merged away meanwhile.
 pub fn install_fold(
     sender: &Sender<IndexCommand>,
     segment: PathBuf,
     xpath: XPathId,
 ) -> io::Result<bool> {
-    let (reply, rx) = mpsc::channel();
-    sender
-        .send(IndexCommand::InstallFold {
-            segment,
-            xpath,
-            reply,
-        })
-        .map_err(|_| broken_pipe("index worker stopped"))?;
-    rx.recv()
-        .map_err(|_| broken_pipe("index worker dropped install fold reply"))?
+    ask(
+        sender,
+        |reply| IndexCommand::InstallFold { segment, xpath, reply },
+        "index worker dropped install fold reply",
+    )
 }
+
 fn disk_segments(sender: &Sender<IndexCommand>) -> io::Result<Vec<PathBuf>> {
-    let (reply, rx) = mpsc::channel();
-    sender
-        .send(IndexCommand::DiskSegments { reply })
-        .map_err(|_| broken_pipe("index worker stopped"))?;
-    rx.recv()
-        .map_err(|_| broken_pipe("index worker dropped disk segment reply"))?
+    ask(
+        sender,
+        |reply| IndexCommand::DiskSegments { reply },
+        "index worker dropped disk segment reply",
+    )
 }
 
 fn install_vectors(
@@ -682,32 +696,23 @@ fn install_vectors(
     segment: PathBuf,
     xpath: XPathId,
 ) -> io::Result<bool> {
-    let (reply, rx) = mpsc::channel();
-    sender
-        .send(IndexCommand::InstallVectors {
-            segment,
-            xpath,
-            reply,
-        })
-        .map_err(|_| broken_pipe("index worker stopped"))?;
-    rx.recv()
-        .map_err(|_| broken_pipe("index worker dropped install vectors reply"))?
+    ask(
+        sender,
+        |reply| IndexCommand::InstallVectors { segment, xpath, reply },
+        "index worker dropped install vectors reply",
+    )
 }
+
 fn install_tail(
     sender: &Sender<IndexCommand>,
     segment: PathBuf,
     xpath: XPathId,
 ) -> io::Result<bool> {
-    let (reply, rx) = mpsc::channel();
-    sender
-        .send(IndexCommand::InstallTail {
-            segment,
-            xpath,
-            reply,
-        })
-        .map_err(|_| broken_pipe("index worker stopped"))?;
-    rx.recv()
-        .map_err(|_| broken_pipe("index worker dropped install tail reply"))?
+    ask(
+        sender,
+        |reply| IndexCommand::InstallTail { segment, xpath, reply },
+        "index worker dropped install tail reply",
+    )
 }
 
 /// Attaches a built graph; false when the segment or its vector file changed meanwhile.
@@ -716,18 +721,12 @@ pub fn install_graph(
     segment: PathBuf,
     xpath: XPathId,
 ) -> io::Result<bool> {
-    let (reply, rx) = mpsc::channel();
-    sender
-        .send(IndexCommand::InstallGraph {
-            segment,
-            xpath,
-            reply,
-        })
-        .map_err(|_| broken_pipe("index worker stopped"))?;
-    rx.recv()
-        .map_err(|_| broken_pipe("index worker dropped install graph reply"))?
+    ask(
+        sender,
+        |reply| IndexCommand::InstallGraph { segment, xpath, reply },
+        "index worker dropped install graph reply",
+    )
 }
-
 fn broken_pipe(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, message)
 }

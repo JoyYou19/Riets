@@ -7,10 +7,10 @@ pub enum Query {
     Prefix(String),
     Wildcard(String),
 
-    Wand(Vec<Query>),
+    Wand(Vec<Self>),
 
-    And(Vec<Query>),
-    Or(Vec<Query>),
+    And(Vec<Self>),
+    Or(Vec<Self>),
     Phrase(Vec<PhraseTerm>),
     Exact(String),
     Fuzzy(String, Fuzziness, FuzzySpec),
@@ -18,11 +18,11 @@ pub enum Query {
     // the user typed; a document is scored by the best weighted form it contains.
     Synonym(Vec<SynonymAlternative>),
 
-    Not(Box<Query>),
+    Not(Box<Self>),
 
     //
     Range(NumericRange),
-    SameElement(Vec<Query>),
+    SameElement(Vec<Self>),
     Bool(bool),
     MatchAll,
 }

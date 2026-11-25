@@ -48,6 +48,10 @@ fn mark_complete(dir:&Path)->io::Result<()>{
 }
 /// Builds a fresh index into index.new. Reads the shard's document store but
 /// touches nothing the shard thread owns.
+#[allow(
+    clippy::print_stderr,
+    reason = "a failed vector carry is only logged: the vectors are embedded again"
+)]
 #[timed(reindex)]
 pub(crate) fn build_staging_index(
     params: &ReindexParams,
@@ -123,7 +127,9 @@ fn carry_vectors(live_root: &Path, staging_root: &Path, xpaths: &[XPathId]) -> i
             .into_iter()
             .filter(|file| file.model_id() == model && !file.is_empty())
             .collect();
-        let dims = sources[0].dims();
+        let Some(dims) = sources.first().map(VectorFile::dims) else {
+            continue;
+        };
         let mut rows: HashMap<DocId, (usize, usize)> = HashMap::new();
         for (source, file) in sources.iter().enumerate() {
             for (index, &doc_id) in file.doc_ids().iter().enumerate() {
@@ -147,7 +153,7 @@ fn dominant_model(files: &[VectorFile]) -> Option<String> {
         .into_iter()
         .filter(|(_, rows)| *rows > 0)
         .max_by_key(|(_, rows)| *rows)
-        .map(|(model, _)| model.to_string())
+        .map(|(model, _)| model.to_owned())
 }
 
 fn write_carried(
@@ -173,8 +179,13 @@ fn write_carried(
     }
     let mut writer = VectorFileWriter::create(vector_file_path(segment, xpath), model, dims)?;
     for doc_id in &docs {
-        let (source, index) = rows[doc_id];
-        writer.push(*doc_id, sources[source].original(index))?;
+        let Some(&(source, index)) = rows.get(doc_id) else {
+            continue;
+        };
+        let Some(file) = sources.get(source) else {
+            continue;
+        };
+        writer.push(*doc_id, file.original(index))?;
     }
     writer.finish()?;
     Ok(docs.len())
@@ -188,7 +199,12 @@ fn segment_files(root: &Path) -> io::Result<Vec<PathBuf>> {
         let is_segment = path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".idx"));
+            .is_some_and(|name| {
+                name.starts_with("segment-")
+                    && Path::new(name)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("idx"))
+            });
         if is_segment {
             found.push(path);
         }
