@@ -10,28 +10,148 @@ All routes live under `/api`. Everything except `/api/login` is a protected rout
 - **Empty bodies**: handlers that need a body reject an empty one with `request body is empty`.
 - **Batch responses**: insert/replace/upsert/partial-replace/delete return HTTP 200 with a per-document breakdown of what succeeded and failed. Failure indexes are mapped back to the position in the client's input array.
 
+### Response envelope
+
+Most command endpoints wrap their result in a fixed JSON envelope; the payload is under `data`:
+
+```json
+{
+  "status": 200,
+  "title": "Login successful",
+  "instance": "/api/login",
+  "request_id": "9f4c2c1e-…",
+  "time_taken": "1.2ms",
+  "data": { }
+}
+```
+
+Some endpoints return raw bodies instead (no envelope): `get-policy` (JSON), `get-config` and `dictionary` (TOML), `get-logs` (text), `metrics`, `timings`.
+
+Errors use a separate shape:
+
+```json
+{
+  "type": "http://corelamo.com/errors/unauthorized",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "missing X-Corelamo-Key header",
+  "instance": "/api/…",
+  "request_id": "…",
+  "time_taken_ms": 0
+}
+```
+
+---
+
+## Running the server
+
+```bash
+corelamo-runtime --root-path /var/lib/corelamo --port 6006 --auth true
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--root-path <path>` | `/var/lib/corelamo` | root for all databases and config; `corelamo` is appended unless the path already ends with it |
+| `--name <name>` | `corelamo` | instance name |
+| `--host <host>` | `0.0.0.0` | bind address |
+| `--port <port>` | `6006` | bind port |
+| `--format <format>` | `json` | default response format |
+| `--auth <true\|false>` | `true` | `false` disables authentication (every request runs as an anonymous admin) |
+| `--max_payload_size <MB>` | `1024` | request body limit |
+| `--max_request_timeout <s>` | `240` | request timeout |
+| `--overwrite_config <true\|false>` | `false` | `true`: CLI wins over the config file and is persisted; `false`: config file wins over CLI |
+| `--embedding-model <id>` | `bge-m3` | embedding model |
+
+Settings live in `<root-path>/CorelamoSettings.toml`, created with defaults on first start. Precedence: **config file > CLI > built-in default** by default; **CLI > config > default** with `--overwrite_config true` (the CLI values are written back to the file).
+
+`-h` / `--help` prints the same list.
+
 ---
 
 ## Authentication
 
-### `POST /api/login` (public)
+### First start: the superuser
 
-Exchanges credentials for a token.
+On the first start with an empty user database the server creates the superuser:
+
+| | |
+|---|---|
+| username | `corelamo` |
+| role | `admin` (every permission) |
+| password | generated once, printed to **stderr** |
+
+```
+  user:     corelamo
+  password: <generated>
+```
+
+If stdin is a terminal, it also asks `Set your own password now? [y/N]:`; `y` replaces the generated password (minimum 8 characters). With no terminal (systemd, Docker, CI) it skips the prompt and the printed password stays valid.
+
+The password cannot be recovered. Change it later as a logged-in admin with `POST /api/users/corelamo/password`.
+
+### `POST /api/login` (public, no token needed)
+
+Body: `{"username": "...", "password": "..."}`.
 
 ```bash
 curl -s -X POST "http://localhost:6006/api/login" \
-  -d '{"username": "admin", "password": "secret"}'
+  -H "Content-Type: application/json" \
+  -d '{"username": "corelamo", "password": "<generated>"}'
 ```
 
-Response: `{ "token": "..." }`. Bad credentials return `Unauthorized`.
+Success (HTTP 200; the token is at **`data.token`**):
+
+```json
+{
+  "status": 200,
+  "title": "Login successful",
+  "instance": "/api/login",
+  "request_id": "…",
+  "time_taken": "…",
+  "data": { "token": "64 hex characters" }
+}
+```
+
+Failure: HTTP 401 `Unauthorized`, `detail: "invalid username or password"` — the same answer for an unknown user and a wrong password.
+
+### Using the token
+
+Every protected request carries the token in the **`X-Corelamo-Key`** header (there is no `Authorization: Bearer`):
+
+```bash
+curl -s "http://localhost:6006/api/databases/movies/status" \
+  -H "X-Corelamo-Key: <token>"
+```
+
+- Missing header → HTTP 401 `Unauthorized`, `detail: "missing X-Corelamo-Key header"`, plus `WWW-Authenticate: Corelamo-Key`.
+- Unknown or expired token → HTTP 401 `Unauthorized`.
+- A valid token that lacks the route's permission → HTTP 403 `Permission denied`, `detail: "user '<username>' lacks permission '<Permission>'"`.
+
+### Token lifetime
+
+- 32 random bytes from the OS RNG, hex-encoded (64 characters).
+- Valid for **24 hours** from login.
+- Stored **hashed and in memory only**: a server restart invalidates every token (clients must log in again).
+- Every login issues a new independent token; logging out revokes only that one.
 
 ### `POST /api/logout`
 
-Invalidates the current session token.
+Revokes the token sent in `X-Corelamo-Key`.
 
 ```bash
-curl -s -X POST "http://localhost:6006/api/logout"
+curl -s -X POST "http://localhost:6006/api/logout" \
+  -H "X-Corelamo-Key: <token>"
 ```
+
+Revoking an unknown token is not an error.
+
+### Auth disabled (`--auth false`)
+
+No login and no header: every request runs as `anonymous` with the `admin` role. Intended for local development — do not expose such a server.
+
+### Permissions
+
+Each handler also checks a permission on the principal; the per-route tables below list which. `admin` has every permission, other roles a subset (see `core-auth/src/bootstrap.rs`).
 
 ---
 
@@ -359,7 +479,7 @@ curl -s -X POST "http://localhost:6006/api/databases/movies/reindex/abort"
 
 ### `GET /api/databases/{db_name}/get-policy`
 
-Returns the database's schema/indexing policy as TOML (`application/toml`). Permission: `GetPolicy`.
+Returns the database's schema/indexing policy as **JSON** (`application/json`, raw — no envelope). Permission: `GetPolicy`.
 
 ```bash
 curl -s "http://localhost:6006/api/databases/movies/get-policy"
@@ -367,17 +487,23 @@ curl -s "http://localhost:6006/api/databases/movies/get-policy"
 
 ### `POST /api/databases/{db_name}/set-policy`
 
-Body is TOML. It is parsed first, then applied to all shards. Permission: `SetPolicy`.
+Body is a **JSON** `IndexPolicy` (the same shape `get-policy` returns). It is parsed first, then applied to all shards. Permission: `SetPolicy`.
 
 ```bash
 curl -s -X POST "http://localhost:6006/api/databases/movies/set-policy" \
-  -H "Content-Type: application/toml" \
-  --data-binary 'analyzers = { title = { stemming = "english" } }
-
-[document]
-title = "text"
-year = "integer"'
+  -H "Content-Type: application/json" \
+  --data-binary '{
+    "analyzers": { "title": { "stemming": "english" } },
+    "document": {
+      "title": { "$type": "text", "$weight": { "min": 65, "max": 90 } },
+      "year": { "$type": "int" }
+    }
+  }'
 ```
+
+- Field names must not contain `/`: model nesting as a struct (`"rank": { "pagerank": … }`), not `"rank/pagerank"`.
+- Unknown field settings (`$…`) are rejected.
+- See `policy.md` for the whole format and `search.md` for how the fields are queried.
 
 ### `GET /api/databases/{db_name}/get-config`
 

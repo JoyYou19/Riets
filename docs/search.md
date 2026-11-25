@@ -30,6 +30,36 @@ curl -s -X POST "http://localhost:6006/api/databases/movies/search" \
        "highlight": {"fields": {"title": {}}}, "docs": 3}'
 ```
 
+### Response
+
+The reply is a JSON envelope; the page of hits is `data`:
+
+```json
+{
+  "status": 200,
+  "title": "…",
+  "instance": "/api/databases/movies/search",
+  "request_id": "…",
+  "time_taken": "1.7ms",
+  "data": [
+    {
+      "id": "doc1",
+      "score": 3.21,
+      "data": { "title": "Spider-Man", "year": 2002 },
+      "highlights": { "title": ["<em>Spider-Man</em>"] }
+    }
+  ],
+  "total_hits": { "value": 10, "more": true }
+}
+```
+
+- `data` — the page of hits (`docs`, default 10, from `offset`), best first.
+- `score` — the final relevance score.
+- `data` inside a hit — the returned document fields (all fields when `return_fields` is omitted).
+- `highlights` — an object, empty `{}` when no `highlight` was requested.
+- `total_hits.value` — aproximate number of matching documents. `total_hits.more` is `true` when a shard had more matches than it returned. (Accurate totals are a known gap.)
+- `corrected_query` / `suggested_query` — present only when spelling correction kicked in.
+
 ---
 
 ## 1. Main query

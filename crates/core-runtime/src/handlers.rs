@@ -1,5 +1,10 @@
 use crate::{
-    AppState, database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name}, database_manager::{DbSlot, SlotState}, doc_parser, http_response::{BatchOutcome, HttpError, HttpOk, millis}, middleware::RequestContext,
+    AppState,
+    database_helpers::{compute_disk_usage, normalize_db_name, trash_dir_for, validate_db_name},
+    database_manager::{DbSlot, SlotState},
+    doc_parser,
+    http_response::{BatchOutcome, HttpError, HttpOk, millis},
+    middleware::RequestContext,
 };
 use axum::{
     Extension,
@@ -77,7 +82,7 @@ fn check_permission(
         .map_err(|_| CorelamoError::Internal("auth service unavailable".into()))?;
     auth.check(principal, &permission)
 }
-fn auth_unavailable<T>(_:std::sync::PoisonError<T>) -> CorelamoError{
+fn auth_unavailable<T>(_: std::sync::PoisonError<T>) -> CorelamoError {
     CorelamoError::Internal("auth service unavailable".into())
 }
 
@@ -168,7 +173,7 @@ pub(crate) async fn list_users_handler(
 
     let auth = Arc::clone(&state.auth);
     let listed = tokio::task::spawn_blocking(move || {
-    let auth = auth.read().map_err(auth_unavailable)?;
+        let auth = auth.read().map_err(auth_unavailable)?;
         auth.list_users()
     })
     .await;
@@ -237,7 +242,7 @@ pub(crate) async fn create_user_handler(
     let created = tokio::task::spawn_blocking(move || {
         let hash = hash_password(&req.password)?;
 
-    let mut auth = auth.write().map_err(auth_unavailable)?;
+        let mut auth = auth.write().map_err(auth_unavailable)?;
         auth.create_user(&principal, &req.username, &hash, &req.roles)
     })
     .await;
@@ -262,7 +267,7 @@ pub(crate) async fn delete_user_handler(
     if let Err(e) = check_permission(&state, &principal, Permission::DeleteUser) {
         return HttpError::from_corelamo(e, &ctx).into_response();
     }
-     let mut auth = match state.auth.write().map_err(auth_unavailable) {
+    let mut auth = match state.auth.write().map_err(auth_unavailable) {
         Ok(auth) => auth,
         Err(e) => return HttpError::from_corelamo(e, &ctx).into_response(),
     };
@@ -309,7 +314,7 @@ pub(crate) async fn update_user_password_handler(
         let hash = hash_password(&req.password)?;
         // short: the write lock only covers the store update; update_user_password checks
         // the permission again, since it may have changed while hashing
-           let mut auth = auth.write().map_err(auth_unavailable)?;
+        let mut auth = auth.write().map_err(auth_unavailable)?;
         auth.update_user_password(&principal, &target, &hash)
     })
     .await;
@@ -738,7 +743,10 @@ pub(crate) async fn insert_handler(
     let doc_indices = parsed_batch.indices;
     let parse_failures = parsed_batch.failures;
 
-    let report = match handle.insert(parsed_batch.docs, principal.id.0.clone()).await {
+    let report = match handle
+        .insert(parsed_batch.docs, principal.id.0.clone())
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(e, &ctx).into_response();
@@ -1228,7 +1236,10 @@ pub(crate) async fn replace_document_handler(
     let parse_failures = parsed_batch.failures;
 
     let manager = Arc::clone(&handle);
-    let report = match manager.replace(parsed_batch.docs, principal.id.0.clone()).await {
+    let report = match manager
+        .replace(parsed_batch.docs, principal.id.0.clone())
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             return HttpError::from_corelamo(
@@ -1661,8 +1672,9 @@ pub(crate) async fn stats_handler(
             "restoring": stats.restoring,
             }
         }),
-        &ctx
-    ).into_response()
+        &ctx,
+    )
+    .into_response()
 }
 /// `GET /api/metrics`: every live database's counters in the Prometheus text format.
 pub(crate) async fn prometheus_metrics_handler(

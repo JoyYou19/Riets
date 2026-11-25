@@ -118,4 +118,23 @@ impl SearchOptions {
         }
         Ok(())
     }
+
+    // The tiers to run, in the configured order. A tier left out of the config is off; equal
+    /// ranks fall back to the default order so the result never depends on map order.
+    pub(crate) fn cascade_order(&self) -> Vec<TierKind> {
+        let mut ordered: Vec<(u8, usize, TierKind)> = self
+            .cascade
+            .iter()
+            .map(|(&kind, &rank)| {
+                let fallback = TierKind::DEFAULT_ORDER
+                    .iter()
+                    .position(|candidate| *candidate == kind)
+                    .unwrap_or(usize::MAX);
+                (rank, fallback, kind)
+            })
+            .collect();
+        ordered.sort_by_key(|&(rank, fallback, _)| (rank, fallback));
+        ordered.into_iter().map(|(_, _, kind)| kind).collect()
+    }
 }
+

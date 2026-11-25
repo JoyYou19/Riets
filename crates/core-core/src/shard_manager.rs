@@ -11,9 +11,9 @@ use core_backup::backup::{compress_file, is_valid_backup_id};
 use core_backup::progress::BackupProgress;
 use core_index::analyzer::Analyzer;
 use core_index::analyzer::text_analyzer::AnalyzerSet;
+use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::{FieldKind, FieldPolicy};
-use core_index::document::IndexPolicy;
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, select_expansions};
 use core_index::lsm::index_worker::Phase;
 use core_index::numeric_values::NumericValue;
@@ -79,7 +79,7 @@ const MAX_VECTOR_RESULTS: usize = 10000;
 const MAX_RESULTS_SIZE: usize = 1000;
 /// Most documents a search can page through (offset + docs). The total hit count is not
 /// limited by it.
-const MAX_WINDOW_SIZE:usize =10000;
+const MAX_WINDOW_SIZE: usize = 10000;
 const _: () = assert!(MAX_RESULTS_SIZE <= MAX_WINDOW_SIZE);
 /// A query that is only `{"vector": "text"}` or `{"vector": {"text": "...", "field": "..."}}`.
 /// How many times as common a correction must be than every equally close or closer word to
@@ -1037,7 +1037,7 @@ impl ShardManager {
         }
         self.db_stats.reindex_progress().set_phase(Phase::Cancelled);
     }
-      fn shard_index_for(&self, external_id: &str) -> usize {
+    fn shard_index_for(&self, external_id: &str) -> usize {
         let shard_count = u16::try_from(self.shards.len())
             .expect("a database is created with a u16 shard count (ShardManager::create)");
         usize::from(shard_for(external_id, shard_count))
