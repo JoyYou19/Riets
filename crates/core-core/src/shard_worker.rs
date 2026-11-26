@@ -17,7 +17,7 @@ use core_backup::backup::BackupManifest;
 use core_index::analyzer::Analyzer;
 use core_index::fuzzy::{FuzzyExpansion, FuzzySpec};
 use core_index::lsm::IndexSnapshot;
-use core_index::search::{SearchIndex, SearchNumeric};
+use core_index::search::{SearchIndex, SearchNumeric, SearchStats};
 use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{
     Fuzziness, LookupResponse, MatchMode, SortModifier, SortOrderRequest,
@@ -57,6 +57,7 @@ const IDLE_FLUSH_POLL: Duration = Duration::from_secs(1);
 pub struct ShardRankedResult {
     pub total: usize,
     pub items: Vec<(SearchHit, Vec<Option<NumericValue>>)>,
+    pub exact: bool,
     pub bounds: Vec<(Option<NumericValue>, Option<NumericValue>)>,
 }
 
@@ -396,7 +397,9 @@ impl ShardHandle {
             stats.merge(p.stats());
         }
 
-        let filter = if let Some(filter) = earlier_filter { filter } else {
+        let filter = if let Some(filter) = earlier_filter {
+            filter
+        } else {
             let mut restrict = filters
                 .and_then(|f| QueryExecutor::new(&*snapshot, &self.analyzer).filter_doc_ids(f));
             for group in groups {
@@ -436,9 +439,9 @@ impl ShardHandle {
         filters: Option<&RoaringTreemap>,
         k: usize,
         mactmode: MatchMode,
-    ) -> (usize, Vec<SearchHit>) {
+    ) -> (usize, bool, Vec<SearchHit>) {
         if k == 0 || filters.is_some_and(RoaringTreemap::is_empty) {
-            return (0, Vec::new());
+            return (0, true, Vec::new());
         }
         // each group sees only part of a document's evidence: keep more of its candidates, so
         // documents strong across groups but middling in each survive until they are merged
@@ -470,8 +473,21 @@ impl ShardHandle {
                 plan,
             ));
         }
+
+        let mut seen = HashSet::new();
+        for group in &ranked {
+            seen.extend(group.hits.iter().map(|hit| hit.doc_id));
+        }
+        let candidates = seen.len();
+
+        let (stats_total, stats_exact) =
+            stats_match_count(snapshot, groups, plans, prepared, filters);
+        let total = candidates.max(stats_total);
+        // stats are exact only if they cover the whole match set
+        let exact = stats_exact && candidates <= stats_total;
+
         let hits = finalize(ranked, k);
-        (hits.len(), hits)
+        (total, exact, hits)
     }
 
     #[timed(search)]
@@ -485,7 +501,7 @@ impl ShardHandle {
         mactmode: MatchMode,
     ) -> Result<ShardRankedResult, CorelamoError> {
         let snapshot = &prepared.snapshot;
-        let (total, hits) = self.rank_candidates(
+        let (total, exact, hits) = self.rank_candidates(
             snapshot,
             &prepared.prepared,
             corpus,
@@ -497,6 +513,7 @@ impl ShardHandle {
         );
         Ok(ShardRankedResult {
             total,
+            exact,
             items: hits.into_iter().map(|hit| (hit, Vec::new())).collect(),
             bounds: Vec::new(),
         })
@@ -542,6 +559,7 @@ impl ShardHandle {
         if window == 0 {
             return Ok(ShardRankedResult {
                 total: 0,
+                exact: true,
                 items: Vec::new(),
                 bounds: Vec::new(),
             });
@@ -550,7 +568,7 @@ impl ShardHandle {
         let snapshot = &prepared.snapshot;
         let sort_xpaths: Vec<XPathId> = sort_fields.iter().map(|f| f.xpath).collect();
 
-        let (total, candidates) = if sort_only {
+        let (total, exact, candidates) = if sort_only {
             //just get the top numeric values per-ffield
             let mut doc_ids: Vec<DocId> = Vec::new();
             for field in sort_fields {
@@ -562,9 +580,14 @@ impl ShardHandle {
                         .map(|(doc_id, _)| doc_id),
                 );
             }
+
             doc_ids.sort_unstable();
             doc_ids.dedup();
-            let total = doc_ids.len();
+            // match-all: every document the filters allow
+            let total = match prepared.filter.as_deref() {
+                Some(filter) => usize::try_from(filter.len()).unwrap_or(usize::MAX),
+                None => live_doc_count(snapshot),
+            };
             let hits: Vec<SearchHit> = doc_ids
                 .into_iter()
                 .map(|doc_id| SearchHit {
@@ -572,7 +595,7 @@ impl ShardHandle {
                     ..Default::default()
                 })
                 .collect();
-            (total, hits)
+            (total, true, hits)
         } else {
             //the smart sort search+numerics
             self.rank_candidates(
@@ -590,6 +613,7 @@ impl ShardHandle {
         if candidates.is_empty() {
             return Ok(ShardRankedResult {
                 total,
+                exact: true,
                 items: Vec::new(),
                 bounds: Vec::new(),
             });
@@ -647,6 +671,7 @@ impl ShardHandle {
 
         Ok(ShardRankedResult {
             total,
+            exact,
             items,
             bounds,
         })
@@ -1358,4 +1383,89 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
             }
         }
     }
+}
+
+/// A cheap match count from the statistics `prepare_search` already read. Exact only for a
+/// single term in a single field and for match-all; otherwise a lower bound.
+fn stats_match_count(
+    snapshot: &IndexSnapshot,
+    groups: &[QueryGroup],
+    plans: &[RankPlan],
+    prepared: &[PreparedQuery],
+    filters: Option<&RoaringTreemap>,
+) -> (usize, bool) {
+    if let Some(filters) = filters {
+        //only match-all has an exact filtered count without evaluating the query
+        let all_match_all = groups
+            .iter()
+            .all(|group| matches!(group.query.as_ref(), Some(Query::MatchAll)));
+        return if all_match_all {
+            (usize::try_from(filters.len()).unwrap_or(usize::MAX), true)
+        } else {
+            (0, false)
+        };
+    }
+
+    let mut total = 0;
+    let mut exact = true;
+    let mut prepared_index = 0;
+    for (group, _plan) in groups.iter().zip(plans) {
+        let Some(query) = group.query.as_ref() else {
+            continue;
+        };
+        let Some(prep) = prepared.get(prepared_index) else {
+            exact = false;
+            break;
+        };
+        prepared_index += 1;
+        let local = prep.stats();
+
+        let (count, group_exact) = match query {
+            Query::MatchAll => (live_doc_count(snapshot), true),
+            Query::Term(term) => {
+                let df = group
+                    .ctxs
+                    .iter()
+                    .map(|ctx| local.term_doc_freq(ctx.xpath, term))
+                    .max()
+                    .unwrap_or(0);
+                (
+                    usize::try_from(df).unwrap_or(usize::MAX),
+                    group.ctxs.len() == 1,
+                )
+            }
+            Query::Wand(parts) | Query::Or(parts) => {
+                let mut best = 0;
+                for part in parts {
+                    let Query::Term(term) = part else {
+                        continue;
+                    };
+                    let df = group
+                        .ctxs
+                        .iter()
+                        .map(|ctx| local.term_doc_freq(ctx.xpath, term))
+                        .max()
+                        .unwrap_or(0);
+                    best = best.max(usize::try_from(df).unwrap_or(usize::MAX));
+                }
+                (best, false)
+            }
+            // AND, phrase, fuzzy, prefix, wildcard, filters: no safe stat count
+            _ => (0, false),
+        };
+        total = total.max(count);
+        exact &= group_exact;
+    }
+    (total, exact)
+}
+
+fn live_doc_count(snapshot: &IndexSnapshot) -> usize {
+    let live = snapshot.live_doc_ids().unwrap_or_else(|| {
+        snapshot
+            .doc_range()
+            .map_or_else(RoaringTreemap::new, |(min, max)| {
+                (min..=max).filter(|id| !snapshot.is_deleted(*id)).collect()
+            })
+    });
+    usize::try_from(live.len()).unwrap_or(usize::MAX)
 }

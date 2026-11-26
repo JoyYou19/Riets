@@ -2,6 +2,23 @@
 
 All routes live under `/api`. Everything except `/api/login` is a protected route: it goes through the auth middleware (unless the server runs with `auth=false`) and then a per-handler permission check.
 
+## Build and run
+
+```bash
+# build (release — use this for anything real)
+cargo build --release
+
+# run the binary
+target/release/core-runtime --root-path /var/lib/corelamo --host 0.0.0.0 --port 6006 --auth true
+```
+
+- Binary: `target/release/core-runtime` (debug builds: `target/debug/core-runtime`; the package is `core-runtime`).
+- Via cargo: `cargo run --release -p core-runtime -- --root-path /var/lib/corelamo --port 6006 --auth true`.
+- Optional features: `--features timing` (per-stage timing counters, served by `POST /api/timings`), `--features cuda` (CUDA embeddings).
+- The rest of the flags and the config file are in "Server flags" below.
+
+---
+
 ## Conventions
 
 - `{db_name}`: name of the target database, taken from the URL path.
@@ -40,33 +57,6 @@ Errors use a separate shape:
   "time_taken_ms": 0
 }
 ```
-
----
-
-## Running the server
-
-```bash
-corelamo-runtime --root-path /var/lib/corelamo --port 6006 --auth true
-```
-
-| flag | default | meaning |
-|---|---|---|
-| `--root-path <path>` | `/var/lib/corelamo` | root for all databases and config; `corelamo` is appended unless the path already ends with it |
-| `--name <name>` | `corelamo` | instance name |
-| `--host <host>` | `0.0.0.0` | bind address |
-| `--port <port>` | `6006` | bind port |
-| `--format <format>` | `json` | default response format |
-| `--auth <true\|false>` | `true` | `false` disables authentication (every request runs as an anonymous admin) |
-| `--max_payload_size <MB>` | `1024` | request body limit |
-| `--max_request_timeout <s>` | `240` | request timeout |
-| `--overwrite_config <true\|false>` | `false` | `true`: CLI wins over the config file and is persisted; `false`: config file wins over CLI |
-| `--embedding-model <id>` | `bge-m3` | embedding model |
-
-Settings live in `<root-path>/CorelamoSettings.toml`, created with defaults on first start. Precedence: **config file > CLI > built-in default** by default; **CLI > config > default** with `--overwrite_config true` (the CLI values are written back to the file).
-
-`-h` / `--help` prints the same list.
-
----
 
 ## Authentication
 

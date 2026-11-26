@@ -1,9 +1,9 @@
 use crate::{
-    posting::{ Posting, PostingList },
+    posting::{Posting, PostingList},
     types::DocId,
 };
 use core_timing::timed;
-use std::{ cmp::Reverse, collections::BinaryHeap };
+use std::{cmp::Reverse, collections::BinaryHeap};
 
 // #[timed(search)]
 // pub(crate) fn linear_search(left: &PostingList, right: &PostingList) -> PostingList {
@@ -89,7 +89,10 @@ fn exponent_search_to(slice: &[Posting], start: usize, target: DocId) -> usize {
 
     // Double the step until we overshoot the target. `tail[0] < target` is known.
     let mut bound = 1usize;
-    while tail.get(bound).is_some_and(|posting| posting.doc_id < target) {
+    while tail
+        .get(bound)
+        .is_some_and(|posting| posting.doc_id < target)
+    {
         bound <<= 1;
     }
 
@@ -123,9 +126,8 @@ pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> Posti
     let mut out: Vec<Posting> = Vec::with_capacity(total);
 
     // (doc_id, source index, offset) — Reverse for min-heap on doc_id.
-    let mut heap: BinaryHeap<Reverse<(DocId, usize, usize)>> = BinaryHeap::with_capacity(
-        sources.len()
-    );
+    let mut heap: BinaryHeap<Reverse<(DocId, usize, usize)>> =
+        BinaryHeap::with_capacity(sources.len());
     for (index, source) in sources.iter().enumerate() {
         if let Some(first) = source.first() {
             heap.push(Reverse((first.doc_id, index, 0)));
@@ -150,3 +152,4 @@ pub fn union_many<'a>(lists: impl IntoIterator<Item = &'a PostingList>) -> Posti
     // segments, so duplicates are real here — from_sorted merges them.
     PostingList::from_sorted(out)
 }
+

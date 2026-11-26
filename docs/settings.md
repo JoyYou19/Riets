@@ -22,9 +22,9 @@ pretty = "true"
 auth = "true"
 max_payload_size = "1024"
 max_request_timeout = "240"
-embedding-model = "snowflake-arctic-embed-m"
+embedding-model = ""
 embedding-device = "auto"
-embedding-runtime = ""
+embedding-runtime = "bge-m3"
 embedding-instances = "1"
 embedding-batch-size = "64"
 embedding-max-tokens = "512"
@@ -44,7 +44,7 @@ embedding-max-chars = "4096"
 | `auth` | `true` | Enable/disable authentication entirely. |
 | `max_payload_size` | `1024` | Max request payload size, in **MB**. |
 | `max_request_timeout` | `240` | Max time before responding, in **seconds**. |
-| `embedding-model` | `snowflake-arctic-embed-m` | Embedding model for `$vector` fields, shared by all databases. |
+| `embedding-model` | `bge-m3` | Embedding model for `$vector` fields, shared by all databases. |
 | `embedding-device` | `auto` | `auto`, `cpu`, `cuda`, `mps`, … |
 | `embedding-runtime` | `` | Path to the ONNX runtime library; empty = auto-install to `<root>/runtime`. |
 | `embedding-instances` | `1` | Number of model instances. |
