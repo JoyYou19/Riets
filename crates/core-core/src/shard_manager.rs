@@ -75,8 +75,8 @@ const SEMANTIC_MIN_WORDS: usize = 3;
 const SEMANTIC_MIN_PROGRESS: u8 = 95;
 /// Largest result count a vector-only query returns (matches the total-hits cap).
 const MAX_VECTOR_RESULTS: usize = 10000;
-
 const MAX_RESULTS_SIZE: usize = 1000;
+////////
 /// Most documents a search can page through (offset + docs). The total hit count is not
 /// limited by it.
 const MAX_WINDOW_SIZE: usize = 10000;
@@ -1260,10 +1260,23 @@ impl ShardManager {
             None => None,
         };
 
-        let more = shard_hits.some_full || shard_hits.items.len() > page.fetch;
+        let total_hits = shard_hits.total;
+        let shard_more = shard_hits.more;
         let mut items = merge_and_sort(&search, &stats.plans, shard_hits, vectors.as_deref());
+
+        // Fewer distinct candidates than the requested window means every shard
+        // returned all its matches: the total is exact even if a stat count was a
+        // lower bound. Not safe for semantic fusion, which can hold back vector hits.
+        let complete = search.semantic.is_none() && items.len() < page.fetch;
+
+        let total_hits = total_hits.max(items.len());
+        let more = !complete && (shard_more || total_hits > MAX_TOTAL_HITS);
+        let total_hits = total_hits.min(MAX_TOTAL_HITS);
+
         let groups = Arc::clone(&search.groups);
+
         items.truncate(page.fetch);
+
         let hits: Vec<SearchHit> = items.into_iter().map(|(hit, _)| hit).collect();
         let CompiledSearch {
             policy, highlight, ..
@@ -1273,6 +1286,7 @@ impl ShardManager {
                 hits,
                 page.offset,
                 page.limit,
+                total_hits,
                 more,
                 command,
                 policy,
@@ -1527,18 +1541,19 @@ impl ShardManager {
             });
         }
 
-        let requested = search.shard_request();
         let mut shard_hits = ShardHits {
             items: Vec::new(),
             bounds: Vec::new(),
-            some_full: false,
+            total: 0,
+            more: false,
         };
         let mut first_err = None;
         while let Some(res) = set.join_next().await {
             match res {
                 Ok(Ok(ranked)) => {
-                    shard_hits.some_full |= ranked.total >= requested;
+                    shard_hits.total += ranked.total;
                     shard_hits.items.extend(ranked.items);
+                    shard_hits.more |= !ranked.exact;
                     if !ranked.bounds.is_empty() {
                         shard_hits.bounds.push(ranked.bounds);
                     }
@@ -2197,6 +2212,7 @@ impl ShardManager {
         // one source: more exist if the vector search filled what it was asked for, or
         // returned more than this page needs
         let more = hits.len() >= k || hits.len() > fetch;
+
         let just_hits: Vec<SearchHit> = hits
             .into_iter()
             .map(|hit| SearchHit {
@@ -2209,11 +2225,13 @@ impl ShardManager {
                 ..SearchHit::default()
             })
             .collect();
+        let total_hits = just_hits.len();
         let (hits, total) = self
             .resolve_page(
                 just_hits,
                 offset,
                 limit,
+                total_hits,
                 more,
                 command,
                 policy,
@@ -2233,6 +2251,7 @@ impl ShardManager {
         just_hits: Vec<SearchHit>,
         offset: usize,
         limit: usize,
+        total_hits: usize,
         more: bool,
         command: &SearchCommand,
         policy: Arc<IndexPolicy>,
@@ -2259,6 +2278,7 @@ impl ShardManager {
             .take(limit)
             .enumerate()
             .collect();
+
         let page_len = page.len();
 
         let mut by_shard: HashMap<usize, Vec<(usize, SearchHit)>> = HashMap::new();
@@ -2440,7 +2460,7 @@ impl ShardManager {
         let resolved: Vec<SearchDocumentHit> = resolved.into_iter().flatten().collect();
 
         let total = TotalHits {
-            value: resolved.len() as u64,
+            value: total_hits,
             more,
         };
         Ok((resolved, total))
@@ -2728,16 +2748,6 @@ struct CompiledSearch {
     sort_only: bool,
 }
 
-impl CompiledSearch {
-    const fn shard_request(&self) -> usize {
-        if self.sorts.is_some() {
-            self.window
-        } else {
-            self.word_fetch
-        }
-    }
-}
-
 /// Every shard prepared for ranking, with the statistics of all of them merged.
 struct ShardStatistics {
     corpus: Arc<CorpusStats>,
@@ -2757,11 +2767,12 @@ enum SpellingResult {
 }
 
 /// Every shard's ranked hits, before they are merged into one order.
+const MAX_TOTAL_HITS: usize = 10_000;
 struct ShardHits {
     items: Vec<(SearchHit, Vec<Option<NumericValue>>)>,
     bounds: Vec<Vec<(Option<NumericValue>, Option<NumericValue>)>>,
-    /// some shard had more matches than it returned
-    some_full: bool,
+    total: usize,
+    more: bool,
 }
 
 /// The requested page, or `None` when it holds no documents.
