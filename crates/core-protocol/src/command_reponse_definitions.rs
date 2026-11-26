@@ -313,7 +313,7 @@ pub struct SearchResponse {
     docs: Docs,
     strip_id: Option<String>,
     total_hits: TotalHits,
-    corrected_query: Option<QueryCorrection>,
+    
 }
 
 impl SearchResponse {
@@ -322,13 +322,13 @@ impl SearchResponse {
         docs: Docs,
         strip_id: Option<String>,
         total_hits: TotalHits,
-        corrected_query: Option<QueryCorrection>,
+      
     ) -> Self {
         Self {
             docs,
             strip_id,
             total_hits,
-            corrected_query,
+           
         }
     }
 }
@@ -388,19 +388,11 @@ impl ResponseData for SearchResponse {
     }
 
     fn extra_fields(&self) -> Vec<(String, OwnedValue)> {
-        let mut fields = vec![(
+        let fields = vec![(
             "total_hits".to_owned(),
             json!({ "value": self.total_hits.value, "more": self.total_hits.more }),
         )];
-        match &self.corrected_query {
-            Some(QueryCorrection::Applied(text)) => {
-                fields.push(("corrected_query".to_owned(), json!(text)));
-            }
-            Some(QueryCorrection::Suggested(text)) => {
-                fields.push(("suggested_query".to_owned(), json!(text)));
-            }
-            None => {}
-        }
+      
         fields
     }
 }

@@ -64,7 +64,7 @@ pub fn coverage(mask: u64, weights: &[f32]) -> f32 {
 #[must_use]
 pub fn final_score(hit: &SearchHit, coverage: f32) -> f32 {
     let score = hit.base
-        * coverage.powi(2)
+        * coverage.powf(COVERAGE_POWER)
         * DENSITY_BOOST.mul_add(hit.distance_factor, 1.0)
         * NAME_BONUS.mul_add(hit.name_share, 1.0);
     if score.is_finite() {

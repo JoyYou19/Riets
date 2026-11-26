@@ -80,4 +80,21 @@ impl Scorer for SynonymScorer<'_> {
     fn weight(&self) -> f32 {
         self.weight
     }
+    fn block_bound(&self) -> Option<(u64, DocId)> {
+        let mut last: Option<DocId> = None;
+        // a form without a block bound counts with its whole-list bound, which limits nothing
+        let bound = best_per_field(
+            self.forms
+                .iter()
+                .filter(|(_, form)| form.doc().is_some())
+                .map(|(field, form)| match form.block_bound() {
+                    Some((bound, form_last)) => {
+                        last = Some(last.map_or(form_last, |known| known.min(form_last)));
+                        (*field, bound)
+                    }
+                    None => (*field, form.upper_bound()),
+                }),
+        );
+        last.map(|last| (bound, last))
+    }
 }

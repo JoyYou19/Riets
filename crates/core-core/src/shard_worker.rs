@@ -254,13 +254,7 @@ impl ShardHandle {
         self.shared.is_clearing.load(Ordering::Acquire)
     }
 
-    #[must_use]
-    pub fn word_missing(&self, word: &str, xpaths: &[XPathId]) -> bool {
-        let snapshot = self.shared.snapshot.get();
-        xpaths
-            .iter()
-            .all(|&xpath| snapshot.lookup(word, xpath).items().iter().next().is_none())
-    }
+  
 
     /// For each candidate, the documents of this shard holding it together with every context
     /// word, each word in any of `xpaths`. No context: the documents holding the candidate.

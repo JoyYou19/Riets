@@ -30,8 +30,11 @@ impl PreparedQuery {
     pub(crate) fn has_fuzzy(&self, xpath: XPathId, key: &FuzzyKey) -> bool {
         self.stats.has_fuzzy(xpath, key)
     }
-    pub(crate) fn insert_field(&mut self, xpath: XPathId, totals: FieldTotals) {
-        self.stats.insert_field(xpath, totals);
+    pub(crate) fn insert_field(&mut self, xpath: XPathId,   totals: impl FnOnce() -> FieldTotals,
+    ) {
+        if !self.stats.has_field(xpath) {
+            self.stats.insert_field(xpath, totals());
+        }
     }
 
     pub(crate) fn insert_leaf(&mut self, xpath: XPathId, key: LeafKey, list: PostingList) {

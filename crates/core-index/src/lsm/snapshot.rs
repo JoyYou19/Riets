@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ahash::{HashMap, HashMapExt};
 use arc_swap::ArcSwap;
@@ -29,6 +29,9 @@ pub struct IndexSnapshot {
     mem: Arc<MemIndex>,
     segments: Arc<[Arc<dyn SearchReader + Send + Sync>]>,
     deleted: Arc<DeleteSet>,
+      /// Per field, how many deleted documents have it and their total length. Worked out on the
+    /// first query that asks; a delete publishes a new snapshot, which starts empty.
+    deleted_totals:Arc<Mutex<HashMap<XPathId,(u64,u64)>>>,
     #[allow(clippy::rc_buffer, reason = "shared with LsmIndex, which mutates it via Arc::make_mut")]
     vectors: Arc<Vec<SegmentVectors>>,
 }
@@ -294,12 +297,7 @@ impl SearchStats for IndexSnapshot {
                 .iter()
                 .map(|s| s.doc_count(xpath))
                 .sum::<u64>();
-        let deleted = self
-            .deleted
-            .iter()
-            .filter(|&doc_id| self.doc_len(doc_id, xpath).is_some())
-            .count() as u64;
-        raw.saturating_sub(deleted)
+        raw.saturating_sub(self.deleted_totals(xpath).0)
     }
 
     fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
@@ -326,13 +324,7 @@ impl SearchStats for IndexSnapshot {
                 .iter()
                 .map(|s| s.total_doc_len(xpath))
                 .sum::<u64>();
-        let deleted: u64 = self
-            .deleted
-            .iter()
-            .filter_map(|doc_id| self.doc_len(doc_id, xpath))
-            .map(u64::from)
-            .sum();
-        raw.saturating_sub(deleted)
+        raw.saturating_sub(self.deleted_totals(xpath).1)
     }
 
     fn doc_range(&self) -> Option<(DocId, DocId)> {
@@ -361,6 +353,7 @@ impl IndexSnapshot {
             mem,
             segments,
             deleted,
+            deleted_totals: Arc::default(),
             vectors: Arc::default(),
         }
     }
@@ -374,7 +367,25 @@ impl IndexSnapshot {
         self.deleted.remove_from(&mut bitset);
         bitset
     }
-
+        /// How many deleted documents have the field, and their total length in it.
+    fn deleted_totals(&self, xpath: XPathId) -> (u64, u64) {
+        if self.deleted.is_empty() {
+            return (0, 0);
+        }
+        // only a cache: after a panic elsewhere its values are still right, or get recomputed
+        let mut cache = self
+            .deleted_totals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *cache.entry(xpath).or_insert_with(|| {
+            self.deleted
+                .iter()
+                .filter_map(|doc_id| self.doc_len(doc_id, xpath))
+                .fold((0, 0), |(count, len), doc_len| {
+                    (count.saturating_add(1), len.saturating_add(u64::from(doc_len)))
+                })
+        })
+    }
     #[timed(search)]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone

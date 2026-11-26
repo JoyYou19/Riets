@@ -41,6 +41,11 @@ pub(crate) trait Scorer {
     ) -> Vec<WandHit> {
         crate::collector::collect_all(stats, self, k, restrict)
     }
+    /// The most this scorer can score on any document up to the returned one, from the posting
+    /// blocks its cursors are in. `None` when it has no block bound: `upper_bound` holds then.
+    fn block_bound(&self) -> Option<(u64,DocId)>{
+        None
+    }
 }
 
 /// A boxed scorer borrowing from the index for `'a`.

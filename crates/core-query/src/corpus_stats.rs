@@ -148,6 +148,9 @@ impl CorpusStats {
     pub(crate) fn field(&self, xpath: XPathId) -> Option<FieldTotals> {
         self.fields.get(&xpath).copied()
     }
+    pub(crate) fn has_field(&self, xpath: XPathId) -> bool{
+        self.fields.contains_key(&xpath)
+    }
 
     /// Document frequency of a leaf, saturated to the `u32` the scorer takes; `None` when the
     /// statistics do not cover the leaf.
@@ -189,4 +192,5 @@ impl<S: SearchStats> SearchStats for ScoringStats<'_, S> {
     fn doc_range(&self) -> Option<(DocId, DocId)> {
         self.index.doc_range()
     }
-}
+
+} 

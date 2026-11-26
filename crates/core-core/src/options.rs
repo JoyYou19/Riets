@@ -85,7 +85,7 @@ impl Default for DatabaseOptions {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SearchOptions {
     /// Rank of each cascade tier, 1 first. A tier left out is off. Empty: the default order.
     pub cascade: std::collections::BTreeMap<TierKind, u8>,
@@ -122,6 +122,9 @@ impl SearchOptions {
     // The tiers to run, in the configured order. A tier left out of the config is off; equal
     /// ranks fall back to the default order so the result never depends on map order.
     pub(crate) fn cascade_order(&self) -> Vec<TierKind> {
+        if self.cascade.is_empty() {
+            return TierKind::DEFAULT_ORDER.to_vec();
+        }
         let mut ordered: Vec<(u8, usize, TierKind)> = self
             .cascade
             .iter()

@@ -9,9 +9,7 @@ use core_timing::timed;
 use roaring::RoaringTreemap;
 
 use crate::{
-    bm25::{bm25_score_scaled, bm25_upper_bound},
-    collector::{HeapHit, finish_heap, next_allowed, push_top_k},
-    scorer::Scorer,
+    bm25::{bm25_score_scaled, bm25_upper_bound}, collector::{HeapHit, finish_heap, next_allowed, push_top_k, reinsert_moved}, scorer::Scorer,
 };
 
 pub use crate::collector::WandHit;
@@ -97,7 +95,9 @@ fn block_skip_target(
 
 /// The summed score and the number of terms of the document the cursors are onu.
 pub enum Cache{
-    Data(u32),
+    Data(Option<u32>),
+    NotYetFetched,
+    None
     
 }
 fn score_pivot<S: SearchStats>(
@@ -135,8 +135,7 @@ fn score_pivot<S: SearchStats>(
 }
 /// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
 /// Each pair is an independent WAND cursor scored with its own field's statistics.
-/// Exact top-k over the sum of BM25 contributions of every (term, field) pair.
-/// Each pair is an independent WAND cursor scored with its own field's statistics.
+
 #[timed(search)]
 pub fn wand_top_k_multi_field<'a, S: SearchStats>(
     stats: &S,
@@ -177,13 +176,10 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
 
     let mut heap = BinaryHeap::<HeapHit>::with_capacity(k.saturating_add(1));
     let mut doc_len_cache: Vec<Option<Option<u32>>> = vec![None; field_stats.len()];
-
+    terms.sort_unstable_by_key(|term| term.cursor.doc_id());
+    let mut moved = Vec::with_capacity(terms.len());
     loop {
-        terms.retain(|term| !term.cursor.is_exhausted());
-        if terms.is_empty() {
-            break;
-        }
-        terms.sort_unstable_by_key(|term| term.cursor.doc_id());
+       
 
         let threshold = if heap.len() < k {
             0
@@ -221,6 +217,7 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                 for term in terms.iter_mut().take(on_pivot) {
                     term.cursor.advance_to(skip_to);
                 }
+                reinsert_moved(&mut terms, on_pivot, |term| term.cursor.doc_id(), &mut moved);
                 continue;
             }
 
@@ -235,17 +232,19 @@ pub fn wand_top_k_multi_field<'a, S: SearchStats>(
                 push_top_k(&mut heap, pivot_doc, score, score, matched_terms, k);
             }
 
-            for term in &mut terms {
-                if term.cursor.doc_id() == Some(pivot_doc) {
-                    term.cursor.next();
-                }
+            for term in terms.iter_mut().take(on_pivot) {
+                term.cursor.next();
             }
-        } else {
-            for term in &mut terms {
-                if term.cursor.doc_id().is_some_and(|doc| doc < pivot_doc) {
-                    term.cursor.advance_to(pivot_doc);
-                }
+            reinsert_moved(&mut terms, on_pivot, |term| term.cursor.doc_id(), &mut moved);
+          } else {
+            let behind = terms
+                .iter()
+                .take_while(|term| term.cursor.doc_id().is_some_and(|doc| doc < pivot_doc))
+                .count();
+            for term in terms.iter_mut().take(behind) {
+                term.cursor.advance_to(pivot_doc);
             }
+            reinsert_moved(&mut terms, behind, |term| term.cursor.doc_id(), &mut moved);
         }
     }
 
