@@ -55,15 +55,20 @@ impl TryFrom<usize> for ShardId {
 
 // ─────────────────────────────────────────────────────────────
 // Document ID packing
-//   layout: [63: array-row flag][62..48: shard][47..0: local id]
+//   layout: [63: array-row flag][62..54: shard][53..0: local id]
 // ─────────────────────────────────────────────────────────────
 
-pub const SHARD_BITS: u32 = 15;
-pub const LOCAL_BITS: u32 = 48;
+pub const SHARD_BITS: u32 = 9;
+pub const LOCAL_BITS: u32 = 54;
+
+// no gap and no overlap: shard + local fill bits 0..62, bit 63 is the array-row flag
+const _: () = assert!(SHARD_BITS + LOCAL_BITS == 63);
 
 /// Largest shard-local id that fits without overflowing into the shard bits.
 pub const MAX_LOCAL_DOC_ID: LocalDocId = (1u64 << LOCAL_BITS) - 1;
 pub const MAX_SHARD_ID: u16 = (1u16 << SHARD_BITS) - 1;
+
+pub const MAX_SHARDS: u16 = MAX_SHARD_ID + 1;
 
 pub fn make_doc_id(shard: ShardId, local: LocalDocId) -> DocId {
     assert!(
@@ -72,7 +77,7 @@ pub fn make_doc_id(shard: ShardId, local: LocalDocId) -> DocId {
     );
     assert!(
         shard.0 <= MAX_SHARD_ID,
-        "shard id {shard} exceeds the 15-bit limit (bit 63 reserved for array rows)"
+        "shard id {shard} exceeds the {SHARD_BITS}-bit limit (bit 63 reserved for array rows)"
     );
     (u64::from(shard.0) << LOCAL_BITS) | local
 }
