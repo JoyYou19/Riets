@@ -105,7 +105,7 @@ pub fn compile_query(
 
     reject_filter_only_operators(raw)?;
 
-    let raw_query = parse_json_query(raw, Query::Wand, wildcards_enabled)?;
+    let raw_query = parse_json_query(raw, Query::And, wildcards_enabled)?;
     let needs_exact = tree_has_exact(&raw_query);
 
     let fields: Vec<&FieldPolicy> = match search_fields {

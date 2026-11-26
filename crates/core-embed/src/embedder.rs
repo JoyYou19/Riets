@@ -263,7 +263,7 @@ fn try_lock_model(slot: &Mutex<LoadedModel>) -> Option<MutexGuard<'_, LoadedMode
 /// give the same vectors for the same model and settings (the pooled one pools inside ONNX
 /// Runtime instead of in fastembed), so neither the backend nor the device is part of the id:
 /// switching between them never forces a re-embed.
-pub(crate) fn vector_id(spec: &ModelSpec, config: &ModelConfig) -> String {
+pub fn vector_id(spec: &ModelSpec, config: &ModelConfig) -> String {
     format!("{}/t{}", spec.id, config.max_tokens)
 }
 

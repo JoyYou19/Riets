@@ -52,24 +52,18 @@ fn escape_json_text(s: &str) -> String {
 
 const fn error_to_status(err: &CorelamoError) -> StatusCode {
     match err {
-        CorelamoError::NotFound(_) => StatusCode::NOT_FOUND,
-        CorelamoError::AlreadyExists(_) => StatusCode::CONFLICT,
-        CorelamoError::Conflict(_) => StatusCode::CONFLICT,
         CorelamoError::InvalidData(_) => StatusCode::BAD_REQUEST,
-        CorelamoError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        CorelamoError::Internal(_) | CorelamoError::FailedToEx(_) => StatusCode::INTERNAL_SERVER_ERROR,
         CorelamoError::PermissionDenied(_) => StatusCode::FORBIDDEN,
         CorelamoError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         CorelamoError::UnsupportedFormat(_) => StatusCode::NOT_ACCEPTABLE,
-        CorelamoError::UnknownRole(_) => StatusCode::NOT_FOUND,
-        CorelamoError::DatabaseAlreadyRunning(_) => StatusCode::CONFLICT,
-        CorelamoError::PathNotIndexed(_) => StatusCode::CONFLICT,
-        CorelamoError::DatabaseNotRunning(_) => StatusCode::CONFLICT,
+        CorelamoError::NotFound(_) | CorelamoError::UnknownRole(_) => StatusCode::NOT_FOUND,
+        CorelamoError::AlreadyExists(_) | CorelamoError::Conflict(_) | CorelamoError::DatabaseAlreadyRunning(_) | CorelamoError::PathNotIndexed(_) | CorelamoError::DatabaseNotRunning(_) => StatusCode::CONFLICT,
         CorelamoError::Busy(_) => StatusCode::SERVICE_UNAVAILABLE,
-        CorelamoError::FailedToEx(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+        }
 }
 
-pub(crate) struct HttpError {
+pub struct HttpError {
     pub error_type: String,
     pub title: String,
     pub status: StatusCode,
@@ -197,7 +191,7 @@ fn envelope_raw(
     body
 }
 
-pub(crate) struct HttpOk {
+pub struct HttpOk {
     pub status: StatusCode,
     pub title: String,
     pub data: Option<Box<dyn ResponseData>>,
@@ -385,7 +379,7 @@ impl IntoResponse for HttpOk {
     }
 }
 
-pub(crate) struct BatchOutcome {
+pub struct BatchOutcome {
     success_label: &'static str,
     all_failed_status: StatusCode,
     succeeded: u32,
@@ -485,6 +479,6 @@ impl BatchOutcome {
         HttpOk::with_data_and_status(status, title, body, ctx)
     }
 }
-pub(crate) fn millis(d: std::time::Duration) -> u64 {
+pub fn millis(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }

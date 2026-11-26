@@ -2,13 +2,8 @@ use roaring::RoaringTreemap;
 
 use crate::{
     fuzzy::{
-        DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_EXPANSIONS, FuzzyExpansion, FuzzyOptions,
-        LevenshteinAutomaton,
-    },
-    numeric_values::{NumericBound, NumericValue},
-    posting::{PostingList, cursor::TermCursor},
-    types::{ArrayRowId, DocId, XPathId},
-    wildcard::WildcardPattern,
+        FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton, rank_candidates,
+    }, numeric_values::{NumericBound, NumericValue}, posting::{PostingList, cursor::TermCursor}, types::{ArrayRowId, DocId, XPathId}, wildcard::WildcardPattern,
 };
 
 #[derive(Debug, Clone)]
@@ -75,42 +70,27 @@ pub trait SearchIndex {
 
     //words within max_edits of input
     fn fuzzy_expansions(
-        &self,
-        term: &str,
-        xpath: XPathId,
-        opts: FuzzyOptions,
-    ) -> Vec<FuzzyExpansion> {
-        //one automaton for k = 0, 1 and 2, so all three use the same rules
-        //(transpositions, unicode, prefix lock)
-        let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
-
-        let mut candidates: Vec<(String, u8, u32)> = Vec::new();
-        candidates.sort_by(|a, b| {
-            a.1.cmp(&b.1) // fewer edits first
-                .then_with(|| b.2.cmp(&a.2)) // then higher doc_freq
-        });
-
-        candidates.truncate(DEFAULT_MAX_EXPANSIONS);
-        for t in self.terms(xpath) {
-            let t: &str = &t;
-            let Some(edits) = aut.distance_to(t) else {
-                continue;
-            };
-            let doc_freq = self.doc_freq(t, xpath);
-            if doc_freq == 0 {
-                continue;
-            }
+    &self,
+    term: &str,
+    xpath: XPathId,
+    opts: FuzzyOptions,
+) -> Vec<FuzzyExpansion> {
+    //one automaton for k = 0, 1 and 2, so all three use the same rules
+    //(transpositions, unicode, prefix lock)
+    let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
+    let mut candidates: Vec<(String, u8, u32)> = Vec::new();
+    for t in self.terms(xpath) {
+        let t: &str = &t;
+        let Some(edits) = aut.distance_to(t) else {
+            continue;
+        };
+        let doc_freq = self.doc_freq(t, xpath);
+        if doc_freq > 0 {
             candidates.push((t.to_owned(), edits, doc_freq));
-            if candidates.len() >= DEFAULT_MAX_CANDIDATES {
-                break;
-            }
         }
-
-        candidates
-            .into_iter()
-            .map(|(t, edits, doc_freq)| FuzzyExpansion::new(t, edits, doc_freq))
-            .collect()
     }
+    rank_candidates(candidates)
+}
 
     //Docs whose indexed term is within `opts.max_edits` of `term`.
     fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {

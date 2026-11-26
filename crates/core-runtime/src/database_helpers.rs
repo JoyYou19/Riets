@@ -11,7 +11,7 @@ use simd_json::{OwnedValue, StaticNode, json, owned::Object};
 use slog::{error, info};
 
 #[timed(database_lifecycle)]
-pub(crate) fn load_saved_shard_managers(
+pub fn load_saved_shard_managers(
     databases_dir: &Path,
 ) -> io::Result<HashMap<String, ShardManager>> {
     let mut databases = HashMap::new();
@@ -50,7 +50,7 @@ pub(crate) fn load_saved_shard_managers(
     Ok(databases)
 }
 
-pub(crate) fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
+pub fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
     if name.is_empty() {
         return Err(CorelamoError::InvalidData(
             "database name cannot be empty".to_owned(),
@@ -72,12 +72,12 @@ pub(crate) fn validate_db_name(name: &str) -> Result<(), CorelamoError> {
     Ok(())
 }
 
-pub(crate) const TRASH_PREFIX: &str = ".deleting-";
-pub(crate) fn normalize_db_name(name: &str) -> String {
+pub const TRASH_PREFIX: &str = ".deleting-";
+pub fn normalize_db_name(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
 
-pub(crate) fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> {
+pub fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> {
     let entries = std::fs::read_dir(databases_dir).ok()?;
     for entry in entries.flatten() {
         let file_name = entry.file_name();
@@ -91,7 +91,7 @@ pub(crate) fn colliding_dir(databases_dir: &Path, name: &str) -> Option<String> 
     None
 }
 
-pub(crate) fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
+pub fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -101,7 +101,7 @@ pub(crate) fn trash_dir_for(databases_dir: &Path, db_name: &str) -> PathBuf {
     ))
 }
 
-pub(crate) fn sweep_trash(databases_dir: &Path) {
+pub fn sweep_trash(databases_dir: &Path) {
     let log = slog_scope::logger();
     let Ok(entries) = std::fs::read_dir(databases_dir) else {
         return;
@@ -184,7 +184,7 @@ fn format_size_opt(bytes: Option<u64>) -> OwnedValue {
     }
 }
 
-pub(crate) fn compute_disk_usage(
+pub fn compute_disk_usage(
     db_root: &Path,
     db_name: &str,
 ) -> Result<OwnedValue, CorelamoError> {

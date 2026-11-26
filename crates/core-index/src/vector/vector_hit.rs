@@ -50,12 +50,12 @@ impl<'a> VectorFilter<'a> {
 
 /// Result order everywhere: higher score first, then lower doc id, so ties never depend on
 /// the order documents were offered or segments were merged.
-pub(crate) fn hit_order(a: &VectorHit, b: &VectorHit) -> Ordering {
+pub(super) fn hit_order(a: &VectorHit, b: &VectorHit) -> Ordering {
     b.score.total_cmp(&a.score).then(a.doc_id.cmp(&b.doc_id))
 }
 
 /// Keeps the `k` best hits by `hit_order`, sorted best first.
-pub(crate) struct TopK {
+pub(super) struct TopK {
     k: usize,
     hits: Vec<VectorHit>,
 }

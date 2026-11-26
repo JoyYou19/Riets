@@ -6,7 +6,27 @@ pub const DEFAULT_MAX_EXPANSIONS: usize = 50;
 /// Safety cap on distinct candidate terms gathered before ranking. Only
 /// pathological queries (very short terms with high `max_edits`) reach it.
 pub const DEFAULT_MAX_CANDIDATES: usize = 1000;
-
+/// Orders fuzzy candidates the same way for every index: fewer edits first, then more
+/// documents, then the term itself so ties never depend on iteration order. Keeps at most
+/// `DEFAULT_MAX_CANDIDATES`; the final choice is made after shards are merged.
+#[must_use]
+pub fn rank_candidates(mut candidates: Vec<(String, u8, u32)>) -> Vec<FuzzyExpansion> {
+    candidates.sort_unstable_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    candidates.truncate(DEFAULT_MAX_CANDIDATES);
+    candidates
+        .into_iter()
+        .map(|(term, edits, doc_freq)| FuzzyExpansion::new(term, edits, doc_freq))
+        .collect()
+}
+/// A typed word in at most this many documents may be a typo of a more common word.
+pub const TYPO_MAX_DOC_FREQ: u32 = 500;
+/// A rare typed word is a likely typo when a candidate within the fuzzy edits is in at least
+/// this many times as many documents ("holand" 33, "holland" 7,922).
+pub const TYPO_RATIO: u32 = 20;
 /// Hard ceiling on `max_edits`. Row cells are `u8` saturating at `max_edits + 1`.
 pub const MAX_SUPPORTED_EDITS: u8 = 3;
 // how storngly type reduces score
@@ -62,8 +82,7 @@ pub fn default_max_edits(term: &str) -> u8 {
     match term.chars().count() {
         0..=2 => 0,
         3..=4 => 1,
-        5..=9 => 2,
-        _ => 3,
+        _ => 2,
     }
 }
 

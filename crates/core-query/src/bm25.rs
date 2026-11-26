@@ -85,7 +85,7 @@ pub(crate) fn bm25_score_scaled(
     clippy::cast_sign_loss,
     reason = "float to int `as` saturates, and the bound is never negative"
 )]
-pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
+pub fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u32) -> u64 {
     if doc_count == 0 || doc_frequency == 0 || max_weight == 0 {
         return 0;
     }
@@ -98,7 +98,7 @@ pub(crate) fn bm25_upper_bound(max_weight: u16, doc_count: u64, doc_frequency: u
 }
 
 #[timed(search)]
-pub(crate) fn score_term_into<S: SearchStats>(
+pub fn score_term_into<S: SearchStats>(
     stats: &S,
     postings: &PostingList,
     xpath: XPathId,
@@ -133,17 +133,17 @@ pub(crate) fn score_term_into<S: SearchStats>(
     }
 }
 
-pub(crate) fn fuzzy_decay(edits: u8) -> f32 {
+pub fn fuzzy_decay(edits: u8) -> f32 {
     1.0 / (1.0 + f32::from(edits))
 }
 
 //Scales a score by a weight in thousandths.
-pub(crate) const fn weighted(score: u64, weight: u16) -> u64 {
+pub const fn weighted(score: u64, weight: u16) -> u64 {
     score.saturating_mul(weight as u64) / 1000
 }
 
 //The best value of each field, added up over the fields (one field's values come together).
-pub(crate) fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
+pub fn best_per_field(values: impl Iterator<Item = (usize, u64)>) -> u64 {
     let mut total = 0u64;
     let mut current: Option<(usize, u64)> = None;
     for (field, value) in values {

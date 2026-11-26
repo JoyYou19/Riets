@@ -11,12 +11,12 @@
 //!    u16 max_weight) * term_count
 //! ```
 
-use std::{collections::BTreeMap, fmt, io, sync::OnceLock};
+use std::{cell::RefCell, collections::BTreeMap, fmt, io, rc::Rc, sync::OnceLock};
 
 pub const TERM_META_LEN: usize = 8 + 4 + 4 + 2+4+4+4;
 
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
-use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
+use levenshtein_automata::{DFA, Distance, LevenshteinAutomatonBuilder};
 
 use crate::{
     fuzzy::{FuzzyExpansion, FuzzyOptions, split_prefix},
@@ -49,7 +49,27 @@ fn builder(max_edits: u8) -> &'static LevenshteinAutomatonBuilder {
     let k = max_edits.min(3);
     BUILDERS[usize::from(k)].get_or_init(|| LevenshteinAutomatonBuilder::new(k, true))
 }
+thread_local! {
+    /// The last automaton built on this thread. A query word is expanded in every segment of a
+    /// snapshot one after another on the same thread, so the DFA is built once per word.
+    static LAST_DFA: RefCell<Option<(u8, String, Rc<DFA>)>> = const { RefCell::new(None) };
+}
 
+/// The Levenshtein DFA for `suffix` within `max_edits`, reused while the same word is expanded.
+fn cached_dfa(max_edits: u8, suffix: &str) -> Rc<DFA> {
+    LAST_DFA.with(|last| {
+        let mut last = last.borrow_mut();
+        if let Some((edits, text, dfa)) = last.as_ref()
+            && *edits == max_edits
+            && text == suffix
+        {
+            return Rc::clone(dfa);
+        }
+        let dfa = Rc::new(builder(max_edits).build_dfa(suffix));
+        *last = Some((max_edits, suffix.to_owned(), Rc::clone(&dfa)));
+        dfa
+    })
+}
 #[derive(Default)]
 pub struct TermDict {
     //Option for field with no ter,s
@@ -208,12 +228,11 @@ impl TermDict {
     /// NOTE: an exact hit is always included (distance 0 is within any distance).
     /// Callers that also look the term up exactly can rely on the posting merge
     /// to dedupe.
-        pub fn fuzzy_expansions(
+    pub fn fuzzy_expansions(
         &self,
         term: &str,
         opts: FuzzyOptions,
     ) -> Vec<(FuzzyExpansion, TermMeta)> {
-        const MAX_CANDIDATES: usize = 2_048; // well above select_expansions' usual 3-50
         let Some(map) = self.map.as_ref() else {
             return Vec::new();
         };
@@ -233,15 +252,12 @@ impl TermDict {
             return exact(0);
         }
 
-        let dfa = builder(opts.max_edits).build_dfa(suffix);
+        let dfa = cached_dfa(opts.max_edits, suffix);
         let mut out = Vec::new();
 
         if prefix.is_empty() {
-            let mut stream = map.search_with_state(&dfa).into_stream();
+            let mut stream = map.search_with_state(&*dfa).into_stream();
             while let Some((key, ord, state)) = stream.next() {
-                if out.len() >= MAX_CANDIDATES {
-                    break;
-                }
                 let Distance::Exact(edits) = dfa.distance(state) else {
                     continue;
                 };
@@ -252,9 +268,6 @@ impl TermDict {
         } else {
             let mut stream = map.range().ge(prefix.as_bytes()).into_stream();
             while let Some((key, ord)) = stream.next() {
-                if out.len() >= MAX_CANDIDATES {
-                    break;
-                }
                 let Ok(text) = std::str::from_utf8(key) else {
                     break;
                 };

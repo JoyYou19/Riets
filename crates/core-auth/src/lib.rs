@@ -19,6 +19,8 @@ pub use token::{ Token, TokenStore };
 pub use users::UserDatabase;
 
 use crate::users::ListUsers;
+
+
 pub const SUPERUSER: &str = "corelamo";
 pub const MIN_PASSWORD_LEN: usize = 8;
 pub fn generate_password() -> Result<String, CorelamoError> {

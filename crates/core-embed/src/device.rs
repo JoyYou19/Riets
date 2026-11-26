@@ -67,7 +67,7 @@ impl fmt::Display for Device {
 
 /// Opens the device `preference` asks for. With `Auto` it also returns why a GPU this build
 /// supports could not be used.
-pub(crate) fn open_device(
+pub fn open_device(
     preference: DevicePreference,
 ) -> io::Result<(candle_core::Device, Device, Option<String>)> {
     match preference {

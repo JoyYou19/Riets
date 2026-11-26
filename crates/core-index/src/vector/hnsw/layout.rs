@@ -26,15 +26,15 @@ use std::path::Path;
 use crate::disk::format::array_at;
 use crate::vector::file::{ SECTION_ALIGNMENT, write_zero_padding };
 
-pub(crate) const HNSW_MAGIC: [u8; 8] = *b"CLHNSW02";
-pub(crate) const HNSW_VERSION: u32 = 2;
+pub(super) const HNSW_MAGIC: [u8; 8] = *b"CLHNSW02";
+pub(super) const HNSW_VERSION: u32 = 2;
 
 /// Largest allowed `max_links_upper` (HNSW's `M`); level 0 allows twice as many.
-pub(crate) const MAX_LINKS_LIMIT: usize = 128;
+pub(super) const MAX_LINKS_LIMIT: usize = 128;
 /// Highest level a node can get; keeps levels in a `u8` whatever the random draw says.
-pub(crate) const MAX_LEVEL: u8 = 16;
+pub(super) const MAX_LEVEL: u8 = 16;
 /// Upper slot start of a node that only lives on level 0.
-pub(crate) const NO_UPPER_SLOTS: u32 = u32::MAX;
+pub(super) const NO_UPPER_SLOTS: u32 = u32::MAX;
 
 /// magic + version + reserved + `vector_file_id` + `node_count` + dims + `max_links_upper` +
 /// `max_links_level0` + `entry_node` + `top_level` + reserved + `upper_slot_count`
@@ -45,7 +45,7 @@ fn field<const N: usize>(bytes: &[u8], at: usize, path: &Path) -> io::Result<[u8
 }
 /// Everything stored in the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct GraphHeader {
+pub(super) struct GraphHeader {
     /// `file_id` of the vector file this graph was built from.
     pub(crate) vector_file_id: u64,
     pub(crate) node_count: u32,
@@ -132,13 +132,13 @@ impl GraphHeader {
 }
 
 /// Header size including padding: the offset of the first section.
-pub(crate) const fn header_length() -> usize {
+pub(super) const fn header_length() -> usize {
     HEADER_FIXED_LENGTH.next_multiple_of(SECTION_ALIGNMENT)
 }
 
 /// Byte offset of every section, and the size of each list slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct GraphLayout {
+pub(super) struct GraphLayout {
     pub(crate) node_levels_offset: usize,
     pub(crate) upper_slot_starts_offset: usize,
     pub(crate) level0_lists_offset: usize,

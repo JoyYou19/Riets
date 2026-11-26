@@ -14,7 +14,7 @@ use core_storage::search_database::{ DocumentInput, IndexMode };
 
 use crate::Principal;
 
-pub(crate) type ListUsers = (String, Result<Vec<String>, String>);
+pub type ListUsers = (String, Result<Vec<String>, String>);
 pub struct UserDatabase<S: DocumentStore> {
     db: SearchDatabase<S>,
 }

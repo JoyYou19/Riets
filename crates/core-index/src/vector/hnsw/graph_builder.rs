@@ -92,7 +92,7 @@ pub fn build_graph_file(
 }
 
 /// Builds and writes the graph whatever the file size. On failure no file is left at `path`.
-pub(crate) fn build_and_write(
+pub(super) fn build_and_write(
     vectors: &VectorFile,
     path: &Path,
     params: &GraphBuildParams

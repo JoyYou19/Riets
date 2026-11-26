@@ -40,7 +40,7 @@ const MAX_MODEL_ID_LEN: usize = u8::MAX as usize;
 /// `quant_absmax` + reserved + count
 const HEADER_FIXED_LEN: usize = 8 + 4 + 4 + 8 + 4 + 1 + 1 + 2 + 4 + 4 + 8;
 /// Section alignment; also guarantees the u64 and f32 views are aligned.
-pub(crate) const SECTION_ALIGNMENT: usize = 64;
+pub(super) const SECTION_ALIGNMENT: usize = 64;
 /// Components kept for measuring a file's range; bounds writer memory at ~4 MiB.
 const SAMPLE_COMPONENTS: usize = 1 << 20;
 
@@ -85,7 +85,7 @@ pub fn tail_file_path(segment_path: &Path, xpath: XPathId) -> PathBuf{
     segment_path.with_extension(format!("{xpath}.tail.vec"))
 }
 
-pub(crate) fn invalid_input(msg: impl Into<String>) -> io::Error {
+pub(super) fn invalid_input(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg.into())
 }
 
@@ -390,7 +390,7 @@ fn sorted_lookup(id_bytes: &[u8]) -> io::Result<Vec<u32>> {
     Ok(keyed.into_iter().map(|(_, row)| row).collect())
 }
 //write zeros to fill the gap up to the next section so sections start at the same positon
-pub(crate) fn write_zero_padding(out: &mut impl Write, from: usize, to: usize) -> io::Result<()> {
+pub(super) fn write_zero_padding(out: &mut impl Write, from: usize, to: usize) -> io::Result<()> {
     const ZEROS: [u8; SECTION_ALIGNMENT] = [0; SECTION_ALIGNMENT];
     let padding = to
         .checked_sub(from)
@@ -512,7 +512,7 @@ impl VectorFile {
         self.dims
     }
 
-    pub(crate) const fn range(&self) -> QuantRange {
+    pub(super) const fn range(&self) -> QuantRange {
         self.range
     }
 

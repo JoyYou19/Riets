@@ -8,9 +8,7 @@ use memmap2::Mmap;
 use roaring::RoaringTreemap;
 
 use crate::{
-    array_rows::{ ArrayRowIndex, NO_PARENT_ROW },
-    bkd::Bkd,
-    disk::{
+    array_rows::{ ArrayRowIndex, NO_PARENT_ROW }, bkd::Bkd, disk::{
         block_cursor::BlockCursor,
         codec::{ DecodedBlock, decode_block, read_var_u32 },
         format::{
@@ -24,17 +22,7 @@ use crate::{
             array_at,
         },
         writer::MergeSource,
-    },
-    document::indexed::BoolField,
-    document_values::DocValues,
-    fuzzy::{ FuzzyExpansion, FuzzyOptions },
-    numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue },
-    posting::{ Positions, Posting, PostingList, cursor::TermCursor, item::Offsets },
-    search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo, TermPostings },
-    segment::build_field_stats,
-    term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta },
-    types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId },
-    wildcard::MAX_PATTERN_TERMS,
+    }, document::indexed::BoolField, document_values::DocValues, fuzzy::{ FuzzyExpansion, FuzzyOptions, rank_candidates }, numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue }, posting::{ Positions, Posting, PostingList, cursor::TermCursor, item::Offsets }, search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo, TermPostings }, segment::build_field_stats, term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta }, types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId }, wildcard::MAX_PATTERN_TERMS,
 };
 
 // Read only disk segment.
@@ -447,17 +435,18 @@ impl SearchIndex for DiskSegment {
         &self,
         term: &str,
         xpath: XPathId,
-        opts: FuzzyOptions
+        opts: FuzzyOptions,
     ) -> Vec<FuzzyExpansion> {
-        self.dictionary
-            .field(xpath)
-            .map(|dict| {
-                dict.fuzzy_expansions(term, opts)
-                    .into_iter()
-                    .map(|(expansion, _)| expansion)
-                    .collect()
-            })
-            .unwrap_or_default()
+        let Some(dict) = self.dictionary.field(xpath) else {
+            return Vec::new();
+        };
+        let candidates: Vec<(String, u8, u32)> = dict
+            .fuzzy_expansions(term, opts)
+            .into_iter()
+            .filter(|(expansion, _)| expansion.doc_freq > 0)
+            .map(|(expansion, _)| (expansion.term, expansion.edits, expansion.doc_freq))
+            .collect();
+        rank_candidates(candidates)
     }
     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
         self.dictionary

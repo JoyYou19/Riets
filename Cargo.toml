@@ -49,7 +49,7 @@ module_name_repetitions = "allow"
 multiple_crate_versions = "allow"
 must_use_candidate = "allow"
 option_if_let_else = "allow"
-redundant_pub_crate = "allow"
+redundant_pub_crate = "warn"
 return_self_not_must_use = "allow"
 too_many_lines = "allow"
 expect_used = "warn"
@@ -74,22 +74,15 @@ cast_precision_loss = "allow"
 cast_sign_loss = "warn"
 float_cmp_const = "warn"
 lossy_float_literal = "warn"
-
 error_impl_error = "warn"
 let_underscore_must_use = "warn"
 map_err_ignore = "warn"
 unused_result_ok = "warn"
-
 multiple_unsafe_ops_per_block = "warn"
-
-
-
-
 dbg_macro = "warn"
 exit = "warn"
 print_stderr = "warn"
 print_stdout = "warn"
-
 clone_on_ref_ptr = "warn"
 if_then_some_else_none = "warn"
 mem_forget = "warn"
@@ -99,36 +92,27 @@ shadow_unrelated = "allow"
 str_to_string = "warn"
 tests_outside_test_module = "warn"
 verbose_file_reads = "warn"
-
 [workspace.lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
 keyword_idents = { level = "warn", priority = -1 }
 nonstandard_style = { level = "warn", priority = -1 }
 rust_2018_idioms = { level = "warn", priority = -1 }
 unused = { level = "warn", priority = -1 }
-
 missing_debug_implementations = "allow"
-
 unnameable_types = "warn"
 unreachable_pub = "warn"
-
 trivial_casts = "warn"
 trivial_numeric_casts = "warn"
-
 elided_lifetimes_in_paths = "warn"
 redundant_lifetimes = "warn"
 single_use_lifetimes = "warn"
 unused_lifetimes = "warn"
-
 unsafe_op_in_unsafe_fn = "warn"
-
 let_underscore_drop = "warn"
 unit_bindings = "warn"
 unused_import_braces = "warn"
 unused_macro_rules = "warn"
 unused_qualifications = "warn"
-
 meta_variable_misuse = "warn"
 non_ascii_idents = "warn"
-
 variant_size_differences = "warn"

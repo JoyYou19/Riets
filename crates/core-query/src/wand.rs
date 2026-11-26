@@ -95,7 +95,11 @@ fn block_skip_target(
     skip_to.filter(|&skip| block_bound < threshold && skip > pivot_doc)
 }
 
-/// The summed score and the number of terms of the document the cursors are on.
+/// The summed score and the number of terms of the document the cursors are onu.
+pub enum Cache{
+    Data(u32),
+    
+}
 fn score_pivot<S: SearchStats>(
     stats: &S,
     terms: &mut [MultiFieldTerm<'_>],

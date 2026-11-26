@@ -5,15 +5,15 @@
 //! to build graphs.
 
 /// Largest int8 code; codes are symmetric in -127..=127 so zero is exact and negation is free.
-pub(crate) const CODE_MAX: f32 = 127.0;
+pub(super) const CODE_MAX: f32 = 127.0;
 /// Fraction of |components| a file's range must cover; the rest is clipped.
-pub(crate) const RANGE_QUANTILE: f64 = 0.99;
+pub(super) const RANGE_QUANTILE: f64 = 0.99;
 /// Independent accumulators so the compiler can keep several SIMD lanes busy.
 const DOT_LANES: usize = 16;
 
 /// Learned range of one file: `absmax` maps to code 127.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct QuantRange {
+pub(super) struct QuantRange {
     absmax: f32,
 }
 
@@ -61,13 +61,13 @@ impl QuantRange {
 
 /// A quantised query and its own scale.
 #[derive(Debug, Clone)]
-pub(crate) struct QueryCodes {
+pub(super) struct QueryCodes {
     pub(crate) codes: Vec<u8>,
     pub(crate) scale: f32,
 }
 
 /// Quantises a query with its own largest |component|, so it always uses the full code range.
-pub(crate) fn quantize_query(query: &[f32]) -> QueryCodes {
+pub(super) fn quantize_query(query: &[f32]) -> QueryCodes {
     let absmax = query
         .iter()
         .filter(|v| v.is_finite())
@@ -99,7 +99,7 @@ fn encode_with_scale(values: &[f32], scale: f32, out: &mut Vec<u8>) {
 /// Dot product of two int8 code vectors stored as bytes, in i32.
 /// max |sum| = dims × 127², so it cannot overflow for dims < `130_000`.
 #[inline]
-pub(crate) fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
+pub(super) fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
     debug_assert_eq!(a.len(), b.len(), "dot product of vectors with different dims");
     #[cfg(target_arch = "x86_64")]
     {
@@ -156,7 +156,7 @@ fn dot_i8_portable(a: &[u8], b: &[u8]) -> i32 {
     clippy::cast_precision_loss,
     reason = "the dot product only ranks candidates; f32 rounding past 2^24 is harmless"
 )]
-pub(crate) fn approx_cosine(dot: i32, row_scale: f32, query_scale: f32) -> f32 {
+pub(super) fn approx_cosine(dot: i32, row_scale: f32, query_scale: f32) -> f32 {
     (dot as f32) / (row_scale * query_scale)
 }
 /// Exact dot product of two f32 vectors (cosine when both are L2-normalized).
@@ -166,7 +166,7 @@ pub(crate) fn approx_cosine(dot: i32, row_scale: f32, query_scale: f32) -> f32 {
 /// the last bits of a score can differ between CPUs. A process always uses the same kernel,
 /// so its own scores are repeatable.
 #[inline]
-pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
+pub(super) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "dot product of vectors with different dims");
     #[cfg(target_arch = "x86_64")]
     {

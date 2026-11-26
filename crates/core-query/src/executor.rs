@@ -1,12 +1,7 @@
 use core_index::{
-    analyzer::text_analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY},
-    fuzzy::{
-        DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec,
-        select_expansions,
-    },
-    posting::{Posting, PostingCursor, PostingList, cursor::TermCursor},
-    search::{SearchIndex, SearchNumeric, SearchStats},
-    types::{ArrayRowId, DocId, XPathId, position_span, position_start},
+    analyzer::text_analyzer::{Analyzer, NAME_KEY, QUALIFIED_NAME_KEY}, fuzzy::{
+        DEFAULT_MAX_EXPANSIONS, DEFAULT_PREFIX_LENGTH, FuzzyExpansion, FuzzyOptions, FuzzySpec, TYPO_MAX_DOC_FREQ, TYPO_RATIO, select_expansions,
+    }, posting::{Posting, PostingCursor, PostingList, cursor::TermCursor}, search::{SearchIndex, SearchNumeric, SearchStats}, types::{ArrayRowId, DocId, XPathId, position_span, position_start},
 };
 use roaring::RoaringTreemap;
 use std::{
@@ -20,18 +15,7 @@ use core_protocol::command_reponse_definitions::{Fuzziness, MatchMode};
 use core_timing::timed;
 
 use crate::{
-    MatchedTerm, ScoredPosting, SearchHit, TopHit,
-    ast::{PhraseTerm, Query, SynonymAlternative},
-    bm25::{bm25_idf, fuzzy_decay, score_term_into},
-    corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats},
-    planner::{RankPlan, Tier},
-    prepared::PreparedQuery,
-    rank_order,
-    ranking::{ANY_POOL_SIZE, MAX_CLAUSES, MIN_COVERAGE, POOL_SIZE, RankedGroup, finalize},
-    resolver::{FieldCtx, FieldQuery, SameElementBinding},
-    scorer::BoxScorer,
-    scorers::{AndScorer, OrScorer},
-    wand::{
+    MatchedTerm, ScoredPosting, SearchHit, TopHit, ast::{PhraseTerm, Query, SynonymAlternative}, corpus_stats::{CorpusStats, FieldTotals, FuzzyKey, LeafKey, ScoringStats}, planner::{RankPlan, Tier}, prepared::PreparedQuery, rank_order, ranking::{ANY_POOL_SIZE, MAX_CLAUSES, MIN_COVERAGE, POOL_SIZE, RankedGroup, finalize}, resolver::{FieldCtx, FieldQuery, SameElementBinding}, scorer::BoxScorer, scorers::{AndScorer, OrScorer}, wand::{
         FieldClauses, FieldTerms, FormRef, TermRef, WandHit, conjunctive_top_k_grouped,
         conjunctive_top_k_multi_field, wand_top_k_grouped, wand_top_k_grouped_with_any,
         wand_top_k_multi_field,
@@ -40,9 +24,7 @@ use crate::{
 //fuzzy const
 // A fuzzy query with more words than this matches nothing (one bit per word is tracked).
 const MAX_FUZZY_WORDS: usize = 64;
-const TYPO_MAX_DOC_FREQ: u32 = 500;
-//when a correction within the fuzzy edits is in at least this many times as many documents.
-const TYPO_RATIO: u32 = 20;
+
 //phrase const
 const OUT_OF_ORDER: f32 = 0.8;
 
@@ -190,7 +172,10 @@ where
     // Posting lists this search has already read, so they are not read again.
     prepared: Option<&'a PreparedQuery>,
 }
-
+    fn posting_ids( postings: &PostingList) -> RoaringTreemap {
+        RoaringTreemap::from_sorted_iter(postings.items().iter().map(|p| p.doc_id))
+            .unwrap_or_default()
+    }
 impl<'a, I> QueryExecutor<'a, I>
 where
     I: SearchIndex + SearchStats + SearchNumeric,
@@ -1030,7 +1015,7 @@ where
                     if ctx.row_keyed {
                         self.push_row_matches(query, page, ctx, out);
                     } else if let Query::Term(term) = query {
-                        let weight = bm25_idf(
+                        let weight = crate::bm25::bm25_idf(
                             self.term_doc_freq(term, ctx.xpath),
                             self.stats().doc_count(ctx.xpath),
                         );
@@ -1049,7 +1034,7 @@ where
                         // the pattern is expanded once, not once per hit
                         let doc_freq =
                             self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
-                        let weight = bm25_idf(doc_freq, self.stats().doc_count(leaf.xpath));
+                        let weight = crate::bm25::bm25_idf(doc_freq, self.stats().doc_count(leaf.xpath));
                         let items = leaf.postings.items();
                         for &(doc_id, slot) in page {
                             let posting = items
@@ -1086,7 +1071,7 @@ where
                         let blended = blended_doc_freq(&expansions);
                         for expansion in expansions {
                             let weight =
-                                bm25_idf(blended, doc_count) * fuzzy_decay(expansion.edits);
+                                crate::bm25::bm25_idf(blended, doc_count) * crate::bm25::fuzzy_decay(expansion.edits);
                             if ctx.row_keyed {
                                 let list = self.index.lookup(&expansion.term, ctx.xpath);
                                 for posting in list.items() {
@@ -1181,7 +1166,7 @@ where
         };
         //compute the relavance same as search with bm25
         let doc_freq = self.leaf_doc_freq(leaf.xpath, &leaf.key, leaf.postings.len());
-        let weight = bm25_idf(doc_freq, self.stats().doc_count(leaf.xpath));
+        let weight = crate::bm25::bm25_idf(doc_freq, self.stats().doc_count(leaf.xpath));
 
         for posting in leaf.postings.items() {
             if posting.positions.is_empty() {
@@ -1313,7 +1298,7 @@ where
         let mut by_word: Vec<Vec<Option<Posting>>> = terms
             .iter()
             .map(|t| {
-                weight += bm25_idf(self.term_doc_freq(&t.text, xpath), doc_count);
+                weight += crate::bm25::bm25_idf(self.term_doc_freq(&t.text, xpath), doc_count);
                 self.posting_for(&t.text, xpath, page)
             })
             .collect();
@@ -1344,7 +1329,7 @@ where
             .iter()
             .map(|t| self.fetch_term_list(&t.text, xpath))
             .collect();
-        let weight: f32 = lists.iter().map(|(_, df)| bm25_idf(*df, doc_count)).sum();
+        let weight: f32 = lists.iter().map(|(_, df)| crate::bm25::bm25_idf(*df, doc_count)).sum();
         let Some((first_list, _)) = lists.first() else {
             return;
         };
@@ -1429,7 +1414,7 @@ where
                         Query::Term(term) => self.index.doc_ids_into(term, ctx.xpath, &mut out),
                         _ => {
                             if let Some(leaf) = self.leaf(query, ctx) {
-                                out |= self.posting_ids(&leaf.postings);
+                                out |= posting_ids(&leaf.postings);
                             }
                         }
                     }
@@ -1467,7 +1452,7 @@ where
 
             scored.clear();
             doc_len.clear();
-            score_term_into(
+            crate::bm25::score_term_into(
                 &stats,
                 &leaf.postings,
                 leaf.xpath,
@@ -1477,8 +1462,8 @@ where
             );
 
             // Fold row-keyed postings onto their document, dropping rows that have no parent.
-            let mut field_scored: Vec<ScoredPosting> = scored
-                .drain(..)
+            let mut field_scored: Vec<ScoredPosting> = scored.clone()
+                .into_iter()
                 .filter_map(|mut hit| {
                     self.fold_to_doc(ctx, hit.doc_id).map(|doc| {
                         hit.doc_id = doc;
@@ -1579,10 +1564,7 @@ where
         EvalOutcome::Scored(best.into_values().collect())
     }
 
-    fn posting_ids(&self, postings: &PostingList) -> RoaringTreemap {
-        RoaringTreemap::from_sorted_iter(postings.items().iter().map(|p| p.doc_id))
-            .unwrap_or_default()
-    }
+
 
     fn eval_union(&self, parts: &[Query], ctxs: &[FieldCtx], mode: EvalMode) -> EvalOutcome {
         match mode {
@@ -2503,7 +2485,7 @@ where
                     let doc_freq =
                         correction.unwrap_or_else(|| self.term_doc_freq(word, ctx.xpath));
                     let docs = stats.doc_count(ctx.xpath);
-                    (doc_freq > 0 && docs > 0).then(|| bm25_idf(doc_freq, docs))
+                    (doc_freq > 0 && docs > 0).then(|| crate::bm25::bm25_idf(doc_freq, docs))
                 })
                 .reduce(f32::min)
                 .unwrap_or(0.0)
@@ -2580,7 +2562,7 @@ where
                 .map(|form| {
                     form.lists
                         .iter()
-                        .map(|(_, doc_freq)| bm25_idf(*doc_freq, largest))
+                        .map(|(_, doc_freq)| crate::bm25::bm25_idf(*doc_freq, largest))
                         .sum::<f32>()
                 })
                 .reduce(f32::min)
@@ -2665,7 +2647,7 @@ where
                 let kept =
                     postings_of_cursor(self.open_term_cursor(&term.text, ctx.xpath), &matched);
                 scored.clear();
-                score_term_into(
+                crate::bm25::score_term_into(
                     &stats,
                     &kept,
                     ctx.xpath,
@@ -2673,7 +2655,7 @@ where
                     &mut doc_len,
                     &mut scored,
                 );
-                for hit in scored.drain(..) {
+                for hit in scored.clone() {
                     match acc.entry(hit.doc_id) {
                         Entry::Vacant(e) => {
                             e.insert(hit);
@@ -3031,7 +3013,7 @@ where
                     scored_buf.clear();
                     let true_df = blended;
                     //BM25 scoring
-                    score_term_into(
+                    crate::bm25::score_term_into(
                         &self.stats(),
                         &postings,
                         ctx.xpath,
@@ -3040,9 +3022,9 @@ where
                         &mut scored_buf,
                     );
 
-                    let decay = fuzzy_decay(expansion.edits);
+                    let decay = crate::bm25::fuzzy_decay(expansion.edits);
 
-                    for mut scored in scored_buf.drain(..) {
+                    for mut scored in scored_buf.clone() {
                         //apply the edit decay to the score
                         scored.score = decay_score(scored.score, decay);
 

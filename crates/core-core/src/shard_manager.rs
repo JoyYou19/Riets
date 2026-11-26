@@ -14,7 +14,7 @@ use core_index::analyzer::text_analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::{FieldKind, FieldPolicy};
-use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, select_expansions};
+use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, TYPO_MAX_DOC_FREQ, TYPO_RATIO, select_expansions};
 use core_index::lsm::index_worker::Phase;
 use core_index::numeric_values::NumericValue;
 use core_index::types::{DocId, ShardId, XPathId, shard_of};
@@ -241,7 +241,7 @@ impl ShardManager {
             boot_rxs.push((shard_id, boot_rx));
         }
         for (i, boot_rx) in boot_rxs {
-            boot_rx.recv().map_err(|_| {
+            boot_rx.recv().map_err(|_rxs| {
                 CorelamoError::Internal(format!("shard {i} thread died during start"))
             })??;
         }
@@ -297,7 +297,7 @@ impl ShardManager {
 
         // Routing returns a position in `shards`, while document ids carry the shard id, so
         // the shard at position i must be shard-i. Checked before any shard is started.
-        let shard_count_u16 = u16::try_from(shard_paths.len()).map_err(|_| {
+        let shard_count_u16 = u16::try_from(shard_paths.len()).map_err(|_exceed| {
             CorelamoError::InvalidData(format!(
                 "{} shard directories exceed the supported maximum of {}",
                 shard_paths.len(),
@@ -367,7 +367,7 @@ impl ShardManager {
             boot_rxs.push((i, boot_rx));
         }
         for (i, boot_rx) in boot_rxs {
-            boot_rx.recv().map_err(|_| {
+            boot_rx.recv().map_err(|_died| {
                 CorelamoError::Internal(format!("shard {i} thread died during start"))
             })??;
         }
@@ -444,6 +444,7 @@ impl ShardManager {
         date: Option<String>,
         max_lines: usize,
     ) -> Result<String, CorelamoError> {
+        const TIMESTAMP_LEN: usize = 29;
         let mut lines: Vec<String> = Vec::new();
         for h in &self.shards {
             lines.extend(h.get_logs_direct(date.as_deref(), max_lines)?);
@@ -452,7 +453,7 @@ impl ShardManager {
         // every line starts with a fixed-width timestamp (`2026-11-11 16:58:03.123+02:00`), so
         // comparing that prefix orders lines by time without allocating; the sort is stable,
         // so lines with the same millisecond keep their order
-        const TIMESTAMP_LEN: usize = 29;
+        
         lines.sort_by(|a, b| {
             let a_ts = a.get(..TIMESTAMP_LEN).unwrap_or(a);
             let b_ts = b.get(..TIMESTAMP_LEN).unwrap_or(b);
@@ -496,9 +497,9 @@ impl ShardManager {
                     first_err.get_or_insert(e);
                 }
                 Err(je) => {
-                    first_err.get_or_insert(CorelamoError::Internal(format!(
-                        "shard task panicked: {je}"
-                    )));
+                    first_err.get_or_insert_with(|| CorelamoError::Internal(format!(
+                         "shard task panicked: {je}"
+                     )));
                 }
             }
         }
@@ -1393,18 +1394,19 @@ impl ShardManager {
                 None,
             )
             .await?;
-        let unknown_word = has_unknown_word(typed, &search.groups, &corpus);
+        let words= typed_words(typed, &search.groups, &corpus);
         let has_fuzzy = search
             .plans_full
             .iter()
             .zip(search.plans_no_fuzzy.iter())
             .any(|(full, plain)| full.tiers.len() != plain.tiers.len());
-        if !(unknown_word && has_fuzzy) {
+        if !((words.unknown || words.rare) && has_fuzzy) {
             return Ok(ShardStatistics {
                 corpus: Arc::new(corpus),
                 shards: shards.into_iter().map(Arc::new).collect(),
                 plans: Arc::clone(&search.plans_no_fuzzy),
-                unknown_word,
+                unknown_word: words.unknown,
+                rare_word: words.rare,
             });
         }
         // only the fuzzy leaves are new: everything else is already in `shards`
@@ -1420,7 +1422,8 @@ impl ShardManager {
             corpus: Arc::new(corpus),
             shards: shards.into_iter().map(Arc::new).collect(),
             plans: Arc::clone(&search.plans_full),
-            unknown_word,
+            unknown_word: words.unknown,
+            rare_word:words.rare
         })
     }
 
@@ -1480,7 +1483,7 @@ impl ShardManager {
         stats: &ShardStatistics,
         allow_correction: bool,
     ) -> SpellingResult {
-        if !allow_correction || !stats.unknown_word {
+          if !allow_correction || !(stats.unknown_word || stats.rare_word) {
             return SpellingResult::Fine;
         }
         let OwnedValue::String(text) = &command.query else {
@@ -1926,12 +1929,23 @@ impl ShardManager {
             };
             let candidates: Vec<FuzzyExpansion> = by_term.into_values().collect();
 
-            // a word many documents contain is spelled right, however common a neighbour is
-            let typed_freq = candidates
+
+           let typed_freq = candidates
                 .iter()
                 .find(|e| e.term == word)
                 .map_or(0, |e| e.doc_freq);
-            if typed_freq >= TRUSTED_DOC_FREQ {
+            // a word is spelled right unless it is rare and a close word is far more common
+            // ("holand" 33 next to "holland" 7,922); the same rule as the executor's `likely_typo`
+            let common_neighbour = candidates
+                .iter()
+                .filter(|e| e.term != word && e.edits > 0)
+                .map(|e| e.doc_freq)
+                .max()
+                .unwrap_or(0);
+            let suspect = typed_freq > 0
+                && typed_freq <= TYPO_MAX_DOC_FREQ
+                && common_neighbour >= typed_freq.saturating_mul(TYPO_RATIO);
+            if typed_freq > 0 && !suspect {
                 by_word.insert(
                     word.clone(),
                     WordCorrection {
@@ -1942,7 +1956,7 @@ impl ShardManager {
                 continue;
             }
 
-            let unknown = !context.contains(&word);
+            let unknown = typed_freq ==0;
             let mut expansions = select_expansions(
                 &word,
                 candidates
@@ -1950,13 +1964,16 @@ impl ShardManager {
                     .map(|e| (e.term.clone(), e.edits, e.doc_freq)),
                 size.max(CONTEXT_CANDIDATES),
             );
-            let mut confident = expansions.first().is_some_and(|best| {
-                best.term != word && is_confident_correction(best, &candidates)
-            });
+            let mut confident = unknown
+                && expansions.first().is_some_and(|best| {
+                    best.term != word && is_confident_correction(best, &candidates)
+                });
 
-            // a misspelled word among known ones: the right spelling is the one found in the
-            // same documents as the rest of the query ("ipjone 14" -> "iphone", not "ipone")
-            if unknown && !context.is_empty() && !expansions.is_empty() {
+                
+             let own_context: Vec<String> =
+                context.iter().filter(|known| **known != word).cloned().collect();
+            if (unknown || suspect) && !own_context.is_empty() && !expansions.is_empty() {
+                let _own_context = Arc::new(own_context);
                 let terms = Arc::new(
                     expansions
                         .iter()
@@ -2751,11 +2768,13 @@ struct CompiledSearch {
 /// Every shard prepared for ranking, with the statistics of all of them merged.
 struct ShardStatistics {
     corpus: Arc<CorpusStats>,
-    shards: Vec<Arc<PreparedShardSearch>>,
     /// the plans the shards were prepared with: rank with exactly these
     plans: Arc<Vec<RankPlan>>,
+    //a typed word is in at most TYPO MAX DOC FREQ documents it may be a typo
+    rare_word:bool,
+    shards: Vec<Arc<PreparedShardSearch>>,
     /// a typed word is in no document of its group's fields
-    unknown_word: bool,
+    unknown_word: bool
 }
 /// What `check_spelling` decided about a typed word no document has.
 enum SpellingResult {
@@ -2879,10 +2898,17 @@ fn highlight_request(
     Ok(Some(HighlightSpec { explicit, auto }))
 }
 
-/// A typed word, analyzed by a group's analyzer, is in no document of that group's fields.
-fn has_unknown_word(typed: &OwnedValue, groups: &[QueryGroup], corpus: &CorpusStats) -> bool {
+/// What the merged counts say about the typed words: `unknown` when one is in no document of
+/// its group's fields, `rare` when one is in at most `TYPO_MAX_DOC_FREQ` and so may be a typo.
+#[derive(Debug, Clone, Copy, Default)]
+struct TypedWords {
+    unknown: bool,
+    rare: bool,
+}
+
+fn typed_words(typed: &OwnedValue, groups: &[QueryGroup], corpus: &CorpusStats) -> TypedWords {
     let OwnedValue::String(text) = typed else {
-        return false;
+        return TypedWords::default();
     };
     let fields: Vec<(&QueryGroup, Vec<XPathId>)> = groups
         .iter()
@@ -2896,20 +2922,27 @@ fn has_unknown_word(typed: &OwnedValue, groups: &[QueryGroup], corpus: &CorpusSt
             (group, xpaths)
         })
         .collect();
-    text.split_whitespace().any(|word| {
+    let mut out = TypedWords::default();
+    for word in text.split_whitespace() {
         let mut analyzed_somewhere = false;
-        let known = fields.iter().any(|(group, xpaths)| {
+        let mut doc_freq = 0u32;
+        for (group, xpaths) in &fields {
+            // a stopword or too short for this analyzer: says nothing about the word
             let Some(token) = group.analyzer.analyze_query(word).into_iter().next() else {
-                // a stopword or too short for this analyzer: says nothing about the word
-                return false;
+                continue;
             };
             analyzed_somewhere = true;
-            xpaths
-                .iter()
-                .any(|&xpath| corpus.term_doc_freq(xpath, &token.text) > 0)
-        });
-        analyzed_somewhere && !known
-    })
+            for &xpath in xpaths {
+                doc_freq = doc_freq.max(corpus.term_doc_freq(xpath, &token.text));
+            }
+        }
+        if !analyzed_somewhere {
+            continue;
+        }
+        out.unknown |= doc_freq == 0;
+        out.rare |= doc_freq > 0 && doc_freq <= TYPO_MAX_DOC_FREQ;
+    }
+    out
 }
 
 /// Every shard's hits in one order: semantic fusion (what the query names stays first), then
@@ -3033,7 +3066,6 @@ fn child_field<'a>(
 fn owned_to_json(value: &OwnedValue) -> serde_json::Value {
     match value {
         OwnedValue::String(s) => serde_json::Value::String(s.clone()),
-        OwnedValue::Static(StaticNode::Null) => serde_json::Value::Null,
         OwnedValue::Static(StaticNode::Bool(b)) => serde_json::Value::Bool(*b),
         OwnedValue::Static(StaticNode::I64(i)) => serde_json::Value::from(*i),
         OwnedValue::Static(StaticNode::U64(u)) => serde_json::Value::from(*u),

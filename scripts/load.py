@@ -6,7 +6,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-INPUT_FILE = "../../fever/corpus.jsonl"
+INPUT_FILE = "fever/corpus.jsonl"
 BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
 SHARD_COUNT = 4

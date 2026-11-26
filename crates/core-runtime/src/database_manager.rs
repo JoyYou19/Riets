@@ -12,7 +12,7 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock as Gate};
 use crate::database_helpers::{colliding_dir, normalize_db_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SlotState {
+pub enum SlotState {
     Creating,
     Live,
     Deleting,
@@ -24,7 +24,7 @@ struct Inner {
     manager: Option<Arc<ShardManager>>,
 }
 
-pub(crate) struct DbSlot(pub String, pub PathBuf, RwLock<Inner>, pub Arc<Gate<()>>);
+pub struct DbSlot(pub String, pub PathBuf, RwLock<Inner>, pub Arc<Gate<()>>);
 
 impl DbSlot {
     fn with_state(
@@ -104,7 +104,7 @@ impl DbSlot {
     }
 }
 
-pub(crate) struct Databases {
+pub struct Databases {
     dir: PathBuf,
     slots: RwLock<HashMap<String, Arc<DbSlot>>>,
 }

@@ -4,7 +4,7 @@ use core_index::{search::SearchStats, types::DocId};
 use crate::scorer::{BoxScorer, Scorer};
 
 //a document matches only when every child is on it.
-pub(crate) struct AndScorer<'a> {
+pub struct AndScorer<'a> {
     children: Vec<BoxScorer<'a>>,
     current: Option<DocId>,
     upper_bound: u64,
