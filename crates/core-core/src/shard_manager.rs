@@ -14,7 +14,9 @@ use core_index::analyzer::text_analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
 use core_index::document::policy::{FieldKind, FieldPolicy};
-use core_index::fuzzy::{FuzzyExpansion, FuzzySpec, TYPO_MAX_DOC_FREQ, TYPO_RATIO, select_expansions};
+use core_index::fuzzy::{
+    FuzzyExpansion, FuzzySpec, TYPO_MAX_DOC_FREQ, TYPO_RATIO, select_expansions,
+};
 use core_index::lsm::index_worker::Phase;
 use core_index::numeric_values::NumericValue;
 use core_index::types::{DocId, ShardId, XPathId, shard_of};
@@ -48,6 +50,7 @@ use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
 use simd_json::{OwnedValue, StaticNode};
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -91,8 +94,12 @@ const CONTEXT_CANDIDATES: usize = 8;
 /// A correction chosen by context is trusted when its documents with the other words
 /// outnumber the next candidate's this many times.
 const CONTEXT_DOMINANCE: u64 = 3;
-/// A word at least this many documents contain is spelled right: it is never replaced.
-const TRUSTED_DOC_FREQ: u32 = 20;
+
+/// Spelling correction ("holand" -> "holland"). Off for now: it cost ~22 ms per query on FEVER
+/// (CHA-468 follow-up). Unknown words still get the Fuzzy tier.
+/// NEEDS TO BE FIXED
+const SPELLING_CORRECTION: bool = false;
+
 fn is_confident_correction(best: &FuzzyExpansion, candidates: &[FuzzyExpansion]) -> bool {
     candidates
         .iter()
@@ -453,7 +460,7 @@ impl ShardManager {
         // every line starts with a fixed-width timestamp (`2026-11-11 16:58:03.123+02:00`), so
         // comparing that prefix orders lines by time without allocating; the sort is stable,
         // so lines with the same millisecond keep their order
-        
+
         lines.sort_by(|a, b| {
             let a_ts = a.get(..TIMESTAMP_LEN).unwrap_or(a);
             let b_ts = b.get(..TIMESTAMP_LEN).unwrap_or(b);
@@ -497,9 +504,9 @@ impl ShardManager {
                     first_err.get_or_insert(e);
                 }
                 Err(je) => {
-                    first_err.get_or_insert_with(|| CorelamoError::Internal(format!(
-                         "shard task panicked: {je}"
-                     )));
+                    first_err.get_or_insert_with(|| {
+                        CorelamoError::Internal(format!("shard task panicked: {je}"))
+                    });
                 }
             }
         }
@@ -1208,19 +1215,10 @@ impl ShardManager {
     pub async fn search(
         &self,
         command: &SearchCommand,
-    ) -> Result<(Vec<SearchDocumentHit>, TotalHits, Option<QueryCorrection>), CorelamoError> {
-        self.run_search(command, true).await
-    }
-
-    /// The whole search. `allow_correction`: false for the re-run with a corrected spelling,
-    /// so a spelling is fixed at most once.
-    async fn run_search(
-        &self,
-        command: &SearchCommand,
-        allow_correction: bool,
-    ) -> Result<(Vec<SearchDocumentHit>, TotalHits, Option<QueryCorrection>), CorelamoError> {
+    ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
+   
         let Some(page) = requested_page(command)? else {
-            return Ok((Vec::new(), TotalHits::default(), None));
+            return Ok((Vec::new(), TotalHits::default()));
         };
 
         if let Some(request) = vector_request(&command.query)? {
@@ -1232,16 +1230,7 @@ impl ShardManager {
         let search = self.compile_search(command, page)?;
         let stats = self.collect_statistics(&search, &command.query).await?;
 
-        let suggestion = match self.check_spelling(command, &stats, allow_correction).await {
-            SpellingResult::SearchInstead(text) => {
-                let mut corrected = command.clone();
-                corrected.query = OwnedValue::String(text.clone());
-                let (docs, total, _) = Box::pin(self.run_search(&corrected, false)).await?;
-                return Ok((docs, total, Some(QueryCorrection::Applied(text))));
-            }
-            SpellingResult::Suggest(suggestion) => Some(suggestion),
-            SpellingResult::Fine => None,
-        };
+        
 
         // started only now: a corrected re-run must not leave an embedding search running
         let vector_task = search.semantic.clone().map(|(text, xpaths)| {
@@ -1263,7 +1252,13 @@ impl ShardManager {
 
         let total_hits = shard_hits.total;
         let shard_more = shard_hits.more;
-        let mut items = merge_and_sort(&search, &stats.plans, shard_hits, vectors.as_deref());
+        let mut items = merge_and_sort(
+            &search,
+            &stats.plans,
+            shard_hits,
+            vectors.as_deref(),
+            page.fetch,
+        );
 
         // Fewer distinct candidates than the requested window means every shard
         // returned all its matches: the total is exact even if a stat count was a
@@ -1298,7 +1293,7 @@ impl ShardManager {
                 Arc::clone(&stats.plans),
             )
             .await?;
-        Ok((docs, total, suggestion))
+        Ok((docs, total))
     }
 
     //Turns the request into analyzed queries, filters, sorts, highlighting and rank plans.
@@ -1394,13 +1389,13 @@ impl ShardManager {
                 None,
             )
             .await?;
-        let words= typed_words(typed, &search.groups, &corpus);
+        let words = typed_words(typed, &search.groups, &corpus);
         let has_fuzzy = search
             .plans_full
             .iter()
             .zip(search.plans_no_fuzzy.iter())
             .any(|(full, plain)| full.tiers.len() != plain.tiers.len());
-        if !((words.unknown || words.rare) && has_fuzzy) {
+        if !((words.unknown || (SPELLING_CORRECTION && words.rare)) && has_fuzzy) {
             return Ok(ShardStatistics {
                 corpus: Arc::new(corpus),
                 shards: shards.into_iter().map(Arc::new).collect(),
@@ -1423,7 +1418,7 @@ impl ShardManager {
             shards: shards.into_iter().map(Arc::new).collect(),
             plans: Arc::clone(&search.plans_full),
             unknown_word: words.unknown,
-            rare_word:words.rare
+            rare_word: words.rare,
         })
     }
 
@@ -1475,39 +1470,7 @@ impl ShardManager {
         Ok((corpus, shards))
     }
 
-    /// A typed word no document has: search a clearly meant spelling instead (fuzzy favours
-    /// rare close words and the embedding model cannot read a typo), or offer it.
-    async fn check_spelling(
-        &self,
-        command: &SearchCommand,
-        stats: &ShardStatistics,
-        allow_correction: bool,
-    ) -> SpellingResult {
-          if !allow_correction || !(stats.unknown_word || stats.rare_word) {
-            return SpellingResult::Fine;
-        }
-        let OwnedValue::String(text) = &command.query else {
-            return SpellingResult::Fine;
-        };
-        let report = match self
-            .suggest_corrections(text, command.search_fields.as_deref(), Fuzziness::Auto, 1)
-            .await
-        {
-            Ok(report) => report,
-            // the typed query still runs (fuzzy matches it); a correction is only an extra
-            Err(_) => {
-                return SpellingResult::Fine;
-            }
-        };
-        if report.corrected.is_empty() || report.corrected == *text {
-            return SpellingResult::Fine;
-        }
-        if report.confident {
-            SpellingResult::SearchInstead(report.corrected)
-        } else {
-            SpellingResult::Suggest(QueryCorrection::Suggested(report.corrected))
-        }
-    }
+    
 
     /// Every shard ranks its documents with the merged statistics and the plans it was
     /// prepared with.
@@ -1929,8 +1892,7 @@ impl ShardManager {
             };
             let candidates: Vec<FuzzyExpansion> = by_term.into_values().collect();
 
-
-           let typed_freq = candidates
+            let typed_freq = candidates
                 .iter()
                 .find(|e| e.term == word)
                 .map_or(0, |e| e.doc_freq);
@@ -1956,7 +1918,7 @@ impl ShardManager {
                 continue;
             }
 
-            let unknown = typed_freq ==0;
+            let unknown = typed_freq == 0;
             let mut expansions = select_expansions(
                 &word,
                 candidates
@@ -1969,9 +1931,11 @@ impl ShardManager {
                     best.term != word && is_confident_correction(best, &candidates)
                 });
 
-                
-             let own_context: Vec<String> =
-                context.iter().filter(|known| **known != word).cloned().collect();
+            let own_context: Vec<String> = context
+                .iter()
+                .filter(|known| **known != word)
+                .cloned()
+                .collect();
             if (unknown || suspect) && !own_context.is_empty() && !expansions.is_empty() {
                 let _own_context = Arc::new(own_context);
                 let terms = Arc::new(
@@ -2188,7 +2152,7 @@ impl ShardManager {
         fetch: usize,
         offset: usize,
         limit: usize,
-    ) -> Result<(Vec<SearchDocumentHit>, TotalHits, Option<QueryCorrection>), CorelamoError> {
+    ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
         if command.sort.is_some() {
             return Err(CorelamoError::InvalidData(
                 "vector queries do not support sort yet".into(),
@@ -2259,7 +2223,7 @@ impl ShardManager {
                 Arc::new(Vec::new()),
             )
             .await?;
-        Ok((hits, total, None))
+        Ok((hits, total))
     }
 
     //loads the requested page of ranked hits as documents, with highlights when asked.
@@ -2279,11 +2243,12 @@ impl ShardManager {
         plans: Arc<Vec<RankPlan>>,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
         if offset >= just_hits.len() {
+            // past the last hit: nothing to show, but the query still matched what it matched
             return Ok((
                 Vec::new(),
                 TotalHits {
-                    value: 0,
-                    more: false,
+                    value: total_hits,
+                    more,
                 },
             ));
         }
@@ -2771,19 +2736,12 @@ struct ShardStatistics {
     /// the plans the shards were prepared with: rank with exactly these
     plans: Arc<Vec<RankPlan>>,
     //a typed word is in at most TYPO MAX DOC FREQ documents it may be a typo
-    rare_word:bool,
+    rare_word: bool,
     shards: Vec<Arc<PreparedShardSearch>>,
     /// a typed word is in no document of its group's fields
-    unknown_word: bool
+    unknown_word: bool,
 }
-/// What `check_spelling` decided about a typed word no document has.
-enum SpellingResult {
-    /// the correction is clearly what was meant: search it instead
-    SearchInstead(String),
-    /// keep the typed query and offer this spelling
-    Suggest(QueryCorrection),
-    Fine,
-}
+
 
 /// Every shard's ranked hits, before they are merged into one order.
 const MAX_TOTAL_HITS: usize = 10_000;
@@ -2945,13 +2903,22 @@ fn typed_words(typed: &OwnedValue, groups: &[QueryGroup], corpus: &CorpusStats) 
     out
 }
 
-/// Every shard's hits in one order: semantic fusion (what the query names stays first), then
-/// the requested sort.
+/// Puts the best `keep` items first, in order, and leaves the rest unsorted: only the first
+/// `keep` are read, the others only counted.
+fn sort_best<T>(items: &mut [T], keep: usize, mut order: impl FnMut(&T, &T) -> Ordering) {
+    if keep < items.len() {
+        items.select_nth_unstable_by(keep, &mut order);
+    }
+    if let Some(best) = items.get_mut(..keep.min(items.len())) {
+        best.sort_unstable_by(order);
+    }
+}
 fn merge_and_sort(
     search: &CompiledSearch,
     plans: &[RankPlan],
     shard_hits: ShardHits,
     vectors: Option<&[VectorHit]>,
+    keep: usize,
 ) -> Vec<(SearchHit, Vec<Option<NumericValue>>)> {
     let mut items = shard_hits.items;
     let named_limit = plans
@@ -2959,9 +2926,11 @@ fn merge_and_sort(
         .map(RankPlan::named_tier_limit)
         .min()
         .unwrap_or(0);
-    items.sort_unstable_by(|(a, _), (b, _)| rank_order(a, b));
+    let order = |(a, _): &(SearchHit, _), (b, _): &(SearchHit, _)| rank_order(a, b);
     match search.sorts.as_ref() {
         Some(sorts) => {
+            // the blend and strict orders read every item
+            items.sort_unstable_by(order);
             if let Some(vectors) = vectors {
                 // vector-only documents carry no sort keys: fuse only what the words found
                 items = fuse_keeping_named(items, vectors, named_limit, false);
@@ -2974,8 +2943,11 @@ fn merge_and_sort(
         }
         None => {
             if let Some(vectors) = vectors {
+                sort_best(&mut items, search.word_fetch, order);
                 items.truncate(search.word_fetch);
                 items = fuse_keeping_named(items, vectors, named_limit, true);
+            } else {
+                sort_best(&mut items, keep, order);
             }
         }
     }

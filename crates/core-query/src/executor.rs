@@ -1790,13 +1790,13 @@ where
                 if out.has_leaf(xpath, &key) {
                     return;
                 }
-                out.insert_field(xpath, self.field_totals(xpath));
+                out.insert_field(xpath, || self.field_totals(xpath));
                 let postings = self.fetch_leaf(query, xpath);
                 out.insert_leaf(xpath, key, postings);
             }
             Query::Fuzzy(raw, fuzziness, spec) => {
                 let xpath = ctx.xpath;
-                out.insert_field(xpath, self.field_totals(xpath));
+                out.insert_field(xpath, || self.field_totals(xpath));
                 for word in self.fuzzy_words(raw) {
                     let opts = fuzzy_options(&word, *fuzziness, *spec);
                     let key = FuzzyKey::new(&word, opts);
@@ -1816,7 +1816,7 @@ where
                 if out.has_leaf(xpath, &key) {
                     return;
                 }
-                out.insert_field(xpath, self.field_totals(xpath));
+                out.insert_field(xpath, || self.field_totals(xpath));
                 // metadata only: WAND opens its own cursor, so the list is not decoded here
                 let doc_freq: u32 = if term.is_empty() {
                     0
@@ -1833,7 +1833,7 @@ where
                 if out.has_leaf(xpath, &key) {
                     return;
                 }
-                out.insert_field(xpath, self.field_totals(xpath));
+                out.insert_field(xpath, || self.field_totals(xpath));
                 let postings = self.fetch_leaf(query, xpath);
                 out.insert_leaf(xpath, key, postings);
             }
@@ -2504,17 +2504,40 @@ where
             }
         }
         let total: f32 = plan.words.iter().map(|word| weights[word.as_str()]).sum();
-        if total > 0.0 {
-            for key in &plan.named_runs {
+                if total > 0.0 {
+            // the documents a run names, plain and qualified, within the filter
+            let named_by = |key: &String| -> Vec<DocId> {
+                [false, true]
+                    .into_iter()
+                    .flat_map(|qualified| self.name_docs(std::slice::from_ref(key), ctxs, qualified))
+                    .filter(|doc| restrict.is_none_or(|limit| limit.contains(*doc)))
+                    .collect()
+            };
+            // longer runs first: a word of a name some page has ("modine" in "matthew modine")
+            // belongs to that name, so the page "Modine" is not what the query is about. A word
+            // no longer name holds is still a name ("iraq" in "Iraq has borders").
+            let (longer, single): (Vec<&String>, Vec<&String>) =
+                plan.named_runs.iter().partition(|key| key.contains(' '));
+            let mut runs: Vec<(&String, Vec<DocId>)> = Vec::with_capacity(plan.named_runs.len());
+            let mut in_a_name: HashSet<&str> = HashSet::new();
+            for key in longer {
+                let docs = named_by(key);
+                if !docs.is_empty() {
+                    in_a_name.extend(key.split(' '));
+                }
+                runs.push((key, docs));
+            }
+            for key in single {
+                if !in_a_name.contains(key.as_str()) {
+                    runs.push((key, named_by(key)));
+                }
+            }
+            for (key, docs) in runs {
                 let held: f32 = key.split(' ').filter_map(|word| weights.get(word)).sum();
                 let share = (held / total).min(1.0);
-                for qualified in [false, true] {
-                    for doc in self.name_docs(std::slice::from_ref(key), ctxs, qualified) {
-                        if restrict.is_none_or(|limit| limit.contains(doc)) {
-                            let best = shares.entry(doc).or_insert(0.0);
-                            *best = best.max(share);
-                        }
-                    }
+                for doc in docs {
+                    let best = shares.entry(doc).or_insert(0.0);
+                    *best = best.max(share);
                 }
             }
         }
@@ -2900,9 +2923,13 @@ where
         if opts.max_edits == 0 {
             return None;
         }
+        // only candidates the statistics round already merged: scanning this shard's whole
+        // dictionary for every rare name costs more than the check is worth
+        let corpus = self.corpus?;
         let correction = xpaths
             .iter()
-            .flat_map(|&xpath| self.fuzzy_candidates(word, xpath, opts))
+            .filter_map(|&xpath| corpus.fuzzy(xpath, &FuzzyKey::new(word, opts)))
+            .flatten()
             .filter(|candidate| candidate.edits > 0 && candidate.term != word)
             .map(|candidate| candidate.doc_freq)
             .max()?;

@@ -1,7 +1,7 @@
 //! The top-k collector: walks a set of scorers and keeps the k best documents.
-use std::{cmp::Ordering, collections::BinaryHeap};
+use std::{cell::{Cell, RefCell}, cmp::Ordering, collections::BinaryHeap};
 
-use core_index::{num::u64_to_f64, search::SearchStats, types::DocId};
+use core_index::{num::u64_to_f64, search::SearchStats, types::{DocId, XPathId}};
 use roaring::RoaringTreemap;
 
 use crate::{
@@ -15,6 +15,107 @@ use crate::{
 )]
 fn scale_score(score: u64, factor: f64) -> u64 {
     (u64_to_f64(score) * factor) as u64
+}
+/// Puts the first `moved` entries back in document order after their cursors advanced, and drops
+/// the ones that ran out. The others never moved and are still in order, so each moved entry is
+/// placed by binary search, instead of sorting every cursor again on every step.
+/// 
+/// smart logic AI gave to make a bit faster long queries
+pub(crate) fn reinsert_moved<T>(
+    entries: &mut Vec<T>,
+    moved: usize,
+    doc: impl Fn(&T) -> Option<DocId>,
+    buffer: &mut Vec<T>,
+) {
+    buffer.extend(entries.drain(..moved.min(entries.len())));
+    for entry in buffer.drain(..) {
+        let Some(at) = doc(&entry) else {
+            continue;
+        };
+        let index = entries.partition_point(|other| doc(other).is_some_and(|d| d <= at));
+        entries.insert(index, entry);
+    }
+}
+/// Where the scorers on the pivot can jump: past the first end of their current blocks, when
+/// nothing they score up to there can reach `threshold`. The scorers after them start at the next
+/// scorer's document, so until there only these can match.
+fn block_skip(
+    scorers: &[BoxScorer<'_>],
+    on_pivot: usize,
+    pivot_doc: DocId,
+    threshold: u64,
+) -> Option<DocId> {
+    if threshold == 0 {
+        return None;
+    }
+    let mut bound = 0u64;
+    let mut skip_to = scorers.get(on_pivot).and_then(|scorer| scorer.doc());
+    for scorer in scorers.iter().take(on_pivot) {
+        match scorer.block_bound() {
+            Some((block, last)) => {
+                bound = bound.saturating_add(block);
+                let after = last.saturating_add(1);
+                skip_to = Some(skip_to.map_or(after, |known| known.min(after)));
+            }
+            None => bound = bound.saturating_add(scorer.upper_bound()),
+        }
+    }
+    // a skip must move forward, or the loop would not end
+    skip_to.filter(|&skip| bound < threshold && skip > pivot_doc)
+}
+/// The statistics with the lengths of the document being scored remembered, so its clauses ask
+/// the index once per field instead of once each.
+struct DocLens<'s> {
+    stats: &'s dyn SearchStats,
+    doc: Cell<Option<DocId>>,
+    lens: RefCell<Vec<(XPathId, Option<u32>)>>,
+}
+
+impl<'s> DocLens<'s> {
+    fn new(stats: &'s dyn SearchStats) -> Self {
+        Self {
+            stats,
+            doc: Cell::new(None),
+            lens: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl SearchStats for DocLens<'_> {
+    fn doc_count(&self, xpath: XPathId) -> u64 {
+        self.stats.doc_count(xpath)
+    }
+
+    fn total_doc_len(&self, xpath: XPathId) -> u64 {
+        self.stats.total_doc_len(xpath)
+    }
+
+    fn doc_range(&self) -> Option<(DocId, DocId)> {
+        self.stats.doc_range()
+    }
+
+    fn avg_doc_len(&self, xpath: XPathId) -> f64 {
+        self.stats.avg_doc_len(xpath)
+    }
+
+    fn doc_len(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
+        if self.doc.get() != Some(doc_id) {
+            self.doc.set(Some(doc_id));
+            self.lens.borrow_mut().clear();
+        }
+        let known = self
+            .lens
+            .borrow()
+            .iter()
+            .find(|(field, _)| *field == xpath)
+            .map(|&(_, len)| len);
+        if let Some(len) = known {
+            return len;
+        }
+        let len = self.stats.doc_len(doc_id, xpath);
+        self.lens.borrow_mut().push((xpath, len));
+        len
+    }
 }
 //Top `k` documents by summed scorer score (WAND), plus the top `any_k` documents holding
 // any scorer by plain score. Returns `(main, any)`.
@@ -38,7 +139,7 @@ pub(crate) fn top_k_with_any<'a>(
     let needed: f32 = coverage.map_or(0.0, |share| share.clamp(0.0, 1.0) * total_weight);
     //Tiny slack: float sums of the same weights can differ in the last bits.
     let covers = |weight: f32| weight + 1e-3 >= needed;
-
+    let lens = DocLens::new(stats);
     //Score every scorer sitting on `doc`; returns (score, raw, matches, covered).
     let evaluate = |scorers: &mut [BoxScorer<'a>], doc: DocId| -> Option<(u64, u64, usize, bool)> {
         let mut score = 0u64;
@@ -46,7 +147,7 @@ pub(crate) fn top_k_with_any<'a>(
         let mut matched_weight = 0.0f32;
         for scorer in scorers.iter_mut() {
             if scorer.doc() == Some(doc) {
-                score = score.saturating_add(scorer.score(stats, doc));
+                score = score.saturating_add(scorer.score(&lens, doc));
                 matched_terms += 1;
                 matched_weight += scorer.weight();
             }
@@ -93,14 +194,10 @@ pub(crate) fn top_k_with_any<'a>(
         }
         return (finish_heap(heap), finish_heap(any_heap));
     }
-
+    scorers.retain(|scorer| scorer.doc().is_some());
+    scorers.sort_unstable_by_key(|scorer| scorer.doc());
+    let mut moved= Vec::with_capacity(scorers.len());
     loop {
-        scorers.retain(|scorer| scorer.doc().is_some());
-        if scorers.is_empty() {
-            break;
-        }
-        // every scorer left has a document, so this orders by it
-        scorers.sort_unstable_by_key(|scorer| scorer.doc());
 
         // The score a document must beat: the worse of the two lists' k-th best.
         let pool_threshold = if k == 0 {
@@ -152,25 +249,38 @@ pub(crate) fn top_k_with_any<'a>(
         }
 
         if smallest_doc == pivot_doc {
-            // Block-max is not ported yet: it only affects speed, not results.
+            let on_pivot = scorers
+                .iter()
+                .take_while(|scorer| scorer.doc() == Some(pivot_doc))
+                .count();
+            // a document both lists would still take is never skipped
+            let skip_threshold = any_threshold.map_or(pool_threshold, |any| any.min(pool_threshold));
+            if let Some(skip_to) = block_skip(scorers, on_pivot, pivot_doc, skip_threshold) {
+                for scorer in scorers.iter_mut().take(on_pivot) {
+                    scorer.advance_to(skip_to);
+                }
+                reinsert_moved(scorers, on_pivot, |scorer| scorer.doc(), &mut moved);
+                continue;
+            }
             if restrict.is_none_or(|docs| docs.contains(pivot_doc))
                 && let Some(found) = evaluate(scorers.as_mut_slice(), pivot_doc)
             {
                 collect(&mut heap, &mut any_heap, pivot_doc, found);
             }
-            // Step past only the scorers that are on the pivot document.
-            for scorer in scorers.iter_mut() {
-                if scorer.doc() == Some(pivot_doc) {
-                    scorer.next();
-                }
+            for scorer in scorers.iter_mut().take(on_pivot) {
+                scorer.next();
             }
+            reinsert_moved(scorers, on_pivot, |scorer| scorer.doc(), &mut moved);
         } else {
             // Everything before the pivot is hopeless: skip it.
-            for scorer in scorers.iter_mut() {
-                if scorer.doc().is_some_and(|doc| doc < pivot_doc) {
-                    scorer.advance_to(pivot_doc);
-                }
+            let behind = scorers
+                .iter()
+                .take_while(|scorer| scorer.doc().is_some_and(|doc| doc < pivot_doc))
+                .count();
+            for scorer in scorers.iter_mut().take(behind) {
+                scorer.advance_to(pivot_doc);
             }
+            reinsert_moved(scorers, behind, |scorer| scorer.doc(), &mut moved);
         }
     }
 

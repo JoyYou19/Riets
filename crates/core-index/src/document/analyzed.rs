@@ -117,7 +117,8 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
     let mut cur_position = 0u32;
 
     let mut push = |term: &str, encoded: u32, offset: (u32, u32)| {
-        let slot = occurrences.entry(term.to_owned()).or_default();
+       let slot = occurrences.entry(term.to_owned()).or_default();
+        
         if slot.0.last() != Some(&encoded) {
             slot.0.push(encoded);
             if store_offsets {

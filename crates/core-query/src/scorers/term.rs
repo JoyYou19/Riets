@@ -186,4 +186,22 @@ impl Scorer for TermScorer<'_> {
     fn doc_count(&self) -> u64 {
         self.doc_count
     }
+    fn block_bound(&self) -> Option<(u64, DocId)> {
+        let mut bound = 0u64;
+        let mut last: Option<DocId> = None;
+        for (cursor, &doc_freq) in self.cursors.iter().zip(&self.doc_freqs) {
+            // memory lists, unions and unknown document lengths have no block bound
+            let entry = cursor.block_entry().filter(|entry| entry.min_doc_len > 0)?;
+            bound = bound.saturating_add(bm25_score_scaled(
+                entry.max_tf,
+                entry.max_weight,
+                Some(entry.min_doc_len),
+                self.avg_doc_len,
+                self.doc_count,
+                doc_freq,
+            ));
+            last = Some(last.map_or(entry.last_doc_id, |known| known.min(entry.last_doc_id)));
+        }
+        Some((weighted(bound, self.weight), last?))
+    }
 }
