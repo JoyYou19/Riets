@@ -15,7 +15,7 @@ use axum::{
 use core_auth::{Permission, Principal, Token, hash_password};
 use core_backup::backup::{BackupType, is_valid_backup_id};
 use core_core::{DatabaseOptions, shard_manager::ShardManager};
-use core_index::lsm::index_worker::ReindexStatus;
+use core_index::{lsm::index_worker::ReindexStatus, types::MAX_SHARDS};
 use core_protocol::{
     command_reponse_definitions::{
         AnalyzeRequest, Command, CreateDatabaseRequest, DeleteCommand, DidYouMeanRequest,
@@ -1394,15 +1394,16 @@ pub(crate) async fn create_database_handler(
     //TODO: calculate in a smart way
     .unwrap_or(4);
     //studip max shard_count
-    if shard_count > 128 {
+    if shard_count > MAX_SHARDS {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData(format!(
-                "shard_count {shard_count} exceeds the maximum of 128"
+                "shard_count {shard_count} exceeds the maximum of {MAX_SHARDS}"
             )),
             &ctx,
         )
         .into_response();
     }
+
     if shard_count < 1 {
         return HttpError::from_corelamo(
             CorelamoError::InvalidData("database must have atleast one shard".to_owned()),
