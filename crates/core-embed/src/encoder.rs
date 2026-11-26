@@ -26,7 +26,7 @@ use crate::model_error;
 /// How the transformer's per-token output becomes one vector per text. Use what the model was
 /// trained with; the other gives vectors that load fine but match badly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Pooling {
+pub enum Pooling {
     /// Average over the text's tokens (e5).
     Mean,
     /// The first token's output (`[CLS]`) alone (bge, mxbai).
@@ -35,7 +35,7 @@ pub(crate) enum Pooling {
 
 /// The transformer a model's weights are for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Architecture {
+pub enum Architecture {
     /// XLM-R (bge-m3, multilingual-e5).
     XlmRoberta,
     /// BERT (mxbai-embed).
@@ -43,7 +43,7 @@ pub(crate) enum Architecture {
 }
 
 /// The files of a Hugging Face model repository that a model is built from.
-pub(crate) struct ModelFiles {
+pub struct ModelFiles {
     pub(crate) weights: PathBuf,
     pub(crate) tokenizer: PathBuf,
     pub(crate) config: PathBuf,
@@ -56,7 +56,7 @@ enum Transformer {
 }
 
 /// One loaded model copy.
-pub(crate) struct LoadedModel {
+pub struct LoadedModel {
     transformer: Transformer,
     pooling: Pooling,
     tokenizer: Tokenizer,

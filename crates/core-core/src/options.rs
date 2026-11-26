@@ -86,7 +86,7 @@ impl Default for DatabaseOptions {
     }
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SearchOptions {
+pub struct SearchOptions {
     /// Rank of each cascade tier, 1 first. A tier left out is off. Empty: the default order.
     pub cascade: std::collections::BTreeMap<TierKind, u8>,
 }

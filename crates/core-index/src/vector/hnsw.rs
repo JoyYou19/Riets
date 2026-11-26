@@ -37,7 +37,7 @@ use crate::types::XPathId;
 pub const DEFAULT_SEARCH_BEAM_WIDTH: usize = 64;
 /// The beam holds at least this many candidates per requested hit, so the f32 rescore has
 /// room to fix the int8 order.
-pub(crate) const RESCORE_OVERSAMPLING: usize = 3;
+pub(super) const RESCORE_OVERSAMPLING: usize = 3;
 /// A search computing more than `node_count` / this many similarities gives up and lets the
 /// exact scan answer: past that, the random-access walk costs as much as a sequential scan.
 const BUDGET_FRACTION_OF_NODES: usize = 4;

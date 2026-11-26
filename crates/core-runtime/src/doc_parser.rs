@@ -14,19 +14,19 @@ use rayon::prelude::*;
 use simd_json::OwnedValue as Value;
 use uuid::Uuid;
 
-pub(crate) trait DocumentConversion {
+pub trait DocumentConversion {
     fn into_document_inputs(self, policy: &IndexPolicy) -> Result<ParseOutcome, CorelamoError>;
 }
 
 // TODO: make this configurable
 const PARALLEL_PARSE_THRESHOLD: usize = 10;
 
-pub(crate) struct Json {
+pub struct Json {
     pub body: String,
 }
 //pub struct Xml<'a>(pub &'a str);
 
-pub(crate) struct ParseOutcome {
+pub struct ParseOutcome {
     pub docs: Vec<DocumentInput>,
     //to save the original index of input unfiltered docs
     pub indices: Vec<usize>,
@@ -34,7 +34,7 @@ pub(crate) struct ParseOutcome {
 }
 
 #[timed(json_parsing)]
-pub(crate) fn parse_documents(
+pub fn parse_documents(
     body: String,
     format: Format,
     policy: &IndexPolicy,
@@ -191,7 +191,7 @@ fn parse_one(
 
 //retrieve byte-for-byte response + skipped for format
 #[timed(retrieve_opps)]
-pub(crate) fn convert_from_storage(
+pub fn convert_from_storage(
     docs: &[StoredDocument],
     format: Format,
 ) -> (Vec<(String, Vec<u8>)>, Vec<ExternalDocId>) {
@@ -208,11 +208,11 @@ pub(crate) fn convert_from_storage(
 }
 
 //polocy is just json so no worries
-pub(crate) fn serialize_policy(policy: &IndexPolicy) -> Result<String, CorelamoError> {
+pub fn serialize_policy(policy: &IndexPolicy) -> Result<String, CorelamoError> {
     serde_json::to_string_pretty(policy).map_err(CorelamoError::from)
 }
 
-pub(crate) fn parse_policy(body: &str) -> Result<IndexPolicy, CorelamoError> {
+pub fn parse_policy(body: &str) -> Result<IndexPolicy, CorelamoError> {
     serde_json::from_str(body).map_err(CorelamoError::from)
 }
 

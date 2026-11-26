@@ -671,8 +671,8 @@ impl ShardHandle {
 
         Ok(ShardRankedResult {
             total,
-            exact,
             items,
+            exact,
             bounds,
         })
     }
@@ -908,8 +908,8 @@ impl ShardHandle {
         make: impl FnOnce(oneshot::Sender<T>) -> ShardCmd,
     ) -> Result<T, CorelamoError> {
         let (rtx, rrx) = oneshot::channel();
-        self.tx.send(make(rtx)).map_err(|_| self.dead())?;
-        rrx.await.map_err(|_| self.dead())
+        self.tx.send(make(rtx)).map_err(|_send| self.dead())?;
+        rrx.await.map_err(|_send| self.dead())
     }
 
     #[timed(inserting)]
@@ -1115,20 +1115,20 @@ impl Drop for AliveGuard {
         self.0.store(false, Ordering::Release);
     }
 }
-
-#[timed(database_lifecycle)]
-pub fn spawn(
-    mut shard: ShardDb,
-    queue_depth: usize,
-    bootable: bool,
-) -> Result<
+type Response = Result<
     (
         ShardHandle,
         JoinHandle<()>,
         Receiver<Result<(), CorelamoError>>,
     ),
     CorelamoError,
-> {
+>;
+#[timed(database_lifecycle)]
+pub fn spawn(
+    mut shard: ShardDb,
+    queue_depth: usize,
+    bootable: bool,
+) -> Response {
     let id = shard.shard_id();
     let progress = shard.progress();
     let alive = Arc::new(AtomicBool::new(true));
@@ -1153,7 +1153,7 @@ pub fn spawn(
                 .store(bootable && ok, Ordering::Release);
             drop(boot_tx.send(started));
             if ok {
-                run(shard, rx, shared_worker);
+                run(shard, &rx, &shared_worker);
             }
         })
         .map_err(|e| CorelamoError::Internal(format!("failed to spawn shard {id}: {e}")))?;
@@ -1171,7 +1171,7 @@ pub fn spawn(
     ))
 }
 
-fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>) {
+fn run(mut shard: ShardDb, rx: &Receiver<ShardCmd>, shared:& Arc<SharedShardState>) {
     loop {
         let cmd = match rx.recv_timeout(IDLE_FLUSH_POLL) {
             Ok(cmd) => cmd,
@@ -1275,7 +1275,7 @@ fn run(mut shard: ShardDb, rx: Receiver<ShardCmd>, shared: Arc<SharedShardState>
                 user,
             } => {
                 shared.is_backing_up.store(true, Ordering::Release);
-                let result = shard.backup_full(user, shard_backup_path, backup_id);
+                let result = shard.backup_full(&user, &shard_backup_path, &backup_id);
                 shared.is_backing_up.store(false, Ordering::Release);
                 if let Ok(manifest) = &result {
                     *shared

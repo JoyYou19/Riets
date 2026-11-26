@@ -14,7 +14,7 @@ use crate::config::ModelConfig;
 use crate::encoder::{Architecture, ModelFiles, Pooling};
 use crate::model_error;
 
-pub(crate) use crate::encoder::LoadedModel;
+pub use crate::encoder::LoadedModel;
 
 /// A supported embedding model. `id` is what settings and vector file headers store.
 pub struct ModelSpec {
@@ -32,7 +32,7 @@ pub struct ModelSpec {
 }
 
 /// Loads one copy of `spec`'s model, downloading its files on first use.
-pub(crate) fn load_model(
+pub fn load_model(
     spec: &'static ModelSpec,
     cache_dir: PathBuf,
     config: &ModelConfig,
@@ -134,7 +134,7 @@ pub fn find_model(id: &str) -> Option<&'static ModelSpec> {
     MODELS.iter().find(|spec| spec.id == id)
 }
 
-pub(crate) fn known_model_ids() -> String {
+pub fn known_model_ids() -> String {
     MODELS
         .iter()
         .map(|spec| spec.id)

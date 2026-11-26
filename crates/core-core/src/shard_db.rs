@@ -73,7 +73,7 @@ pub struct DatabaseStats {
     pub restoring: bool,
 }
 //has it been quiet long enough to flush
-pub(crate) const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
+pub const IDLE_FLUSH_AFTER: Duration = Duration::from_secs(2);
 const RESTORE_STAGING: &str = "restore.new";
 const RESTORE_OLD: &str = "restore.old";
 const RESTORE_DATA_DIRS: [&str; 2] = ["index", "documents"];
@@ -833,7 +833,7 @@ impl ShardDb {
         result
     }
 
-    pub fn get_logs(&self, date: Option<String>) -> Result<String, CorelamoError> {
+    pub fn get_logs(&self, date: Option<&String>) -> Result<String, CorelamoError> {
         let logs_dir = self.root.join("logs");
         if !logs_dir.exists() {
             return Ok(String::new());
@@ -844,7 +844,7 @@ impl ShardDb {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|e| e == "log") {
-                if let Some(ref date_str) = date {
+                if let Some(date_str) = date {
                     if path
                         .file_name()
                         .and_then(|n| n.to_str())
@@ -1434,9 +1434,9 @@ impl ShardDb {
     #[timed(backup)]
     pub fn backup_full(
         &mut self,
-        user: String,
-        shard_backup_path: PathBuf,
-        backup_id: String,
+        user: &String,
+        shard_backup_path: &PathBuf,
+        backup_id: &String,
     ) -> Result<BackupManifest, CorelamoError> {
         if self.wal_reindex.is_some() {
             return Err(CorelamoError::Busy(
@@ -1450,7 +1450,7 @@ impl ShardDb {
         {
             warn!(self.log, "background worker exited with error before backup"; "error" => %err);
         }
-        let result = self.run_full_backup(&shard_backup_path, &backup_id);
+        let result = self.run_full_backup(shard_backup_path, backup_id);
         self.restart_background();
 
         match &result {

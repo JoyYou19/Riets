@@ -91,7 +91,7 @@ impl SegmentVectors {
 /// Exact top `k` of `file` that `filter` accepts, with f32 scores.
 /// With a selective filter only the allowed rows are read; otherwise every row's int8 codes
 /// are scanned for `k * RESCORE_OVERSAMPLING` candidates, which are then rescored in f32.
-pub(crate) fn exact_scan(
+pub(super) fn exact_scan(
     file: &VectorFile,
     query: &[f32],
     k: usize,

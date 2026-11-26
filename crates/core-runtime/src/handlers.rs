@@ -86,7 +86,7 @@ fn auth_unavailable<T>(_: std::sync::PoisonError<T>) -> CorelamoError {
     CorelamoError::Internal("auth service unavailable".into())
 }
 
-pub(crate) async fn login_handler(
+pub async fn login_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     body: String,
@@ -143,7 +143,7 @@ pub(crate) async fn login_handler(
     }
 }
 
-pub(crate) async fn logout_handler(
+pub async fn logout_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     headers: HeaderMap,
@@ -162,7 +162,7 @@ pub(crate) async fn logout_handler(
     auth.logout(&Token(token.to_owned()));
     HttpOk::new("logged out", &ctx).into_response()
 }
-pub(crate) async fn list_users_handler(
+pub async fn list_users_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
@@ -211,7 +211,7 @@ pub(crate) async fn list_users_handler(
     .into_response()
 }
 
-pub(crate) async fn create_user_handler(
+pub async fn create_user_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
@@ -258,7 +258,7 @@ pub(crate) async fn create_user_handler(
     }
 }
 
-pub(crate) async fn delete_user_handler(
+pub async fn delete_user_handler(
     State(state): State<AppState>,
     Path(username): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -277,7 +277,7 @@ pub(crate) async fn delete_user_handler(
     }
 }
 
-pub(crate) async fn update_user_password_handler(
+pub async fn update_user_password_handler(
     State(state): State<AppState>,
     Path(username): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -332,7 +332,7 @@ pub(crate) async fn update_user_password_handler(
     }
 }
 
-pub(crate) async fn update_user_roles_handler(
+pub async fn update_user_roles_handler(
     State(state): State<AppState>,
     Path(username): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -373,7 +373,7 @@ pub(crate) async fn update_user_roles_handler(
 
 // //TODO: total_hits: xxx kkadu
 #[timed(search)]
-pub(crate) async fn search_handler(
+pub async fn search_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -454,7 +454,7 @@ pub(crate) async fn search_handler(
 }
 
 #[timed(search)]
-pub(crate) async fn did_you_mean_handler(
+pub async fn did_you_mean_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -531,7 +531,7 @@ pub(crate) async fn did_you_mean_handler(
     .into_response()
 }
 
-pub(crate) async fn get_all_fields_handler(
+pub async fn get_all_fields_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -565,7 +565,7 @@ pub(crate) async fn get_all_fields_handler(
 }
 
 #[timed(retrieve_opps)]
-pub(crate) async fn lookup_handler(
+pub async fn lookup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -612,7 +612,7 @@ pub(crate) async fn lookup_handler(
 }
 
 #[timed(retrieve_opps)]
-pub(crate) async fn analyze_handler(
+pub async fn analyze_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -688,7 +688,7 @@ pub(crate) async fn analyze_handler(
 }
 
 #[timed(inserting)]
-pub(crate) async fn insert_handler(
+pub async fn insert_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -774,7 +774,7 @@ pub(crate) async fn insert_handler(
 }
 
 #[timed(retrieve_opps)]
-pub(crate) async fn retrieve_handler(
+pub async fn retrieve_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -851,7 +851,7 @@ pub(crate) async fn retrieve_handler(
 }
 
 #[timed(database_lifecycle)]
-pub(crate) async fn start_database_handler(
+pub async fn start_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -875,7 +875,7 @@ pub(crate) async fn start_database_handler(
 }
 
 #[timed(database_lifecycle)]
-pub(crate) async fn stop_database_handler(
+pub async fn stop_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -899,7 +899,7 @@ pub(crate) async fn stop_database_handler(
 }
 
 #[timed(database_lifecycle)]
-pub(crate) async fn restart_database_handler(
+pub async fn restart_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -925,7 +925,7 @@ pub(crate) async fn restart_database_handler(
 }
 
 #[timed(database_lifecycle)]
-pub(crate) async fn clear_database_handler(
+pub async fn clear_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -953,7 +953,7 @@ pub(crate) async fn clear_database_handler(
     }
 }
 
-pub(crate) async fn get_logs_handler(
+pub async fn get_logs_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1005,7 +1005,7 @@ pub(crate) async fn get_logs_handler(
     }
 }
 
-pub(crate) async fn clear_logs_handler(
+pub async fn clear_logs_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1035,7 +1035,7 @@ pub(crate) async fn clear_logs_handler(
 }
 
 #[timed(modifying_documents)]
-pub(crate) async fn delete_document_handler(
+pub async fn delete_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1104,7 +1104,7 @@ pub(crate) async fn delete_document_handler(
 }
 
 #[timed(modifying_documents)]
-pub(crate) async fn partial_replace_handler(
+pub async fn partial_replace_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1180,7 +1180,7 @@ pub(crate) async fn partial_replace_handler(
 }
 
 #[timed(modifying_documents)]
-pub(crate) async fn replace_document_handler(
+pub async fn replace_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1271,7 +1271,7 @@ pub(crate) async fn replace_document_handler(
 }
 
 #[timed(modifying_documents)]
-pub(crate) async fn upsert_document_handler(
+pub async fn upsert_document_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1359,7 +1359,7 @@ pub(crate) async fn upsert_document_handler(
 }
 
 #[timed(database_lifecycle)]
-pub(crate) async fn create_database_handler(
+pub async fn create_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1474,7 +1474,7 @@ fn discard_failed_create(state: &AppState, slot: &DbSlot, db_name: &str) {
     state.databases.remove(db_name);
 }
 #[timed(database_lifecycle)]
-pub(crate) async fn delete_database_handler(
+pub async fn delete_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1587,7 +1587,7 @@ pub(crate) async fn delete_database_handler(
     }
 }
 
-pub(crate) async fn stats_handler(
+pub async fn stats_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1679,7 +1679,7 @@ pub(crate) async fn stats_handler(
     .into_response()
 }
 /// `GET /api/metrics`: every live database's counters in the Prometheus text format.
-pub(crate) async fn prometheus_metrics_handler(
+pub async fn prometheus_metrics_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
@@ -1792,7 +1792,7 @@ fn write_histogram(
     let _ = writeln!(out, "{name}_count{{db=\"{db}\"}} {cumulative}");
 }
 #[timed(search)]
-pub(crate) async fn info_words_handler(
+pub async fn info_words_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1862,7 +1862,7 @@ pub(crate) async fn info_words_handler(
 }
 
 #[timed(reindex)]
-pub(crate) async fn reindex_handler(
+pub async fn reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1914,7 +1914,7 @@ pub(crate) async fn reindex_handler(
     }
 }
 #[timed(reindex)]
-pub(crate) async fn abort_reindex_handler(
+pub async fn abort_reindex_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1939,7 +1939,7 @@ pub(crate) async fn abort_reindex_handler(
     HttpOk::new(format!("reindex aborted for '{db_name}'"), &ctx).into_response()
 }
 
-pub(crate) async fn get_policy_handler(
+pub async fn get_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -1963,7 +1963,7 @@ pub(crate) async fn get_policy_handler(
     }
 }
 
-pub(crate) async fn set_policy_handler(
+pub async fn set_policy_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2003,7 +2003,7 @@ pub(crate) async fn set_policy_handler(
     }
 }
 
-pub(crate) async fn get_config_handler(
+pub async fn get_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2028,7 +2028,7 @@ pub(crate) async fn get_config_handler(
     }
 }
 
-pub(crate) async fn set_config_handler(
+pub async fn set_config_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2069,7 +2069,7 @@ pub(crate) async fn set_config_handler(
     }
 }
 
-pub(crate) async fn list_databases_handler(
+pub async fn list_databases_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
@@ -2126,7 +2126,7 @@ struct ListModelsResponse {
     models: Vec<EmbeddingModelInfo>,
 }
 
-pub(crate) async fn list_models_handler(
+pub async fn list_models_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
@@ -2157,7 +2157,7 @@ pub(crate) async fn list_models_handler(
 }
 
 #[timed(backup)]
-pub(crate) async fn backup_handler(
+pub async fn backup_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2188,7 +2188,7 @@ pub(crate) async fn backup_handler(
 }
 
 #[timed(restore)]
-pub(crate) async fn backup_restore_handler(
+pub async fn backup_restore_handler(
     State(state): State<AppState>,
     Path((db_name, backup_id)): Path<(String, String)>,
     Extension(ctx): Extension<RequestContext>,
@@ -2245,7 +2245,7 @@ pub(crate) async fn backup_restore_handler(
 }
 
 #[timed(backup)]
-pub(crate) async fn backup_incremental_handler(
+pub async fn backup_incremental_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2295,7 +2295,7 @@ pub(crate) async fn backup_incremental_handler(
 }
 
 #[timed(backup)]
-pub(crate) async fn list_backups_handler(
+pub async fn list_backups_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2329,7 +2329,7 @@ pub(crate) async fn list_backups_handler(
 }
 
 #[timed(backup)]
-pub(crate) async fn backup_delete_handler(
+pub async fn backup_delete_handler(
     State(state): State<AppState>,
     Path((db_name, backup_id)): Path<(String, String)>,
     Extension(ctx): Extension<RequestContext>,
@@ -2369,7 +2369,7 @@ pub(crate) async fn backup_delete_handler(
 }
 
 #[timed(database_lifecycle)]
-pub(crate) async fn rename_database_handler(
+pub async fn rename_database_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2559,7 +2559,7 @@ pub(crate) async fn rename_database_handler(
     }
 }
 
-pub(crate) async fn timings_handler(
+pub async fn timings_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Extension(principal): Extension<Principal>,
@@ -2592,7 +2592,7 @@ pub(crate) async fn timings_handler(
 }
 
 #[timed(disk_usage)]
-pub(crate) async fn disk_usage_handler(
+pub async fn disk_usage_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2636,7 +2636,7 @@ pub(crate) async fn disk_usage_handler(
     HttpOk::with_data(format!("disk usage for '{db_name}'"), usage, &ctx).into_response()
 }
 
-pub(crate) async fn get_dictionary_handler(
+pub async fn get_dictionary_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2661,7 +2661,7 @@ pub(crate) async fn get_dictionary_handler(
     )
 }
 
-pub(crate) async fn set_dictionary_handler(
+pub async fn set_dictionary_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,
@@ -2692,7 +2692,7 @@ pub(crate) async fn set_dictionary_handler(
     }
 }
 
-pub(crate) async fn reset_dictionary_handler(
+pub async fn reset_dictionary_handler(
     State(state): State<AppState>,
     Path(db_name): Path<String>,
     Extension(ctx): Extension<RequestContext>,

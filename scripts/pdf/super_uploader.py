@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload slide JSON files (made by deck_to_slide_json.py) to corelamo.
+"""Upload slide JSON files (made by pdf_parse.py) to corelamo.
 
 Pass 1 - scan. Every JSON file becomes one document per slide. The uploader then walks every
 document, nested objects and arrays included, and records which fields exist, how often and with
@@ -20,7 +20,7 @@ Each slide document:
     title          slide title
     content        title + text + tables + charts + notes as sentences; "$vector": embedded
     notes          speaker notes (PowerPoint) or comments (PDF)
-    source_format  "pdf" | "pptx"
+    source_format  "pdf" | "pptx" | "md"
     pictures       [picture asset paths]          stored, not ranked
     warnings       [parser warnings]              stored, not ranked
     page_image     legacy parser field            stored, not ranked
@@ -92,6 +92,8 @@ FIELD_POLICY: dict[str, Any] = {
     "pictures[]": {"$type": "text", "$analyzer": "path", "$weight": {"min": 0, "max": 0}},
     "warnings[]": {"$type": "text", "$weight": {"min": 0, "max": 0}},
     "page_image": {"$type": "text", "$analyzer": "path", "$weight": {"min": 0, "max": 0}},
+    "links[].url": {"$type": "text", "$analyzer": "path", "$weight": {"min": 0, "max": 0}},
+    "links[].text": {"$type": "text", "$weight": {"min": 1, "max": 20}},
 }
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -215,12 +217,47 @@ def chart_sentences(shape: dict) -> list[str]:
     return out
 
 
+def data_sentences(data: Any, path: tuple[str, ...] = ()) -> list[str]:
+    """Converted XML/JSON as "path: value" sentences, e.g. "index status: index state: normal".
+    A single wrapper element such as cps:content is left out of the path."""
+    if not path and isinstance(data, dict) and len(data) == 1:
+        (only,) = data.values()
+        if isinstance(only, (dict, list)):
+            data = only
+    out: list[str] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            label = str(key).lstrip("@")
+            out.extend(data_sentences(value, path if key == "#text" else path + (label,)))
+    elif isinstance(data, list):
+        for value in data:
+            out.extend(data_sentences(value, path))
+    elif data is not None:
+        value = clean_text(json.dumps(data) if isinstance(data, bool) else data)
+        if value:
+            label = clean_text(" ".join(path))
+            out.append(f"{label}: {value}" if label else value)
+    return out
+
+
 def flatten_shapes(shapes: list, parts: list[str], pictures: list[str]) -> None:
     for shape in shapes:
         if not isinstance(shape, dict):
             continue
         kind = shape.get("kind")
-        if kind == "text":
+        if kind == "heading":
+            text = clean_text(shape.get("text"))
+            if text:
+                parts.append(text)
+        elif kind == "code":
+            # parsed XML/JSON reads better as sentences; other code goes in as written (names are searchable)
+            if shape.get("data") is not None:
+                parts.extend(data_sentences(shape["data"]))
+            else:
+                code = clean_text(shape.get("text"))
+                if code:
+                    parts.append(code)
+        elif kind == "text":
             for p in shape.get("paragraphs") or []:
                 text = clean_text(p.get("text") if isinstance(p, dict) else p)
                 if text and not NOISE_LINE.match(text):

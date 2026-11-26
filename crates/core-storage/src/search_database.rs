@@ -419,14 +419,14 @@ impl<S: DocumentStore> SearchDatabase<S> {
             self.index_worker.delete_documents_wait(old_ids, true)?;
         } else {
             let analyzer = self.analyzer_set.clone();
-            let (analyzed, documents) = mpsc::channel();
+            let (analyzed_document, documents) = mpsc::channel();
             rayon::spawn(move || {
                 if
                     let Ok(docs) = panic::catch_unwind(
                         AssertUnwindSafe(|| analyze_batch(&analyzer, &indexed))
                     )
                 {
-                    drop(analyzed.send(docs));
+                    drop(analyzed_document.send(docs));
                 }
             });
             // delete without publishing; the add right after it publishes both together
@@ -670,7 +670,7 @@ impl<S: DocumentStore> IndexPipeline<'_, S> {
 
         let indexed = std::mem::take(&mut self.current_batch);
         let analyzer = self.db.analyzer_set.clone();
-        let (analyzed, documents) = mpsc::channel();
+        let (analyzed_batch, documents) = mpsc::channel();
         rayon::spawn(move || {
             // A panic in rayon::spawn would abort the process. Caught, it drops the sender
             // instead, and the index worker reports this batch as failed.
@@ -679,7 +679,7 @@ impl<S: DocumentStore> IndexPipeline<'_, S> {
                     AssertUnwindSafe(|| analyze_batch(&analyzer, &indexed))
                 )
             {
-                drop(analyzed.send(docs));
+                drop(analyzed_batch.send(docs));
             }
         });
         let pending = self.db.index_worker.add_indexed_documents_deferred(documents)?;
@@ -713,14 +713,14 @@ fn send_reindex_batch(
     }
     let count = batch.len() as u64;
     let analyzer = analyzer.clone();
-    let (analyzed, documents) = mpsc::channel();
+    let (analyzed_reindex, documents) = mpsc::channel();
     rayon::spawn(move || {
         if
             let Ok(docs) = panic::catch_unwind(
                 AssertUnwindSafe(|| analyze_batch(&analyzer, &batch))
             )
         {
-            drop(analyzed.send(docs));
+            drop(analyzed_reindex.send(docs));
         }
     });
     in_flight.push_back(worker.add_indexed_documents_deferred(documents)?);

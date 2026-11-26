@@ -67,8 +67,8 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
 
         Query::Not(inner) => {
             //if nothing is inside a NOT it means match all right?
-            let analyzed = analyze_query(*inner, analyzer).unwrap_or(Query::MatchAll);
-            Some(Query::Not(Box::new(analyzed)))
+            let analyzed_query = analyze_query(*inner, analyzer).unwrap_or(Query::MatchAll);
+            Some(Query::Not(Box::new(analyzed_query)))
         }
 
         Query::Synonym(forms) => analyze_synonym(forms, analyzer),

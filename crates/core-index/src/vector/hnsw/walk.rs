@@ -14,13 +14,13 @@ use crate::hash::fmix64;
 const TIE_BREAK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Where the walk gets a node's links from.
-pub(crate) trait NeighbourLists: Sync {
+pub(super) trait NeighbourLists: Sync {
     /// Replaces `out` with the neighbours of `node` on `level`. `node` is on `level`.
     fn neighbours_into(&self, node: u32, level: usize, out: &mut Vec<u32>);
 }
 
 /// How close a node is to the walk's target. Must be finite.
-pub(crate) trait SimilarityToTarget {
+pub(super) trait SimilarityToTarget {
     fn similarity(&self, node: u32) -> f32;
     fn tie_salt(&self) -> u64 {
         0
@@ -34,7 +34,7 @@ pub(crate) trait SimilarityToTarget {
 /// highest ids and the other duplicates would lose all incoming links. The hash spreads
 /// ties evenly and deterministically.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ScoredNode {
+pub(super) struct ScoredNode {
     pub(crate) similarity: f32,
     tie_break: u32,
     pub(crate) node: u32,
@@ -84,7 +84,7 @@ impl Eq for ScoredNode {}
 /// Which nodes the current search has already looked at. Each search gets a new mark, so
 /// starting a search is O(1) instead of clearing the whole buffer.
 #[derive(Default)]
-pub(crate) struct VisitedSet {
+pub(super) struct VisitedSet {
     marks: Vec<u32>,
     current_mark: u32,
 }
@@ -125,13 +125,13 @@ thread_local! {
 
 /// Runs `f` with this thread's visited buffer.
 /// Panics if called again from inside `f`: a walk never starts another walk.
-pub(crate) fn with_visited_set<R>(f: impl FnOnce(&mut VisitedSet) -> R) -> R {
+pub(super) fn with_visited_set<R>(f: impl FnOnce(&mut VisitedSet) -> R) -> R {
     VISITED_SET.with_borrow_mut(f)
 }
 
 /// Result of searching one level.
 #[derive(Debug)]
-pub(crate) struct LevelSearch {
+pub(super) struct LevelSearch {
     /// Accepted nodes found, best first, at most `beam_width`.
     pub(crate) best_first: Vec<ScoredNode>,
     /// True if the walk stopped because it used up its similarity computations.
@@ -139,7 +139,7 @@ pub(crate) struct LevelSearch {
 }
 
 /// A walk over one graph towards one target.
-pub(crate) struct GraphWalk<'a, L: ?Sized, S: ?Sized> {
+pub(super) struct GraphWalk<'a, L: ?Sized, S: ?Sized> {
     pub(crate) lists: &'a L,
     pub(crate) target: &'a S,
     pub(crate) node_count: usize,

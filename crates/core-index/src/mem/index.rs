@@ -3,7 +3,7 @@ use crate::array_rows::ArrayRowIndex;
 use crate::document::IndexedDocument;
 use crate::document::analyzed::{AnalyzedDocument, AnalyzedField, AnalyzedTarget};
 use crate::document::indexed::BoolField;
-use crate::fuzzy::{DEFAULT_MAX_CANDIDATES, FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton};
+use crate::fuzzy::{FuzzyExpansion, FuzzyOptions, LevenshteinAutomaton, rank_candidates};
 use crate::numeric_values::{NumericBound, NumericPoints, NumericValue};
 use crate::posting::cursor::TermCursor;
 use crate::posting::{PostingCursor, PostingList};
@@ -105,35 +105,27 @@ impl SearchIndex for MemIndex {
     }
 
     fn fuzzy_expansions(
-        &self,
-        term: &str,
-        xpath: XPathId,
-        opts: FuzzyOptions,
-    ) -> Vec<FuzzyExpansion> {
-        let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
-
-        let mut candidates: Vec<(String, u8, u32)> = Vec::new();
-        for (key, list) in &self.terms {
-            if key.xpath != xpath || list.is_empty() {
-                continue;
-            }
-            let Some(edits) = aut.distance_to(&key.term) else {
-                continue;
-            };
-            candidates.push((key.term.clone(), edits, self.doc_freq(&key.term, xpath)));
+    &self,
+    term: &str,
+    xpath: XPathId,
+    opts: FuzzyOptions,
+) -> Vec<FuzzyExpansion> {
+    let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
+    let mut candidates: Vec<(String, u8, u32)> = Vec::new();
+    for (key, list) in &self.terms {
+        if key.xpath != xpath || list.is_empty() {
+            continue;
         }
-        candidates.sort_unstable_by(|a, b| {
-            a.1.cmp(&b.1)
-                .then(b.2.cmp(&a.2))
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        candidates.truncate(DEFAULT_MAX_CANDIDATES);
-
-        candidates
-            .into_iter()
-            .map(|(t, edits, doc_freq)| FuzzyExpansion::new(t, edits, doc_freq))
-            .collect()
+        let Some(edits) = aut.distance_to(&key.term) else {
+            continue;
+        };
+        let doc_freq = self.doc_freq(&key.term, xpath);
+        if doc_freq > 0 {
+            candidates.push((key.term.clone(), edits, doc_freq));
+        }
     }
+    rank_candidates(candidates)
+}
 
      fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.terms
