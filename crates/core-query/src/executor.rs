@@ -1116,6 +1116,7 @@ where
                                 weight,
                                 out,
                                 slot,
+                                false,
                             );
                         }
                     } else if let Some(leaf) = self.leaf(query, ctx) {
@@ -1130,7 +1131,7 @@ where
                                 .binary_search_by_key(&doc_id, |p| p.doc_id)
                                 .ok()
                                 .and_then(|i| items.get(i));
-                            Self::push_leaf_matches(posting, ctx.xpath, weight, out, slot);
+                            Self::push_leaf_matches(posting, ctx.xpath, weight, out, slot, false);
                         }
                     }
                 }
@@ -1194,6 +1195,7 @@ where
                                             positions: posting.positions.to_vec(),
                                             offsets: posting.offsets.to_vec(),
                                             weight,
+                                            exact: false,
                                         });
                                     }
                                 }
@@ -1206,6 +1208,7 @@ where
                                         weight,
                                         out,
                                         slot,
+                                        false,
                                     );
                                 }
                             }
@@ -1237,6 +1240,7 @@ where
         weight: f32,
         out: &mut [Vec<MatchedTerm>],
         slot: usize,
+        exact: bool,
     ) {
         if let Some(p) = posting
             && !p.positions.is_empty()
@@ -1249,6 +1253,7 @@ where
                 row_path: Vec::new(),
                 weight,
                 offsets: p.offsets.to_vec(),
+                exact,
             });
         }
     }
@@ -1291,6 +1296,7 @@ where
                 positions: posting.positions.to_vec(),
                 weight,
                 offsets: posting.offsets.to_vec(),
+                exact: false,
             });
         }
     }
@@ -1370,6 +1376,7 @@ where
                     row_id,
                     weight,
                     offsets: vec![(start, end)],
+                    exact: false,
                 });
             } else {
                 out.push(MatchedTerm {
@@ -1379,6 +1386,7 @@ where
                     positions: matched,
                     weight,
                     offsets: Vec::new(),
+                    exact: false,
                 });
             }
         }
@@ -1431,6 +1439,7 @@ where
                                 positions: posting.positions.to_vec(),
                                 offsets: posting.offsets.to_vec(),
                                 weight,
+                                exact: true,
                             });
                         }
                     }
@@ -1443,6 +1452,7 @@ where
                             weight,
                             out,
                             slot,
+                            true,
                         );
                     }
                 }
@@ -1506,6 +1516,7 @@ where
                                 positions: token_posting.positions.to_vec(),
                                 offsets: token_posting.offsets.to_vec(),
                                 weight,
+                                exact: true,
                             });
                         }
                     }
@@ -1559,6 +1570,7 @@ where
                                 positions,
                                 offsets,
                                 weight,
+                                exact: true,
                             });
                         }
                     }
@@ -2131,22 +2143,6 @@ where
                     let postings = self.execute_term(&term, xpath).unwrap_or_default();
                     out.insert_leaf(xpath, key, postings);
                 }
-            }
-            Query::ExactField(raw) => {
-                let Some(xpath) = ctx.exact_xpath else {
-                    return;
-                };
-                let mode = ctx.exact.unwrap_or(ExactMode::CaseInsensitive);
-                let Some(terms) = Self::exact_field_terms(raw, mode) else {
-                    return;
-                };
-                let key = LeafKey::Phrase(terms.clone());
-                if out.has_leaf(xpath, &key) {
-                    return;
-                }
-                out.insert_field(xpath, || self.field_totals(xpath));
-                let postings = self.execute_phrase(&terms, xpath);
-                out.insert_leaf(xpath, key, postings);
             }
             _ => {
                 let Some((key, xpath)) = Self::leaf_key(query, ctx) else {

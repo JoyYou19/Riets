@@ -2821,7 +2821,7 @@ fn highlight_request(
     let default_opts = auto_opts.or(star);
     let mut rest: Vec<FieldHighlight> = Vec::new();
     if let Some(default_opts) = default_opts {
-        for field in policy.searchable_fields() {
+        for field in policy.indexed_fields() {
             let xpath = field.xpath(policy);
             if !searched.contains(&xpath) || field.kind != FieldKind::Text {
                 continue;
