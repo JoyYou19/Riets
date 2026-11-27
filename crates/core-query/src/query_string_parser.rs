@@ -54,15 +54,31 @@ pub fn analyze_query(query: Query, analyzer: &Analyzer) -> Option<Query> {
             analyze_phrase(&words, analyzer)
         }
 
-        //for these just lowercase cuz like "ca[tnb]" is not a real word for analasys
-        Query::Prefix(p) => non_empty(p.to_lowercase()).map(Query::Prefix),
-        Query::Wildcard(p) => non_empty(p.to_lowercase()).map(Query::Wildcard),
+        //no analazys for these two just lowercase if the analyzer lowercases
+        Query::Prefix(p) => {
+            let p = if analyzer.lowercases() {
+                p.to_lowercase()
+            } else {
+                p
+            };
+            non_empty(p).map(Query::Prefix)
+        }
+        Query::Wildcard(p) => {
+            let p = if analyzer.lowercases() {
+                p.to_lowercase()
+            } else {
+                p
+            };
+            non_empty(p).map(Query::Wildcard)
+        }
 
         Query::Wand(subs) => combine(subs, analyzer, Query::Wand),
         Query::And(subs) => combine(subs, analyzer, Query::And),
         Query::Or(subs) => combine(subs, analyzer, Query::Or),
 
-        Query::Exact(term) => Some(Query::Exact(term.to_lowercase())),
+        Query::Exact(term) => Some(Query::Exact(term)),
+        Query::ExactField(term) => Some(Query::ExactField(term)),
+
         Query::Fuzzy(term, fuzziness, spec) => Some(Query::Fuzzy(term, fuzziness, spec)),
 
         Query::Not(inner) => {
@@ -197,6 +213,11 @@ pub fn parse_json_query(
             if let Some(inner) = obj.get("exact") {
                 return leaf(inner, &Leaf::Exact, default, wildcard_enabled);
             }
+
+            if let Some(inner) = obj.get("exact-field") {
+                return leaf(inner, &Leaf::ExactField, default, wildcard_enabled);
+            }
+
             if let Some(inner) = obj.get("phrase") {
                 return phrase(inner);
             }
@@ -218,7 +239,7 @@ pub fn parse_json_query(
 
             let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
             Err(CorelamoError::InvalidData(format!(
-                "unknown query operator(s): {} — expected one of term/exact/fuzzy/phrase/range/same_element/AND/OR/WAND/NOT",
+                "unknown query operator(s): {} — expected one of term/exact/exact-field/fuzzy/phrase/range/same_element/AND/OR/WAND/NOT",
                 keys.join(", ")
             )))
         }
@@ -232,6 +253,7 @@ pub fn parse_json_query(
 enum Leaf {
     Term,
     Exact,
+    ExactField,
 }
 
 fn combinator(
@@ -289,8 +311,8 @@ fn leaf(
         .as_str()
         .ok_or_else(|| CorelamoError::InvalidData("leaf value must be a string".into()))?;
     Ok(match kind {
-        //exact allows multiple words too
         Leaf::Exact => Query::Exact(s.to_owned()),
+        Leaf::ExactField => Query::ExactField(s.to_owned()),
         Leaf::Term => {
             if s.split_whitespace().count() > 1 {
                 return Err(CorelamoError::InvalidData(

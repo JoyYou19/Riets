@@ -142,6 +142,7 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
                 push(&marker, encode_position(cur_position, 1), offset);
 
                 for (index, token) in tokens.iter().enumerate() {
+                    //the lowercase in exact check
                     let normalized = if exact_mode.lowercases() {
                         token.to_lowercase()
                     } else {
