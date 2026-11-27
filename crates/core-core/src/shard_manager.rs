@@ -13,17 +13,17 @@ use core_index::analyzer::Analyzer;
 use core_index::analyzer::text_analyzer::AnalyzerSet;
 use core_index::document::IndexPolicy;
 use core_index::document::all_fields::AllFields;
-use core_index::document::policy::{FieldKind, FieldPolicy};
+use core_index::document::policy::{ExactMode, FieldKind, FieldPolicy};
 use core_index::fuzzy::{
     FuzzyExpansion, FuzzySpec, TYPO_MAX_DOC_FREQ, TYPO_RATIO, select_expansions,
 };
 use core_index::lsm::index_worker::Phase;
 use core_index::numeric_values::NumericValue;
-use core_index::types::{DocId, ShardId, XPathId, shard_of};
+use core_index::types::{DocId, ShardId, XPathId, exact_len_marker, shard_of};
 use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{
     DidYouMeanRequest, Fuzziness, HighlightFieldOptions, LookupCommand, LookupResponse, MatchMode,
-    QueryCorrection, SearchCommand, SortMode, TotalHits,
+    SearchCommand, SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::dictionary::{
@@ -1216,7 +1216,6 @@ impl ShardManager {
         &self,
         command: &SearchCommand,
     ) -> Result<(Vec<SearchDocumentHit>, TotalHits), CorelamoError> {
-   
         let Some(page) = requested_page(command)? else {
             return Ok((Vec::new(), TotalHits::default()));
         };
@@ -1229,8 +1228,6 @@ impl ShardManager {
 
         let search = self.compile_search(command, page)?;
         let stats = self.collect_statistics(&search, &command.query).await?;
-
-        
 
         // started only now: a corrected re-run must not leave an embedding search running
         let vector_task = search.semantic.clone().map(|(text, xpaths)| {
@@ -1469,8 +1466,6 @@ impl ShardManager {
             .collect::<Result<Vec<_>, _>>()?;
         Ok((corpus, shards))
     }
-
-    
 
     /// Every shard ranks its documents with the merged statistics and the plans it was
     /// prepared with.
@@ -2742,7 +2737,6 @@ struct ShardStatistics {
     unknown_word: bool,
 }
 
-
 /// Every shard's ranked hits, before they are merged into one order.
 const MAX_TOTAL_HITS: usize = 10_000;
 struct ShardHits {
@@ -2827,7 +2821,7 @@ fn highlight_request(
     let default_opts = auto_opts.or(star);
     let mut rest: Vec<FieldHighlight> = Vec::new();
     if let Some(default_opts) = default_opts {
-        for field in policy.searchable_fields() {
+        for field in policy.indexed_fields() {
             let xpath = field.xpath(policy);
             if !searched.contains(&xpath) || field.kind != FieldKind::Text {
                 continue;
@@ -2967,6 +2961,11 @@ fn analyze_json(
             for (name, v) in obj.iter() {
                 let sub = child_field(field, name, policy);
                 out.insert(name.clone(), analyze_json(v, sub, policy, analyzers, full)?);
+                if let Some(sub) = sub
+                    && sub.exact_xpath(policy).is_some()
+                {
+                    out.insert(format!("{name}$exact"), analyze_exact_json(v, sub, full));
+                }
             }
             Ok(serde_json::Value::Object(out))
         }
@@ -3032,6 +3031,52 @@ fn child_field<'a>(
     match parent {
         Some(p) => p.subfields.iter().find(|s| s.name == name),
         None => policy.field_by_path(name),
+    }
+}
+
+fn analyze_exact_json(value: &OwnedValue, field: &FieldPolicy, full: bool) -> serde_json::Value {
+    match value {
+        OwnedValue::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| analyze_exact_json(item, field, full))
+                .collect(),
+        ),
+        // exact indexes only exist on leaves
+        OwnedValue::Object(_) => serde_json::Value::Null,
+        leaf => {
+            let raw = leaf_text(leaf).unwrap_or_default();
+            let mode = field.exact.unwrap_or(ExactMode::CaseInsensitive);
+            let tokens: Vec<String> = raw
+                .split_whitespace()
+                .map(|token| {
+                    if mode.lowercases() {
+                        token.to_lowercase()
+                    } else {
+                        token.to_owned()
+                    }
+                })
+                .collect();
+
+            if tokens.is_empty() {
+                return if full {
+                    serde_json::json!({ "value": raw, "tokens": [] })
+                } else {
+                    serde_json::Value::String(String::new())
+                };
+            }
+
+            let marker = exact_len_marker(tokens.len());
+            if full {
+                serde_json::json!({
+                    "value": raw,
+                    "marker": marker,
+                    "tokens": tokens,
+                })
+            } else {
+                serde_json::Value::String(format!("{marker} {}", tokens.join(" ")))
+            }
+        }
     }
 }
 

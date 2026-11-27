@@ -186,7 +186,7 @@ impl RankPlan {
                     }
                 }
                 TierKind::Exact if has_exact_field && !raw.trim().is_empty() => {
-                    tiers.push(Tier::Exact(Query::Exact(raw.trim().to_lowercase())));
+                    tiers.push(Tier::Exact(Query::Exact(raw.trim().to_owned())));
                 }
                 TierKind::Phrase if parts.len() >= 2 => {
                     let terms = terms_from_text(raw, analyzer);
@@ -225,7 +225,11 @@ impl RankPlan {
             Query::And(query_parts) | Query::Wand(query_parts) | Query::Or(query_parts) => {
                 query_parts
             }
-            Query::Term(_) | Query::Phrase(_) | Query::Synonym(_) | Query::Exact(_) => {
+            Query::Term(_)
+            | Query::Phrase(_)
+            | Query::Synonym(_)
+            | Query::Exact(_)
+            | Query::ExactField(_) => {
                 vec![resolved]
             }
             _ => Vec::new(),
@@ -336,6 +340,7 @@ fn written_forms(query: &Query) -> Vec<String> {
             }
             out
         }
+        Query::ExactField(_) => Vec::new(),
         _ => Vec::new(),
     }
 }

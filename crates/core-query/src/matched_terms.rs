@@ -18,4 +18,8 @@ pub struct MatchedTerm {
     pub offsets: Vec<(u32, u32)>,
     //relevance of a matched term
     pub weight: f32,
+
+    /// True when the positions are exact-index positions:
+    /// marker at 0, user tokens at 1..n.
+    pub exact: bool,
 }
