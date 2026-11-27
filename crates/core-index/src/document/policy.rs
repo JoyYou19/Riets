@@ -28,6 +28,7 @@ impl WeightInterval {
     pub const TEXT: Self = Self { min: 1, max: 75 };
     pub const DEFAULT: Self = Self { min: 0, max: 100 };
 
+    #[must_use]
     pub fn new(min: u16, max: u16) -> Option<Self> {
         (min <= max).then_some(Self { min, max })
     }
@@ -308,22 +309,26 @@ impl FieldPolicy {
         clippy::panic,
         reason = "invariant: IndexPolicy::resolve() registers every field's xpath; a miss is a bug"
     )]
+    #[must_use]
     pub fn xpath(&self, policy: &IndexPolicy) -> XPathId {
         policy
             .xpath_of(&self.full_path)
             .unwrap_or_else(|| panic!("field '{}' has no registered xpath", self.full_path))
     }
 
+    #[must_use]
     pub const fn searchable(&self) -> bool {
         self.searchable
     }
 
+    #[must_use]
     pub fn has_exact_index(&self) -> bool {
         //either text+exact or Id IdAuto
         (self.kind == FieldKind::Text && self.exact) ||
             matches!(self.kind, FieldKind::Id | FieldKind::IdAuto)
     }
 
+    #[must_use]
     pub fn exact_xpath(&self, policy: &IndexPolicy) -> Option<XPathId> {
         if !self.has_exact_index() {
             return None;
@@ -412,6 +417,7 @@ impl IndexPolicy {
         root.join(Self::REGISTRY_FILE_NAME)
     }
 
+    #[must_use]
     pub const fn new(
         analyzers: IndexMap<String, AnalyzerConfig>,
         fields: Vec<FieldPolicy>
@@ -427,6 +433,7 @@ impl IndexPolicy {
         serde_json::from_str(contents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
+    #[must_use]
     pub fn leaf_by_path(&self, path: &str) -> Option<&FieldPolicy> {
         fn find<'a>(fields: &'a [FieldPolicy], path: &str) -> Option<&'a FieldPolicy> {
             for f in fields {
@@ -526,6 +533,7 @@ impl IndexPolicy {
         Ok(())
     }
 
+    #[must_use]
     pub fn field_analyzers(&self, analyzers: &AnalyzerSet) -> HashMap<XPathId, Analyzer> {
         let mut map = HashMap::new();
         for field in self.searchable_fields() {
@@ -539,6 +547,7 @@ impl IndexPolicy {
         map
     }
 
+    #[must_use]
     pub fn default_document() -> Self {
         let mut analyzers = IndexMap::new();
         analyzers.insert("$default".to_owned(), AnalyzerConfig::builtin_default());
@@ -559,6 +568,7 @@ impl IndexPolicy {
             ]
         )
     }
+    #[must_use]
     pub fn id_field(&self) -> Option<&FieldPolicy> {
         self.fields.iter().find(|f| matches!(f.kind, FieldKind::Id | FieldKind::IdAuto))
     }
@@ -572,6 +582,7 @@ impl IndexPolicy {
         self.analyzers.get("$default").cloned().unwrap_or_else(AnalyzerConfig::builtin_default)
     }
 
+    #[must_use]
     pub fn indexed_fields(&self) -> Vec<&FieldPolicy> {
         let mut out = Vec::new();
         for f in &self.fields {
@@ -580,20 +591,24 @@ impl IndexPolicy {
         out
     }
 
+    #[must_use]
     pub fn has_hidden_fields(&self) -> bool {
         self.indexed_fields()
             .into_iter()
             .any(|f| !f.list)
     }
 
+    #[must_use]
     pub fn xpath_of(&self, name: &str) -> Option<XPathId> {
         self.registry.get(name)
     }
 
+    #[must_use]
     pub fn exact_xpath_of(&self, name: &str) -> Option<XPathId> {
         self.registry.get_exact(name)
     }
 
+    #[must_use]
     pub fn searchable_fields(&self) -> Vec<&FieldPolicy> {
         self.indexed_fields()
             .into_iter()
@@ -601,12 +616,14 @@ impl IndexPolicy {
             .collect()
     }
 
+    #[must_use]
     pub fn searchable_xpaths(&self) -> Vec<XPathId> {
         self.searchable_fields()
             .into_iter()
             .map(|field| field.xpath(self))
             .collect()
     }
+    #[must_use]
     pub fn vector_fields(&self) -> Vec<&FieldPolicy> {
         self.indexed_fields()
             .into_iter()
@@ -614,6 +631,7 @@ impl IndexPolicy {
             .collect()
     }
 
+    #[must_use]
     pub fn vector_xpaths(&self) -> Vec<XPathId> {
         self.vector_fields()
             .into_iter()
@@ -658,6 +676,7 @@ impl IndexPolicy {
         Ok(policy)
     }
 
+    #[must_use]
     pub fn field_by_path(&self, path: &str) -> Option<&FieldPolicy> {
         fn find<'a>(fields: &'a [FieldPolicy], path: &str) -> Option<&'a FieldPolicy> {
             for f in fields {
@@ -778,14 +797,17 @@ impl FieldKind {
         }
     }
 
+    #[must_use]
     pub const fn is_numeric(self) -> bool {
         matches!(self, Self::Integer | Self::Float)
     }
 
+    #[must_use]
     pub const fn is_bool(self) -> bool {
         matches!(self, Self::Bool)
     }
 
+    #[must_use]
     pub const fn is_date(self) -> bool {
         matches!(self, Self::DateTime)
     }

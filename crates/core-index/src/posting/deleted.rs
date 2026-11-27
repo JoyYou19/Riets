@@ -10,10 +10,12 @@ pub struct DeleteSet {
 }
 
 impl DeleteSet {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.deleted.is_empty()
     }
@@ -22,6 +24,7 @@ impl DeleteSet {
         self.deleted.insert(doc_id);
     }
 
+    #[must_use]
     pub fn is_deleted(&self, doc_id: DocId) -> bool {
         self.deleted.contains(doc_id)
     }
@@ -37,6 +40,7 @@ impl DeleteSet {
         list.retain(|posting| !self.is_deleted(posting.doc_id));
     }
 
+    #[must_use]
     pub fn contains(&self, doc_id: DocId) -> bool {
         self.deleted.contains(doc_id)
     }

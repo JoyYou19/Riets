@@ -16,6 +16,7 @@ pub struct PostingList {
 }
 
 impl PostingList {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             items: Vec::new(),
@@ -68,6 +69,7 @@ impl PostingList {
         }
     }
 
+    #[must_use]
     pub fn from_sorted(items: Vec<Posting>) -> Self {
         let has_duplicates = items
             .windows(2)
@@ -118,6 +120,7 @@ impl PostingList {
         Self { items, max_weight }
     }
 
+    #[must_use]
     pub fn from_items(mut items: Vec<Posting>) -> Self {
         if !items.is_sorted_by_key(|p| p.doc_id) {
             items.sort_by_key(|p| p.doc_id);
@@ -213,28 +216,34 @@ impl PostingList {
     }
 
     #[inline]
+    #[must_use]
     pub fn items(&self) -> &[Posting] {
         &self.items
     }
+    #[must_use]
     pub fn into_items(self) -> Vec<Posting> {
         self.items
     }
 
     #[inline]
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.items.len()
     }
 
     #[inline]
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     #[inline]
+    #[must_use]
     pub const fn max_weight(&self) -> u16 {
         self.max_weight
     }
 
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             items: Vec::with_capacity(capacity),

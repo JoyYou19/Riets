@@ -21,6 +21,7 @@ pub struct DocValues {
 }
 impl DocValues {
  
+    #[must_use]
     pub fn from_points(points: Vec<(DocId, NumericValue)>) -> Self {
         let kind = points
             .first()
@@ -50,26 +51,32 @@ impl DocValues {
         }
     }
 
+    #[must_use]
     pub const fn kind(&self) -> NumericKind {
         self.kind
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[must_use]
     pub fn first_doc(&self) -> Option<DocId> {
         self.entries.first().map(|entry| entry.0)
     }
 
+    #[must_use]
     pub fn last_doc(&self) -> Option<DocId> {
         self.entries.last().map(|entry| entry.0)
     }
 
+    #[must_use]
     pub fn entries(&self) -> &[(DocId, u64)] {
         &self.entries
     }
@@ -91,6 +98,7 @@ impl DocValues {
         })
     }
 
+        #[must_use]
         pub fn get(&self, doc_id: DocId) -> Option<NumericValue> {
         //fast exit
         if doc_id < self.first_doc()? || doc_id > self.last_doc()? {

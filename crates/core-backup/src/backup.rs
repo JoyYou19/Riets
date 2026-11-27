@@ -647,19 +647,46 @@ impl BackupManager {
         self.save_state()
     }
     #[timed(backup)]
-    pub fn delete_backup(&self, backup_id: &str) -> Result<(), BackupError> {
+    pub fn delete_backup(&mut self, backup_id: &str) -> Result<Vec<String>, BackupError> {
         if !is_valid_backup_id(backup_id) {
-            return Err(
-                BackupError::IoError(
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid backup id '{backup_id}'")
-                    )
-                )
-            );
+            return Err(BackupError::IoError(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid backup id '{backup_id}'"),
+            )));
         }
-        fs::remove_dir_all(self.shard_backup_path(backup_id))?;
-        Ok(())
+        let all = self.list_backups()?;
+        // the backup, then every backup whose parent is already in the list
+        let mut doomed: Vec<String> = vec![backup_id.to_owned()];
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for manifest in &all {
+                let on_doomed = manifest
+                    .parent_backup_id
+                    .as_ref()
+                    .is_some_and(|parent| doomed.contains(parent));
+                if on_doomed && !doomed.contains(&manifest.backup_id) {
+                    doomed.push(manifest.backup_id.clone());
+                    grew = true;
+                }
+            }
+        }
+        // children first: stopping part way never leaves a child without its parent
+            for id in doomed.as_slice().iter().rev() {
+            match fs::remove_dir_all(self.shard_backup_path(id)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if self
+            .last_backup_id
+            .as_ref()
+            .is_some_and(|last| doomed.contains(last))
+        {
+            self.require_full_backup()?;
+        }
+        Ok(doomed)
     }
 }
 

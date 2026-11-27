@@ -24,7 +24,7 @@ use crate::{
 };
 
 //Where a term's postings live inside the segment, plus how many docs it hits.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq,PartialOrd,Ord)]
 pub struct TermMeta {
     pub postings_offset: u64,
     pub postings_len: u32,
@@ -90,6 +90,7 @@ impl TermDict {
     fn meta_for(&self, ord: u64) -> Option<TermMeta> {
         self.metas.get(usize::try_from(ord).ok()?).copied()
     }
+    #[must_use]
     pub const fn empty() -> Self {
         Self {
             map: None,
@@ -150,28 +151,34 @@ impl TermDict {
             .map_or_else(<&[u8]>::default, |map| map.as_fst().as_bytes())
     }
 
+    #[must_use]
     pub fn metas(&self) -> &[TermMeta] {
         &self.metas
     }
 
+     #[must_use]
      pub fn get(&self, term: &str) -> Option<TermMeta> {
         let map = self.map.as_ref()?;
         self.meta_for(map.get(term)?)
     }
 
+    #[must_use]
     pub fn contains(&self, term: &str) -> bool {
         self.get(term).is_some()
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.metas.len()
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.metas.is_empty()
     }
 
     //Every term in this field, ascending, as owned strings.
+     #[must_use]
      pub fn entries(&self) -> Vec<(String, TermMeta)> {
         let Some(map) = self.map.as_ref() else {
             return Vec::new();
@@ -189,28 +196,24 @@ impl TermDict {
     }
 
     //All terms starting with `prefix`, ascending.
-    pub fn prefix(&self, prefix: &str) -> Vec<(String, TermMeta)> {
+    #[must_use]
+   pub fn prefix(&self, prefix: &str, mut f: impl FnMut(&[u8], u64, TermMeta)) {
         let Some(map) = self.map.as_ref() else {
-            return Vec::new();
+            return;
         };
 
-        let mut out = Vec::new();
         let mut stream = map.range().ge(prefix.as_bytes()).into_stream();
-
         while let Some((term, ord)) = stream.next() {
             if !term.starts_with(prefix.as_bytes()) {
                 break;
             }
-
-            let meta = self.meta_for(ord).unwrap_or_default();
-            out.push((String::from_utf8_lossy(term).into_owned(), meta));
+            f(term, ord, self.meta_for(ord).unwrap_or_default());
         }
-
-        out
     }
 
     /// Terms within `opts.max_edits` of `term`, ascending, metadata flattened to
     /// just the term name.
+    #[must_use]
     pub fn fuzzy(&self, term: &str, opts: FuzzyOptions) -> Vec<(String, TermMeta)> {
         self.fuzzy_expansions(term, opts)
             .into_iter()
@@ -228,6 +231,7 @@ impl TermDict {
     /// NOTE: an exact hit is always included (distance 0 is within any distance).
     /// Callers that also look the term up exactly can rely on the posting merge
     /// to dedupe.
+    #[must_use]
     pub fn fuzzy_expansions(
         &self,
         term: &str,
@@ -291,6 +295,7 @@ pub struct TermDictionary {
 }
 
 impl TermDictionary {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -299,6 +304,7 @@ impl TermDictionary {
         self.fields.insert(xpath, dict);
     }
 
+    #[must_use]
     pub fn field(&self, xpath: XPathId) -> Option<&TermDict> {
         self.fields.get(&xpath)
     }
@@ -307,6 +313,7 @@ impl TermDictionary {
         self.fields.iter().map(|(&xpath, dict)| (xpath, dict))
     }
 
+    #[must_use]
     pub fn get(&self, xpath: XPathId, term: &str) -> Option<TermMeta> {
         self.field(xpath)?.get(term)
     }

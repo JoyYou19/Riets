@@ -43,6 +43,7 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
     Ok(())
 }
+#[must_use]
 pub fn tmp_path_for(path: &Path) -> PathBuf {
     with_suffix(path, ".tmp")
 }

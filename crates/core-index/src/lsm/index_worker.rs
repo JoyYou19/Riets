@@ -182,6 +182,7 @@ impl IndexWorker {
         })
     }
 
+    #[must_use]
     pub fn sender(&self) -> Sender<IndexCommand> {
         self.sender.clone()
     }
@@ -193,6 +194,7 @@ impl IndexWorker {
     }
     /// Stats as of the last command the worker finished. May lag queued batches;
     /// use `get_stats` when an exact value is required.
+    #[must_use]
     pub fn cached_stats(&self) -> IndexingStats {
         (**self.stats.load()).clone()
     }
@@ -727,6 +729,7 @@ fn release_flush_waiters(waiters: &mut VecDeque<(u64, Option<Acknowledgement>)>,
     }
 }
 #[timed(indexing_documents)]
+#[must_use]
 pub fn build_segment_batch(
     analyzer: &AnalyzerSet,
     documents: Vec<IndexedDocument>
@@ -741,6 +744,7 @@ pub fn build_segment_batch(
 }
 
 #[timed(indexing_documents)]
+#[must_use]
 pub fn build_segments_parallel(
     analyzer: &AnalyzerSet,
     batches: Vec<Vec<IndexedDocument>>
@@ -814,6 +818,7 @@ impl Phase {
         }
     }
 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "idle",
@@ -827,6 +832,7 @@ impl Phase {
         }
     }
 
+    #[must_use]
     pub const fn is_running(self) -> bool {
         matches!(self, Self::Preparing | Self::Reindexing | Self::Swapping | Self::CatchUp)
     }
@@ -871,6 +877,7 @@ pub struct ReindexProgress {
 }
 
 impl ReindexProgress {
+    #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             phase: AtomicU8::new(Phase::Idle as u8),

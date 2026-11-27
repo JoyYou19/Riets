@@ -1,6 +1,6 @@
 //WARN: Valter, luudzu piedod es atvicaju es centos Kristianu aptureet - Normunds
 
-use std::{ collections::BTreeMap, io, path::Path };
+use std::{ cmp::Reverse, collections::{BTreeMap, BinaryHeap}, io, path::Path };
 
 use bitpacking::{ BitPacker, BitPacker4x };
 use core_timing::timed;
@@ -58,13 +58,14 @@ impl SearchStats for DiskSegment {
 }
 
 impl SearchNumeric for DiskSegment {
-    fn numeric_range(
+     fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
-    ) -> RoaringTreemap {
-        self.numeric_fields.range(xpath, lo, hi)
+        hi: Option<NumericBound>,
+        out: &mut RoaringTreemap,
+    ) {
+        self.numeric_fields.range(xpath, lo, hi, out);
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -316,17 +317,10 @@ impl SearchIndex for DiskSegment {
         self.array_row_index.doc_of(row)
     }
 
-    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.bool_fields
-            .get(&xpath)
-            .map(|f| f.true_ids.clone())
-            .unwrap_or_default()
-    }
-    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.bool_fields
-            .get(&xpath)
-            .map(|f| f.false_ids.clone())
-            .unwrap_or_default()
+    fn union_bool_ids(&self, xpath: XPathId, value: bool, out: &mut RoaringTreemap) {
+        if let Some(field) = self.bool_fields.get(&xpath) {
+            *out |= if value { &field.true_ids } else { &field.false_ids };
+        }
     }
 
     fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
@@ -370,22 +364,24 @@ impl SearchIndex for DiskSegment {
             return PostingList::default();
         };
 
-        // choose the terms from the dictionary first, then read postings only for those
-        let mut matches = dict.prefix(prefix);
-        matches.sort_unstable_by(|a, b|
-            b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0))
-        );
-        matches.truncate(MAX_PATTERN_TERMS);
+        // min-heap on (doc_freq, Reverse(ord)): the top is the worst term kept so far
+        let mut heap: BinaryHeap<Reverse<(u32, Reverse<u64>, TermMeta)>> =
+            BinaryHeap::with_capacity(MAX_PATTERN_TERMS + 1);
+        dict.prefix(prefix, |_, ord, meta| {
+            heap.push(Reverse((meta.doc_freq, Reverse(ord), meta)));
+            if heap.len() > MAX_PATTERN_TERMS {
+                heap.pop();
+            }
+        });
 
         let mut postings = Vec::new();
-        for (_, meta) in matches {
+        for Reverse((_, _, meta)) in heap {
             self.read_postings_into(meta, &mut postings);
         }
 
         PostingList::from_items(postings)
     }
-
-    #[timed(search)]
+     #[timed(search)]
     fn lookup_wildcard(
         &self,
         pattern: &crate::wildcard::WildcardPattern,
@@ -398,19 +394,32 @@ impl SearchIndex for DiskSegment {
             return PostingList::default();
         };
 
-        // prefix("") yields every term in the field, which is what a leading "*" wildcard needs
-        let mut matches: Vec<_> = dict
-            .prefix(pattern.prefix())
-            .into_iter()
-            .filter(|(term, _)| pattern.matches(term))
-            .collect();
-        matches.sort_unstable_by(|a, b|
-            b.1.doc_freq.cmp(&a.1.doc_freq).then_with(|| a.0.cmp(&b.0))
-        );
-        matches.truncate(MAX_PATTERN_TERMS);
+        // min-heap on (doc_freq, Reverse(ord)): the top is the worst term kept so far
+        let mut heap: BinaryHeap<Reverse<(u32, Reverse<u64>, TermMeta)>> =
+            BinaryHeap::with_capacity(MAX_PATTERN_TERMS + 1);
+        // prefix "" walks every term in the field, which a leading "*" needs
+        dict.prefix(pattern.prefix(), |term, ord, meta| {
+            let key = (meta.doc_freq, Reverse(ord));
+            // full and not better than the worst kept: skip before running the pattern
+            if heap.len() == MAX_PATTERN_TERMS
+                && heap.peek().is_some_and(|Reverse((freq, worst, _))| key <= (*freq, *worst))
+            {
+                return;
+            }
+            let Ok(text) = std::str::from_utf8(term) else {
+                return;
+            };
+            if !pattern.matches(text) {
+                return;
+            }
+            heap.push(Reverse((meta.doc_freq, Reverse(ord), meta)));
+            if heap.len() > MAX_PATTERN_TERMS {
+                heap.pop();
+            }
+        });
 
         let mut postings = Vec::new();
-        for (_, meta) in matches {
+        for Reverse((_, _, meta)) in heap {
             self.read_postings_into(meta, &mut postings);
         }
 
@@ -449,15 +458,13 @@ impl SearchIndex for DiskSegment {
         rank_candidates(candidates)
     }
     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
-        self.dictionary
-            .field(xpath)
-            .map(|dict| {
-                dict.prefix(prefix)
-                    .into_iter()
-                    .map(|(t, meta)| (t, meta.doc_freq))
-                    .collect()
-            })
-            .unwrap_or_default()
+        let mut out = Vec::new();
+        if let Some(dict) = self.dictionary.field(xpath) {
+            dict.prefix(prefix, |term, _, meta| {
+                out.push((String::from_utf8_lossy(term).into_owned(), meta.doc_freq));
+            });
+        }
+        out
     }
 }
 
@@ -529,7 +536,7 @@ enum FieldLengths {
         first: DocId,
         lens: Vec<u32>,
     },
-    Sparse(BTreeMap<DocId, u32>),
+    Sparse(Vec<(DocId, u32)>),
 }
 
 impl DocLengths {
@@ -567,7 +574,13 @@ impl DocLengths {
                         }
                         FieldLengths::Dense { first, lens }
                     }
-                    _ => FieldLengths::Sparse(docs.into_iter().collect()),
+                    _ => {
+                        let mut docs = docs;
+                        if !docs.is_sorted_by_key(|&(doc, _)| doc) {
+                            docs.sort_unstable_by_key(|&(doc, _)| doc);
+                        }
+                        FieldLengths::Sparse(docs)
+                    }
                 };
                 (xpath, lengths)
             })
@@ -575,8 +588,11 @@ impl DocLengths {
         Self { fields }
     }
 
+    #[must_use]
     pub fn get(&self, doc_id: DocId, xpath: XPathId) -> Option<u32> {
-        let (_, lengths) = self.fields.iter().find(|(field, _)| *field == xpath)?;
+        // built from a BTreeMap, so `fields` is sorted by xpath
+        let at = self.fields.binary_search_by_key(&xpath, |(field, _)| *field).ok()?;
+        let (_, lengths) = self.fields.get(at)?;
         match lengths {
             FieldLengths::Dense { first, lens } => {
                 let index = usize::try_from(doc_id.checked_sub(*first)?).ok()?;
@@ -584,7 +600,10 @@ impl DocLengths {
                     .copied()
                     .filter(|&len| len != u32::MAX)
             }
-            FieldLengths::Sparse(map) => map.get(&doc_id).copied(),
+            FieldLengths::Sparse(docs) => {
+                let at = docs.binary_search_by_key(&doc_id, |&(doc, _)| doc).ok()?;
+                docs.get(at).map(|&(_, len)| len)
+            }
         }
     }
 
@@ -602,8 +621,8 @@ impl DocLengths {
                                 .filter(|&(_, &len)| len != u32::MAX)
                                 .map(move |(index, &len)| ((*first + (index as DocId), xpath), len))
                         ),
-                    FieldLengths::Sparse(map) => {
-                        Box::new(map.iter().map(move |(&doc, &len)| ((doc, xpath), len)))
+                    FieldLengths::Sparse(docs) => {
+                        Box::new(docs.iter().map(move |&(doc, len)| ((doc, xpath), len)))
                     }
                 }
             }

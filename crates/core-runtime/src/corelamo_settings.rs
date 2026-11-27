@@ -11,7 +11,7 @@ use std::{
 use slog::{info, warn};
 //helper file to manage and easilly add corelamo settings
 
-pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
+pub(crate) const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("root-path", "/var/lib/corelamo"),
     ("name", "corelamo"),
     ("host", "0.0.0.0"),
@@ -29,7 +29,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("embedding-max-chars", "4096"),
 ];
 
-pub const HELP: &str = "\
+pub(crate) const HELP: &str = "\
 corelamo-runtime 
 USAGE:
     corelamo-runtime [OPTIONS]
@@ -76,18 +76,18 @@ OPTIONS:
 
 ";
 
-pub fn default_value(key: &str) -> &'static str {
+pub(crate) fn default_value(key: &str) -> &'static str {
     DEFAULT_SETTINGS
         .iter()
         .find(|(k, _)| *k == key)
         .map_or("", |(_, v)| *v)
 }
 
-pub fn valid_keys() -> Vec<&'static str> {
+pub(crate) fn valid_keys() -> Vec<&'static str> {
     DEFAULT_SETTINGS.iter().map(|(k, _)| *k).collect()
 }
 
-pub fn resolve_root(path: PathBuf) -> PathBuf {
+pub(crate) fn resolve_root(path: PathBuf) -> PathBuf {
     if path.ends_with("corelamo") {
         path
     } else {
@@ -95,7 +95,7 @@ pub fn resolve_root(path: PathBuf) -> PathBuf {
     }
 }
 
-pub fn parse_args() -> Result<HashMap<String, String>, String> {
+pub(crate) fn parse_args() -> Result<HashMap<String, String>, String> {
     let mut overrides = HashMap::new();
     let mut args = std::env::args().skip(1).peekable();
     let keys = valid_keys();
@@ -139,7 +139,7 @@ pub fn parse_args() -> Result<HashMap<String, String>, String> {
 
 //config wins over cli, cli wins over hardcoded defaults
 //unless overwrite_config is true, then cli wins over config AND gets written to file
-pub fn load_or_init_settings(
+pub(crate) fn load_or_init_settings(
     cli_overrides: HashMap<String, String>,
 ) -> io::Result<HashMap<String, String>> {
     //root path is either default or specified cause we dont know where it is lmao
@@ -220,14 +220,14 @@ pub fn load_or_init_settings(
     Ok(settings)
 }
 
-pub fn get_bool(settings: &HashMap<String, String>, key: &str) -> bool {
+pub(crate) fn get_bool(settings: &HashMap<String, String>, key: &str) -> bool {
     match get(settings, key).to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => true,
         _ => false,
     }
 }
 
-pub fn get(settings: &HashMap<String, String>, key: &str) -> String {
+pub(crate) fn get(settings: &HashMap<String, String>, key: &str) -> String {
     settings
         .get(key)
         .cloned()
@@ -235,13 +235,13 @@ pub fn get(settings: &HashMap<String, String>, key: &str) -> String {
 }
 
 // Maybe useful later
-pub fn get_usize(settings: &HashMap<String, String>, key: &str) -> usize {
+pub(crate) fn get_usize(settings: &HashMap<String, String>, key: &str) -> usize {
     get(settings, key)
         .parse()
         .unwrap_or_else(|_| default_value(key).parse().unwrap_or(0))
 }
 
-pub fn validate_settings(settings: &HashMap<String, String>) -> Result<(), String> {
+pub(crate) fn validate_settings(settings: &HashMap<String, String>) -> Result<(), String> {
     let max_payload_size: usize = get(settings, "max_payload_size").parse().map_err(|_| {
         format!(
             "invalid max_payload_size '{}': must be a valid integer",
@@ -276,7 +276,7 @@ static SYNONYM_REGISTRY: OnceLock<SynonymRegistry> = OnceLock::new();
 
 /// Opens CorelamoDictionary.toml next to CorelamoSettings.toml (written from the built-in copy on
 /// first start); every database copies it when it is created.
-pub fn init_synonyms(settings: &HashMap<String, String>) -> Result<(), String> {
+pub(crate) fn init_synonyms(settings: &HashMap<String, String>) -> Result<(), String> {
     let root_path = PathBuf::from(get(settings, "root-path"));
     let registry = SynonymRegistry::open(&root_path)
         .map_err(|e| format!("failed to load the synonym dictionary: {e}"))?;
@@ -287,7 +287,7 @@ pub fn init_synonyms(settings: &HashMap<String, String>) -> Result<(), String> {
         .map_err(|_| "synonym registry initialised twice".to_owned())
 }
 
-pub fn synonym_registry() -> &'static SynonymRegistry {
+pub(crate) fn synonym_registry() -> &'static SynonymRegistry {
     SYNONYM_REGISTRY
         .get()
         .expect("synonym registry used before corelamo_settings::init_synonyms in main")
@@ -297,7 +297,7 @@ static MODEL_REGISTRY: OnceLock<Arc<ModelRegistry>> = OnceLock::new();
 
 /// Sets up the server-wide model registry. Models live in `<root>/models` and are loaded on
 /// first use, so a server whose databases have no vector fields never loads one.
-pub fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
+pub(crate) fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
     let root_path = PathBuf::from(get(settings, "root-path"));
     
    
@@ -322,7 +322,7 @@ pub fn init_models(settings: &HashMap<String, String>) -> Result<(), String> {
         .map_err(|_| "model registry initialised twice".to_owned())
 }
 
-pub fn model_registry() -> Arc<ModelRegistry> {
+pub(crate) fn model_registry() -> Arc<ModelRegistry> {
     Arc::clone(
         MODEL_REGISTRY
             .get()

@@ -45,6 +45,7 @@ const BUDGET_FRACTION_OF_NODES: usize = 4;
 const MIN_COMPUTATIONS_PER_BEAM_SLOT: usize = 64;
 
 /// `segment-12.idx` + xpath 3 -> `segment-12.3.hnsw`, next to `segment-12.3.vec`.
+#[must_use]
 pub fn hnsw_file_path(segment_path: &Path, xpath: XPathId) -> PathBuf {
     segment_path.with_extension(format!("{xpath}.hnsw"))
 }
@@ -179,15 +180,18 @@ impl HnswGraph {
         Ok(())
     }
 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// The vector file this graph indexes.
+    #[must_use]
     pub const fn vectors(&self) -> &Arc<VectorFile> {
         &self.vectors
     }
 
+    #[must_use]
     pub const fn node_count(&self) -> usize {
         self.header.node_count as usize
     }
@@ -235,6 +239,7 @@ impl HnswGraph {
     /// Returns `None` when the walk cannot vouch for its answer: it used up its budget, or
     /// found fewer than `k` accepted rows. The caller then runs the exact scan.
     /// `query` must be L2-normalized.
+    #[must_use]
     pub fn search(
         &self,
         query: &[f32],

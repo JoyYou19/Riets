@@ -939,18 +939,14 @@ where
             Query::Range(r) => {
                 let mut out = RoaringTreemap::new();
                 for &ctx in ctxs {
-                    out |= self.index.numeric_range(ctx.xpath, r.lo, r.hi);
+                    self.index.numeric_range(ctx.xpath, r.lo, r.hi, &mut out);
                 }
                 EvalOutcome::Docs(out)
             }
             Query::Bool(b) => {
                 let mut out = RoaringTreemap::new();
                 for &ctx in ctxs {
-                    if *b {
-                        out |= self.index.bool_true_ids(ctx.xpath);
-                    } else {
-                        out |= self.index.bool_false_ids(ctx.xpath);
-                    }
+                    self.index.union_bool_ids(ctx.xpath, *b, &mut out);
                 }
                 EvalOutcome::Docs(out)
             }

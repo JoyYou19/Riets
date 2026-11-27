@@ -22,6 +22,7 @@ pub struct WildcardPattern {
 pub const MAX_PATTERN_TERMS: usize = 128;
 impl WildcardPattern {
     #[timed(search)]
+    #[must_use]
     pub fn parse(input: &str) -> Self {
         let mut tokens = Vec::new();
         let mut literal = String::new();
@@ -69,6 +70,7 @@ impl WildcardPattern {
         Self { tokens }
     }
 
+    #[must_use]
     pub fn prefix(&self) -> &str {
         match self.tokens.first() {
             Some(WildcardToken::Literal(s)) => s,
@@ -76,6 +78,7 @@ impl WildcardPattern {
         }
     }
 
+    #[must_use]
     pub const fn is_prefix_only(&self) -> bool {
         matches!(
             self.tokens.as_slice(),
@@ -84,6 +87,7 @@ impl WildcardPattern {
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn matches(&self, word: &str) -> bool {
         let chars: Vec<char> = word.chars().collect();
         self.matches_from(0, 0, &chars)

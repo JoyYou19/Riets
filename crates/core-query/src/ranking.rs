@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Coverage is raised to this power: 0 ignores it; 4 made partial matches nearly worthless.
-pub const COVERAGE_POWER: f32 = 2.0;
+pub const COVERAGE_POWER: f32 = 2.1;
 /// Share of the query's weight a document needs to enter the ranked pool, when the plan allows
 /// partial matches.
 pub const MIN_COVERAGE: f32 = 0.7;

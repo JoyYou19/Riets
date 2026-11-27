@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 //INFO: everything later will need these two to return
 #[derive(Debug, Clone)]
-pub struct RequestContext {
+pub(crate) struct RequestContext {
     pub format: Format,
     pub pretty: bool,
     pub request_id: Uuid,
@@ -65,7 +65,7 @@ fn resolve_accept(state: &AppState, request: &Request) -> Result<(Format, Option
     Ok((state.default_format, pretty))
 }
 
-pub async fn request_context_middleware(
+pub(crate) async fn request_context_middleware(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -87,7 +87,7 @@ pub async fn request_context_middleware(
             return {
                 warn!(log, "The format is unsupported"; "format" => %subtype);
                 HttpError::from_corelamo(
-                    CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
+                    &CorelamoError::UnsupportedFormat(format!("unsupported format: '{subtype}'")),
                     &ctx,
                 )
                 .into_response()
@@ -106,7 +106,7 @@ pub async fn request_context_middleware(
     next.run(request).await
 }
 
-pub async fn auth_middleware(
+pub(crate) async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -127,7 +127,7 @@ pub async fn auth_middleware(
         warn!(log, "rejected request: missing auth token";
         "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
         let mut response = HttpError::from_corelamo(
-            CorelamoError::Unauthorized("missing X-Corelamo-Key header".to_owned()),
+            &CorelamoError::Unauthorized("missing X-Corelamo-Key header".to_owned()),
             &ctx,
         )
         .into_response();
@@ -143,7 +143,7 @@ pub async fn auth_middleware(
             error!(log, "auth service unavailable: lock poisoned";
                 "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
             return HttpError::from_corelamo(
-                CorelamoError::Internal("authentication is unavailable".to_owned()),
+                &CorelamoError::Internal("authentication is unavailable".to_owned()),
                 &ctx,
             )
             .into_response();
@@ -159,7 +159,7 @@ pub async fn auth_middleware(
         warn!(log, "rejected request: invalid or expired token";
     "method" => %request.method(), "uri" => %request.uri(), "request_id" => %ctx.request_id);
         let mut response = HttpError::from_corelamo(
-            CorelamoError::Unauthorized("invalid or expired token".to_owned()),
+            &CorelamoError::Unauthorized("invalid or expired token".to_owned()),
             &ctx,
         )
         .into_response();
@@ -171,7 +171,7 @@ pub async fn auth_middleware(
     }
 }
 
-pub async fn disabled_auth_middleware(mut request: Request, next: Next) -> Response {
+pub(crate) async fn disabled_auth_middleware(mut request: Request, next: Next) -> Response {
     let principal = Principal::new("anonymous").with_role("admin");
 
     request.extensions_mut().insert(principal);
