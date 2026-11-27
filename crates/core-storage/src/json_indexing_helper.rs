@@ -93,10 +93,7 @@ fn index_numeric_leaf(
         value,
     });
     if field.searchable() {
-        parts.push(DocumentPart {
-            exact: true,
-            ..plain_part(field, policy, &leaf.data.to_text())
-        });
+        parts.extend(exact_part(field, policy, &leaf.data.to_text(), false));
     }
 }
 #[must_use]

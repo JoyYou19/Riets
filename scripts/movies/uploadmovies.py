@@ -23,12 +23,16 @@ POLICY = """\
   },
 
   "document": {
-    "id": {"$type":"id_auto", "$searchable": true},
-
+    "id": {
+        "$type":"id", 
+        "$searchable": true,
+        "$exact": "case-insensitive"
+    },
+    
     "title": {
       "$type": "text",
       "$analyzer": "title",
-      "$exact": true,
+      "$exact": "case-insensitive",
       "$weight": { "min": 90, "max": 100 }
     },
 
@@ -55,13 +59,13 @@ POLICY = """\
         "name": {
           "$type": "text",
           "$analyzer": "name",
-          "$exact": true,
+          "$exact": "case-insensitive",
           "$weight": { "min": 60, "max": 80 }
         },
         "surname": {
           "$type": "text",
           "$analyzer": "name",
-          "$exact": true,
+          "$exact":  "case-insensitive",
           "$weight": { "min": 60, "max": 80 }
         }
       }
@@ -70,7 +74,7 @@ POLICY = """\
     "genres": [
       {
         "$type": "text",
-        "$exact": true,
+        "$exact": "case-insensitive",
         "$weight": { "min": 1, "max": 40 }
       }
     ],
@@ -86,7 +90,7 @@ POLICY = """\
     "href": {
       "$type": "text",
       "$analyzer": "url",
-      "$exact": true,
+      "$exact": "case-insensitive",
       "$weight": { "min": 0, "max": 0 }
     },
 
