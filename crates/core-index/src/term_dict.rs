@@ -19,8 +19,7 @@ use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use levenshtein_automata::{DFA, Distance, LevenshteinAutomatonBuilder};
 
 use crate::{
-    fuzzy::{FuzzyExpansion, FuzzyOptions, split_prefix},
-    types::XPathId,
+    disk::SegmentBytes, fuzzy::{FuzzyExpansion, FuzzyOptions, split_prefix}, types::XPathId,
 };
 
 //Where a term's postings live inside the segment, plus how many docs it hits.
@@ -38,7 +37,30 @@ pub struct TermMeta {
     pub positions_len:u32
 
 }
+impl TermMeta {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.postings_offset.to_le_bytes());
+        out.extend_from_slice(&self.postings_len.to_le_bytes());
+        out.extend_from_slice(&self.doc_freq.to_le_bytes());
+        out.extend_from_slice(&self.max_weight.to_le_bytes());
+        out.extend_from_slice(&self.block_count.to_le_bytes());
+        out.extend_from_slice(&self.block_len.to_le_bytes());
+        out.extend_from_slice(&self.positions_len.to_le_bytes());
+    }
 
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let u32_at = |at: usize| bytes.get(at..at + 4)?.try_into().ok().map(u32::from_le_bytes);
+        Some(Self {
+            postings_offset: u64::from_le_bytes(bytes.get(0..8)?.try_into().ok()?),
+            postings_len: u32_at(8)?,
+            doc_freq: u32_at(12)?,
+            max_weight: u16::from_le_bytes(bytes.get(16..18)?.try_into().ok()?),
+            block_count: u32_at(18)?,
+            block_len: u32_at(22)?,
+            positions_len: u32_at(26)?,
+        })
+    }
+}
 //to io:Error simplest one yer
 fn fst_err(err: &fst::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
@@ -72,29 +94,32 @@ fn cached_dfa(max_edits: u8, suffix: &str) -> Rc<DFA> {
 }
 #[derive(Default)]
 pub struct TermDict {
-    //Option for field with no ter,s
-    map: Option<Map<Vec<u8>>>,
-    metas: Vec<TermMeta>,
+    //Option for field with no terms
+    map: Option<Map<SegmentBytes>>,
+    // TERM_META_LEN bytes per term, in ord order
+    metas: SegmentBytes,
 }
 
 impl fmt::Debug for TermDict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TermDict")
-            .field("terms", &self.metas.len())
+            .field("terms", &self.len())
             .field("fst_bytes", &self.fst_bytes().len())
             .finish_non_exhaustive()
     }
 }
 
 impl TermDict {
-    fn meta_for(&self, ord: u64) -> Option<TermMeta> {
-        self.metas.get(usize::try_from(ord).ok()?).copied()
+     fn meta_for(&self, ord: u64) -> Option<TermMeta> {
+        let start = usize::try_from(ord).ok()?.checked_mul(TERM_META_LEN)?;
+        let end = start.checked_add(TERM_META_LEN)?;
+        TermMeta::decode(self.metas.as_ref().get(start..end)?)
     }
     #[must_use]
-    pub const fn empty() -> Self {
+     pub const fn empty() -> Self {
         Self {
             map: None,
-            metas: Vec::new(),
+            metas: SegmentBytes::Owned(Vec::new()),
         }
     }
 
@@ -104,17 +129,16 @@ impl TermDict {
         I: IntoIterator<Item = (K, TermMeta)>,
     {
         let mut builder = MapBuilder::memory();
-        let mut metas: Vec<TermMeta> = Vec::new();
+        let mut metas: Vec<u8> = Vec::new();
+        let mut ord: u64 = 0;
 
         for (term, meta) in terms {
             // The ord is simply the position in sorted term order.
-            let ord = u64::try_from(metas.len()).map_err(|_overflow| {
-                io::Error::new(io::ErrorKind::InvalidData, "term count exceeds u64")
-            })?;
             builder
                 .insert(term.as_ref(), ord)
                 .map_err(|err: fst::Error| fst_err(&err))?;
-            metas.push(meta);
+            meta.encode(&mut metas);
+            ord += 1;
         }
 
         if metas.is_empty() {
@@ -122,21 +146,24 @@ impl TermDict {
         }
 
         let bytes = builder.into_inner().map_err(|err: fst::Error| fst_err(&err))?;
-        let map = Map::new(bytes).map_err(|err: fst::Error| fst_err(&err))?;
+        let map = Map::new(SegmentBytes::Owned(bytes)).map_err(|err: fst::Error| fst_err(&err))?;
 
         Ok(Self {
             map: Some(map),
-            metas,
+            metas: SegmentBytes::Owned(metas),
         })
     }
 
     //read from bytes
-    pub fn from_parts(bytes: Vec<u8>, metas: Vec<TermMeta>) -> io::Result<Self> {
-        if metas.is_empty() {
+    pub fn from_parts(fst: SegmentBytes, metas: SegmentBytes) -> io::Result<Self> {
+        if metas.as_ref().is_empty() {
             return Ok(Self::empty());
         }
+        if metas.as_ref().len() % TERM_META_LEN != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "term metas not a whole number of entries"));
+        }
 
-        let map = Map::new(bytes).map_err(|err: fst::Error| fst_err(&err))?;
+        let map = Map::new(fst).map_err(|err: fst::Error| fst_err(&err))?;
 
         Ok(Self {
             map: Some(map),
@@ -152,8 +179,8 @@ impl TermDict {
     }
 
     #[must_use]
-    pub fn metas(&self) -> &[TermMeta] {
-        &self.metas
+    pub fn metas(&self) -> &[u8] {
+        self.metas.as_ref()
     }
 
      #[must_use]
@@ -168,13 +195,12 @@ impl TermDict {
     }
 
     #[must_use]
-    pub const fn len(&self) -> usize {
-        self.metas.len()
+   pub fn len(&self) -> usize {
+        self.metas.as_ref().len() / TERM_META_LEN
     }
 
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.metas.is_empty()
+    pub fn is_empty(&self) -> bool {
+        self.metas.as_ref().is_empty()
     }
 
     //Every term in this field, ascending, as owned strings.
@@ -184,7 +210,7 @@ impl TermDict {
             return Vec::new();
         };
 
-        let mut out = Vec::with_capacity(self.metas.len());
+        let mut out = Vec::with_capacity(self.len());
         let mut stream = map.stream();
 
         while let Some((term, ord)) = stream.next() {
@@ -196,7 +222,7 @@ impl TermDict {
     }
 
     //All terms starting with `prefix`, ascending.
-    #[must_use]
+    
    pub fn prefix(&self, prefix: &str, mut f: impl FnMut(&[u8], u64, TermMeta)) {
         let Some(map) = self.map.as_ref() else {
             return;

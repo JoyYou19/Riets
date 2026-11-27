@@ -11,8 +11,8 @@ BASE_URL = "http://localhost:6006"
 DB_NAME = "fever"
 SHARD_COUNT = 4
 
-BATCH_SIZE = 50000   # documents per insert request
-IN_FLIGHT = 8     # insert requests running at the same time
+BATCH_SIZE = 100000   # documents per insert request
+IN_FLIGHT = 4     # insert requests running at the same time
 
 # Policy format since the analyzer refactor: named analyzers + a "document" schema.
 # "$stemming" on a field is gone; a field picks an analyzer with "$analyzer"
@@ -35,7 +35,7 @@ POLICY = json.dumps({
         "title": {
             "$type": "text",
             "$list": True,
-            "$exact": True,
+            "$exact": "case-insensitive",
             "$weight": {"min": 40, "max": 80},
         },
         "text": {

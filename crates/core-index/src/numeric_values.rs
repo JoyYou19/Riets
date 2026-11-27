@@ -71,7 +71,7 @@ impl NumericFields {
     }
 
     //range for our NumericFields
-    #[must_use]
+    
     pub fn range(
         &self,
         xpath: XPathId,
@@ -180,7 +180,7 @@ impl NumericPoints {
             .map(|(_, value)| *value)
     }
 
-    #[must_use]
+    
     pub fn range(
         &self,
         xpath: XPathId,

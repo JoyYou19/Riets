@@ -1,6 +1,6 @@
 //WARN: Valter, luudzu piedod es atvicaju es centos Kristianu aptureet - Normunds
 
-use std::{ cmp::Reverse, collections::{BTreeMap, BinaryHeap}, io, path::Path };
+use std::{ cmp::Reverse, collections::{BTreeMap, BinaryHeap}, io, path::Path, sync::Arc };
 
 use bitpacking::{ BitPacker, BitPacker4x };
 use core_timing::timed;
@@ -9,9 +9,7 @@ use roaring::RoaringTreemap;
 
 use crate::{
     array_rows::{ ArrayRowIndex, NO_PARENT_ROW }, bkd::Bkd, disk::{
-        block_cursor::BlockCursor,
-        codec::{ DecodedBlock, decode_block, read_var_u32 },
-        format::{
+        SegmentBytes, block_cursor::BlockCursor, codec::{ DecodedBlock, decode_block, read_var_u32 }, format::{
             FOOTER_LEN,
             HEADER_LEN,
             MAGIC,
@@ -20,8 +18,7 @@ use crate::{
             SkipEntry,
             VERSION,
             array_at,
-        },
-        writer::MergeSource,
+        }, writer::MergeSource,
     }, document::indexed::BoolField, document_values::DocValues, fuzzy::{ FuzzyExpansion, FuzzyOptions, rank_candidates }, numeric_values::{ NumericBound, NumericField, NumericFields, NumericKind, NumericValue }, posting::{ Positions, Posting, PostingList, cursor::TermCursor, item::Offsets }, search::{ SearchIndex, SearchNumeric, SearchStats, TermCursorInfo, TermPostings }, segment::build_field_stats, term_dict::{ TERM_META_LEN, TermDict, TermDictionary, TermMeta }, types::{ ArrayRowId, DocId, FieldStats, TermKey, XPathId }, wildcard::MAX_PATTERN_TERMS,
 };
 
@@ -29,7 +26,7 @@ use crate::{
 // Segmetn file layout is roughly [header][posting bytes][dictionary bytes][footer]
 // the whole file is MMAPED we are cool 🤘
 pub struct DiskSegment {
-    mmap: Mmap,
+    mmap: Arc<Mmap>,
     dictionary: TermDictionary,
     doc_lengths: DocLengths,
     field_stats: BTreeMap<XPathId, FieldStats>,
@@ -93,7 +90,7 @@ impl DiskSegment {
         // SAFETY: segment files are written under a temporary name, renamed into place and
         // never modified after; a replacement is a new inode, so the mapping cannot change
         // underneath us.
-        let mmap = unsafe { Mmap::map(&file)? };
+        let mmap = Arc::new(unsafe { Mmap::map(&file)? });
 
         validate_header(&mmap)?;
 
@@ -669,10 +666,9 @@ fn read_array_row_index(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Arra
 
 // One field is [xpath][term_count][fst_len][fst bytes][TermMeta * term_count].
 // The FST maps term bytes to an ord, and that ord indexes the metas array.
-// One field is [xpath][term_count][fst_len][fst bytes][TermMeta * term_count].
-// The FST maps term bytes to an ord, and that ord indexes the metas array.
-fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<TermDictionary> {
-   let data = section(bytes, footer.dictionary_offset, footer.dictionary_len, "dictionary")?;
+fn read_term_dictionary(mmap: &Arc<Mmap>, footer: &SegmentFooter) -> io::Result<TermDictionary> {
+    let data = section(mmap, footer.dictionary_offset, footer.dictionary_len, "dictionary")?;
+    let base = to_usize(footer.dictionary_offset)?;
     let mut cursor = Cursor::new(data);
     let field_count = cursor.read_u32()? as usize;
 
@@ -694,34 +690,27 @@ fn read_term_dictionary(bytes: &[u8], footer: &SegmentFooter) -> io::Result<Term
         let field_terms = cursor.read_u32()? as usize;
         let fst_len = to_usize(cursor.read_u64()?)?;
 
-        let fst_bytes = cursor.take(fst_len)?.to_vec();
+        let fst_start = base + cursor.offset;
+        cursor.take(fst_len)?;
+        let fst = SegmentBytes::Mapped {
+            mmap: Arc::clone(mmap),
+            start: fst_start,
+            end: fst_start + fst_len,
+        };
 
-        // Check the metas actually fit before reserving, so a bogus count in a
-        // corrupt file cannot make us allocate gigabytes.
-        if field_terms.saturating_mul(TERM_META_LEN) > cursor.remaining() {
-            return Err(
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "dictionary term count exceeds section size"
-                )
-            );
-        }
+        let metas_len = field_terms.checked_mul(TERM_META_LEN).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "dictionary term count overflows")
+        })?;
+        let metas_start = base + cursor.offset;
+        // fails on a bogus count instead of reading past the section
+        cursor.take(metas_len)?;
+        let metas = SegmentBytes::Mapped {
+            mmap: Arc::clone(mmap),
+            start: metas_start,
+            end: metas_start + metas_len,
+        };
 
-        let mut metas = Vec::with_capacity(field_terms);
-
-        for _ in 0..field_terms {
-            metas.push(TermMeta {
-                postings_offset: cursor.read_u64()?,
-                postings_len: cursor.read_u32()?,
-                doc_freq: cursor.read_u32()?,
-                max_weight: cursor.read_u16()?,
-                block_count: cursor.read_u32()?,
-                block_len: cursor.read_u32()?,
-                positions_len: cursor.read_u32()?,
-            });
-        }
-
-        dictionary.insert_field(xpath, TermDict::from_parts(fst_bytes, metas)?);
+        dictionary.insert_field(xpath, TermDict::from_parts(fst, metas)?);
         term_count += field_terms;
     }
 

@@ -549,15 +549,7 @@ fn write_dictionary(out: &mut impl Write, fields: &[(XPathId, TermDict)]) -> io:
         write_u64(out, fst.len() as u64)?;
         out.write_all(fst)?;
 
-        for meta in dict.metas() {
-            write_u64(out, meta.postings_offset)?;
-            write_u32(out, meta.postings_len)?;
-            write_u32(out, meta.doc_freq)?;
-            write_u16(out, meta.max_weight)?;
-            write_u32(out, meta.block_count)?;
-            write_u32(out, meta.block_len)?;
-            write_u32(out, meta.positions_len)?;
-        }
+        out.write_all(dict.metas())?;
     }
 
     Ok(())
