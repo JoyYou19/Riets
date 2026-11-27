@@ -24,7 +24,7 @@ POLICY = """\
 
   "document": {
     "id": {
-        "$type":"id", 
+        "$type":"id_auto", 
         "$searchable": true,
         "$exact": "case-insensitive"
     },
