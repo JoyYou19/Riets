@@ -22,8 +22,7 @@ use core_index::numeric_values::NumericValue;
 use core_index::types::{DocId, ShardId, XPathId, exact_len_marker, shard_of};
 use core_index::vector::{VectorHit, merge_hits};
 use core_protocol::command_reponse_definitions::{
-    DidYouMeanRequest, Fuzziness, HighlightFieldOptions, LookupCommand, LookupResponse, MatchMode,
-    SearchCommand, SortMode, TotalHits,
+    DidYouMeanRequest, Fuzziness, HighlightFieldOptions, LookupCommand, LookupResponse, MatchMode, SearchCommand, SortMode, TotalHits,
 };
 use core_protocol::errors::CorelamoError;
 use core_query::dictionary::{
@@ -2128,14 +2127,21 @@ impl ShardManager {
         Ok(merged.into_values().collect())
     }
 
-    #[timed(backup)]
-    pub async fn delete_backup(
-        &self,
-        backup_id: String,
-        _user: String,
-    ) -> Result<(), CorelamoError> {
-        let backup_root = self.backup_dir.join(backup_id);
-        fs::remove_dir_all(&backup_root).map_err(|e| CorelamoError::Internal(e.to_string()))?;
+     #[timed(backup)]
+    pub async fn delete_backup(&self, backup_id: String, user: String) -> Result<(), CorelamoError> {
+        if !is_valid_backup_id(&backup_id) {
+            return Err(CorelamoError::InvalidData(format!("invalid backup id '{backup_id}'")));
+        }
+        // each shard deletes its part and keeps its own chain state right
+        for shard in &self.shards {
+            shard.delete_backup(backup_id.clone(), user.clone()).await?;
+        }
+        // the deleted backups' directories are empty now; a directory still holding a part stays
+        if let Ok(entries) = fs::read_dir(&self.backup_dir) {
+            for entry in entries.flatten() {
+                drop(fs::remove_dir(entry.path()));
+            }
+        }
         Ok(())
     }
 

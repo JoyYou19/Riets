@@ -77,17 +77,10 @@ impl SearchIndex for ImmutableSegment {
         self.array_row_index.parent_of(row)
     }
 
-    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.bool_fields
-            .get(&xpath)
-            .map(|f| f.true_ids.clone())
-            .unwrap_or_default()
-    }
-    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.bool_fields
-            .get(&xpath)
-            .map(|f| f.false_ids.clone())
-            .unwrap_or_default()
+    fn union_bool_ids(&self, xpath: XPathId, value: bool, out: &mut RoaringTreemap) {
+        if let Some(field) = self.bool_fields.get(&xpath) {
+            *out |= if value { &field.true_ids } else { &field.false_ids };
+        }
     }
 
     fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
@@ -123,13 +116,14 @@ impl SearchIndex for ImmutableSegment {
 }
 
 impl SearchNumeric for ImmutableSegment {
-    fn numeric_range(
+     fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> RoaringTreemap {
-        self.numeric_fields.range(xpath, lo, hi)
+        out: &mut RoaringTreemap,
+    ) {
+        self.numeric_fields.range(xpath, lo, hi, out);
     }
 
     fn numeric_top(
@@ -169,6 +163,7 @@ impl SearchStats for ImmutableSegment {
 }
 
 impl ImmutableSegment {
+    #[must_use]
     pub fn new(
         terms: BTreeMap<TermKey, PostingList>,
         doc_lengths: BTreeMap<(DocId, XPathId), u32>,
@@ -194,38 +189,47 @@ impl ImmutableSegment {
         }
     }
     
+    #[must_use]
     pub const fn doc_lengths(&self) -> &BTreeMap<(DocId, XPathId), u32> {
         &self.doc_lengths
     }
+    #[must_use]
     pub const fn doc_range(&self) -> Option<(DocId, DocId)> {
         self.doc_id_range
     }
 
+    #[must_use]
     pub const fn bool_fields(&self) -> &BTreeMap<XPathId, BoolField> {
         &self.bool_fields
     }
 
+    #[must_use]
     pub const fn numeric_fields(&self) -> &NumericFields {
         &self.numeric_fields
     }
 
+    #[must_use]
     pub const fn array_row_index(&self) -> &ArrayRowIndex {
         &self.array_row_index
     }
 
+    #[must_use]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {
         self.terms.get(&TermKey::new(term, xpath))
     }
 
+    #[must_use]
     pub const fn terms(&self) -> &BTreeMap<TermKey, PostingList> {
         &self.terms
     }
 
+    #[must_use]
     pub fn lookup_or_empty(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup(term, xpath).cloned().unwrap_or_default()
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let mut matches: Vec<(&str, &PostingList)> = Vec::new();
         for (key, postings) in self.terms.range(TermKey::new(prefix, xpath)..) {
@@ -238,6 +242,7 @@ impl ImmutableSegment {
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);
@@ -255,6 +260,7 @@ impl ImmutableSegment {
         capped_union(matches)
     }
 
+    #[must_use]
     pub fn term_count(&self) -> usize {
         self.terms.len()
     }

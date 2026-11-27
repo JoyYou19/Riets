@@ -34,6 +34,7 @@ pub struct SegmentVectors {
 
 impl SegmentVectors {
     /// Vectors without a graph; the graph is attached later, once built.
+    #[must_use]
     pub const fn new(segment: PathBuf, xpath: XPathId, file: Arc<VectorFile>) -> Self {
         Self {
             segment,
@@ -64,6 +65,7 @@ impl SegmentVectors {
     }
    /// Best `k` hits of the main file and the tail that `filter` accepts, best first.
     /// `query` must be L2-normalized.
+    #[must_use]
     pub fn search(&self, query: &[f32], k: usize, filter: &VectorFilter<'_>) -> Vec<VectorHit> {
         let main = self.search_main(query, k, filter);
         match &self.tail {
@@ -75,14 +77,17 @@ impl SegmentVectors {
     }
 
     /// Rows in the main file and the tail together.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.file.len() + self.tail.as_ref().map_or(0, |tail| tail.len())
     }
     // True when neither the main file nor the tail holds a row.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     /// True when the main file or the tail holds a vector for `doc_id`.
+    #[must_use]
     pub fn contains(&self, doc_id: DocId) -> bool {
         self.file.contains(doc_id) || self.tail.as_ref().is_some_and(|tail| tail.contains(doc_id))
     }

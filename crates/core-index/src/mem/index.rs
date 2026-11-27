@@ -72,17 +72,14 @@ impl SearchIndex for MemIndex {
         self.array_row_index.doc_of(row)
     }
 
-    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.bool_fields
-            .get(&xpath)
-            .map(|f| f.true_ids.clone())
-            .unwrap_or_default()
-    }
-    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.bool_fields
-            .get(&xpath)
-            .map(|f| f.false_ids.clone())
-            .unwrap_or_default()
+    fn union_bool_ids(&self, xpath: XPathId, value: bool, out: &mut RoaringTreemap) {
+        if let Some(field) = self.bool_fields.get(&xpath) {
+            *out |= if value {
+                &field.true_ids
+            } else {
+                &field.false_ids
+            };
+        }
     }
 
     fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
@@ -105,29 +102,29 @@ impl SearchIndex for MemIndex {
     }
 
     fn fuzzy_expansions(
-    &self,
-    term: &str,
-    xpath: XPathId,
-    opts: FuzzyOptions,
-) -> Vec<FuzzyExpansion> {
-    let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
-    let mut candidates: Vec<(String, u8, u32)> = Vec::new();
-    for (key, list) in &self.terms {
-        if key.xpath != xpath || list.is_empty() {
-            continue;
+        &self,
+        term: &str,
+        xpath: XPathId,
+        opts: FuzzyOptions,
+    ) -> Vec<FuzzyExpansion> {
+        let aut = LevenshteinAutomaton::new(&[], term, opts.max_edits, opts.prefix_length);
+        let mut candidates: Vec<(String, u8, u32)> = Vec::new();
+        for (key, list) in &self.terms {
+            if key.xpath != xpath || list.is_empty() {
+                continue;
+            }
+            let Some(edits) = aut.distance_to(&key.term) else {
+                continue;
+            };
+            let doc_freq = self.doc_freq(&key.term, xpath);
+            if doc_freq > 0 {
+                candidates.push((key.term.clone(), edits, doc_freq));
+            }
         }
-        let Some(edits) = aut.distance_to(&key.term) else {
-            continue;
-        };
-        let doc_freq = self.doc_freq(&key.term, xpath);
-        if doc_freq > 0 {
-            candidates.push((key.term.clone(), edits, doc_freq));
-        }
+        rank_candidates(candidates)
     }
-    rank_candidates(candidates)
-}
 
-     fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
+    fn doc_freq(&self, term: &str, xpath: XPathId) -> u32 {
         self.terms
             .get(&TermKey::new(term, xpath))
             .map_or(0, len_u32)
@@ -135,7 +132,7 @@ impl SearchIndex for MemIndex {
     fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         self.lookup_prefix(prefix, xpath)
     }
-     fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
+    fn prefix_terms(&self, prefix: &str, xpath: XPathId) -> Vec<(String, u32)> {
         self.terms
             .iter()
             .filter(|(key, list)| {
@@ -167,8 +164,9 @@ impl SearchNumeric for MemIndex {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> RoaringTreemap {
-        self.numeric_points.range(xpath, lo, hi)
+        out: &mut RoaringTreemap,
+    ) {
+        self.numeric_points.range(xpath, lo, hi, out);
     }
 
     fn numeric_top(
@@ -222,6 +220,7 @@ impl MemIndex {
     }
 
     #[timed(indexing_documents)]
+    #[must_use]
     pub fn freeze(self) -> crate::segment::ImmutableSegment {
         let terms: BTreeMap<_, _> = self.terms.into_iter().collect();
         let doc_lengths: BTreeMap<_, _> = self.doc_lengths.into_iter().collect();
@@ -306,10 +305,8 @@ impl MemIndex {
         offsets: &[(u32, u32)],
         weight: u16,
     ) {
-        self.estimated_bytes += size_of::<DocId>()
-            + size_of::<u16>()
-            + size_of_val(positions)
-            + size_of_val(offsets);
+        self.estimated_bytes +=
+            size_of::<DocId>() + size_of::<u16>() + size_of_val(positions) + size_of_val(offsets);
 
         match self.terms.entry(TermKey::new(term, xpath)) {
             Entry::Occupied(mut slot) => {
@@ -323,15 +320,15 @@ impl MemIndex {
             }
         }
     }
-     #[must_use]
+    #[must_use]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> Option<&PostingList> {
         self.terms.get(&TermKey::new(term, xpath))
     }
-     #[must_use]
+    #[must_use]
     pub fn term_count(&self) -> usize {
         self.terms.len()
     }
-     #[must_use]
+    #[must_use]
     pub const fn estimated_size_bytes(&self) -> usize {
         self.estimated_bytes
     }
@@ -401,12 +398,13 @@ impl MemIndex {
             );
         }
     }
-     #[must_use]
+    #[must_use]
     pub fn lookup_or_empty(&self, term: &str, xpath: XPathId) -> PostingList {
         self.lookup(term, xpath).cloned().unwrap_or_default()
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let matches: Vec<(&str, &PostingList)> = self
             .terms
@@ -418,6 +416,7 @@ impl MemIndex {
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         if pattern.is_prefix_only() {
             return self.lookup_prefix(pattern.prefix(), xpath);

@@ -24,7 +24,7 @@ use core_protocol::command_reponse_definitions::{
 };
 use core_query::planner::RankPlan;
 use core_query::resolver::{FieldQuery, QueryGroup};
-use core_storage::binary_store::{CompletedSegmentCompaction, SegmentCompactionJob};
+use core_storage::binary_store::{CompletedSegmentCompaction, ExternalId, SegmentCompactionJob};
 use core_storage::document_projections::{id_path_to_strip, project_document};
 use core_storage::document_store::StoredDocument;
 use core_timing::timed;
@@ -764,7 +764,7 @@ impl ShardHandle {
     ) -> Result<Vec<Option<SearchDocumentHit>>, CorelamoError> {
         self.ensure_readable()?;
 
-        let external_ids: Vec<Option<String>> = hits
+        let external_ids: Vec<Option<ExternalId>> = hits
             .iter()
             .map(|hit| {
                 self.shared

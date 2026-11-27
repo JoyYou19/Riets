@@ -2,7 +2,7 @@ use std::io;
 use std::sync::atomic::AtomicU64;
 use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool};
 
-use core_storage::binary_store::{DocLocation, doc_cache_weigher, read_document_at_path};
+use core_storage::binary_store::{DocLocation, ExternalId, doc_cache_weigher, read_document_at_path};
 use core_timing::timed;
 use dashmap::DashMap;
 
@@ -15,8 +15,8 @@ use tokio::task;
 pub struct SharedShardState {
     pub snapshot: SharedIndexSnapshot,
     pub docs: Cache<String, StoredDocument>,
-    pub locations: Arc<DashMap<String, DocLocation>>,
-    pub internal_to_external: Arc<DashMap<DocId, String>>,
+    pub locations: Arc<DashMap<ExternalId, DocLocation>>,
+    pub internal_to_external: Arc<DashMap<DocId, ExternalId>>,
     pub is_running: AtomicBool,
     pub is_clearing: AtomicBool,
     pub is_backing_up: AtomicBool,
@@ -94,7 +94,7 @@ impl SharedShardState {
         else {
             return Ok(None);
         };
-        if let Some(doc) = self.docs.get(&external_id) {
+         if let Some(doc) = self.docs.get(&*external_id) {
             return Ok(Some(doc));
         }
         let Some(loc) = self.locations.get(&external_id).map(|entry| *entry.value()) else {

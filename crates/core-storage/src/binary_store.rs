@@ -37,9 +37,13 @@ const COMPACTED_MAGIC: &[u8; 8] = b"BANANA_D";
 const MAPS_MAGIC: &[u8; 8] = b"CLMAPS02";
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
-
+/// One shared allocation per external id, held by both `locations` and `internal_to_external`.
+pub type ExternalId = Arc<str>;
 #[must_use]
-#[allow(clippy::ptr_arg, reason = "moka's weigher is Fn(&K, &V) with K = String")]
+#[allow(
+    clippy::ptr_arg,
+    reason = "moka's weigher is Fn(&K, &V) with K = String"
+)]
 pub fn doc_cache_weigher(key: &String, value: &StoredDocument) -> u32 {
     let bytes = key.len() + value.external_id.len() + value.source.len();
     u32::try_from(bytes).unwrap_or(u32::MAX)
@@ -101,7 +105,7 @@ impl Throttle {
         }
     }
 
-     fn consume(&mut self, bytes: u64) {
+    fn consume(&mut self, bytes: u64) {
         self.bytes += bytes;
         // bytes / (bytes per second), in whole milliseconds; integers, so it cannot overflow to
         // infinity (from_secs_f64 panics on that) and `max(1)` rules out dividing by zero
@@ -133,14 +137,16 @@ fn seek_delta(from: u64, to: u64) -> io::Result<i64> {
 
 fn record_len(bytes: u64) -> io::Result<u32> {
     u32::try_from(bytes).map_err(|_overflow| {
-        io::Error::new(io::ErrorKind::InvalidInput, "document record longer than 4 GiB")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "document record longer than 4 GiB",
+        )
     })
 }
 
 fn len_u32(len: usize) -> io::Result<u32> {
-    u32::try_from(len).map_err(|_overflow| {
-        io::Error::new(io::ErrorKind::InvalidInput, "value longer than 4 GiB")
-    })
+    u32::try_from(len)
+        .map_err(|_overflow| io::Error::new(io::ErrorKind::InvalidInput, "value longer than 4 GiB"))
 }
 
 fn dead_fraction(live: u64, total: u64) -> f64 {
@@ -153,17 +159,18 @@ fn dead_fraction(live: u64, total: u64) -> f64 {
 }
 pub struct StoreSnapshot {
     dir: PathBuf,
-    entries: Vec<(String, DocLocation)>,
+    entries: Vec<(ExternalId, DocLocation)>,
     highest_id: DocId,
 }
 impl StoreSnapshot {
     #[must_use]
     pub fn capture(
         dir: PathBuf,
-        locations: &DashMap<String, DocLocation>,
+        locations: &DashMap<ExternalId, DocLocation>,
         highest_id: DocId,
     ) -> Self {
-        let mut entries: Vec<(String, DocLocation)> = locations
+
+        let mut entries: Vec<(ExternalId, DocLocation)> = locations
             .iter()
             .map(|entry| (entry.key().clone(), *entry.value()))
             .collect();
@@ -220,8 +227,8 @@ impl DocumentStore for StoreSnapshot {
         Ok(docs)
     }
 
+   
     /// Reads exactly the recorded documents, segment by segment in file order.
-       /// Reads exactly the recorded documents, segment by segment in file order.
     fn for_each_document(
         &self,
         f: &mut dyn FnMut(&StoredDocument) -> io::Result<()>,
@@ -243,7 +250,7 @@ impl DocumentStore for StoreSnapshot {
             let doc = read_document(reader)?;
             *position = location.offset + u64::from(location.len);
 
-            if doc.external_id != *external_id || doc.internal_id != location.internal_id {
+            if *doc.external_id != **external_id || doc.internal_id != location.internal_id {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
@@ -261,8 +268,8 @@ impl DocumentStore for StoreSnapshot {
 pub struct BinaryDocumentStore {
     path: PathBuf,
     docs: Cache<String, StoredDocument>,
-    internal_to_external: Arc<DashMap<DocId, String>>,
-    locations: Arc<DashMap<String, DocLocation>>,
+    internal_to_external: Arc<DashMap<DocId, ExternalId>>,
+    locations: Arc<DashMap<ExternalId, DocLocation>>,
     current_segment: AtomicU32,
     next_segment_id: AtomicU32,
     unsynced_from: AtomicU32,
@@ -272,14 +279,14 @@ pub struct SegmentCompactionJob {
     pub segment_ids: Vec<u32>,
     pub next_segment_id: u32,
     pub store_dir: PathBuf,
-    pub locations_snapshot: Vec<(String, DocLocation)>, // this segment's live entries at plan time
+    pub locations_snapshot: Vec<(ExternalId, DocLocation)>, // this segment's live entries at plan time
 }
 #[derive(Debug)]
 pub struct CompletedSegmentCompaction {
     pub old_segment_ids: Vec<u32>,
     pub new_segment_id: u32,
     pub tmp_path: PathBuf,
-    pub new_locations: Vec<(String, DocLocation)>,
+    pub new_locations: Vec<(ExternalId, DocLocation)>,
 }
 //TODO: make this persistend and generate on each load
 #[derive(Debug, Clone, Copy, bincode::Encode, bincode::Decode)]
@@ -292,7 +299,7 @@ pub struct DocLocation {
 
 impl BinaryDocumentStore {
     #[timed(database_lifecycle)]
-        #[timed(database_lifecycle)]
+    #[timed(database_lifecycle)]
     pub fn open(path: impl AsRef<Path>, doc_cache_budget_bytes: u64) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let segment_ids = Self::prepare_dir(&path)?;
@@ -338,14 +345,12 @@ impl BinaryDocumentStore {
         Ok(segment_ids)
     }
 
-    /// New writes go to the newest append segment, never into a compaction output (BANANA_D):
+    /// New writes go to the newest append segment, never into a compaction output (`BANANA_D)`:
     /// when the newest file is one, a fresh append segment is started after it.
     fn begin_appending(&self) -> io::Result<()> {
         let newest = Self::list_segment_ids(&self.path)?.last().copied();
         let append_to = match newest {
-            Some(id) if segment_magic(&self.path.join(Self::segment_filename(id)))? == *MAGIC => {
-                id
-            }
+            Some(id) if segment_magic(&self.path.join(Self::segment_filename(id)))? == *MAGIC => id,
             _ => {
                 let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
                 let seg_path = self.path.join(Self::segment_filename(id));
@@ -387,11 +392,11 @@ impl BinaryDocumentStore {
         self.path.join(Self::segment_filename(id))
     }
 
-        pub fn open_with_maps(
+    pub fn open_with_maps(
         path: impl AsRef<Path>,
         docs: Cache<String, StoredDocument>,
-        internal_to_external: Arc<DashMap<DocId, String>>,
-        locations: Arc<DashMap<String, DocLocation>>,
+        internal_to_external: Arc<DashMap<DocId, ExternalId>>,
+        locations: Arc<DashMap<ExternalId, DocLocation>>,
     ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let segment_ids = Self::prepare_dir(&path)?;
@@ -509,7 +514,7 @@ impl BinaryDocumentStore {
         }
 
         let selected: ahash::AHashSet<u32> = selected_ids.iter().copied().collect();
-        let mut entries: Vec<(String, DocLocation)> = self
+        let mut entries: Vec<(ExternalId, DocLocation)> = self
             .locations
             .iter()
             .filter(|entry| selected.contains(&entry.value().segment))
@@ -533,7 +538,8 @@ impl BinaryDocumentStore {
         let final_path = self
             .path
             .join(Self::segment_filename(completed.new_segment_id));
-        std::fs::rename(&completed.tmp_path, &final_path).map_err(|e| with_path(&e, &final_path))?;
+        std::fs::rename(&completed.tmp_path, &final_path)
+            .map_err(|e| with_path(&e, &final_path))?;
         File::open(&self.path)?.sync_all()?;
 
         let mut installed = 0usize;
@@ -560,12 +566,6 @@ impl BinaryDocumentStore {
                 return Err(with_path(&err, &old_path));
             }
         }
-
-        save_maps(
-            &self.path,
-            &self.locations,
-            self.highest_id.load(Ordering::Relaxed),
-        )?;
         Ok(installed > 0)
     }
 
@@ -582,7 +582,7 @@ impl BinaryDocumentStore {
     /// Applies one segment's records to the maps, from `from` (a byte offset just past a
     /// record) or from the start. A record cut short by a crash at the end of the last segment
     /// is cut off, so later appends start on a clean boundary; anywhere else it is an error.
-        fn scan_segment(
+    fn scan_segment(
         &self,
         id: u32,
         from: Option<u64>,
@@ -674,7 +674,7 @@ impl BinaryDocumentStore {
             .fetch_max(doc.internal_id, Ordering::Relaxed);
         let newer_than_current = self
             .locations
-            .get(&doc.external_id)
+            .get(doc.external_id.as_str())
             .is_none_or(|current| current.internal_id <= doc.internal_id);
         let newer_than_delete = deleted_versions
             .get(&doc.external_id)
@@ -682,8 +682,9 @@ impl BinaryDocumentStore {
         if !(newer_than_current && newer_than_delete) {
             return;
         }
+        let external_id: ExternalId = Arc::from(doc.external_id.as_str());
         if let Some(old) = self.locations.insert(
-            doc.external_id.clone(),
+            Arc::clone(&external_id),
             DocLocation {
                 internal_id: doc.internal_id,
                 offset: doc_offset,
@@ -695,7 +696,7 @@ impl BinaryDocumentStore {
             self.internal_to_external.remove(&old.internal_id);
         }
         self.internal_to_external
-            .insert(doc.internal_id, doc.external_id.clone());
+            .insert(doc.internal_id, external_id);
         self.docs.invalidate(&doc.external_id);
     }
 
@@ -745,14 +746,12 @@ impl BinaryDocumentStore {
             }
         }
 
-        // 3. load the snapshot
-        self.highest_id
-            .fetch_max(saved.highest_id, Ordering::Relaxed);
         for (external_id, loc) in saved.entries {
             self.highest_id
                 .fetch_max(loc.internal_id, Ordering::Relaxed);
+            let external_id: ExternalId = Arc::from(external_id);
             self.internal_to_external
-                .insert(loc.internal_id, external_id.clone());
+                .insert(loc.internal_id, Arc::clone(&external_id));
             self.locations.insert(external_id, loc);
         }
 
@@ -829,14 +828,14 @@ impl DocumentStore for BinaryDocumentStore {
         let location = self.append_put(&doc)?;
         self.highest_id
             .fetch_max(doc.internal_id, Ordering::Relaxed);
+        let external_id: ExternalId = Arc::from(doc.external_id);
         self.internal_to_external
-            .insert(doc.internal_id, doc.external_id.clone());
-        self.locations.insert(doc.external_id, location);
-        //self.docs.insert(doc.external_id.clone(), doc);
+            .insert(doc.internal_id, Arc::clone(&external_id));
+        self.locations.insert(external_id, location);
         Ok(())
     }
 
-     #[timed(inserting)]
+    #[timed(inserting)]
     fn put_batch(&mut self, docs: Vec<StoredDocument>) -> io::Result<()> {
         let seg_path = self.current_segment_path();
         let file = OpenOptions::new()
@@ -854,10 +853,11 @@ impl DocumentStore for BinaryDocumentStore {
             let len = record_len(writer.position() - doc_offset)?;
             self.highest_id
                 .fetch_max(doc.internal_id, Ordering::Relaxed);
+             let external_id: ExternalId = Arc::from(doc.external_id);
             self.internal_to_external
-                .insert(doc.internal_id, doc.external_id.clone());
+                .insert(doc.internal_id, Arc::clone(&external_id));
             self.locations.insert(
-                doc.external_id.clone(),
+                external_id,
                 DocLocation {
                     internal_id: doc.internal_id,
                     offset: doc_offset,
@@ -952,7 +952,7 @@ impl DocumentStore for BinaryDocumentStore {
                         let doc = read_document(&mut reader)?;
                         let is_current = self
                             .locations
-                            .get(&doc.external_id)
+                            .get(doc.external_id.as_str())
                             .is_some_and(|loc| loc.segment == id && loc.offset == doc_offset);
                         if is_current {
                             f(&doc)?;
@@ -1206,7 +1206,7 @@ struct MapsFile {
 #[timed(database_lifecycle)]
 pub fn save_maps(
     path: &Path,
-    locations: &DashMap<String, DocLocation>,
+    locations: &DashMap<ExternalId, DocLocation>,
     highest_id: DocId,
 ) -> io::Result<()> {
     let mut segment_ends = Vec::new();
@@ -1223,7 +1223,7 @@ pub fn save_maps(
         segment_ends,
         entries: locations
             .iter()
-            .map(|e| (e.key().clone(), *e.value()))
+             .map(|e| (e.key().to_string(), *e.value()))
             .collect(),
         highest_id,
     };

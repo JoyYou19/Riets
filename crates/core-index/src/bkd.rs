@@ -28,6 +28,7 @@ impl Bkd {
     }
 
     //top-k doc ids + values, in the requested order (lowest-first when ascending)
+        #[must_use]
         pub fn top(&self, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
         let unpacked = |&(packed, doc_id): &(u64, DocId)| (doc_id, unpack(packed, self.kind));
         if descending {
@@ -45,6 +46,7 @@ impl Bkd {
         Ok(Self { kind, points })
     }
 
+    #[must_use]
     pub fn from_points(points: Vec<(DocId, NumericValue)>) -> Self {
         let kind = points
             .first()
@@ -57,29 +59,35 @@ impl Bkd {
         )
     }
 
+    #[must_use]
     pub const fn kind(&self) -> NumericKind {
         self.kind
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.points.len()
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 
     //array of ascending values
+    #[must_use]
     pub fn points(&self) -> &[(u64, DocId)] {
         &self.points
     }
 
     //for bounds lol
+    #[must_use]
     pub fn min(&self) -> Option<NumericValue> {
         self.points
             .first()
             .map(|(packed, _)| unpack(*packed, self.kind))
     }
+    #[must_use]
     pub fn max(&self) -> Option<NumericValue> {
         self.points
             .last()
@@ -87,7 +95,13 @@ impl Bkd {
     }
 
     //Doc ids whose value lies inside the bounds, ascending and deduped.
-        pub fn range(&self, lo: Option<NumericBound>, hi: Option<NumericBound>) -> RoaringTreemap {
+        #[must_use]
+        pub fn range(
+        &self,
+        lo: Option<NumericBound>,
+        hi: Option<NumericBound>,
+        out: &mut RoaringTreemap,
+    ) {
         let start = lo.map_or(0, |lo| {
             let bound = pack(lo.value);
             if lo.inclusive {
@@ -107,15 +121,16 @@ impl Bkd {
         });
 
         if start >= end {
-            return RoaringTreemap::new();
+            return;
         }
 
-        // docs are sorted here cuz the original array is sorted by value
-        self.points
-            .get(start..end)
-            .unwrap_or_default()
-            .iter()
-            .map(|point| point.1)
-            .collect()
+        // the run is in value order, not doc order, so this is a plain extend, not an append
+        out.extend(
+            self.points
+                .get(start..end)
+                .unwrap_or_default()
+                .iter()
+                .map(|point| point.1),
+        );
     }
 }

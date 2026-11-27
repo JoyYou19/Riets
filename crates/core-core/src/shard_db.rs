@@ -550,7 +550,7 @@ impl ShardDb {
             if crate::shard_for_untimed(entry.key(), self.shard_count) != self.shard_id.0 {
                 misplaced += 1;
                 if examples.len() < EXAMPLE_LIMIT {
-                    examples.push(entry.key().clone());
+                    examples.push(entry.key().to_string());
                 }
             }
         }
@@ -1160,9 +1160,12 @@ impl ShardDb {
                 0
             }
         };
-        if should_checkpoint {
+        if should_checkpoint && !self.failed {
             self.start_checkpoint()?;
         }
+        self.stats.add_documents_indexed(u64::from(replaced));
+        self.publish_stats();
+        self.last_write = Instant::now();
         let elapsed = started.elapsed();
         info!(self.log, "replace batch";
             "user" => user,
@@ -1588,12 +1591,13 @@ impl ShardDb {
             .map_err(|e| CorelamoError::Internal(e.to_string()))
     }
 
-    #[timed(backup)]
-    pub fn delete_backup(&self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
-        self.backup
+     #[timed(backup)]
+    pub fn delete_backup(&mut self, backup_id: &str, user: String) -> Result<(), CorelamoError> {
+        let deleted = self
+            .backup
             .delete_backup(backup_id)
             .map_err(|e| CorelamoError::Internal(e.to_string()))?;
-        info!(self.log, "backup deleted"; "Backup id "=> backup_id, "User" =>user);
+        info!(self.log, "backup deleted"; "Backup id" => backup_id, "Deleted" => ?deleted, "User" => user);
         Ok(())
     }
     #[timed(backup)]

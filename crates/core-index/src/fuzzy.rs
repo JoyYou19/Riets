@@ -87,6 +87,7 @@ pub fn default_max_edits(term: &str) -> u8 {
 }
 
 //prefixword -> (prefix word) based on prefix_chars
+#[must_use]
 pub fn split_prefix(term: &str, prefix_chars: usize) -> (&str, &str) {
     let byte = term
         .char_indices()
@@ -153,6 +154,7 @@ pub struct FuzzyState {
 const BAND: usize = 2 * (MAX_SUPPORTED_EDITS as usize) + 1;
 
 impl LevenshteinAutomaton {
+    #[must_use]
     pub fn new(key_prefix: &[u8], term: &str, max_edits: u8, prefix_length: usize) -> Self {
         let (prefix, suffix) = split_prefix(term, prefix_length);
         let mut exact = Vec::with_capacity(key_prefix.len() + prefix.len());
@@ -166,10 +168,12 @@ impl LevenshteinAutomaton {
         }
     }
 
+    #[must_use]
     pub const fn key_prefix_len(&self) -> usize {
         self.key_prefix_len
     }
 
+    #[must_use]
     pub const fn max_edits(&self) -> u8 {
         self.max_edits
     }
@@ -254,6 +258,7 @@ impl LevenshteinAutomaton {
     }
 
     /// Edit distance of a matching state, `None` if the state is not a match.
+    #[must_use]
     pub fn distance(&self, state: &LevState) -> Option<u8> {
         let LevState::Fuzzy(s) = state else {
             return None;
@@ -272,6 +277,7 @@ impl LevenshteinAutomaton {
 
     /// Runs a whole word through the automaton. The word must not include the
     /// raw key prefix unless the automaton was built with one.
+    #[must_use]
     pub fn distance_to(&self, word: &str) -> Option<u8> {
         let mut state = self.start();
         for &b in word.as_bytes() {
@@ -529,6 +535,7 @@ pub fn weighted_distance(query: &str, candidate: &str) -> f64 {
 }
 
 /// Noisy-channel score: how likely `candidate` is what the user meant.
+#[must_use]
 pub fn expansion_score(query: &str, candidate: &str, doc_freq: u32) -> f64 {
     EDIT_WEIGHT.mul_add(-weighted_distance(query, candidate), f64::from(doc_freq.max(1)).log10())
 }
@@ -593,6 +600,7 @@ pub struct FuzzyMatcher {
 }
 
 impl FuzzyMatcher {
+    #[must_use]
     pub fn new(term: &str, max_edits: u8, prefix_length: usize) -> Self {
         Self {
             automaton: LevenshteinAutomaton::new(

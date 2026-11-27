@@ -25,21 +25,25 @@ pub struct VectorFilter<'a> {
 }
 
 impl<'a> VectorFilter<'a> {
+    #[must_use]
     pub const fn new(deleted: &'a DeleteSet, allowed: Option<&'a RoaringTreemap>) -> Self {
         Self { deleted, allowed }
     }
 
+    #[must_use]
     pub fn accepts(&self, doc_id: DocId) -> bool {
         !self.deleted.contains(doc_id)
             && self.allowed.is_none_or(|allowed| allowed.contains(doc_id))
     }
 
+    #[must_use]
     pub const fn allowed(&self) -> Option<&'a RoaringTreemap> {
         self.allowed
     }
 
     /// True when the filter keeps so few of `rows` documents that checking them one by one
     /// beats searching the whole segment.
+       #[must_use]
        pub fn is_selective(&self, rows: usize) -> bool {
         self.allowed.is_some_and(|allowed| {
             allowed.len().saturating_mul(SELECTIVE_FILTER_RATIO)

@@ -9,12 +9,14 @@ pub struct ArrayRowAllocator {
 }
 
 impl ArrayRowAllocator {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             next: ArrayRowId(ARRAY_ROW_FLAG),
         }
     }
 
+    #[must_use]
     pub const fn starting_at(next: ArrayRowId) -> Self {
         Self { next }
     }
@@ -30,6 +32,7 @@ impl ArrayRowAllocator {
         id
     }
 
+    #[must_use]
     pub const fn next(&self) -> ArrayRowId {
         self.next
     }
@@ -47,6 +50,7 @@ pub struct ArrayRowIndex {
 }
 
 impl ArrayRowIndex {
+    #[must_use]
     pub const fn new(base: ArrayRowId) -> Self {
         Self {
             base,
@@ -60,6 +64,7 @@ impl ArrayRowIndex {
         usize::try_from(array_row_id.raw().checked_sub(self.base.raw())?).ok()
     }
 
+    #[must_use]
     pub fn parent_of(&self, array_row_id: ArrayRowId) -> Option<ArrayRowId> {
         let parent = *self.parent_row.get(self.slot(array_row_id)?)?;
         (parent != NO_PARENT_ROW).then_some(parent)
@@ -85,14 +90,17 @@ impl ArrayRowIndex {
         self.element_index.push(element_index);
     }
 
+    #[must_use]
     pub fn element_index_of(&self, array_row_id: ArrayRowId) -> Option<u32> {
         self.element_index.get(self.slot(array_row_id)?).copied()
     }
 
+    #[must_use]
     pub fn doc_of(&self, array_row_id: ArrayRowId) -> Option<DocId> {
         self.row_to_doc.get(self.slot(array_row_id)?).copied()
     }
 
+    #[must_use]
     pub const fn max_array_row(&self) -> Option<ArrayRowId> {
         if self.is_empty() {
             None
@@ -126,25 +134,31 @@ impl ArrayRowIndex {
         Ok(())
     }
 
+    #[must_use]
     pub fn element_indices(&self) -> &[u32] {
         &self.element_index
     }
 
+    #[must_use]
     pub fn row_to_doc(&self) -> &[DocId] {
         &self.row_to_doc
     }
+    #[must_use]
     pub fn parent_rows(&self) -> &[ArrayRowId] {
         &self.parent_row
     }
 
+    #[must_use]
     pub const fn base(&self) -> ArrayRowId {
         self.base
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.row_to_doc.len()
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.row_to_doc.is_empty()
     }

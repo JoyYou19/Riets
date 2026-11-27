@@ -21,6 +21,7 @@ impl AllFields {
         root.join(Self::FILE_NAME)
     }
 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -43,6 +44,7 @@ impl AllFields {
         crate::write_atomically(&Self::path(root.as_ref()), contents.as_bytes())
     }
 
+    #[must_use]
     pub const fn get_fields(&self) -> &BTreeMap<String, FieldKind> {
         &self.fields
     }
@@ -51,10 +53,12 @@ impl AllFields {
         &mut self.fields
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.fields.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }

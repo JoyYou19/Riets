@@ -105,20 +105,12 @@ impl SearchIndex for IndexSnapshot {
         self.segments.iter().find_map(|seg| seg.doc_of_row(row))
     }
 
-    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        let mut out = self.mem.bool_true_ids(xpath);
+    fn union_bool_ids(&self, xpath: XPathId, value: bool, out: &mut RoaringTreemap) {
+        self.mem.union_bool_ids(xpath, value, out);
         for seg in self.segments.iter() {
-            out |= seg.bool_true_ids(xpath);
+            seg.union_bool_ids(xpath, value, out);
         }
-        self.apply_deletes_to_bitset(out)
-    }
-
-    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        let mut out = self.mem.bool_false_ids(xpath);
-        for seg in self.segments.iter() {
-            out |= seg.bool_false_ids(xpath);
-        }
-        self.apply_deletes_to_bitset(out)
+        self.deleted.remove_from(out);
     }
 
     fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
@@ -202,18 +194,18 @@ impl SearchIndex for IndexSnapshot {
 }
 
 impl SearchNumeric for IndexSnapshot {
-    fn numeric_range(
+        fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> RoaringTreemap {
-        let mut out = self.mem.numeric_range(xpath, lo, hi);
+        out: &mut RoaringTreemap,
+    ) {
+        self.mem.numeric_range(xpath, lo, hi, out);
         for segment in self.segments.iter() {
-            out |= segment.numeric_range(xpath, lo, hi);
+            segment.numeric_range(xpath, lo, hi, out);
         }
-        self.deleted.remove_from(&mut out);
-        out
+        self.deleted.remove_from(out);
     }
 
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
@@ -387,6 +379,7 @@ impl IndexSnapshot {
         })
     }
     #[timed(search)]
+    #[must_use]
     pub fn lookup(&self, term: &str, xpath: XPathId) -> PostingList {
         let mem_list = self.mem.lookup(term, xpath); // Option<&PostingList> — no clone
 
@@ -410,12 +403,14 @@ impl IndexSnapshot {
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn lookup_prefix(&self, prefix: &str, xpath: XPathId) -> PostingList {
         let terms = self.pattern_terms(prefix, xpath, |_| true);
         self.union_terms(&terms, xpath)
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn lookup_wildcard(&self, pattern: &WildcardPattern, xpath: XPathId) -> PostingList {
         let terms = self.pattern_terms(pattern.prefix(), xpath, |term| pattern.matches(term));
         self.union_terms(&terms, xpath)
@@ -456,6 +451,7 @@ impl IndexSnapshot {
     }
 
     #[timed(search)]
+    #[must_use]
     pub fn lookup_fuzzy(&self, term: &str, xpath: XPathId, opts: FuzzyOptions) -> PostingList {
         let mut lists = Vec::new();
 
@@ -468,14 +464,17 @@ impl IndexSnapshot {
         self.apply_deletes(union_many(lists.iter()))
     }
     //vectors
+    #[must_use]
     pub fn with_vectors(mut self, vectors: Arc<Vec<SegmentVectors>>) -> Self {
         self.vectors = vectors;
         self
     }
     /// Vector files of the published segments.
+    #[must_use]
     pub fn vectors(&self) -> &[SegmentVectors] {
         &self.vectors
     }
+    #[must_use]
     pub fn deleted(&self) -> &DeleteSet{
         &self.deleted
     }
@@ -531,6 +530,7 @@ pub struct SharedIndexSnapshot {
 }
 
 impl SharedIndexSnapshot {
+    #[must_use]
     pub fn new(snapshot: IndexSnapshot) -> Self {
         Self {
             inner: Arc::new(ArcSwap::new(Arc::new(snapshot))),
@@ -541,6 +541,7 @@ impl SharedIndexSnapshot {
         self.inner.store(Arc::new(IndexSnapshot::default()));
     }
 
+    #[must_use]
     pub fn empty() -> Self {
         Self::new(IndexSnapshot::default())
     }
@@ -549,6 +550,7 @@ impl SharedIndexSnapshot {
         self.inner.store(Arc::new(snapshot));
     }
 
+    #[must_use]
     pub fn get(&self) -> Arc<IndexSnapshot> {
         self.inner.load_full()
     }

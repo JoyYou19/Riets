@@ -73,6 +73,7 @@ pub struct FlushJob {
 }
 
 impl FlushJob {
+    #[must_use]
     pub const fn seq(&self) -> u64 {
         self.seq
     }
@@ -200,11 +201,8 @@ impl SearchIndex for LsmIndex {
         self.snapshot().doc_of_row(row)
     }
 
-    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.snapshot().bool_true_ids(xpath)
-    }
-    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap {
-        self.snapshot().bool_false_ids(xpath)
+    fn union_bool_ids(&self, xpath: XPathId, value: bool, out: &mut RoaringTreemap) {
+        self.snapshot().union_bool_ids(xpath, value, out);
     }
     fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
         self.snapshot().bool_value(xpath, doc_id)
@@ -274,14 +272,15 @@ impl SearchIndex for LsmIndex {
 }
 
 impl SearchNumeric for LsmIndex {
-    #[timed(search)]
+     #[timed(search)]
     fn numeric_range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
-        hi: Option<NumericBound>
-    ) -> RoaringTreemap {
-        self.snapshot().numeric_range(xpath, lo, hi)
+        hi: Option<NumericBound>,
+        out: &mut RoaringTreemap,
+    ) {
+        self.snapshot().numeric_range(xpath, lo, hi, out);
     }
 
     #[timed(search)]
@@ -323,6 +322,7 @@ impl SearchStats for LsmIndex {
 }
 
 impl LsmIndex {
+    #[must_use]
     pub fn new(flush_threshold: usize) -> Self {
         Self {
             mem: MemIndex::new(),
@@ -455,12 +455,14 @@ impl LsmIndex {
         })
     }
 
+    #[must_use]
     pub const fn max_array_row(&self) -> ArrayRowId {
         self.max_array_row
     }
 
     /// Highest document id this index still holds anything for: in a segment, or marked
     /// deleted. A new document must get a higher id, or it would inherit those traces.
+    #[must_use]
     pub fn highest_known_doc_id(&self) -> DocId {
         let in_segments = self.next_doc_id.saturating_sub(1);
         let deleted = self.deleted
@@ -506,6 +508,7 @@ impl LsmIndex {
     pub(crate) fn should_flush(&self) -> bool {
         self.memtable_size() >= self.flush_threshold
     }
+    #[must_use]
     pub fn pending_flushes(&self) -> usize {
         self.flush_queue.pending.len()
     }
@@ -516,6 +519,7 @@ impl LsmIndex {
     }
 
     /// Read-only callers only; copies `active`, keep off hot paths.
+    #[must_use]
     pub fn snapshot(&self) -> IndexSnapshot {
         self.build_snapshot(Arc::new(self.mem.clone()))
     }
@@ -553,6 +557,7 @@ impl LsmIndex {
         )
     }
 
+    #[must_use]
     pub fn memtable_size(&self) -> usize {
         self.mem.estimated_size_bytes() +
             self.generations
@@ -561,6 +566,7 @@ impl LsmIndex {
                 .sum::<usize>()
     }
     /////////////////////////////////FLUSH/////////////////////
+    #[must_use]
     pub const fn flush_threshold(&self) -> usize {
         self.flush_threshold
     }
@@ -667,14 +673,17 @@ impl LsmIndex {
     }
 
     /// Every flush numbered below this has to finish before data queued so far is on disk.
+    #[must_use]
     pub const fn flush_target(&self) -> u64 {
         self.flush_queue.next_seq
     }
 
+    #[must_use]
     pub fn flushed_through(&self) -> u64 {
         self.flush_queue.flushed_through()
     }
 
+    #[must_use]
     pub fn has_pending_flushes(&self) -> bool {
         !self.flush_queue.pending.is_empty()
     }
@@ -708,14 +717,17 @@ impl LsmIndex {
 
         Ok(())
     }
+    #[must_use]
     pub const fn segment_count(&self) -> usize {
         self.segment_handles.len()
     }
+    #[must_use]
     pub fn lost_segments(&self) -> &[PathBuf] {
         &self.lost_segments
     }
 
     /// Files removed at startup as crash leftovers.
+    #[must_use]
     pub fn removed_leftovers(&self) -> &[PathBuf] {
         &self.removed_leftovers
     }
@@ -818,6 +830,7 @@ impl LsmIndex {
         rest.saturating_mul(ratio.max(1)) >= largest
     }
 
+    #[must_use]
     pub fn settling(&self, config: &CompactionConfig) -> bool {
         let in_memory =
             self.root.is_some() &&
@@ -992,10 +1005,12 @@ impl LsmIndex {
         Ok(())
     }
 
+    #[must_use]
     pub fn memtable_term_count(&self) -> usize {
         self.mem.term_count()
     }
 
+    #[must_use]
     pub fn disk_segment_paths(&self) -> Vec<PathBuf> {
         self.segment_handles
             .iter()

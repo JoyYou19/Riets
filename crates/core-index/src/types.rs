@@ -70,6 +70,7 @@ pub const MAX_SHARD_ID: u16 = (1u16 << SHARD_BITS) - 1;
 
 pub const MAX_SHARDS: u16 = MAX_SHARD_ID + 1;
 
+#[must_use]
 pub fn make_doc_id(shard: ShardId, local: LocalDocId) -> DocId {
     assert!(
         local <= MAX_LOCAL_DOC_ID,
@@ -83,12 +84,14 @@ pub fn make_doc_id(shard: ShardId, local: LocalDocId) -> DocId {
 }
 
 /// Shard that owns a globally packed document ID.
+#[must_use]
 pub fn shard_of(doc: DocId) -> ShardId {
     let shard = (doc >> LOCAL_BITS) & u64::from(MAX_SHARD_ID);
     ShardId(u16::try_from(shard).unwrap_or(MAX_SHARD_ID))
 }
 
 /// Shard-local id contained in a globally packed document ID.
+#[must_use]
 pub const fn local_of(doc: DocId) -> LocalDocId {
     doc & MAX_LOCAL_DOC_ID
 }
@@ -114,16 +117,19 @@ pub struct ArrayRowId(pub u64);
 
 impl ArrayRowId {
     /// Raw u64 as stored in a posting / on disk (bit 63 always set).
+    #[must_use]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
     /// Re-wrap a raw id read from a posting or the index.
+    #[must_use]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 
     /// Per-shard sequence number (flag stripped).
+    #[must_use]
     pub const fn seq(self) -> u64 {
         self.0 & !ARRAY_ROW_FLAG
     }
@@ -136,14 +142,17 @@ pub const MAX_SPAN: u32 = 1 << SPAN_BITS;
 
 /// Packs a token's start and span so sorting stored positions still sorts by
 /// start. Starts past what fits are capped.
+#[must_use]
 pub fn encode_position(start: u32, span: u32) -> Position {
     (start.min(u32::MAX >> SPAN_BITS) << SPAN_BITS) | (span.clamp(1, MAX_SPAN) - 1)
 }
 
+#[must_use]
 pub const fn position_start(position: Position) -> u32 {
     position >> SPAN_BITS
 }
 
+#[must_use]
 pub const fn position_span(position: Position) -> u32 {
     (position & (MAX_SPAN - 1)) + 1
 }

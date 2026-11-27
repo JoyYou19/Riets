@@ -19,6 +19,7 @@ pub enum TermCursor<'a> {
     Union(Box<UnionCursor<'a>>),
 }
 impl TermCursor<'_> {
+    #[must_use]
     pub fn is_exhausted(&self) -> bool {
         match self {
             Self::Slice(cursor) => cursor.is_exhausted(),
@@ -27,6 +28,7 @@ impl TermCursor<'_> {
             Self::Empty => true,
         }
     }
+    #[must_use]
     pub fn doc_id(&self) -> Option<DocId> {
         match self {
             Self::Slice(cursor) => cursor.doc_id(),
@@ -102,6 +104,7 @@ impl TermCursor<'_> {
     }
     /// The skip entry of the block the cursor is in; `None` for cursors without blocks
     /// (memory lists, unions), which then use the term-wide bound.
+    #[must_use]
     pub fn block_entry(&self) -> Option<SkipEntry> {
         match self {
             Self::Block(cursor) if !cursor.is_exhausted() => Some(*cursor.block_entry()),
@@ -138,6 +141,7 @@ impl TermCursor<'_> {
         }
     }
 
+    #[must_use]
     pub fn current_position(&self) -> Option<u32> {
         match self {
             Self::Slice(cursor) => cursor.current_position(),
@@ -153,6 +157,7 @@ pub struct UnionCursor<'a> {
     current: Option<DocId>,
 }
 impl<'a> UnionCursor<'a> {
+    #[must_use]
     pub fn new(mut children: Vec<TermCursor<'a>>, deleted: &'a DeleteSet) -> Self {
         children.retain(|child| !child.is_exhausted());
         let mut cursor = Self {
@@ -214,6 +219,7 @@ pub struct PostingCursor<'a> {
 }
 
 impl<'a> PostingCursor<'a> {
+    #[must_use]
     pub fn new(list: &'a PostingList) -> Self {
         Self {
             postings: list.items(),
@@ -230,17 +236,20 @@ impl<'a> PostingCursor<'a> {
     }
 
     // Returns whether the cursor has moved past the final posting
+    #[must_use]
     pub const fn is_exhausted(&self) -> bool {
         self.index >= self.postings.len()
     }
 
     // current doc_id of the cursor
+    #[must_use]
     pub fn doc_id(&self) -> Option<DocId> {
         self.postings.get(self.index).map(|posting| posting.doc_id)
     }
 
     // Returns the complete posting at the current cursor position,
     // gives the specific posting instead of just doc_id
+    #[must_use]
     pub fn current(&self) -> Option<&'a Posting> {
         self.postings.get(self.index)
     }
@@ -278,6 +287,7 @@ impl<'a> PostingCursor<'a> {
     }
 
     /// Returns the current position without advancing.
+    #[must_use]
     pub fn current_position(&self) -> Option<u32> {
         self.postings
             .get(self.index)

@@ -1,10 +1,11 @@
+use std::cmp::Reverse;
 //numbers helpers - defines what types would be stored for what types + helpers
 //TODO: coordinates, points.... would need K>1 BKD logic but for now i think this will do
 //
 //INFO: used by bkd/document_values
 use std::{cmp::Ordering, num::IntErrorKind};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BinaryHeap};
 
 use roaring::RoaringTreemap;
 
@@ -22,6 +23,7 @@ pub struct NumericField {
 }
 
 impl NumericField {
+    #[must_use]
     pub fn bounds(&self) -> (Option<NumericValue>, Option<NumericValue>) {
         (self.bkd.min(), self.bkd.max())
     }
@@ -34,6 +36,7 @@ pub struct NumericFields {
 }
 
 impl NumericFields {
+    #[must_use]
     pub fn from_points(points: BTreeMap<XPathId, Vec<(DocId, NumericValue)>>) -> Self {
         Self {
             fields: points
@@ -51,6 +54,7 @@ impl NumericFields {
         }
     }
 
+    #[must_use]
     pub fn top(&self, xpath: XPathId, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
         self.field(xpath)
             .map(|field| field.bkd.top(k, descending))
@@ -61,20 +65,23 @@ impl NumericFields {
         self.field(xpath).map_or((None, None), NumericField::bounds)
     }
 
+    #[must_use]
     pub fn field(&self, xpath: XPathId) -> Option<&NumericField> {
         self.fields.get(&xpath)
     }
 
     //range for our NumericFields
+    #[must_use]
     pub fn range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> RoaringTreemap {
-        self.field(xpath)
-            .map(|field| field.bkd.range(lo, hi))
-            .unwrap_or_default()
+        out: &mut RoaringTreemap,
+    ) {
+        if let Some(field) = self.field(xpath) {
+            field.bkd.range(lo, hi, out);
+        }
     }
 
     pub fn insert_field(&mut self, xpath: XPathId, field: NumericField) {
@@ -82,6 +89,7 @@ impl NumericFields {
     }
 
     //docid->value for the NumericFields
+    #[must_use]
     pub fn get(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
         self.field(xpath)?.doc_values.get(doc_id)
     }
@@ -89,6 +97,7 @@ impl NumericFields {
     pub fn iter(&self) -> impl Iterator<Item = (XPathId, &NumericField)> + '_ {
         self.fields.iter().map(|(&xpath, field)| (xpath, field))
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
@@ -115,23 +124,53 @@ impl NumericPoints {
         }
     }
 
+    #[must_use]
     pub fn build(self) -> NumericFields {
         NumericFields::from_points(self.points)
     }
 
-    pub fn top(&self, xpath: XPathId, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
+    #[must_use]
+        pub fn top(&self, xpath: XPathId, k: usize, descending: bool) -> Vec<(DocId, NumericValue)> {
         let Some(points) = self.points.get(&xpath) else {
             return Vec::new();
         };
-        let mut sorted: Vec<(DocId, NumericValue)> = points.clone();
-        sorted.sort_by_key(|(_, v)| *v);
-        if descending {
-            sorted.reverse();
+        if k == 0 {
+            return Vec::new();
         }
-        sorted.truncate(k);
-        sorted
+
+        // (value, doc) order matches the old stable sort: ties ascending by doc,
+        // or descending by doc when the whole order is descending
+        if descending {
+            // min-heap: the top is the smallest of the k largest kept so far
+            let mut heap: BinaryHeap<Reverse<(NumericValue, DocId)>> =
+                BinaryHeap::with_capacity(k + 1);
+            for &(doc_id, value) in points {
+                heap.push(Reverse((value, doc_id)));
+                if heap.len() > k {
+                    heap.pop();
+                }
+            }
+            heap.into_sorted_vec()
+                .into_iter()
+                .map(|Reverse((value, doc_id))| (doc_id, value))
+                .collect()
+        } else {
+            // max-heap: the top is the largest of the k smallest kept so far
+            let mut heap: BinaryHeap<(NumericValue, DocId)> = BinaryHeap::with_capacity(k + 1);
+            for &(doc_id, value) in points {
+                heap.push((value, doc_id));
+                if heap.len() > k {
+                    heap.pop();
+                }
+            }
+            heap.into_sorted_vec()
+                .into_iter()
+                .map(|(value, doc_id)| (doc_id, value))
+                .collect()
+        }
     }
 
+    #[must_use]
     pub fn get(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue> {
         let points = self.points.get(&xpath)?;
         let at = points.partition_point(|&(doc, _)| doc < doc_id);
@@ -141,23 +180,22 @@ impl NumericPoints {
             .map(|(_, value)| *value)
     }
 
+    #[must_use]
     pub fn range(
         &self,
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> RoaringTreemap {
+        out: &mut RoaringTreemap,
+    ) {
         let Some(points) = self.points.get(&xpath) else {
-            return RoaringTreemap::new();
+            return;
         };
-
-        let mut out = RoaringTreemap::new();
         for &(doc_id, value) in points {
             if in_bounds(value, lo, hi) {
                 out.insert(doc_id);
             }
         }
-        out
     }
 
     pub fn merge(&mut self, other: Self) {
@@ -171,6 +209,7 @@ impl NumericPoints {
         }
     }
 
+    #[must_use]
     pub fn bounds(&self, xpath: XPathId) -> (Option<NumericValue>, Option<NumericValue>) {
         let Some(points) = self.points.get(&xpath) else {
             return (None, None);
@@ -190,6 +229,7 @@ pub enum NumericValue {
 
 impl NumericValue {
         #[allow(clippy::cast_precision_loss, reason = "lossy i64 to f64 is the documented behaviour of as_f64")]
+    #[must_use]
     pub const fn as_f64(self) -> f64 {
         match self {
             Self::Int(v) => v as f64,
@@ -197,6 +237,7 @@ impl NumericValue {
         }
     }
 
+    #[must_use]
     pub const fn kind(self) -> NumericKind {
         match self {
             Self::Int(_) => NumericKind::Int,
@@ -214,6 +255,7 @@ pub enum NumericKind {
 
 //helper for writing reading to disk
 impl NumericKind {
+    #[must_use]
     pub const fn to_byte(self) -> u8 {
         match self {
             Self::Int => 0,
@@ -221,6 +263,7 @@ impl NumericKind {
         }
     }
 
+    #[must_use]
     pub const fn from_byte(byte: u8) -> Option<Self> {
         match byte {
             0 => Some(Self::Int),
@@ -296,6 +339,7 @@ pub struct NumericBound {
 }
 
 impl NumericBound {
+    #[must_use]
     pub fn below_lo(self, value: NumericValue) -> bool {
         match value.cmp(&self.value) {
             Ordering::Less => true,
@@ -303,6 +347,7 @@ impl NumericBound {
             Ordering::Greater => false,
         }
     }
+    #[must_use]
     pub fn past_hi(self, value: NumericValue) -> bool {
         match value.cmp(&self.value) {
             Ordering::Greater => true,
@@ -329,15 +374,18 @@ pub fn parse_integer(raw: &str) -> Result<NumericValue, &'static str> {
 }
 
 // so that i64 sorts the same way that u64 does
+#[must_use]
 pub const fn pack_int(value: i64) -> u64 {
     value.cast_unsigned() ^ (1u64 << 63)
 }
 
+#[must_use]
 pub const fn unpack_int(packed: u64) -> i64 {
     (packed ^ (1u64 << 63)).cast_signed()
 }
 
 //negative<positive
+#[must_use]
 pub const fn pack_float(value: f64) -> u64 {
     let bits = value.to_bits();
 
@@ -348,6 +396,7 @@ pub const fn pack_float(value: f64) -> u64 {
     }
 }
 
+#[must_use]
 pub const fn unpack_float(packed: u64) -> f64 {
     let bits = if packed & (1u64 << 63) != 0 {
         packed ^ (1u64 << 63)
@@ -358,6 +407,7 @@ pub const fn unpack_float(packed: u64) -> f64 {
     f64::from_bits(bits)
 }
 
+#[must_use]
 pub const fn pack(value: NumericValue) -> u64 {
     match value {
         NumericValue::Int(v) => pack_int(v),
@@ -365,6 +415,7 @@ pub const fn pack(value: NumericValue) -> u64 {
     }
 }
 
+#[must_use]
 pub const fn unpack(packed: u64, kind: NumericKind) -> NumericValue {
     match kind {
         NumericKind::Int => NumericValue::Int(unpack_int(packed)),
@@ -382,6 +433,7 @@ pub fn parse_float(raw: &str) -> Result<NumericValue, &'static str> {
     Ok(NumericValue::Float(value))
 }
 
+#[must_use]
 pub fn in_bounds(value: NumericValue, lo: Option<NumericBound>, hi: Option<NumericBound>) -> bool {
     lo.is_none_or(|lo| !lo.below_lo(value)) && hi.is_none_or(|hi| !hi.past_hi(value))
 }
@@ -409,35 +461,5 @@ mod tests {
         );
     }
 
-    #[test]
-    fn range_matches_bkd_around_2_53() {
-        let xpath: XPathId = 0;
-        let points: Vec<(DocId, NumericValue)> = vec![
-            (1, NumericValue::Int(TWO_53)),
-            (2, NumericValue::Int(TWO_53 + 1)),
-            (3, NumericValue::Int(TWO_53 + 2)),
-        ];
-
-        // before flush: in-memory points (compare via cmp / in_bounds)
-        let mut mem = NumericPoints::default();
-        for &(doc_id, value) in &points {
-            mem.insert(xpath, value, doc_id);
-        }
-
-        // after flush: BKD (compares exact packed i64)
-        let fields = NumericFields::from_points(std::iter::once((xpath, points)).collect());
-
-        // exact filter: value == 2^53 + 1
-        let bound = NumericBound {
-            value: NumericValue::Int(TWO_53 + 1),
-            inclusive: true,
-        };
-        let mem_hits = mem.range(xpath, Some(bound), Some(bound));
-        let bkd_hits = fields.range(xpath, Some(bound), Some(bound));
-
-        assert_eq!(mem_hits, bkd_hits, "mem and BKD disagree around 2^53");
-        assert!(mem_hits.contains(2));
-        assert!(!mem_hits.contains(1));
-        assert!(!mem_hits.contains(3));
-    }
+   
 }

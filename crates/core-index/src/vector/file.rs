@@ -76,11 +76,13 @@ pub fn find_vector_files(segment_path: &Path) -> io::Result<Vec<(XPathId, PathBu
     Ok(found)
 }
 /// `segment-12.idx` + xpath 3 -> `segment-12.3.vec`, in the same directory.
+#[must_use]
 pub fn vector_file_path(segment_path: &Path, xpath: XPathId) -> PathBuf {
     segment_path.with_extension(format!("{xpath}.vec"))
 }
 //the rows embedded since the last
 /// fold into the main file.
+#[must_use]
 pub fn tail_file_path(segment_path: &Path, xpath: XPathId) -> PathBuf{
     segment_path.with_extension(format!("{xpath}.tail.vec"))
 }
@@ -262,10 +264,12 @@ impl VectorFileWriter {
         }
     }
 
+    #[must_use]
     pub const fn len(&self) -> u64 {
         self.count
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -495,19 +499,23 @@ impl VectorFile {
         Ok(opened)
     }
 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Random id of this written file; a graph built from it stores the same id.
+    #[must_use]
     pub const fn file_id(&self) -> u64 {
         self.file_id
     }
 
+    #[must_use]
     pub fn model_id(&self) -> &str {
         &self.model_id
     }
 
+    #[must_use]
     pub const fn dims(&self) -> usize {
         self.dims
     }
@@ -516,20 +524,24 @@ impl VectorFile {
         self.range
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.count
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// False when the file was written by a different model and must be re-embedded.
+    #[must_use]
     pub fn matches(&self, model_id: &str, dims: usize) -> bool {
         self.model_id == model_id && self.dims == dims
     }
 
     /// All doc ids, strictly increasing; row `i` belongs to `doc_ids()[i]`.
+        #[must_use]
         pub fn doc_ids(&self) -> &[DocId] {
         let Some(bytes) = self.mmap.get(self.layout.ids..self.layout.ids + self.count * 8) else {
             return &[];
@@ -542,6 +554,7 @@ impl VectorFile {
     }
 
     #[allow(clippy::indexing_slicing, reason = "rows come from this file's own lookup; an out of range row is a caller bug, as in `original`")]
+    #[must_use]
     pub fn doc_id(&self, index: usize) -> DocId {
         self.doc_ids()[index]
     }
@@ -559,6 +572,7 @@ impl VectorFile {
     }
 
     /// Row index of `doc_id`.
+    #[must_use]
     pub fn position(&self, doc_id: DocId) -> Option<usize> {
         let ids = self.doc_ids();
         let lookup = self.lookup();
@@ -571,10 +585,12 @@ impl VectorFile {
     }
 
     /// Row holding the `rank`-th smallest doc id, for walking a file in doc-id order.
+    #[must_use]
     pub fn row_by_rank(&self, rank: usize) -> Option<usize> {
         self.lookup().get(rank).map(|&row| row as usize)
     }
 
+    #[must_use]
     pub fn contains(&self, doc_id: DocId) -> bool {
         self.position(doc_id).is_some()
     }
@@ -585,6 +601,7 @@ impl VectorFile {
         self.mmap.get(start..start + self.dims).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn original(&self, index: usize) -> &[f32] {
         assert!(index < self.count, "row {index} out of {} rows", self.count);
         let start = self.layout.originals + index * self.dims * 4;

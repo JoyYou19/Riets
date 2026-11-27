@@ -75,11 +75,11 @@ pub struct HttpError {
 }
 
 impl HttpError {
-    pub(crate) fn from_corelamo(err: CorelamoError, ctx: &RequestContext) -> Self {
+    pub(crate) fn from_corelamo(err: &CorelamoError, ctx: &RequestContext) -> Self {
         Self {
             error_type: format!("{}{}", DOCS_ROOT_URL, err.code()),
             title: err.title().to_owned(),
-            status: error_to_status(&err),
+            status: error_to_status(err),
             detail: err.message(),
             instance: ctx.instance.clone(),
             request_id: ctx.request_id,
@@ -89,7 +89,7 @@ impl HttpError {
     }
 
     fn from_render_failure(
-        err: CorelamoError,
+        err: &CorelamoError,
         instance: String,
         request_id: Uuid,
         format: Format,
@@ -98,7 +98,7 @@ impl HttpError {
         Self {
             error_type: format!("{}{}", DOCS_ROOT_URL, err.code()),
             title: err.title().to_owned(),
-            status: error_to_status(&err),
+            status: error_to_status(err),
             detail: err.message(),
             instance,
             request_id,
@@ -191,7 +191,7 @@ fn envelope_raw(
     body
 }
 
-pub struct HttpOk {
+pub(crate) struct HttpOk {
     pub status: StatusCode,
     pub title: String,
     pub data: Option<Box<dyn ResponseData>>,
@@ -335,7 +335,7 @@ impl IntoResponse for HttpOk {
                         Ok(v) => Some(v),
                         Err(e) => {
                             return HttpError::from_render_failure(
-                                e,
+                                &e,
                                 self.instance,
                                 self.request_id,
                                 self.format,
@@ -379,7 +379,7 @@ impl IntoResponse for HttpOk {
     }
 }
 
-pub struct BatchOutcome {
+pub(crate) struct BatchOutcome {
     success_label: &'static str,
     all_failed_status: StatusCode,
     succeeded: u32,
@@ -479,6 +479,6 @@ impl BatchOutcome {
         HttpOk::with_data_and_status(status, title, body, ctx)
     }
 }
-pub fn millis(d: std::time::Duration) -> u64 {
+pub(crate) fn millis(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }

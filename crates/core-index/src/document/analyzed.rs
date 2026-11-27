@@ -48,6 +48,7 @@ pub struct AnalyzedDocument {
 impl IndexedDocument {
     /// Runs the analyzer over every text part. Pure: no index state is touched,
     /// so this can run on any thread.
+    #[must_use]
     pub fn analyze(&self, analyzers: &AnalyzerSet) -> AnalyzedDocument {
         AnalyzedDocument {
             doc_id: self.doc_id,

@@ -263,6 +263,7 @@ pub fn compact_segments_streaming(
 /// dropping deleted documents. Returns the fields that got a file. A failure only loses
 /// that field's vectors (the embedding worker rebuilds them); it never fails the compaction.
 #[timed(compaction)]
+#[must_use]
 pub fn compact_vectors(
     vectors: &[SegmentVectors],
     deleted: &DeleteSet,

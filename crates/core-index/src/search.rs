@@ -54,20 +54,8 @@ pub trait SearchIndex {
     fn parent_of_row(&self, row: ArrayRowId) -> Option<ArrayRowId>;
     fn doc_of_row(&self, row: ArrayRowId) -> Option<DocId>;
 
-    fn bool_true_ids(&self, xpath: XPathId) -> RoaringTreemap;
-
-    fn bool_false_ids(&self, xpath: XPathId) -> RoaringTreemap;
-
-    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool> {
-        if self.bool_true_ids(xpath).contains(doc_id) {
-            return Some(true);
-        }
-        if self.bool_false_ids(xpath).contains(doc_id) {
-            return Some(false);
-        }
-        None
-    }
-
+    fn bool_value(&self, xpath: XPathId, doc_id: DocId) -> Option<bool>;
+    fn union_bool_ids(&self, xpath: XPathId, value: bool, out: &mut RoaringTreemap);
     //words within max_edits of input
     fn fuzzy_expansions(
     &self,
@@ -139,8 +127,8 @@ pub trait SearchNumeric {
         xpath: XPathId,
         lo: Option<NumericBound>,
         hi: Option<NumericBound>,
-    ) -> RoaringTreemap;
-
+        out: &mut RoaringTreemap,
+    );
     //quick docid+xpath->numeric_value
     fn numeric_value(&self, xpath: XPathId, doc_id: DocId) -> Option<NumericValue>;
 

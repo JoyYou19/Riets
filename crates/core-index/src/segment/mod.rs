@@ -13,6 +13,7 @@ use crate::{
 
 /// Compute the min/max `DocId` present in a segment from both text
 /// (`doc_lengths`) and numeric-only (BKD points) sources.
+#[must_use]
 pub fn compute_doc_id_range(
     doc_lengths: &BTreeMap<(DocId, XPathId), u32>,
     numeric_fields: &NumericFields,
