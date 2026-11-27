@@ -96,6 +96,15 @@ pub const fn local_of(doc: DocId) -> LocalDocId {
     doc & MAX_LOCAL_DOC_ID
 }
 
+//each exact fields index starts with this token, some random bullshit + whitespace (because no user
+//inserted tokens can have a whitespace + length (token count) for exact-field
+const EXACT_MARKER_PREFIX: &str = "\u{0}\u{1}exact\u{1} ";
+///final marker token at the start of every exact value/element + carries its token count.
+#[must_use]
+pub fn exact_len_marker(tokens: usize) -> String {
+    format!("{EXACT_MARKER_PREFIX}len:{tokens}")
+}
+
 // ─────────────────────────────────────────────────────────────
 // Array rows
 // ─────────────────────────────────────────────────────────────

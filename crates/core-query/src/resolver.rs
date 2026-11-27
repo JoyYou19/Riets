@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use core_index::datetimes::parse_date;
-use core_index::document::policy::FieldPolicy;
+use core_index::document::policy::{ExactMode, FieldPolicy};
 use core_index::{
     analyzer::{Analyzer, text_analyzer::AnalyzerSet},
     document::{IndexPolicy, policy::FieldKind},
@@ -34,6 +34,8 @@ pub struct FieldCtx {
     pub xpath: XPathId,
     pub exact_xpath: Option<XPathId>,
     pub row_keyed: bool,
+    pub searchable: bool,
+    pub exact: Option<ExactMode>,
 }
 
 //hujna prieks arrays nezinu vai vispar vel stradaa lol
@@ -60,10 +62,13 @@ pub struct FieldQuery {
 }
 
 fn field_ctx(field: &FieldPolicy, policy: &IndexPolicy) -> FieldCtx {
+    let exact_xpath = field.exact_xpath(policy);
     FieldCtx {
         xpath: field.xpath(policy),
-        exact_xpath: field.exact_xpath(policy),
+        exact_xpath,
         row_keyed: field.row_keyed,
+        searchable: field.searchable(),
+        exact: exact_xpath.map(|_| field.exact.unwrap_or(ExactMode::CaseInsensitive)),
     }
 }
 
@@ -110,8 +115,18 @@ pub fn compile_query(
 
     let fields: Vec<&FieldPolicy> = match search_fields {
         Some(names) => resolve_search_fields(names, needs_exact, policy)?,
-        None => policy.searchable_fields(),
+        None => default_search_fields(policy, needs_exact),
     };
+
+    if needs_exact
+        && !fields
+            .iter()
+            .any(|field| field.exact_xpath(policy).is_some())
+    {
+        return Err(CorelamoError::InvalidData(
+            "the query contains an exact match, but no selected field has an exact index".into(),
+        ));
+    }
 
     // group fields by analyzer name; analyze once per analyzer, then reuse
     let mut by_name: ByName = BTreeMap::new();
@@ -178,15 +193,24 @@ fn resolve_search_fields<'a>(
                     "field '{name}' is not searchable ..."
                 )));
             }
-            if needs_exact && leaf.exact_xpath(policy).is_none() {
-                return Err(CorelamoError::InvalidData(format!(
-                    "field '{name}' has no exact index ..."
-                )));
-            }
             out.push(leaf);
         }
     }
     Ok(out)
+}
+
+fn default_search_fields<'a>(policy: &'a IndexPolicy, needs_exact: bool) -> Vec<&'a FieldPolicy> {
+    let mut fields = policy.searchable_fields();
+    if needs_exact {
+        for leaf in policy.indexed_fields() {
+            if leaf.exact_xpath(policy).is_some()
+                && !fields.iter().any(|known| known.full_path == leaf.full_path)
+            {
+                fields.push(leaf);
+            }
+        }
+    }
+    fields
 }
 
 fn reject_filter_only_operators(v: &OwnedValue) -> Result<(), CorelamoError> {
@@ -255,7 +279,7 @@ fn collapse_not(
 
 fn tree_has_exact(q: &Query) -> bool {
     match q {
-        Query::Exact(_) => true,
+        Query::Exact(_) | Query::ExactField(_) => true,
         Query::And(ps) | Query::Or(ps) | Query::Wand(ps) | Query::SameElement(ps) => {
             ps.iter().any(tree_has_exact)
         }
@@ -322,6 +346,8 @@ pub fn resolve_filters(
                         xpath: 0,
                         exact_xpath: None,
                         row_keyed: false,
+                        exact: None,
+                        searchable: false,
                     }
                 } else {
                     field_ctx(field, policy)
@@ -527,6 +553,8 @@ fn resolve_same_element(
                     xpath: 0,
                     exact_xpath: None,
                     row_keyed: false,
+                    searchable: false,
+                    exact: None,
                 },
                 depth: sub_field.depth,
                 nested: Some(Box::new(sub_binding)),

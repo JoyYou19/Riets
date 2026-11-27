@@ -19,17 +19,45 @@ pub fn highlight_field_array(
     matched: &[&MatchedTerm],
     opts: &HighlightFieldOptions,
 ) -> Vec<String> {
-    let want = positions_with_weight(matched);
-    if want.is_empty() {
-        return Vec::new();
+    let mut out = Vec::new();
+    let (exact, regular): (Vec<&MatchedTerm>, Vec<&MatchedTerm>) =
+        matched.iter().copied().partition(|m| m.exact);
+
+    if !regular.is_empty() {
+        let want = positions_with_weight(&regular);
+        if !want.is_empty() {
+            out.extend(highlight_flattened_texts(texts, analyzer, &want, opts));
+        }
     }
-    highlight_flattened_texts(texts, analyzer, &want, opts)
+
+    if !exact.is_empty() {
+        let mut base = 0u32;
+        for text in texts {
+            let mut spans = exact_spans(text, base, &exact);
+            if !spans.is_empty() {
+                spans = merge_ranges(spans);
+                if opts.sentence {
+                    out.extend(fragments_by_sentence(text, &spans, opts));
+                } else {
+                    out.extend(fragments_by_chars(text, &spans, opts));
+                }
+            }
+            let tokens = u32::try_from(exact_token_spans(text).len()).unwrap_or(u32::MAX);
+            base = base
+                .saturating_add(tokens)
+                .saturating_add(1)
+                .saturating_add(ARRAY_GAP);
+        }
+    }
+
+    out
 }
 
 //                                  this bs:
 //like ummm cast: {name, surname, aliases["", "", ""],}
 #[timed(highlight)]
 #[must_use]
+
 pub fn highlight_field_row_keyed_flattened(
     value: &OwnedValue,
     full_path: &str,
@@ -38,22 +66,68 @@ pub fn highlight_field_row_keyed_flattened(
     opts: &HighlightFieldOptions,
 ) -> Vec<String> {
     let mut out = Vec::new();
-    for (row_path, want) in wants_by_row(matched) {
-        let Some(OwnedValue::Array(items)) = value_for_row(value, full_path, &row_path) else {
-            continue;
-        };
-        let texts: Vec<String> = items
-            .iter()
-            .filter_map(|v| match v {
-                OwnedValue::String(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect();
-        if texts.is_empty() {
-            continue;
+    let (exact, regular): (Vec<&MatchedTerm>, Vec<&MatchedTerm>) =
+        matched.iter().copied().partition(|m| m.exact);
+
+    if !regular.is_empty() {
+        for (row_path, want) in wants_by_row(&regular) {
+            let Some(OwnedValue::Array(items)) = value_for_row(value, full_path, &row_path) else {
+                continue;
+            };
+            let texts: Vec<String> = items
+                .iter()
+                .filter_map(|v| match v {
+                    OwnedValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+            if texts.is_empty() {
+                continue;
+            }
+            out.extend(highlight_flattened_texts(&texts, analyzer, &want, opts));
         }
-        out.extend(highlight_flattened_texts(&texts, analyzer, &want, opts));
     }
+
+    if !exact.is_empty() {
+        let mut by_row: BTreeMap<Vec<u32>, Vec<&MatchedTerm>> = BTreeMap::new();
+        for m in exact {
+            by_row.entry(m.row_path.clone()).or_default().push(m);
+        }
+        for (row_path, terms) in by_row {
+            let Some(OwnedValue::Array(items)) = value_for_row(value, full_path, &row_path) else {
+                continue;
+            };
+            let texts: Vec<String> = items
+                .iter()
+                .filter_map(|v| match v {
+                    OwnedValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+            if texts.is_empty() {
+                continue;
+            }
+
+            let mut base = 0u32;
+            for text in &texts {
+                let mut spans = exact_spans(text, base, &terms);
+                if !spans.is_empty() {
+                    spans = merge_ranges(spans);
+                    if opts.sentence {
+                        out.extend(fragments_by_sentence(text, &spans, opts));
+                    } else {
+                        out.extend(fragments_by_chars(text, &spans, opts));
+                    }
+                }
+                let tokens = u32::try_from(exact_token_spans(text).len()).unwrap_or(u32::MAX);
+                base = base
+                    .saturating_add(tokens)
+                    .saturating_add(1)
+                    .saturating_add(ARRAY_GAP);
+            }
+        }
+    }
+
     out
 }
 
@@ -159,7 +233,6 @@ fn highlight_flattened_texts(
 }
 
 //rewalks the json to get the precise element from the [index] of the array
-//rewalks the json to get the precise element from the [index] of the array
 #[timed(highlight)]
 #[must_use]
 pub fn highlight_field_row_keyed(
@@ -170,31 +243,59 @@ pub fn highlight_field_row_keyed(
     opts: &HighlightFieldOptions,
 ) -> Vec<String> {
     let mut out = Vec::new();
-    for (row_path, want) in wants_by_row(matched) {
-        let Some(OwnedValue::String(text)) = value_for_row(value, full_path, &row_path) else {
-            continue;
-        };
-        let (filtered, tokens) = analyzer.analyze_text(text);
-        let ranges: Vec<Span> = tokens
-            .iter()
-            .filter_map(|token| {
-                want.get(&token.position).map(|&weight| Span {
-                    start: token.start_byte,
-                    end: token.end_byte,
-                    weight,
+    let (exact, regular): (Vec<&MatchedTerm>, Vec<&MatchedTerm>) =
+        matched.iter().copied().partition(|m| m.exact);
+
+    if !regular.is_empty() {
+        for (row_path, want) in wants_by_row(&regular) {
+            let Some(OwnedValue::String(text)) = value_for_row(value, full_path, &row_path) else {
+                continue;
+            };
+            let (filtered, tokens) = analyzer.analyze_text(text);
+            let ranges: Vec<Span> = tokens
+                .iter()
+                .filter_map(|token| {
+                    want.get(&token.position).map(|&weight| Span {
+                        start: token.start_byte,
+                        end: token.end_byte,
+                        weight,
+                    })
                 })
-            })
-            .collect();
-        if ranges.is_empty() {
-            continue;
-        }
-        let ranges = merge_ranges(ranges);
-        if opts.sentence {
-            out.extend(fragments_by_sentence(&filtered, &ranges, opts));
-        } else {
-            out.extend(fragments_by_chars(&filtered, &ranges, opts));
+                .collect();
+            if ranges.is_empty() {
+                continue;
+            }
+            let ranges = merge_ranges(ranges);
+            if opts.sentence {
+                out.extend(fragments_by_sentence(&filtered, &ranges, opts));
+            } else {
+                out.extend(fragments_by_chars(&filtered, &ranges, opts));
+            }
         }
     }
+
+    if !exact.is_empty() {
+        let mut by_row: BTreeMap<Vec<u32>, Vec<&MatchedTerm>> = BTreeMap::new();
+        for m in exact {
+            by_row.entry(m.row_path.clone()).or_default().push(m);
+        }
+        for (row_path, terms) in by_row {
+            let Some(OwnedValue::String(text)) = value_for_row(value, full_path, &row_path) else {
+                continue;
+            };
+            let mut spans = exact_spans(text, 0, &terms);
+            if spans.is_empty() {
+                continue;
+            }
+            spans = merge_ranges(spans);
+            if opts.sentence {
+                out.extend(fragments_by_sentence(text, &spans, opts));
+            } else {
+                out.extend(fragments_by_chars(text, &spans, opts));
+            }
+        }
+    }
+
     out
 }
 
@@ -521,4 +622,47 @@ fn walk_path<'a>(value: &'a OwnedValue, path: &str) -> Option<&'a OwnedValue> {
         cur = obj.get(seg)?;
     }
     Some(cur)
+}
+
+fn exact_token_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    for token in text.split_whitespace() {
+        let start = text[cursor..].find(token).map_or(cursor, |at| cursor + at);
+        let end = start.saturating_add(token.len());
+        spans.push((start, end));
+        cursor = end;
+    }
+    spans
+}
+
+fn exact_spans(text: &str, base: u32, matched: &[&MatchedTerm]) -> Vec<Span> {
+    let tokens = exact_token_spans(text);
+    let mut wants: HashMap<usize, f32> = HashMap::new();
+
+    for m in matched {
+        for &position in &m.positions {
+            let start = position_start(position);
+            if start <= base {
+                continue;
+            }
+            let index = start - base - 1;
+            let Ok(index) = usize::try_from(index) else {
+                continue;
+            };
+            if index >= tokens.len() {
+                continue;
+            }
+            let weight = wants.entry(index).or_insert(m.weight);
+            *weight = weight.max(m.weight);
+        }
+    }
+
+    wants
+        .into_iter()
+        .map(|(index, weight)| {
+            let (start, end) = tokens[index];
+            Span { start, end, weight }
+        })
+        .collect()
 }

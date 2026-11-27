@@ -13,6 +13,7 @@ pub enum Query {
     Or(Vec<Self>),
     Phrase(Vec<PhraseTerm>),
     Exact(String),
+    ExactField(String),
     Fuzzy(String, Fuzziness, FuzzySpec),
     // Forms from the synonym dictionary that stand for one part of the query. The first is what
     // the user typed; a document is scored by the best weighted form it contains.

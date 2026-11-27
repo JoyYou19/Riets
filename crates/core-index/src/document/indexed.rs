@@ -1,7 +1,7 @@
 use roaring::RoaringTreemap;
 
 use crate::{
-    document::policy::WeightInterval,
+    document::policy::{ExactMode, WeightInterval},
     numeric_values::NumericValue,
     types::{ArrayRowId, DocId, XPathId},
 };
@@ -28,7 +28,11 @@ pub struct ArrayRow {
 
 impl ArrayRow {
     #[must_use]
-    pub const fn new(array_row_id: ArrayRowId, parent: Option<ArrayRowId>, element_index: u32) -> Self {
+    pub const fn new(
+        array_row_id: ArrayRowId,
+        parent: Option<ArrayRowId>,
+        element_index: u32,
+    ) -> Self {
         Self {
             array_row_id,
             parent,
@@ -76,7 +80,8 @@ pub struct DocumentPart {
     pub xpath: XPathId,
     pub text: String,
     pub weight: WeightInterval,
-    pub exact: bool,
+    //exact case sesnse or nonsense
+    pub exact_mode: Option<ExactMode>,
     /// The values are names (a text field's exact copy): each one is also filed whole, see
     /// `Analyzer::name_terms`.
     pub names: bool,
@@ -91,7 +96,7 @@ impl DocumentPart {
         xpath: XPathId,
         segments: Vec<String>,
         weight: WeightInterval,
-        exact: bool,
+        exact_mode: Option<ExactMode>,
         gap: u32,
     ) -> Self {
         Self {
@@ -99,7 +104,7 @@ impl DocumentPart {
             text: String::new(),
             weight,
             analyzer: None,
-            exact,
+            exact_mode,
             names: false,
             segments,
             gap,
@@ -118,7 +123,7 @@ impl DocumentPart {
         self.names = names;
         self
     }
-#[must_use]
+    #[must_use]
     pub const fn is_flattened(&self) -> bool {
         !self.segments.is_empty()
     }

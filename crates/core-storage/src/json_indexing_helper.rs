@@ -3,7 +3,7 @@ use core_index::array_rows::ArrayRowAllocator;
 use core_index::datetimes::parse_date;
 
 use core_index::document::indexed::{ArrayRow, BoolPoint, NumericPoint};
-use core_index::document::policy::{ARRAY_GAP, FieldPolicy};
+use core_index::document::policy::{ARRAY_GAP, ExactMode, FieldPolicy};
 use core_index::document::{DocumentPart, IndexPolicy, IndexedDocument, policy::FieldKind};
 use core_index::numeric_values::{NumericValue, parse_float, parse_integer};
 use core_index::types::{ArrayRowId, DocId};
@@ -24,7 +24,7 @@ fn plain_part(field: &FieldPolicy, policy: &IndexPolicy, text: &str) -> Document
         xpath: field.xpath(policy),
         text: text.to_owned(),
         weight: field.weight,
-        exact: false,
+        exact_mode: None,
         names: false,
         analyzer: field.analyzer.clone(),
         gap: 0,
@@ -41,7 +41,7 @@ fn exact_part(
 ) -> Option<DocumentPart> {
     field.exact_xpath(policy).map(|xpath| DocumentPart {
         xpath,
-        exact: true,
+        exact_mode: Some(field.exact.unwrap_or(ExactMode::CaseInsensitive)),
         names,
         ..plain_part(field, policy, text)
     })
@@ -93,10 +93,7 @@ fn index_numeric_leaf(
         value,
     });
     if field.searchable() {
-        parts.push(DocumentPart {
-            exact: true,
-            ..plain_part(field, policy, &leaf.data.to_text())
-        });
+        parts.extend(exact_part(field, policy, &leaf.data.to_text(), false));
     }
 }
 #[must_use]
@@ -197,14 +194,20 @@ fn flatten_scalar_array(
         field.xpath(policy),
         segments.clone(),
         field.weight,
-        false,
+        None,
         ARRAY_GAP,
     ));
     // exact copy, if the field has an exact index
     if let Some(exact_xpath) = field.exact_xpath(policy) {
         parts.push(
-            DocumentPart::flattened(exact_xpath, segments, field.weight, true, ARRAY_GAP)
-                .with_names(field.kind == FieldKind::Text),
+            DocumentPart::flattened(
+                exact_xpath,
+                segments,
+                field.weight,
+                Some(field.exact.unwrap_or(ExactMode::CaseInsensitive)),
+                ARRAY_GAP,
+            )
+            .with_names(field.kind == FieldKind::Text),
         );
     }
 }
