@@ -115,8 +115,18 @@ pub fn compile_query(
 
     let fields: Vec<&FieldPolicy> = match search_fields {
         Some(names) => resolve_search_fields(names, needs_exact, policy)?,
-        None => policy.searchable_fields(),
+        None => default_search_fields(policy, needs_exact),
     };
+
+    if needs_exact
+        && !fields
+            .iter()
+            .any(|field| field.exact_xpath(policy).is_some())
+    {
+        return Err(CorelamoError::InvalidData(
+            "the query contains an exact match, but no selected field has an exact index".into(),
+        ));
+    }
 
     // group fields by analyzer name; analyze once per analyzer, then reuse
     let mut by_name: ByName = BTreeMap::new();
@@ -183,15 +193,24 @@ fn resolve_search_fields<'a>(
                     "field '{name}' is not searchable ..."
                 )));
             }
-            if needs_exact && leaf.exact_xpath(policy).is_none() {
-                return Err(CorelamoError::InvalidData(format!(
-                    "field '{name}' has no exact index ..."
-                )));
-            }
             out.push(leaf);
         }
     }
     Ok(out)
+}
+
+fn default_search_fields<'a>(policy: &'a IndexPolicy, needs_exact: bool) -> Vec<&'a FieldPolicy> {
+    let mut fields = policy.searchable_fields();
+    if needs_exact {
+        for leaf in policy.indexed_fields() {
+            if leaf.exact_xpath(policy).is_some()
+                && !fields.iter().any(|known| known.full_path == leaf.full_path)
+            {
+                fields.push(leaf);
+            }
+        }
+    }
+    fields
 }
 
 fn reject_filter_only_operators(v: &OwnedValue) -> Result<(), CorelamoError> {

@@ -639,10 +639,20 @@ where
         let Query::Synonym(forms) = part else {
             return self.leaf_form(part, ctx, None, 1000).into_iter().collect();
         };
+
         let mut out = Vec::with_capacity(forms.len());
         // the typed word's document frequency, the lowest the other words are scored with
         let mut floor = None;
         for (index, form) in forms.iter().enumerate() {
+            if !ctx_supports(&form.query, ctx) {
+                continue;
+            }
+            if matches!(form.query, Query::Exact(_))
+                && matches!(ctx.exact, Some(ExactMode::CaseInsensitive))
+            {
+                continue;
+            }
+
             let built = match &form.query {
                 Query::Term(_) => self.leaf_form(&form.query, ctx, floor, form.weight),
                 // a phrase form adds up its words' scores on the documents where they form the
@@ -774,6 +784,9 @@ where
         min_doc_freq: Option<u32>,
         weight: u16,
     ) -> Option<FormLists<'a>> {
+        if !ctx_supports(query, ctx) {
+            return None;
+        }
         let (xpath, source, own) = if let Query::Term(term) = query {
             let (source, own) = self.term_source(term, ctx.xpath);
             (ctx.xpath, source, own)
@@ -982,12 +995,17 @@ where
                 EvalMode::Filter => {
                     let mut out = RoaringTreemap::new();
                     for &ctx in ctxs {
+                        if !ctx.searchable {
+                            continue;
+                        }
                         out |= self.execute_fuzzy(v, ctx.xpath, *fz, *spec);
                     }
                     EvalOutcome::Docs(out)
                 }
                 EvalMode::Rank => {
-                    EvalOutcome::Scored(self.execute_scored_fuzzy(v, ctxs, *fz, *spec))
+                    let ctxs: Vec<FieldCtx> =
+                        ctxs.iter().copied().filter(|ctx| ctx.searchable).collect();
+                    EvalOutcome::Scored(self.execute_scored_fuzzy(v, &ctxs, *fz, *spec))
                 }
             },
             Query::Range(r) => {
@@ -1066,6 +1084,9 @@ where
             //these shouldnt henerate matched highlights
             Query::Term(_) | Query::Prefix(_) | Query::Wildcard(_) | Query::Exact(_) => {
                 for &ctx in ctxs {
+                    if !ctx_supports(query, ctx) {
+                        continue;
+                    }
                     if ctx.row_keyed {
                         self.push_row_matches(query, page, ctx, out);
                     } else if let Query::Term(term) = query {
@@ -1103,6 +1124,9 @@ where
             }
             Query::Phrase(terms) => {
                 for &ctx in ctxs {
+                    if !ctx.searchable {
+                        continue;
+                    }
                     if ctx.row_keyed {
                         self.collect_phrase_row_keyed(terms, page, ctx, out);
                     } else {
@@ -1113,6 +1137,9 @@ where
             Query::Fuzzy(raw, fuzziness, fuzzy_spec) => {
                 let words = self.fuzzy_words(raw);
                 for &ctx in ctxs {
+                    if !ctx.searchable {
+                        continue;
+                    }
                     let doc_count = self.stats().doc_count(ctx.xpath);
                     for word in &words {
                         let opts = fuzzy_options(word, *fuzziness, *fuzzy_spec);
@@ -1429,6 +1456,9 @@ where
     /// The key a leaf query's list is filed under and the field it is read from (the exact field
     /// for an exact match); `None` for anything that is not a leaf.
     fn leaf_key(query: &Query, ctx: FieldCtx) -> Option<(LeafKey, XPathId)> {
+        if !ctx_supports(query, ctx) {
+            return None;
+        }
         Some(match query {
             Query::Term(v) => (LeafKey::Term(v.clone()), ctx.xpath),
             Query::Prefix(v) => (LeafKey::Prefix(v.clone()), ctx.xpath),
@@ -1470,6 +1500,9 @@ where
             EvalMode::Filter => {
                 let mut out = RoaringTreemap::new();
                 for &ctx in ctxs {
+                    if !ctx_supports(query, ctx) {
+                        continue;
+                    }
                     match query {
                         Query::Term(term) => self.index.doc_ids_into(term, ctx.xpath, &mut out),
                         _ => {
@@ -2289,6 +2322,14 @@ where
         if let Query::ExactField(raw) = query {
             return self.exact_field_hits(raw, ctxs, k, restrict);
         }
+
+        let filtered: Vec<FieldCtx>;
+        let ctxs: &[FieldCtx] = if query_has_exact(query) {
+            ctxs
+        } else {
+            filtered = ctxs.iter().copied().filter(|ctx| ctx.searchable).collect();
+            &filtered
+        };
 
         let mut by_doc: HashMap<DocId, SearchHit> = HashMap::new();
 
@@ -3437,6 +3478,34 @@ where
             .filter(|(_, mask)| *mask == all_words)
             .map(|(hit, _)| hit)
             .collect()
+    }
+}
+
+fn ctx_supports(query: &Query, ctx: FieldCtx) -> bool {
+    match query {
+        Query::Exact(_) | Query::ExactField(_) => ctx.exact.is_some(),
+        Query::Term(_)
+        | Query::Prefix(_)
+        | Query::Wildcard(_)
+        | Query::Phrase(_)
+        | Query::Fuzzy(..) => ctx.searchable,
+        // Range/Bool are filters and MatchAll is unrestricted; combinators are
+        // resolved by their leaves.
+        _ => true,
+    }
+}
+
+fn query_has_exact(query: &Query) -> bool {
+    match query {
+        Query::Exact(_) | Query::ExactField(_) => true,
+        Query::And(parts) | Query::Or(parts) | Query::Wand(parts) | Query::SameElement(parts) => {
+            parts.iter().any(query_has_exact)
+        }
+        Query::Not(inner) => query_has_exact(inner),
+        Query::Synonym(forms) => forms
+            .first()
+            .is_some_and(|form| query_has_exact(&form.query)),
+        _ => false,
     }
 }
 
