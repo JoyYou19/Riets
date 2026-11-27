@@ -58,7 +58,7 @@ pub struct WeightInterval {
 impl WeightInterval {
     pub const TITLE: Self = Self { min: 65, max: 90 };
     pub const TEXT: Self = Self { min: 1, max: 75 };
-    pub const DEFAULT: Self = Self { min: 0, max: 100 };
+    pub const DEFAULT: Self = Self { min: 1, max: 100 };
 
     #[must_use]
     pub fn new(min: u16, max: u16) -> Option<Self> {

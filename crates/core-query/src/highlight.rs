@@ -57,7 +57,6 @@ pub fn highlight_field_array(
 //like ummm cast: {name, surname, aliases["", "", ""],}
 #[timed(highlight)]
 #[must_use]
-
 pub fn highlight_field_row_keyed_flattened(
     value: &OwnedValue,
     full_path: &str,
