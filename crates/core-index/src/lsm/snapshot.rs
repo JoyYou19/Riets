@@ -175,13 +175,15 @@ impl SearchIndex for IndexSnapshot {
         out.into_values().collect()
     }
     fn doc_ids_into(&self, term: &str, xpath: XPathId, out: &mut RoaringTreemap) {
-        let mut ids = RoaringTreemap::new();
-        self.mem.doc_ids_into(term, xpath, &mut ids);
-        for segment in self.segments.iter() {
-            segment.doc_ids_into(term, xpath, &mut ids);
+      
+        let Some(info) = self.term_cursor(term, xpath) else {
+            return;
+        };
+        let mut cursor = info.cursor;
+        while let Some(doc) = cursor.doc_id() {
+            out.insert(doc);
+            cursor.next();
         }
-        self.deleted.remove_from(&mut ids);
-        *out |= ids;
     }
     fn live_doc_ids(&self) -> Option<RoaringTreemap> {
         let mut out = RoaringTreemap::new();

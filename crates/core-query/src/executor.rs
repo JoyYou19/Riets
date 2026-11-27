@@ -2136,8 +2136,7 @@ where
                         continue;
                     }
                     out.insert_field(xpath, || self.field_totals(xpath));
-                    let postings = self.execute_term(&term, xpath).unwrap_or_default();
-                    out.insert_leaf(xpath, key, postings);
+                    out.insert_doc_freq(xpath, key, u64::from(self.local_doc_freq(&term, xpath)));
                 }
             }
             _ => {
@@ -2230,6 +2229,23 @@ where
             .unwrap_or(raw)
     }
 
+    /// Adds one field's score for a token to the document's entry.
+    fn add_exact_hit(docs: &mut HashMap<DocId, ScoredPosting>, hit: ScoredPosting) {
+        match docs.entry(hit.doc_id) {
+            Entry::Vacant(slot) => {
+                slot.insert(hit);
+            }
+            Entry::Occupied(mut slot) => {
+                let known = slot.get_mut();
+                known.score = known.score.saturating_add(hit.score);
+                known.matched_terms = known.matched_terms.saturating_add(hit.matched_terms);
+                known.density = known.density.max(hit.density);
+            }
+        }
+    }
+
+    /// `exact`: every whitespace token in some exact field. The rarest token is read in full;
+    /// every other token only for the documents that still hold all tokens before it.
     fn exact_scored(&self, raw: &str, ctxs: &[FieldCtx]) -> Vec<ScoredPosting> {
         let raw = Self::exact_text(raw);
         let mut unique: Vec<&str> = Vec::new();
@@ -2243,62 +2259,111 @@ where
             return Vec::new();
         }
 
-        let mut per_token: Vec<HashMap<DocId, ScoredPosting>> = Vec::with_capacity(unique.len());
-        for token in unique {
-            let mut docs: HashMap<DocId, ScoredPosting> = HashMap::new();
-            for &ctx in ctxs {
-                let (Some(exact_xpath), Some(mode)) = (ctx.exact_xpath, ctx.exact) else {
-                    continue;
-                };
-                //lowercaser in the query
-                let token = Self::exact_token(token, mode);
-
-                let synthetic = FieldCtx {
-                    xpath: exact_xpath,
-                    exact_xpath: None,
-                    row_keyed: ctx.row_keyed,
-                    searchable: true,
-                    exact: None,
-                };
-                for hit in self.score_leaf(&Query::Term(token), &[synthetic], &[]) {
-                    match docs.entry(hit.doc_id) {
-                        Entry::Vacant(slot) => {
-                            slot.insert(hit);
-                        }
-                        Entry::Occupied(mut slot) => {
-                            let known = slot.get_mut();
-                            known.score = known.score.saturating_add(hit.score);
-                            known.matched_terms =
-                                known.matched_terms.saturating_add(hit.matched_terms);
-                            known.density = known.density.max(hit.density);
-                        }
-                    }
-                }
-            }
-            if docs.is_empty() {
-                return Vec::new();
-            }
-            per_token.push(docs);
+        let exact_ctxs: Vec<(FieldCtx, XPathId, ExactMode)> = ctxs
+            .iter()
+            .filter_map(|&ctx| Some((ctx, ctx.exact_xpath?, ctx.exact?)))
+            .collect();
+        if exact_ctxs.is_empty() {
+            return Vec::new();
         }
 
-        let mut merged = per_token.swap_remove(0);
-        for docs in per_token {
-            merged.retain(|doc, _| docs.contains_key(doc));
+        // rarest first: a token no document has ends the search before anything is read
+        let mut ordered: Vec<(&str, u64)> = Vec::with_capacity(unique.len());
+        for token in unique {
+            let count: u64 = exact_ctxs
+                .iter()
+                .map(|&(_, xpath, mode)| {
+                    u64::from(self.term_doc_freq(&Self::exact_token(token, mode), xpath))
+                })
+                .sum();
+            if count == 0 {
+                return Vec::new();
+            }
+            ordered.push((token, count));
+        }
+        ordered.sort_by_key(|&(_, count)| count);
+
+        let synthetic_of = |ctx: FieldCtx, xpath: XPathId| FieldCtx {
+            xpath,
+            exact_xpath: None,
+            row_keyed: ctx.row_keyed,
+            searchable: true,
+            exact: None,
+        };
+
+        let Some(((first, _), rest)) = ordered.split_first() else {
+            return Vec::new();
+        };
+
+        // the rarest token, read in full
+        let mut merged: HashMap<DocId, ScoredPosting> = HashMap::new();
+        for &(ctx, xpath, mode) in &exact_ctxs {
+            let term = Self::exact_token(first, mode);
+            for hit in self.score_leaf(&Query::Term(term), &[synthetic_of(ctx, xpath)], &[]) {
+                Self::add_exact_hit(&mut merged, hit);
+            }
+        }
+        if merged.is_empty() {
+            return Vec::new();
+        }
+
+        // every other token, only on the documents still in the running
+        let stats = self.stats();
+        let mut doc_len: HashMap<DocId, Option<u32>> = HashMap::new();
+        let mut scored: Vec<ScoredPosting> = Vec::new();
+        for &(token, _) in rest {
+            let mut candidates: Vec<DocId> = merged.keys().copied().collect();
+            // the cursor only moves forward
+            candidates.sort_unstable();
+
+            let mut token_docs: HashMap<DocId, ScoredPosting> = HashMap::new();
+            for &(ctx, xpath, mode) in &exact_ctxs {
+                let term = Self::exact_token(token, mode);
+                if ctx.row_keyed {
+                    // postings are rows, not documents: read the whole list as before
+                    for hit in self.score_leaf(&Query::Term(term), &[synthetic_of(ctx, xpath)], &[])
+                    {
+                        Self::add_exact_hit(&mut token_docs, hit);
+                    }
+                    continue;
+                }
+                let list = postings_of_cursor(self.open_term_cursor(&term, xpath), &candidates);
+                if list.is_empty() {
+                    continue;
+                }
+                scored.clear();
+                doc_len.clear();
+                crate::bm25::score_term_into(
+                    &stats,
+                    &list,
+                    xpath,
+                    self.term_doc_freq(&term, xpath),
+                    &mut doc_len,
+                    &mut scored,
+                );
+                for hit in scored.drain(..) {
+                    Self::add_exact_hit(&mut token_docs, hit);
+                }
+            }
+
+            merged.retain(|doc, _| token_docs.contains_key(doc));
             for (doc, hit) in &mut merged {
-                if let Some(other) = docs.get(doc) {
+                if let Some(other) = token_docs.get(doc) {
                     hit.score = hit.score.saturating_add(other.score);
                     hit.matched_terms = hit.matched_terms.saturating_add(other.matched_terms);
                     hit.density = hit.density.max(other.density);
                 }
             }
             if merged.is_empty() {
-                break;
+                return Vec::new();
             }
         }
+
         merged.into_values().collect()
     }
 
     //Filter-mode `exact`: document ids only.
+    //Filter-mode `exact`: document ids only. Rarest token first; stops as soon as nothing is left.
     fn exact_docs(
         &self,
         raw: &str,
@@ -2313,34 +2378,61 @@ where
             }
         }
 
-        let mut result: Option<RoaringTreemap> = None;
+        let exact_ctxs: Vec<(FieldCtx, XPathId, ExactMode)> = ctxs
+            .iter()
+            .filter_map(|&ctx| Some((ctx, ctx.exact_xpath?, ctx.exact?)))
+            .collect();
+        if unique.is_empty() || exact_ctxs.is_empty() {
+            return RoaringTreemap::new();
+        }
+
+        let mut ordered: Vec<(&str, u64)> = Vec::with_capacity(unique.len());
         for token in unique {
+            let count: u64 = exact_ctxs
+                .iter()
+                .map(|&(_, xpath, mode)| {
+                    u64::from(self.term_doc_freq(&Self::exact_token(token, mode), xpath))
+                })
+                .sum();
+            if count == 0 {
+                return RoaringTreemap::new();
+            }
+            ordered.push((token, count));
+        }
+        ordered.sort_by_key(|&(_, count)| count);
+
+        let mut result: Option<RoaringTreemap> = None;
+        for (token, _) in ordered {
             let mut docs = RoaringTreemap::new();
-            for &ctx in ctxs {
-                let (Some(exact_xpath), Some(mode)) = (ctx.exact_xpath, ctx.exact) else {
-                    continue;
-                };
-                let token = Self::exact_token(token, mode);
-                let list = self.index.lookup(&token, exact_xpath);
-                for posting in list.items() {
-                    let Some(doc) = self.fold_to_doc(ctx, posting.doc_id) else {
-                        continue;
-                    };
-                    if restrict.is_none_or(|r| r.contains(doc)) {
-                        docs.insert(doc);
+            for &(ctx, xpath, mode) in &exact_ctxs {
+                let term = Self::exact_token(token, mode);
+                let mut ids = RoaringTreemap::new();
+                self.index.doc_ids_into(&term, xpath, &mut ids);
+                if ctx.row_keyed {
+                    // row ids: fold each onto its document
+                    for row in ids.iter() {
+                        if let Some(doc) = self.fold_to_doc(ctx, row) {
+                            docs.insert(doc);
+                        }
                     }
+                } else {
+                    docs |= ids;
                 }
+            }
+            if let Some(limit) = restrict {
+                docs &= limit;
             }
             if docs.is_empty() {
                 return RoaringTreemap::new();
             }
-            result = Some(match result {
+            let next = match result {
                 Some(current) => current & docs,
                 None => docs,
-            });
-            if result.as_ref().is_some_and(RoaringTreemap::is_empty) {
-                break;
+            };
+            if next.is_empty() {
+                return RoaringTreemap::new();
             }
+            result = Some(next);
         }
         result.unwrap_or_default()
     }
@@ -2428,6 +2520,9 @@ where
         hits
     }
 
+    /// `exact-field` postings in one field: the length marker, then each token at its place
+    /// after it. Every list is read through a cursor from the rarest one; positions are read
+    /// only where the marker and every token are on the same posting.
     fn exact_field_postings(&self, raw: &str, ctx: FieldCtx) -> Vec<Posting> {
         let (Some(xpath), Some(mode)) = (ctx.exact_xpath, ctx.exact) else {
             return Vec::new();
@@ -2435,97 +2530,104 @@ where
         let Some(terms) = Self::exact_field_terms(raw, mode) else {
             return Vec::new();
         };
-
-        let marker_list = self.index.lookup(&terms[0].text, xpath);
-        if marker_list.is_empty() {
+        // terms[0] is the marker, terms[1..] the tokens in order
+        if terms.len() < 2 {
             return Vec::new();
         }
 
-        let token_lists: Vec<PostingList> = terms[1..]
+        // every list with its count; one nobody has ends it before anything is read
+        let mut order: Vec<(usize, u32)> = Vec::with_capacity(terms.len());
+        for (index, term) in terms.iter().enumerate() {
+            let count = self.term_doc_freq(&term.text, xpath);
+            if count == 0 {
+                return Vec::new();
+            }
+            order.push((index, count));
+        }
+        // rarest first: it drives the walk, the others only jump to its postings
+        order.sort_by_key(|&(_, count)| count);
+
+        let mut cursors: Vec<TermCursor<'a>> = terms
             .iter()
-            .map(|term| self.index.lookup(&term.text, xpath))
+            .map(|term| self.open_term_cursor(&term.text, xpath))
             .collect();
-        if token_lists.is_empty() {
-            return Vec::new();
-        }
-
-        //go from the rarest query token
-        let driver_index = token_lists
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, list)| list.len())
-            .map_or(0, |(index, _)| index);
-        let driver = &token_lists[driver_index];
-        let marker_items = marker_list.items();
 
         let mut out = Vec::new();
-        for driver_posting in driver.items() {
-            if driver_posting.positions.is_empty() {
-                continue;
-            }
-            let doc = driver_posting.doc_id;
+        let mut marker_positions: Vec<u32> = Vec::new();
+        let mut token_positions: Vec<Vec<u32>> = vec![Vec::new(); terms.len() - 1];
+        let mut offsets: Vec<(u32, u32)> = Vec::new();
 
-            let Some(marker_posting) = marker_items
-                .binary_search_by_key(&doc, |posting| posting.doc_id)
-                .ok()
-                .and_then(|index| marker_items.get(index))
-            else {
-                continue;
-            };
-            if marker_posting.positions.is_empty() {
-                continue;
-            }
+        let Some(&(driver, _)) = order.first() else {
+            return Vec::new();
+        };
 
-            let mut token_postings = Vec::with_capacity(token_lists.len());
-            let mut all_present = true;
-            for list in &token_lists {
-                let Some(posting) = list
-                    .items()
-                    .binary_search_by_key(&doc, |posting| posting.doc_id)
-                    .ok()
-                    .and_then(|index| list.items().get(index))
-                else {
-                    all_present = false;
-                    break;
-                };
-                if posting.positions.is_empty() {
-                    all_present = false;
-                    break;
-                }
-                token_postings.push(posting);
-            }
-            if !all_present {
-                continue;
-            }
-
-            let mut matched = Vec::new();
-            for &marker_position in marker_posting.positions.iter() {
-                let base = position_start(marker_position);
-                let mut ok = true;
-                for (index, posting) in token_postings.iter().enumerate() {
-                    let want = base
-                        .saturating_add(1)
-                        .saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
-                    if !posting
-                        .positions
-                        .iter()
-                        .any(|position| position_start(*position) == want)
-                    {
-                        ok = false;
-                        break;
+        'walk: while let Some(mut target) = cursors.get(driver).and_then(TermCursor::doc_id) {
+            // leapfrog: move every list to `target`; a list past it moves the target forward
+            let mut settled = false;
+            while !settled {
+                settled = true;
+                for &(index, _) in &order {
+                    let Some(cursor) = cursors.get_mut(index) else {
+                        break 'walk;
+                    };
+                    cursor.advance_to(target);
+                    match cursor.doc_id() {
+                        None => break 'walk,
+                        Some(found) if found > target => {
+                            target = found;
+                            settled = false;
+                            break;
+                        }
+                        Some(_) => {}
                     }
                 }
-                if ok {
-                    matched.push(marker_position);
-                }
-            }
-            if matched.is_empty() {
-                continue;
             }
 
-            let mut posting = marker_posting.clone();
-            posting.positions = matched.into();
-            out.push(posting);
+            // every list is on `target`: check the tokens sit right after a marker
+            let read_marker = cursors
+                .first_mut()
+                .is_some_and(|cursor| cursor.positions_into(&mut marker_positions).is_ok());
+            let read_tokens = cursors
+                .iter_mut()
+                .skip(1)
+                .zip(token_positions.iter_mut())
+                .all(|(cursor, buffer)| cursor.positions_into(buffer).is_ok());
+
+            if read_marker && read_tokens {
+                let matched: Vec<u32> = marker_positions
+                    .iter()
+                    .copied()
+                    .filter(|&marker_position| {
+                        let base = position_start(marker_position);
+                        token_positions
+                            .iter()
+                            .enumerate()
+                            .all(|(index, positions)| {
+                                let want = base
+                                    .saturating_add(1)
+                                    .saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+                                positions
+                                    .iter()
+                                    .any(|position| position_start(*position) == want)
+                            })
+                    })
+                    .collect();
+
+                if !matched.is_empty()
+                    && let Some(marker) = cursors.first_mut()
+                {
+                    let mut posting = Posting::with_weight(target, matched, marker.weight());
+                    if marker.offsets_into(&mut offsets).is_ok() && !offsets.is_empty() {
+                        posting.offsets = offsets.clone().into();
+                    }
+                    out.push(posting);
+                }
+            }
+
+            // past this posting: the driver moves on, the others follow on the next round
+            if let Some(cursor) = cursors.get_mut(driver) {
+                cursor.next();
+            }
         }
         out
     }
@@ -2738,20 +2840,20 @@ where
 
     /// The documents whose whole value in a name field is one of `keys`: level 0 the value as
     /// written, level 1 the value without its qualifier ("Tom Holland (author)").
-    fn name_docs(&self, keys: &[String], ctxs: &[FieldCtx], qualified: bool) -> HashSet<DocId> {
+    fn name_docs(&self, keys: &[String], ctxs: &[FieldCtx], qualified: bool) -> RoaringTreemap {
         let marker = if qualified {
             QUALIFIED_NAME_KEY
         } else {
             NAME_KEY
         };
-        let mut docs = HashSet::new();
+        let mut docs = RoaringTreemap::new();
         for ctx in ctxs.iter().filter(|ctx| !ctx.row_keyed) {
             let Some(xpath) = ctx.exact_xpath else {
                 continue;
             };
             for key in keys {
-                let list = self.index.lookup(&format!("{marker}{key}"), xpath);
-                docs.extend(list.items().iter().map(|posting| posting.doc_id));
+                self.index
+                    .doc_ids_into(&format!("{marker}{key}"), xpath, &mut docs);
             }
         }
         docs
@@ -2900,12 +3002,19 @@ where
                     }
                 }
                 Tier::Exact(query) => {
+                    // a title holding every typed token: a strong candidate, scored with the
+                    // rest, its name share how much of the title the query covers
+                    let Query::Exact(raw) = query else {
+                        continue;
+                    };
                     for mut hit in ranked(query, fetch, None) {
-                        hit.tier = plan.ranks.exact;
+                        hit.tier = plan.ranks.relevance;
                         hit.level = 0;
-                        hit.name_share = 1.0;
+                        hit.name_share = self.exact_share(raw, hit.doc_id, ctxs);
                         keep(&mut found, hit);
                     }
+                    // not a hard tier: does not count toward filling the page
+                    continue;
                 }
                 _ => {
                     continue;
@@ -2918,7 +3027,6 @@ where
         // sources find could be shown
         let below_hard = plan.tiers.iter().all(|tier| match tier {
             Tier::Name { .. } => plan.ranks.name < plan.ranks.relevance,
-            Tier::Exact(_) => plan.ranks.exact < plan.ranks.relevance,
             _ => true,
         });
         let filled = named_count >= k || (plan.stop_after > 0 && named_count >= plan.stop_after);
@@ -3200,6 +3308,31 @@ where
         }
 
         shares
+    }
+    /// How much of a document's exact value the typed tokens cover: 1 when the title is the
+    /// query's tokens and nothing else, less the more words it has beyond them. Best over the
+    /// exact fields; 0 when no length is known.
+        fn exact_share(&self, raw: &str, doc: DocId, ctxs: &[FieldCtx]) -> f32 {
+        let tokens: HashSet<&str> = Self::exact_text(raw).split_whitespace().collect();
+        if tokens.is_empty() {
+            return 0.0;
+        }
+        let stats = self.stats();
+        ctxs.iter()
+            .filter(|ctx| !ctx.row_keyed)
+            .filter_map(|ctx| Some((ctx.exact_xpath?, ctx.exact?)))
+            // only a field that holds every token for this document says how much of it matched
+            .filter(|&(xpath, mode)| {
+                tokens.iter().all(|token| {
+                    let mut cursor = self.open_term_cursor(&Self::exact_token(token, mode), xpath);
+                    cursor.advance_to(doc);
+                    cursor.doc_id() == Some(doc)
+                })
+            })
+            .filter_map(|(xpath, _)| stats.doc_len(doc, xpath))
+            .filter(|&len| len > 0)
+            .map(|len| (f32_of(count_u32(tokens.len())) / f32_of(len)).min(1.0))
+            .fold(0.0, f32::max)
     }
     #[timed(search)]
     fn clause_masks(
@@ -3762,7 +3895,7 @@ where
     }
 }
 
-fn ctx_supports(query: &Query, ctx: FieldCtx) -> bool {
+const fn ctx_supports(query: &Query, ctx: FieldCtx) -> bool {
     match query {
         Query::Exact(_) | Query::ExactField(_) => ctx.exact.is_some(),
         Query::Term(_)

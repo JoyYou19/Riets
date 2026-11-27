@@ -19,7 +19,7 @@ IN_FLIGHT = 4     # insert requests running at the same time
 # (fields without one use "$default"). See docs/analyzers.md.
 POLICY = json.dumps({
     "analyzers": {
-        "$default": {"stemming": "english", "min_length": 1, "stopwords": [
+        "$default": {"stemming": "english", "min_length": 1, "ascii_folding": True, "stopwords": [
             "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
             "into", "is", "it", "of", "on", "or", "such", "that", "the", "their", "then",
             "there", "these", "they", "this", "to", "was", "will", "with",
@@ -36,7 +36,7 @@ POLICY = json.dumps({
             "$type": "text",
             "$list": True,
             "$exact": "case-insensitive",
-            "$weight": {"min": 40, "max": 80},
+            "$weight": {"min": 80, "max": 80},
         },
         "text": {
             "$type": "text",

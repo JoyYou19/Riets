@@ -251,8 +251,7 @@ impl RankPlan {
     #[must_use]
     pub fn named_tier_limit(&self) -> u8 {
         let named_first = self.tiers.iter().all(|tier| match tier {
-            Tier::Name { .. } => self.ranks.name < self.ranks.relevance,
-            Tier::Exact(_) => self.ranks.exact < self.ranks.relevance,
+            Tier::Name { .. } => self.ranks.name < self.ranks.relevance, 
             _ => true,
         });
         if named_first { self.ranks.relevance } else { 0 }
@@ -340,11 +339,18 @@ fn written_forms(query: &Query) -> Vec<String> {
             }
             out
         }
-        Query::ExactField(_) => Vec::new(),
         _ => Vec::new(),
     }
 }
-
+//TEST
+/// A typed word without a trailing possessive: "Thailand's" -> "Thailand", "Mars'" -> "Mars".
+fn without_possessive(word: &str) -> &str {
+    ["'s", "’s", "'", "’"]
+        .iter()
+        .find_map(|end| word.strip_suffix(end))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(word)
+}
 /// The name key of every run of the typed words, up to `MAX_NAME_WORDS` long: a document whose
 /// name is one of them is something the query is about ("Vera Wang" in "Vera Wang was born in
 /// March"). And the query's words as the keys write them, to weigh how much of the query a run is.
@@ -355,22 +361,40 @@ fn named_runs(raw: &str, analyzer: &Analyzer) -> (Vec<String>, Vec<String>) {
     }
     let mut keys: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut push = |text: &str, keys: &mut Vec<String>| {
+        if let Some(key) = analyzer.name_key(text)
+            && seen.insert(key.clone())
+        {
+            keys.push(key);
+        }
+    };
     for start in 0..typed.len() {
         let limit = typed.len().min(start.saturating_add(MAX_NAME_WORDS));
         for end in start.saturating_add(1)..=limit {
             let Some(run) = typed.get(start..end) else {
                 continue;
             };
-            if let Some(key) = analyzer.name_key(&run.join(" "))
-                && seen.insert(key.clone())
-            {
-                keys.push(key);
+            push(&run.join(" "), &mut keys);
+            // the key as typed stays, for titles that hold the possessive ("Ender's Game")
+            if let Some((last, head)) = run.split_last() {
+                let plain = without_possessive(last);
+                if plain.len() != last.len() {
+                    let mut words: Vec<&str> = head.to_vec();
+                    words.push(plain);
+                    push(&words.join(" "), &mut keys);
+                }
             }
         }
     }
-    // the words name_key keeps: one per position, a hyphenated word's parts but not its joined form
+    // the words name_key keeps: one per position, a hyphenated word's parts but not its joined
+    // form; possessives dropped, so a stray "s" holds no share of the query
+    let plain: String = typed
+        .iter()
+        .map(|word| without_possessive(word))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut words: Vec<(u32, String)> = Vec::new();
-    analyzer.for_each_token(raw, |term, position, length| {
+    analyzer.for_each_token(&plain, |term, position, length| {
         if length == 1 && words.last().is_none_or(|(last, _)| *last < position) {
             words.push((position, term.to_owned()));
         }

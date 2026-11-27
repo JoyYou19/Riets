@@ -1396,8 +1396,7 @@ impl ShardManager {
                 corpus: Arc::new(corpus),
                 shards: shards.into_iter().map(Arc::new).collect(),
                 plans: Arc::clone(&search.plans_no_fuzzy),
-                unknown_word: words.unknown,
-                rare_word: words.rare,
+         
             });
         }
         // only the fuzzy leaves are new: everything else is already in `shards`
@@ -1413,8 +1412,7 @@ impl ShardManager {
             corpus: Arc::new(corpus),
             shards: shards.into_iter().map(Arc::new).collect(),
             plans: Arc::clone(&search.plans_full),
-            unknown_word: words.unknown,
-            rare_word: words.rare,
+     
         })
     }
 
@@ -2582,15 +2580,14 @@ impl ShardManager {
             let embedder = models.default_embedder().ok()?;
             let query = embedder.embed_query(&text).ok()?;
             let lists: Vec<Vec<VectorHit>> = std::thread::scope(|scope| {
-                let jobs: Vec<_> = shards
+                
+                shards
                     .iter()
                     .zip(&prepared_shards)
                     .map(|(shard, prepared)| {
                         let (query, xpaths) = (&query, &xpaths);
                         scope.spawn(move || shard.vector_search(xpaths, query, k, prepared))
                     })
-                    .collect();
-                jobs.into_iter()
                     .filter_map(|job| job.join().ok()?.ok())
                     .collect()
             });
@@ -2737,10 +2734,10 @@ struct ShardStatistics {
     /// the plans the shards were prepared with: rank with exactly these
     plans: Arc<Vec<RankPlan>>,
     //a typed word is in at most TYPO MAX DOC FREQ documents it may be a typo
-    rare_word: bool,
+
     shards: Vec<Arc<PreparedShardSearch>>,
-    /// a typed word is in no document of its group's fields
-    unknown_word: bool,
+
+  
 }
 
 /// Every shard's ranked hits, before they are merged into one order.
