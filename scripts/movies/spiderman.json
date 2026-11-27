@@ -1,0 +1,60 @@
+{
+    "docs": [
+        {
+            "title": "Spider-Man",
+            "year": "2002",
+            "cast": [
+                {
+                    "name": "Tobey",
+                    "surname": "Maguire"
+                },
+                {
+                    "name": "Willem",
+                    "surname": "Dafoe"
+                },
+                {
+                    "name": "Kirsten",
+                    "surname": "Dunst"
+                },
+                {
+                    "name": "James",
+                    "surname": "Franco"
+                },
+                {
+                    "name": "Cliff",
+                    "surname": "Robertson"
+                },
+                {
+                    "name": "Rosemary",
+                    "surname": "Harris"
+                },
+                {
+                    "name": "J. K.",
+                    "surname": "Simmons"
+                }
+            ],
+            "genres": [
+                "Superhero"
+            ],
+            "href": "Spider-Man_(2002_film)",
+            "extract": "Spider-Man is a 2002 American superhero film based on the Marvel Comics superhero of the same name. Directed by Sam Raimi from a screenplay by David Koepp, it is the first installment in Raimi's Spider-Man trilogy, and stars Tobey Maguire as the titular character, alongside Willem Dafoe, Kirsten Dunst, James Franco, Cliff Robertson, and Rosemary Harris. The film chronicles Spider-Man's origin story and early superhero career. After being bitten by a genetically-altered spider, outcast teenager Peter Parker develops spider-like superhuman abilities and adopts a masked superhero identity to fight crime and injustice in New York City, facing the sinister Green Goblin (Dafoe) in the process.",
+            "thumbnail": "https://upload.wikimedia.org/wikipedia/en/f/f3/Spider-Man2002Poster.jpg",
+            "thumbnail_width": "260",
+            "thumbnail_height": "383",
+            "is_cool": true,
+            "id": 30818,
+            "rating": 4.0,
+            "release_date": "1998-10-10-00-18-09",
+            "random_nums": [
+                {
+                    "num1": 85,
+                    "num2": 30
+                },
+                {
+                    "num1": 10,
+                    "num2": 71
+                }
+            ]
+        }
+    ]
+}

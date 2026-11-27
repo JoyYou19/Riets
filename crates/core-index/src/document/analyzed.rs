@@ -139,10 +139,20 @@ fn add_weighted(analyzers: &AnalyzerSet, part: &DocumentPart, is_row_keyed: bool
                 (0, 0)
             } else {
                 let marker = exact_len_marker(tokens.len());
-                push(&marker, encode_position(cur_position, 1), offset);
+                let marker_offset = (0u32, u32::try_from(seg.len()).unwrap_or(u32::MAX));
+                push(&marker, encode_position(cur_position, 1), marker_offset);
 
+                let mut cursor = 0usize;
                 for (index, token) in tokens.iter().enumerate() {
-                    //the lowercase in exact check
+                    let start = seg[cursor..].find(*token).map_or(cursor, |at| cursor + at);
+                    let end = start.saturating_add(token.len());
+                    cursor = end;
+
+                    let offset = (
+                        u32::try_from(start).unwrap_or(u32::MAX),
+                        u32::try_from(end).unwrap_or(u32::MAX),
+                    );
+
                     let normalized = if exact_mode.lowercases() {
                         token.to_lowercase()
                     } else {

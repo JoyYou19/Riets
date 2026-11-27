@@ -1425,7 +1425,7 @@ where
                         };
                         if let Some(matches) = out.get_mut(slot) {
                             matches.push(MatchedTerm {
-                                xpath,
+                                xpath: ctx.xpath,
                                 row_id: Some(row),
                                 row_path: Vec::new(),
                                 positions: posting.positions.to_vec(),
@@ -1439,7 +1439,7 @@ where
                     for &(_, slot) in page {
                         Self::push_leaf_matches(
                             postings.get(slot).and_then(Option::as_ref),
-                            xpath,
+                            ctx.xpath,
                             weight,
                             out,
                             slot,
@@ -1470,8 +1470,7 @@ where
                 continue;
             }
 
-            let phrase = self.execute_phrase(&terms, xpath);
-            for posting in phrase.items() {
+            for posting in self.exact_field_postings(raw, ctx) {
                 if posting.positions.is_empty() {
                     continue;
                 }
@@ -1501,7 +1500,7 @@ where
                         );
                         if let Some(matches) = out.get_mut(slot) {
                             matches.push(MatchedTerm {
-                                xpath,
+                                xpath: ctx.xpath,
                                 row_id: Some(row),
                                 row_path: Vec::new(),
                                 positions: token_posting.positions.to_vec(),
@@ -1554,7 +1553,7 @@ where
                         );
                         if let Some(matches) = out.get_mut(slot) {
                             matches.push(MatchedTerm {
-                                xpath,
+                                xpath: ctx.xpath,
                                 row_id: None,
                                 row_path: Vec::new(),
                                 positions,
@@ -2356,41 +2355,35 @@ where
 
     /// `exact-field`: whole value/element as marker + token phrase.
     fn exact_field_scored(&self, raw: &str, ctxs: &[FieldCtx]) -> Vec<ScoredPosting> {
-        let raw = Self::exact_text(raw);
-        let tokens: Vec<&str> = raw.split_whitespace().collect();
-        if tokens.is_empty() {
-            return Vec::new();
-        }
-
         let mut best: HashMap<DocId, ScoredPosting> = HashMap::new();
+
         for &ctx in ctxs {
-            let (Some(exact_xpath), Some(mode)) = (ctx.exact_xpath, ctx.exact) else {
+            let Some(exact_xpath) = ctx.exact_xpath else {
                 continue;
             };
-            let Some(mut terms) = Self::exact_field_terms(raw, mode) else {
+            let postings = self.exact_field_postings(raw, ctx);
+            if postings.is_empty() {
                 continue;
-            };
-            for (index, token) in tokens.iter().enumerate() {
-                let text = if mode.lowercases() {
-                    token.to_lowercase()
-                } else {
-                    (*token).to_owned()
-                };
-                terms.push(PhraseTerm {
-                    text,
-                    offset: u32::try_from(index + 1).unwrap_or(u32::MAX),
-                });
             }
 
-            let synthetic = FieldCtx {
-                xpath: exact_xpath,
-                exact_xpath: None,
-                row_keyed: ctx.row_keyed,
-                searchable: true,
-                exact: None,
-            };
-            for hit in self.score_leaf(&Query::Phrase(terms), &[synthetic], &[]) {
-                match best.entry(hit.doc_id) {
+            let list = PostingList::from_items(postings);
+            let mut doc_len = HashMap::new();
+            let mut scored = Vec::new();
+            crate::bm25::score_term_into(
+                &self.stats(),
+                &list,
+                exact_xpath,
+                u32::try_from(list.len()).unwrap_or(u32::MAX),
+                &mut doc_len,
+                &mut scored,
+            );
+
+            for mut hit in scored {
+                let Some(doc) = self.fold_to_doc(ctx, hit.doc_id) else {
+                    continue;
+                };
+                hit.doc_id = doc;
+                match best.entry(doc) {
                     Entry::Vacant(slot) => {
                         slot.insert(hit);
                     }
@@ -2411,34 +2404,9 @@ where
         ctxs: &[FieldCtx],
         restrict: Option<&RoaringTreemap>,
     ) -> RoaringTreemap {
-        let raw = Self::exact_text(raw);
-        let tokens: Vec<&str> = raw.split_whitespace().collect();
-        if tokens.is_empty() {
-            return RoaringTreemap::new();
-        }
-
         let mut docs_out = RoaringTreemap::new();
         for &ctx in ctxs {
-            let (Some(exact_xpath), Some(mode)) = (ctx.exact_xpath, ctx.exact) else {
-                continue;
-            };
-            let Some(mut terms) = Self::exact_field_terms(raw, mode) else {
-                continue;
-            };
-            for (index, token) in tokens.iter().enumerate() {
-                let text = if mode.lowercases() {
-                    token.to_lowercase()
-                } else {
-                    (*token).to_owned()
-                };
-                terms.push(PhraseTerm {
-                    text,
-                    offset: u32::try_from(index + 1).unwrap_or(u32::MAX),
-                });
-            }
-
-            let list = self.execute_phrase(&terms, exact_xpath);
-            for posting in list.items() {
+            for posting in self.exact_field_postings(raw, ctx) {
                 let Some(doc) = self.fold_to_doc(ctx, posting.doc_id) else {
                     continue;
                 };
@@ -2466,6 +2434,108 @@ where
         hits.sort_unstable_by(rank_order);
         hits.truncate(k);
         hits
+    }
+
+    fn exact_field_postings(&self, raw: &str, ctx: FieldCtx) -> Vec<Posting> {
+        let (Some(xpath), Some(mode)) = (ctx.exact_xpath, ctx.exact) else {
+            return Vec::new();
+        };
+        let Some(terms) = Self::exact_field_terms(raw, mode) else {
+            return Vec::new();
+        };
+
+        let marker_list = self.index.lookup(&terms[0].text, xpath);
+        if marker_list.is_empty() {
+            return Vec::new();
+        }
+
+        let token_lists: Vec<PostingList> = terms[1..]
+            .iter()
+            .map(|term| self.index.lookup(&term.text, xpath))
+            .collect();
+        if token_lists.is_empty() {
+            return Vec::new();
+        }
+
+        //go from the rarest query token
+        let driver_index = token_lists
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, list)| list.len())
+            .map_or(0, |(index, _)| index);
+        let driver = &token_lists[driver_index];
+        let marker_items = marker_list.items();
+
+        let mut out = Vec::new();
+        for driver_posting in driver.items() {
+            if driver_posting.positions.is_empty() {
+                continue;
+            }
+            let doc = driver_posting.doc_id;
+
+            let Some(marker_posting) = marker_items
+                .binary_search_by_key(&doc, |posting| posting.doc_id)
+                .ok()
+                .and_then(|index| marker_items.get(index))
+            else {
+                continue;
+            };
+            if marker_posting.positions.is_empty() {
+                continue;
+            }
+
+            let mut token_postings = Vec::with_capacity(token_lists.len());
+            let mut all_present = true;
+            for list in &token_lists {
+                let Some(posting) = list
+                    .items()
+                    .binary_search_by_key(&doc, |posting| posting.doc_id)
+                    .ok()
+                    .and_then(|index| list.items().get(index))
+                else {
+                    all_present = false;
+                    break;
+                };
+                if posting.positions.is_empty() {
+                    all_present = false;
+                    break;
+                }
+                token_postings.push(posting);
+            }
+            if !all_present {
+                continue;
+            }
+
+            let mut matched = Vec::new();
+            for &marker_position in marker_posting.positions.iter() {
+                let base = position_start(marker_position);
+                let mut ok = true;
+                for (index, posting) in token_postings.iter().enumerate() {
+                    let want = base
+                        .saturating_add(1)
+                        .saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+                    if !posting
+                        .positions
+                        .iter()
+                        .any(|position| position_start(*position) == want)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    matched.push(marker_position);
+                }
+            }
+            if matched.is_empty() {
+                continue;
+            }
+
+            let mut posting = marker_posting.clone();
+            posting.positions = matched.into();
+            out.push(posting);
+        }
+        out
     }
 
     fn exact_field_hits(
